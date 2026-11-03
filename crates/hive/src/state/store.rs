@@ -26,6 +26,29 @@ impl Store {
         self.commit(cx);
     }
 
+    pub fn set_ui_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        self.state.settings.set_ui_font_size(size);
+        self.commit(cx);
+    }
+
+    pub fn set_terminal_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        self.state.settings.set_terminal_font_size(size);
+        self.commit(cx);
+    }
+
+    /// Assigns `keystrokes` to the action named `action`, replacing its default.
+    pub fn set_keybinding(&mut self, action: &str, keystrokes: &str, cx: &mut Context<Self>) {
+        self.state.settings.set_keybinding(action, keystrokes);
+        self.commit(cx);
+    }
+
+    /// Returns the action named `action` to its default shortcut.
+    pub fn reset_keybinding(&mut self, action: &str, cx: &mut Context<Self>) {
+        if self.state.settings.reset_keybinding(action) {
+            self.commit(cx);
+        }
+    }
+
     pub fn add_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let project = ProjectRef::new(path, Host::Local);
         if !self
@@ -65,7 +88,7 @@ impl Store {
         });
         cx.spawn(async move |cx| {
             if let Ok(Ok(Some(paths))) = rx.await {
-                let _ = cx.update(|cx| {
+                cx.update(|cx| {
                     store.update(cx, |store, cx| {
                         for path in paths {
                             store.add_project(path, cx);

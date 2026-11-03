@@ -39,7 +39,11 @@ fn main() {
             gpui_kit::init(cx);
             AppState::init(cx);
             terminal::view::init(cx);
-            ui::workspace::init(cx);
+            terminal::panel::init(cx);
+            ui::theme::init(cx);
+            // After every layer has bound its keys: it rebuilds the keymap around them.
+            ui::keymap::init(cx);
+            ui::settings::init(cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,

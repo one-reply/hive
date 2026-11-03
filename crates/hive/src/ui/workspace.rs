@@ -18,7 +18,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use hive_core::settings::{ThemeChoice, clamp_sidebar_width};
+use hive_core::settings::clamp_sidebar_width;
 
 use crate::app::AppState;
 use crate::state::projects::Projects;
@@ -26,16 +26,10 @@ use crate::state::store::Store;
 use crate::terminal::TerminalPanel;
 use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
-use crate::ui::theme::apply_theme;
+use crate::ui::{keymap, theme};
 
+// Bound in `ui::keymap`, where the user can reassign them.
 actions!(workspace, [NewTerminal, ToggleSidebar]);
-
-pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("cmd-t", NewTerminal, Some("Workspace")),
-        KeyBinding::new("cmd-shift-\\", ToggleSidebar, Some("Workspace")),
-    ]);
-}
 
 pub struct Workspace {
     sidebar: Entity<Sidebar>,
@@ -46,6 +40,10 @@ pub struct Workspace {
     sidebar_width: Pixels,
     /// The resize handle is held down; the next mouse-up persists `sidebar_width`.
     resizing_sidebar: bool,
+    /// Mirrors `window.is_fullscreen()`; the title slides into the traffic lights' space.
+    fullscreen: bool,
+    /// Set by the first fullscreen change, so the title doesn't slide on launch.
+    fullscreen_animate: bool,
     status_bar: Entity<StatusBarView>,
     projects: Entity<Projects>,
     dock: Entity<DockArea>,
@@ -63,6 +61,11 @@ const TAB_BAR_HEIGHT: Pixels = px(34.);
 const RESIZE_HANDLE_WIDTH: Pixels = px(6.);
 const HIVE_MARK: &[u8] = include_bytes!("../../assets/icons/Hive.icon/Assets/mark.svg");
 const WELCOME_LOGO_SIZE: Pixels = px(96.);
+/// `TitleBar`'s left padding that clears the macOS traffic lights.
+const TRAFFIC_LIGHTS_INSET: Pixels = px(80.);
+/// Left padding `TitleBar` adds on its own in fullscreen, where the traffic lights are hidden.
+const FULLSCREEN_INSET: Pixels = px(12.);
+const TITLE_INSET_DURATION: Duration = Duration::from_millis(200);
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -70,17 +73,12 @@ impl Workspace {
         let (store, projects) = (app.store.clone(), app.projects.clone());
         let sidebar_width = px(store.read(cx).state.settings.sidebar_width());
 
-        apply_theme(store.read(cx).state.settings.theme, Some(window), cx);
-
         let (dock, skin) = DockSkin::dock_area("center", None, window, cx);
         skin.set_panel_style(PanelStyle::TabBar, cx);
         skin.set_close_button_visible(true, cx);
         skin.set_toggle_button_visible(false, cx);
 
         let observers = vec![
-            cx.observe(&store, |_, store, cx| {
-                apply_theme(store.read(cx).state.settings.theme, None, cx)
-            }),
             cx.observe_in(&projects, window, |this, _, window, cx| {
                 this.sync_selection(window, cx)
             }),
@@ -96,12 +94,16 @@ impl Workspace {
                 this.sync_active_worktrees(cx);
                 cx.notify();
             }),
-            cx.observe_window_appearance(window, {
-                let store = store.clone();
-                move |_, window, cx| {
-                    if store.read(cx).state.settings.theme == ThemeChoice::System {
-                        apply_theme(ThemeChoice::System, Some(window), cx);
-                    }
+            cx.observe_window_appearance(window, |_, window, cx| {
+                theme::sync_system_appearance(window, cx)
+            }),
+            // Entering or leaving fullscreen resizes the window; there is no dedicated event.
+            cx.observe_window_bounds(window, |this, window, cx| {
+                let fullscreen = window.is_fullscreen();
+                if this.fullscreen != fullscreen {
+                    this.fullscreen = fullscreen;
+                    this.fullscreen_animate = true;
+                    cx.notify();
                 }
             }),
         ];
@@ -112,6 +114,8 @@ impl Workspace {
             sidebar_animate: false,
             sidebar_width,
             resizing_sidebar: false,
+            fullscreen: window.is_fullscreen(),
+            fullscreen_animate: false,
             status_bar: cx.new(StatusBarView::new),
             projects,
             dock,
@@ -210,6 +214,24 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Slides the title from the traffic lights' inset to the left edge on entering fullscreen;
+    /// `TitleBar` alone would jump. Leaving fullscreen snaps it back at once: macOS draws no
+    /// frames during its exit transition, so a slide would freeze under the traffic lights.
+    fn animate_title_inset(&self, title_bar: TitleBar) -> AnyElement {
+        if !(self.fullscreen && self.fullscreen_animate) {
+            return title_bar.into_any_element();
+        }
+        // In fullscreen `TitleBar` pads its content by `FULLSCREEN_INSET` itself.
+        let from = TRAFFIC_LIGHTS_INSET - FULLSCREEN_INSET;
+        title_bar
+            .with_animation(
+                "title-inset",
+                Animation::new(TITLE_INSET_DURATION).with_easing(ease_in_out),
+                move |bar, t| bar.pl(from * (1. - t)),
+            )
+            .into_any_element()
+    }
+
     fn finish_sidebar_resize(&mut self, cx: &mut Context<Self>) {
         if !std::mem::take(&mut self.resizing_sidebar) {
             return;
@@ -267,7 +289,7 @@ impl Workspace {
             )
     }
 
-    fn render_center(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_center(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         // The center column starts at the window's top edge, so its top band is where the
         // macOS title bar would be: let it drag and double-click-zoom the window like `TitleBar`
@@ -300,19 +322,24 @@ impl Workspace {
                 }
             });
         if self.terminals.is_empty() {
-            return center.child(self.render_welcome(muted, cx));
+            return center.child(self.render_welcome(muted, window, cx));
         }
         center.child(div().size_full().child(self.dock.clone()))
     }
 
     /// Shown while the dock has no tabs (the dock itself draws nothing then).
-    fn render_welcome(&self, muted: Hsla, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_welcome(
+        &self,
+        muted: Hsla,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let hint = if self.projects.read(cx).selection().is_some() {
             "Open a terminal in the selected worktree to begin."
         } else {
             "Select a project from the sidebar to begin."
         };
-        let shortcut = |label: &'static str, keys: &'static str| {
+        let shortcut = |label: &'static str, action: &dyn Action| {
             h_flex()
                 .w(px(320.))
                 .justify_between()
@@ -320,7 +347,11 @@ impl Workspace {
                 .text_sm()
                 .text_color(muted)
                 .child(label)
-                .child(Kbd::new(Keystroke::parse(keys).expect("static keystroke")))
+                .children(Kbd::binding_for_action(
+                    action,
+                    Some(keymap::CONTEXT),
+                    window,
+                ))
         };
         v_flex()
             .size_full()
@@ -364,13 +395,13 @@ impl Workspace {
                 v_flex()
                     .gap_1()
                     .mt_6()
-                    .child(shortcut("New terminal", "cmd-t")),
+                    .child(shortcut("New terminal", &NewTerminal)),
             )
     }
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let bg = cx.theme().background;
         let open = self.sidebar_open;
         // Open, the toggle sits at the sidebar's right border; collapsed, the title bar spans the
@@ -388,12 +419,17 @@ impl Render for Workspace {
                         .ghost()
                         .small()
                         .icon(Lucide::PanelLeft)
-                        .tooltip_with_action("Toggle sidebar", &ToggleSidebar, Some("Workspace"))
+                        .tooltip_with_action(
+                            "Toggle sidebar",
+                            &ToggleSidebar,
+                            Some(keymap::CONTEXT),
+                        )
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.toggle_sidebar(&ToggleSidebar, window, cx)
                         })),
                 ),
         );
+        let title_bar = self.animate_title_inset(title_bar);
         // Orca-style: the title bar (traffic lights + name) sits above the sidebar only and the
         // center dock with its tab bar runs to the very top. Collapsing slides the sidebar to
         // zero width while the dock drops below the title bar, which then spans the window.
@@ -418,7 +454,7 @@ impl Render for Workspace {
             .flex_1()
             .min_w_0()
             .h_full()
-            .child(self.render_center(cx));
+            .child(self.render_center(window, cx));
         let (left_el, center_el) = if self.sidebar_animate {
             let anim = Animation::new(Duration::from_millis(200)).with_easing(ease_in_out);
             (

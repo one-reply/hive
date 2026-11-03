@@ -26,7 +26,7 @@ use hive_core::worktree::{Removal, WorktreeError};
 use crate::app::AppState;
 use crate::state::projects::Projects;
 use crate::state::store::Store;
-use crate::ui::settings_sheet;
+use crate::ui::settings;
 
 /// Folder colors, cycled by project position (Orca tints each project).
 const FOLDER_COLORS: [u32; 8] = [
@@ -409,7 +409,7 @@ impl Render for Sidebar {
                         .small()
                         .icon(IconName::Settings)
                         .tooltip("Settings")
-                        .on_click(|_, window, cx| settings_sheet::open(window, cx)),
+                        .on_click(|_, _, cx| settings::open(cx)),
                 ),
             )
     }

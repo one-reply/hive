@@ -8,6 +8,12 @@ use hive_core::terminal::{Cell, Color, CursorShape, Flags, NamedColor, Point as 
 
 use super::view::TerminalView;
 
+/// Floor for the theme's mono size so a misconfigured theme cannot make the grid unreadable.
+const MIN_FONT_SIZE: Pixels = px(11.);
+/// Zed's "standard" terminal line height: tight like a native terminal, still readable.
+const LINE_HEIGHT_RATIO: f32 = 1.3;
+const GRID_PADDING: Pixels = px(4.);
+
 pub struct TerminalElement {
     view: Entity<TerminalView>,
     focused: bool,
@@ -158,7 +164,7 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) -> Prepaint {
         let theme = cx.theme();
-        let font_size = theme.font_size.max(px(11.));
+        let font_size = theme.mono_font_size.max(MIN_FONT_SIZE);
         let base_font = Font {
             family: theme.mono_font_family.clone(),
             features: FontFeatures::default(),
@@ -174,9 +180,9 @@ impl Element for TerminalElement {
             .advance(font_id, font_size, 'm')
             .map(|s| s.width)
             .unwrap_or(font_size * 0.6);
-        let line_height = (font_size * 1.4).round();
+        let line_height = (font_size * LINE_HEIGHT_RATIO).round();
 
-        let padding = px(4.);
+        let padding = GRID_PADDING;
         let inner = Bounds {
             origin: bounds.origin + point(padding, padding),
             size: size(
@@ -184,8 +190,8 @@ impl Element for TerminalElement {
                 bounds.size.height - padding * 2.,
             ),
         };
-        let cols = (f32::from(inner.size.width / cell_width)).floor().max(2.) as u16;
-        let rows = (f32::from(inner.size.height / line_height)).floor().max(1.) as u16;
+        let cols = (inner.size.width / cell_width).floor().max(2.) as u16;
+        let rows = (inner.size.height / line_height).floor().max(1.) as u16;
         self.view.update(cx, |view, _| view.resize(cols, rows));
 
         let mut rects = Vec::new();
@@ -207,7 +213,7 @@ impl Element for TerminalElement {
         let cursor_visible = content.cursor.shape != CursorShape::Hidden;
 
         for indexed in display_iter {
-            let cell: &Cell = &indexed.cell;
+            let cell: &Cell = indexed.cell;
             let flags = cell.flags;
             if flags.contains(Flags::WIDE_CHAR_SPACER)
                 || flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)

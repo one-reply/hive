@@ -2,7 +2,7 @@
 //! turns keyboard/scroll input into PTY writes.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use gpui_kit::component::ActiveTheme as _;
@@ -79,11 +79,8 @@ impl TerminalView {
                         }
                         // Let the shell finish its burst of output before we repaint.
                         std::thread::sleep(Duration::from_millis(4));
-                        loop {
-                            match rx.try_recv() {
-                                Ok(event) => batch.push(event),
-                                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-                            }
+                        while let Ok(event) = rx.try_recv() {
+                            batch.push(event);
                         }
                         (rx, batch)
                     })
@@ -258,6 +255,11 @@ fn shorten_title(title: &str, max_chars: usize) -> String {
 
 actions!(terminal, [Paste]);
 
+/// Keymap entries the terminal needs. Call once at startup.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("cmd-v", Paste, Some("Terminal"))]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::shorten_title;
@@ -277,9 +279,4 @@ mod tests {
             "…g/and/going"
         );
     }
-}
-
-/// Keymap entries the terminal needs. Call once at startup.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("cmd-v", Paste, Some("Terminal"))]);
 }

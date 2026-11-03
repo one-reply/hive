@@ -1,5 +1,7 @@
-//! A dock tab holding one [`TerminalView`], with "+" (new tab) and "split" toolbar buttons.
+//! A dock tab holding a tree of terminal panes (Orca-style tiles), with "+" (new tab) and
+//! "split" toolbar buttons and ⌘D / ⌘⇧D / ⌘W for splitting and closing the active pane.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::assets::IconName as Lucide;
@@ -9,19 +11,35 @@ use gpui_kit::component::dock::{
     BasePanel, DockArea, DockPlacement, InsertTarget, Panel, PanelControl, PanelEvent, PanelId,
     TabGroup, panel_handle,
 };
-use gpui_kit::component::{IconName, Placement, h_flex};
+use gpui_kit::component::resizable::{h_resizable, v_resizable};
+use gpui_kit::component::{IconName, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hive_core::terminal::{Terminal, TerminalSize};
 
+use super::pane_tree::PaneTree;
 use super::view::{TerminalView, TerminalViewEvent};
 
+actions!(terminal_panel, [SplitRight, SplitDown, ClosePane]);
+
+/// Keymap entries for pane management. Call once at startup.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("cmd-d", SplitRight, Some("TerminalPanel")),
+        KeyBinding::new("cmd-shift-d", SplitDown, Some("TerminalPanel")),
+        KeyBinding::new("cmd-w", ClosePane, Some("TerminalPanel")),
+    ]);
+}
+
 pub struct TerminalPanel {
-    view: Entity<TerminalView>,
+    panes: PaneTree<Entity<TerminalView>>,
+    /// The pane that last had focus: it is split and closed by the shortcuts and names the tab.
+    active: Entity<TerminalView>,
+    /// Per-pane subscriptions, dropped together with the pane.
+    pane_subscriptions: HashMap<EntityId, Vec<Subscription>>,
     area: WeakEntity<DockArea>,
     group: Option<WeakEntity<TabGroup>>,
     alone: bool,
-    _subscriptions: Vec<Subscription>,
 }
 
 impl TerminalPanel {
@@ -32,45 +50,51 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Entity<Self>> {
-        let terminal = match Terminal::spawn(cwd, None, TerminalSize::new(80, 24)) {
-            Ok(terminal) => terminal,
-            Err(err) => {
-                tracing::error!(?cwd, %err, "failed to spawn terminal");
-                return None;
-            }
-        };
+        let terminal = spawn_terminal(cwd)?;
         Some(cx.new(|cx| {
             let view = cx.new(|cx| TerminalView::new(terminal, cwd, window, cx));
-            Self::new(view, area, window, cx)
+            let mut this = Self {
+                panes: PaneTree::Leaf(view.clone()),
+                active: view.clone(),
+                pane_subscriptions: HashMap::new(),
+                area,
+                group: None,
+                alone: false,
+            };
+            this.watch_pane(&view, window, cx);
+            this
         }))
     }
 
-    fn new(
-        view: Entity<TerminalView>,
-        area: WeakEntity<DockArea>,
+    fn watch_pane(
+        &mut self,
+        view: &Entity<TerminalView>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Self {
+    ) {
+        let focus_handle = view.read(cx).focus_handle().clone();
+        let weak_view = view.downgrade();
         let subscriptions = vec![
             // The tab group renders this panel through `AnyView::cached`, which only re-renders when the
             // panel itself is dirty; forward the view's notifications so grid updates reach the screen.
-            cx.observe(&view, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&view, window, |this, _, event, window, cx| match event {
+            cx.observe(view, |_, _, cx| cx.notify()),
+            cx.subscribe_in(view, window, |this, view, event, window, cx| match event {
                 TerminalViewEvent::TitleChanged => this.notify_group(cx),
-                TerminalViewEvent::Exited => this.close(window, cx),
+                TerminalViewEvent::Exited => this.close_pane(view, window, cx),
+            }),
+            cx.on_focus(&focus_handle, window, move |this, _, cx| {
+                if let Some(view) = weak_view.upgrade() {
+                    this.active = view;
+                    this.notify_group(cx);
+                }
             }),
         ];
-        Self {
-            view,
-            area,
-            group: None,
-            alone: false,
-            _subscriptions: subscriptions,
-        }
+        self.pane_subscriptions
+            .insert(view.entity_id(), subscriptions);
     }
 
     pub fn cwd(&self, cx: &App) -> Option<PathBuf> {
-        self.view.read(cx).cwd().map(Path::to_path_buf)
+        self.active.read(cx).cwd().map(Path::to_path_buf)
     }
 
     /// The tab bar reads titles on render; make sure it renders.
@@ -79,6 +103,47 @@ impl TerminalPanel {
             group.update(cx, |_, cx| cx.notify());
         }
         cx.notify();
+    }
+
+    fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = self.active.read(cx).focus_handle().clone();
+        handle.focus(window, cx);
+    }
+
+    /// Split the active pane: a new shell in the same cwd lands after it along `axis`.
+    fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
+        let cwd = self.cwd(cx);
+        let Some(terminal) = spawn_terminal(cwd.as_deref()) else {
+            return;
+        };
+        let view = cx.new(|cx| TerminalView::new(terminal, cwd.as_deref(), window, cx));
+        self.watch_pane(&view, window, cx);
+        self.panes.split(&self.active, view.clone(), axis);
+        self.active = view;
+        self.focus_active(window, cx);
+        self.notify_group(cx);
+    }
+
+    /// Close one pane; closing the last one closes the tab.
+    fn close_pane(
+        &mut self,
+        view: &Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.panes, PaneTree::Leaf(_)) {
+            self.close(window, cx);
+            return;
+        }
+        let Some(neighbor) = self.panes.remove(view) else {
+            return;
+        };
+        self.pane_subscriptions.remove(&view.entity_id());
+        if self.active == *view {
+            self.active = neighbor;
+            self.focus_active(window, cx);
+        }
+        self.notify_group(cx);
     }
 
     /// Remove this tab. Goes through the dock, not the tab group, so the last
@@ -105,13 +170,8 @@ impl TerminalPanel {
         }
     }
 
-    /// Open another terminal in the same cwd: as a new tab of this group, or split beside it.
-    pub fn open_sibling(
-        &mut self,
-        split: Option<Placement>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// Open another terminal in the active pane's cwd as a new tab of this group.
+    fn open_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(area) = self.area.upgrade() else {
             return;
         };
@@ -128,17 +188,10 @@ impl TerminalPanel {
         area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
             if let Some(node) = node {
-                let target = match split {
-                    Some(placement) => InsertTarget::Split {
-                        node,
-                        placement,
-                        size: None,
-                    },
-                    None => InsertTarget::Tabs {
-                        node,
-                        ix: None,
-                        activate: true,
-                    },
+                let target = InsertTarget::Tabs {
+                    node,
+                    ix: None,
+                    activate: true,
                 };
                 area.move_panel(id, target, window, cx);
             }
@@ -146,11 +199,44 @@ impl TerminalPanel {
     }
 }
 
+fn spawn_terminal(cwd: Option<&Path>) -> Option<Terminal> {
+    match Terminal::spawn(cwd, None, TerminalSize::new(80, 24)) {
+        Ok(terminal) => Some(terminal),
+        Err(err) => {
+            tracing::error!(?cwd, %err, "failed to spawn terminal");
+            None
+        }
+    }
+}
+
+/// Splits become resizable groups. The group id encodes the node's structure (axis, first pane,
+/// child count), so its keyed size state resets to equal shares whenever the structure changes
+/// and survives drags otherwise.
+fn render_pane(pane: &PaneTree<Entity<TerminalView>>) -> AnyElement {
+    match pane {
+        PaneTree::Leaf(view) => div().size_full().child(view.clone()).into_any_element(),
+        PaneTree::Split { axis, children } => {
+            let id = SharedString::from(format!(
+                "pane-split-{axis:?}-{}-{}",
+                pane.first_leaf().entity_id(),
+                children.len()
+            ));
+            let group = match axis {
+                Axis::Horizontal => h_resizable(id),
+                Axis::Vertical => v_resizable(id),
+            };
+            group
+                .children(children.iter().map(render_pane))
+                .into_any_element()
+        }
+    }
+}
+
 impl EventEmitter<PanelEvent> for TerminalPanel {}
 
 impl Focusable for TerminalPanel {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.view.read(cx).focus_handle().clone()
+        self.active.read(cx).focus_handle().clone()
     }
 }
 
@@ -161,8 +247,7 @@ impl BasePanel for TerminalPanel {
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if active {
-            let handle = self.view.read(cx).focus_handle().clone();
-            handle.focus(window, cx);
+            self.focus_active(window, cx);
         }
     }
 
@@ -175,11 +260,11 @@ impl Panel for TerminalPanel {
     /// A plain name while the tab bar draws its own close button; `None` when we are the
     /// last tab, so the bar renders [`Panel::title`] with our own "×" inside the tab instead.
     fn tab_name(&self, cx: &App) -> Option<SharedString> {
-        (!self.alone).then(|| self.view.read(cx).title().into())
+        (!self.alone).then(|| self.active.read(cx).title().into())
     }
 
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let view = self.view.read(cx);
+        let view = self.active.read(cx);
         let title = view.title();
         h_flex()
             .gap_2()
@@ -205,14 +290,21 @@ impl Panel for TerminalPanel {
                 .cursor_pointer()
                 .icon(IconName::Plus)
                 .tooltip("New terminal tab")
-                .on_click(cx.listener(|this, _, window, cx| this.open_sibling(None, window, cx))),
-            Button::new("terminal-split")
+                .on_click(cx.listener(|this, _, window, cx| this.open_tab(window, cx))),
+            Button::new("terminal-split-right")
                 .cursor_pointer()
                 .icon(Lucide::SquareSplitHorizontal)
-                .tooltip("Split right")
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.open_sibling(Some(Placement::Right), window, cx)
-                })),
+                .tooltip("Split right (⌘D)")
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.split(Axis::Horizontal, window, cx)),
+                ),
+            Button::new("terminal-split-down")
+                .cursor_pointer()
+                .icon(Lucide::SquareSplitVertical)
+                .tooltip("Split down (⌘⇧D)")
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.split(Axis::Vertical, window, cx)),
+                ),
         ])
     }
 
@@ -226,7 +318,22 @@ impl Panel for TerminalPanel {
 }
 
 impl Render for TerminalPanel {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.view.clone())
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .key_context("TerminalPanel")
+            .on_action(cx.listener(|this, _: &SplitRight, window, cx| {
+                this.split(Axis::Horizontal, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &SplitDown, window, cx| {
+                    this.split(Axis::Vertical, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &ClosePane, window, cx| {
+                let active = this.active.clone();
+                this.close_pane(&active, window, cx)
+            }))
+            .child(render_pane(&self.panes))
     }
 }

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -27,14 +28,35 @@ pub const SIDEBAR_WIDTH_MIN: f32 = 180.;
 pub const SIDEBAR_WIDTH_MAX: f32 = 600.;
 const SIDEBAR_WIDTH_DEFAULT: f32 = 260.;
 
+/// Smallest UI font size (the rem every UI size scales from), in logical pixels.
+pub const UI_FONT_SIZE_MIN: f32 = 12.;
+/// Largest UI font size, in logical pixels.
+pub const UI_FONT_SIZE_MAX: f32 = 24.;
+/// UI font size before the user changes it, in logical pixels.
+pub const UI_FONT_SIZE_DEFAULT: f32 = 16.;
+
+/// Smallest terminal font size, in logical pixels.
+pub const TERMINAL_FONT_SIZE_MIN: f32 = 11.;
+/// Largest terminal font size, in logical pixels.
+pub const TERMINAL_FONT_SIZE_MAX: f32 = 28.;
+/// Terminal font size before the user changes it, in logical pixels.
+pub const TERMINAL_FONT_SIZE_DEFAULT: f32 = 13.;
+
 /// User preferences. Persisted as part of [`crate::state::State`].
+///
+/// Numeric fields are private and kept within their ranges by the accessors, because
+/// `state.json` may be edited by hand.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Settings {
     pub theme: ThemeChoice,
-    /// Kept within `SIDEBAR_WIDTH_MIN..=SIDEBAR_WIDTH_MAX` by the accessors, because
-    /// `state.json` may be edited by hand.
     sidebar_width: f32,
+    ui_font_size: f32,
+    terminal_font_size: f32,
+    /// Shortcuts the user reassigned: action name (`"workspace::NewTerminal"`) → keystrokes
+    /// (`"cmd-shift-t"`). Actions missing here use their default. The keystroke string is
+    /// opaque to this crate; the app parses it and falls back to the default if it can't.
+    keybindings: BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -42,6 +64,9 @@ impl Default for Settings {
         Self {
             theme: ThemeChoice::default(),
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
+            ui_font_size: UI_FONT_SIZE_DEFAULT,
+            terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
+            keybindings: BTreeMap::new(),
         }
     }
 }
@@ -56,15 +81,84 @@ impl Settings {
     pub fn set_sidebar_width(&mut self, width: f32) {
         self.sidebar_width = clamp_sidebar_width(width);
     }
+
+    /// UI font size in logical pixels, within `UI_FONT_SIZE_MIN..=UI_FONT_SIZE_MAX`.
+    pub fn ui_font_size(&self) -> f32 {
+        clamp_ui_font_size(self.ui_font_size)
+    }
+
+    /// Stores `size` clamped to the allowed range.
+    pub fn set_ui_font_size(&mut self, size: f32) {
+        self.ui_font_size = clamp_ui_font_size(size);
+    }
+
+    /// Terminal font size in logical pixels, within
+    /// `TERMINAL_FONT_SIZE_MIN..=TERMINAL_FONT_SIZE_MAX`.
+    pub fn terminal_font_size(&self) -> f32 {
+        clamp_terminal_font_size(self.terminal_font_size)
+    }
+
+    /// Stores `size` clamped to the allowed range.
+    pub fn set_terminal_font_size(&mut self, size: f32) {
+        self.terminal_font_size = clamp_terminal_font_size(size);
+    }
+
+    /// Keystrokes the user assigned to `action`, if they reassigned it.
+    pub fn keybinding(&self, action: &str) -> Option<&str> {
+        self.keybindings.get(action).map(String::as_str)
+    }
+
+    /// Every reassigned shortcut, action name → keystrokes.
+    pub fn keybindings(&self) -> &BTreeMap<String, String> {
+        &self.keybindings
+    }
+
+    /// Assigns `keystrokes` to `action`, replacing its default.
+    pub fn set_keybinding(&mut self, action: &str, keystrokes: &str) {
+        self.keybindings
+            .insert(action.to_owned(), keystrokes.to_owned());
+    }
+
+    /// Returns `action` to its default shortcut. Returns whether it was reassigned.
+    pub fn reset_keybinding(&mut self, action: &str) -> bool {
+        self.keybindings.remove(action).is_some()
+    }
 }
 
 /// Clamps `width` to `SIDEBAR_WIDTH_MIN..=SIDEBAR_WIDTH_MAX`; a non-finite value falls back
 /// to the default.
 pub fn clamp_sidebar_width(width: f32) -> f32 {
-    if !width.is_finite() {
-        return SIDEBAR_WIDTH_DEFAULT;
+    clamp_or_default(
+        width,
+        SIDEBAR_WIDTH_MIN,
+        SIDEBAR_WIDTH_MAX,
+        SIDEBAR_WIDTH_DEFAULT,
+    )
+}
+
+fn clamp_ui_font_size(size: f32) -> f32 {
+    clamp_or_default(
+        size,
+        UI_FONT_SIZE_MIN,
+        UI_FONT_SIZE_MAX,
+        UI_FONT_SIZE_DEFAULT,
+    )
+}
+
+fn clamp_terminal_font_size(size: f32) -> f32 {
+    clamp_or_default(
+        size,
+        TERMINAL_FONT_SIZE_MIN,
+        TERMINAL_FONT_SIZE_MAX,
+        TERMINAL_FONT_SIZE_DEFAULT,
+    )
+}
+
+fn clamp_or_default(value: f32, min: f32, max: f32, default: f32) -> f32 {
+    if !value.is_finite() {
+        return default;
     }
-    width.clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX)
+    value.clamp(min, max)
 }
 
 #[cfg(test)]
@@ -72,9 +166,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_sidebar_width_uses_default() {
+    fn missing_fields_use_defaults() {
         let settings: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).expect("valid json");
         assert_eq!(settings.sidebar_width(), SIDEBAR_WIDTH_DEFAULT);
+        assert_eq!(settings.ui_font_size(), UI_FONT_SIZE_DEFAULT);
+        assert_eq!(settings.terminal_font_size(), TERMINAL_FONT_SIZE_DEFAULT);
+        assert!(settings.keybindings().is_empty());
     }
 
     #[test]
@@ -88,8 +185,37 @@ mod tests {
     }
 
     #[test]
-    fn non_finite_width_falls_back_to_default() {
+    fn hand_edited_font_sizes_are_clamped() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"ui_font_size":2,"terminal_font_size":200}"#)
+                .expect("valid json");
+        assert_eq!(settings.ui_font_size(), UI_FONT_SIZE_MIN);
+        assert_eq!(settings.terminal_font_size(), TERMINAL_FONT_SIZE_MAX);
+    }
+
+    #[test]
+    fn non_finite_values_fall_back_to_defaults() {
         assert_eq!(clamp_sidebar_width(f32::NAN), SIDEBAR_WIDTH_DEFAULT);
         assert_eq!(clamp_sidebar_width(f32::INFINITY), SIDEBAR_WIDTH_DEFAULT);
+        let mut settings = Settings::default();
+        settings.set_ui_font_size(f32::NAN);
+        settings.set_terminal_font_size(f32::NEG_INFINITY);
+        assert_eq!(settings.ui_font_size(), UI_FONT_SIZE_DEFAULT);
+        assert_eq!(settings.terminal_font_size(), TERMINAL_FONT_SIZE_DEFAULT);
+    }
+
+    #[test]
+    fn keybindings_round_trip_and_reset() {
+        let mut settings = Settings::default();
+        settings.set_keybinding("workspace::NewTerminal", "cmd-shift-t");
+        let json = serde_json::to_string(&settings).expect("serializable");
+        let mut loaded: Settings = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(
+            loaded.keybinding("workspace::NewTerminal"),
+            Some("cmd-shift-t")
+        );
+        assert!(loaded.reset_keybinding("workspace::NewTerminal"));
+        assert!(!loaded.reset_keybinding("workspace::NewTerminal"));
+        assert_eq!(loaded.keybinding("workspace::NewTerminal"), None);
     }
 }

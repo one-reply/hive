@@ -46,10 +46,10 @@ pub fn claude_access_token() -> Result<String, CredentialError> {
     let creds: Value =
         serde_json::from_str(&raw).map_err(|e| CredentialError::Malformed(e.to_string()))?;
     let oauth = &creds["claudeAiOauth"];
-    if let Some(expires_ms) = oauth["expiresAt"].as_u64() {
-        if UNIX_EPOCH + Duration::from_millis(expires_ms) < SystemTime::now() {
-            return Err(CredentialError::Expired);
-        }
+    if let Some(expires_ms) = oauth["expiresAt"].as_u64()
+        && UNIX_EPOCH + Duration::from_millis(expires_ms) < SystemTime::now()
+    {
+        return Err(CredentialError::Expired);
     }
     oauth["accessToken"]
         .as_str()
