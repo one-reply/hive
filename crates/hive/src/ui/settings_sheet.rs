@@ -32,6 +32,7 @@ pub fn open(window: &mut Window, cx: &mut App) {
                 .child(div().text_sm().truncate().child(path))
                 .child(
                     Button::new(("remove-project", i))
+                        .cursor_pointer()
                         .ghost()
                         .xsmall()
                         .icon(IconName::Delete)

@@ -145,8 +145,9 @@ impl Render for Sidebar {
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(muted_fg).child("Projects"))
                     .child(
                         Button::new("add-project")
+                            .cursor_pointer()
                             .ghost()
-                            .xsmall()
+                            .small()
                             .icon(Lucide::FolderPlus)
                             .tooltip("Add project")
                             .on_click(cx.listener(|this, _, _, cx| this.add_projects(cx))),
@@ -156,6 +157,7 @@ impl Render for Sidebar {
             .child(
                 h_flex().px_3().pb_3().child(
                     Button::new("settings")
+                        .cursor_pointer()
                         .ghost()
                         .small()
                         .icon(IconName::Settings)

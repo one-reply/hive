@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -11,6 +12,7 @@ use gpui_kit::component::dock::{DockArea, DockPlacement, DockSkin, PanelId, Pane
 use gpui_kit::component::{
     ActiveTheme as _, IconName, InteractiveElementExt as _, Sizable as _, TitleBar, h_flex, v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hive_core::settings::ThemeChoice;
 
@@ -34,6 +36,8 @@ pub fn init(cx: &mut App) {
 pub struct Workspace {
     sidebar: Entity<Sidebar>,
     sidebar_open: bool,
+    /// Set by the first toggle, so the sidebar doesn't slide in on launch.
+    sidebar_animate: bool,
     status_bar: Entity<StatusBarView>,
     projects: Entity<Projects>,
     dock: Entity<DockArea>,
@@ -47,6 +51,7 @@ pub struct Workspace {
 
 /// Height of the band at the top of the center column that behaves like a title bar.
 const TAB_BAR_HEIGHT: Pixels = px(34.);
+const SIDEBAR_WIDTH: f32 = 260.;
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -83,6 +88,7 @@ impl Workspace {
         let mut this = Self {
             sidebar: cx.new(Sidebar::new),
             sidebar_open: true,
+            sidebar_animate: false,
             status_bar: cx.new(StatusBarView::new),
             projects,
             dock,
@@ -145,6 +151,7 @@ impl Workspace {
 
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_open = !self.sidebar_open;
+        self.sidebar_animate = true;
         cx.notify();
     }
 
@@ -211,6 +218,7 @@ impl Workspace {
                     .mt_2()
                     .child(
                         Button::new("welcome-add-project")
+                            .cursor_pointer()
                             .outline()
                             .icon(IconName::FolderOpen)
                             .label("Add project")
@@ -218,6 +226,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new("welcome-new-terminal")
+                            .cursor_pointer()
                             .outline()
                             .icon(Lucide::SquareTerminal)
                             .label("New terminal")
@@ -234,29 +243,57 @@ impl Render for Workspace {
         let title_bar = TitleBar::new().bg(bg).child(
             h_flex().gap_2().child(div().text_sm().child("Hive")).child(
                 Button::new("toggle-sidebar")
+                    .cursor_pointer()
                     .ghost()
-                    .xsmall()
+                    .small()
                     .icon(Lucide::PanelLeft)
                     .tooltip_with_action("Toggle sidebar", &ToggleSidebar, Some("Workspace"))
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(&ToggleSidebar, window, cx))),
             ),
         );
-        // Orca-style: the title bar (traffic lights + name) sits above the sidebar only;
-        // the center dock with its tab bar runs to the very top of the window.
-        // ponytail: collapsed, the title bar spans the window above the dock; inline it into the tab bar if that looks off.
-        let body = if self.sidebar_open {
-            let left = v_flex()
-                .w(px(260.))
-                .h_full()
-                .flex_shrink_0()
-                .border_r_1()
-                .border_color(cx.theme().sidebar_border)
-                .child(title_bar)
-                .child(div().flex_1().min_h_0().child(self.sidebar.clone()));
-            h_flex().flex_1().min_h_0().child(left).child(self.render_center(cx)).into_any_element()
-        } else {
-            v_flex().flex_1().min_h_0().child(title_bar).child(self.render_center(cx)).into_any_element()
+        // Orca-style: the title bar (traffic lights + name) sits above the sidebar only and the
+        // center dock with its tab bar runs to the very top. Collapsing slides the sidebar to
+        // zero width while the dock drops below the title bar, which then spans the window.
+        let open = self.sidebar_open;
+        // 1.0 = fully open; `t` is the eased animation progress.
+        let amount = move |t: f32| if open { t } else { 1. - t };
+        let border = cx.theme().sidebar_border;
+        let left = move |el: Div, t: f32| {
+            let a = amount(t);
+            el.w(px(SIDEBAR_WIDTH * a)).when(a > 0., |el| el.border_r_1().border_color(border))
         };
+        let center = move |el: Div, t: f32| el.pt(TAB_BAR_HEIGHT * (1. - amount(t)));
+        let left_el = v_flex().h_full().flex_shrink_0().overflow_hidden().child(
+            v_flex()
+                .w(px(SIDEBAR_WIDTH))
+                .h_full()
+                .child(div().h(TAB_BAR_HEIGHT).flex_none())
+                .child(div().flex_1().min_h_0().child(self.sidebar.clone())),
+        );
+        let center_el = v_flex().flex_1().min_w_0().h_full().child(self.render_center(cx));
+        let (left_el, center_el) = if self.sidebar_animate {
+            let anim = Animation::new(Duration::from_millis(200)).with_easing(ease_in_out);
+            (
+                left_el.with_animation(("sidebar-w", open as usize), anim.clone(), left).into_any_element(),
+                center_el.with_animation(("center-pt", open as usize), anim, center).into_any_element(),
+            )
+        } else {
+            (left(left_el, 1.).into_any_element(), center(center_el, 1.).into_any_element())
+        };
+        let body = h_flex()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .child(left_el)
+            .child(center_el)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .map(|el| if open { el.w(px(SIDEBAR_WIDTH)) } else { el.w_full() })
+                    .child(title_bar),
+            );
         v_flex()
             .size_full()
             .key_context("Workspace")

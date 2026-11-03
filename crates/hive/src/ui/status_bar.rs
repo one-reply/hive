@@ -53,6 +53,7 @@ impl Render for StatusBarView {
             .left(h_flex().gap_6().child("Used").children(providers))
             .right(
                 Button::new("refresh-usage")
+                    .cursor_pointer()
                     .ghost()
                     .xsmall()
                     .icon(IconName::RefreshCw)

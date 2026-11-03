@@ -149,6 +149,7 @@ impl Panel for TerminalPanel {
             .when(self.alone, |this| {
                 this.child(
                     Button::new("terminal-close")
+                        .cursor_pointer()
                         .icon(IconName::Close)
                         .xsmall()
                         .ghost()
@@ -161,10 +162,12 @@ impl Panel for TerminalPanel {
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
         Some(vec![
             Button::new("terminal-new")
+                .cursor_pointer()
                 .icon(IconName::Plus)
                 .tooltip("New terminal tab")
                 .on_click(cx.listener(|this, _, window, cx| this.open_sibling(None, window, cx))),
             Button::new("terminal-split")
+                .cursor_pointer()
                 .icon(Lucide::SquareSplitHorizontal)
                 .tooltip("Split right")
                 .on_click(cx.listener(|this, _, window, cx| this.open_sibling(Some(Placement::Right), window, cx))),
