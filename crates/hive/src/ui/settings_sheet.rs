@@ -7,6 +7,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use hive_core::settings::ThemeChoice;
+use std::path::PathBuf;
 
 use crate::app::AppState;
 
@@ -18,11 +19,7 @@ pub fn open(window: &mut Window, cx: &mut App) {
         let theme_index = ThemeChoice::ALL
             .iter()
             .position(|t| *t == state.settings.theme);
-        let projects: Vec<String> = state
-            .projects
-            .iter()
-            .map(|p| p.path.display().to_string())
-            .collect();
+        let projects: Vec<PathBuf> = state.projects.iter().map(|p| p.path.clone()).collect();
 
         let theme_group = RadioGroup::vertical("theme")
             .selected_index(theme_index)
@@ -39,7 +36,7 @@ pub fn open(window: &mut Window, cx: &mut App) {
             h_flex()
                 .justify_between()
                 .gap_2()
-                .child(div().text_sm().truncate().child(path))
+                .child(div().text_sm().truncate().child(path.display().to_string()))
                 .child(
                     Button::new(("remove-project", i))
                         .cursor_pointer()
@@ -47,7 +44,7 @@ pub fn open(window: &mut Window, cx: &mut App) {
                         .xsmall()
                         .icon(IconName::Delete)
                         .on_click(move |_, _, cx| {
-                            store.update(cx, |s, cx| s.remove_project(i, cx))
+                            store.update(cx, |s, cx| s.remove_project(&path, cx))
                         }),
                 )
         });

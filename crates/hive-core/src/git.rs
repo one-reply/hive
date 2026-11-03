@@ -31,16 +31,21 @@ impl GitError {
 
 /// Blocking: runs `git args` in `cwd` on `host` and returns its trimmed stdout.
 pub fn run(host: &Host, cwd: &Path, args: &[&str]) -> Result<String, GitError> {
-    let output = host.command("git", args, Some(cwd)).output().map_err(|source| GitError::Spawn {
-        command: args.join(" "),
-        host: host.clone(),
-        source,
-    })?;
+    let output = host
+        .command("git", args, Some(cwd))
+        .output()
+        .map_err(|source| GitError::Spawn {
+            command: args.join(" "),
+            host: host.clone(),
+            source,
+        })?;
     if !output.status.success() {
         return Err(GitError::Failed {
             command: args.join(" "),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         });
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string())
 }

@@ -1,6 +1,7 @@
 //! Main window layout: TitleBar | Sidebar + center dock | StatusBar.
 //! The center is a `DockArea` of terminal tabs, one group per selected project/worktree.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -93,6 +94,7 @@ impl Workspace {
                         .is_some()
                 });
                 this.sync_alone(cx);
+                this.sync_active_worktrees(cx);
                 cx.notify();
             }),
             cx.observe_window_appearance(window, {
@@ -174,6 +176,7 @@ impl Workspace {
             });
             self.terminals.push(panel);
             self.sync_alone(cx);
+            self.sync_active_worktrees(cx);
             cx.notify();
         }
     }
@@ -184,6 +187,17 @@ impl Workspace {
         for panel in &self.terminals {
             panel.update(cx, |panel, cx| panel.set_alone(alone, cx));
         }
+    }
+
+    /// Worktrees with an open terminal get a lit status dot in the sidebar.
+    fn sync_active_worktrees(&self, cx: &mut Context<Self>) {
+        let paths: HashSet<PathBuf> = self
+            .terminals
+            .iter()
+            .filter_map(|panel| panel.read(cx).cwd(cx))
+            .collect();
+        self.projects
+            .update(cx, |projects, cx| projects.set_active(paths, cx));
     }
 
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {

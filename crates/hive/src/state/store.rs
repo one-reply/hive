@@ -2,7 +2,7 @@ use gpui_kit::*;
 use hive_core::host::Host;
 use hive_core::settings::ThemeChoice;
 use hive_core::state::{ProjectRef, State};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Persisted state. Every mutation saves to disk and notifies observers.
 pub struct Store {
@@ -27,19 +27,30 @@ impl Store {
     }
 
     pub fn add_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let project = ProjectRef {
-            path,
-            host: Host::Local,
-        };
-        if !self.state.projects.contains(&project) {
+        let project = ProjectRef::new(path, Host::Local);
+        if !self
+            .state
+            .projects
+            .iter()
+            .any(|p| p.is_same_folder(&project))
+        {
             self.state.projects.push(project);
             self.commit(cx);
         }
     }
 
-    pub fn remove_project(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index < self.state.projects.len() {
-            self.state.projects.remove(index);
+    pub fn remove_project(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let before = self.state.projects.len();
+        self.state.projects.retain(|p| p.path != path);
+        if self.state.projects.len() != before {
+            self.commit(cx);
+        }
+    }
+
+    /// Switches a project between listing only Hive's worktrees and listing all of them.
+    pub fn toggle_worktree_filter(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if let Some(project) = self.state.projects.iter_mut().find(|p| p.path == path) {
+            project.worktrees = project.worktrees.toggled();
             self.commit(cx);
         }
     }

@@ -1,0 +1,326 @@
+//! Creating and removing git worktrees the way Orca does: a generated name, a new branch of
+//! the same name off the remote's default branch, a folder in [`Project::worktrees_dir`].
+
+use crate::git::{self, GitError};
+use crate::projects::{Head, Project, Worktree};
+use std::collections::HashSet;
+use std::hash::{BuildHasher as _, RandomState};
+use std::path::PathBuf;
+
+/// Pool for generated worktree names: plants bees forage on.
+const NAMES: &[&str] = &[
+    "acacia",
+    "alfalfa",
+    "allium",
+    "aster",
+    "basil",
+    "borage",
+    "buckwheat",
+    "calendula",
+    "catmint",
+    "chicory",
+    "clover",
+    "coneflower",
+    "cornflower",
+    "cosmos",
+    "crocus",
+    "dahlia",
+    "dandelion",
+    "fennel",
+    "foxglove",
+    "goldenrod",
+    "hawthorn",
+    "heather",
+    "hyssop",
+    "lavender",
+    "linden",
+    "lupine",
+    "mallow",
+    "marigold",
+    "marjoram",
+    "meadowsweet",
+    "mint",
+    "mustard",
+    "oregano",
+    "phacelia",
+    "poppy",
+    "rosemary",
+    "sage",
+    "sainfoin",
+    "salvia",
+    "snowdrop",
+    "sunflower",
+    "thistle",
+    "thyme",
+    "verbena",
+    "vetch",
+    "willow",
+    "yarrow",
+    "zinnia",
+];
+
+/// Base refs tried, in order, when the remote has no `HEAD` symref.
+const BASE_REF_FALLBACKS: [&str; 4] = ["origin/main", "origin/master", "main", "master"];
+
+/// Why a worktree could not be created or removed.
+#[derive(Debug, thiserror::Error)]
+pub enum WorktreeError {
+    #[error("the primary worktree of {project} can't be removed; remove the project instead")]
+    Primary { project: String },
+    #[error("{} has modified or untracked files", path.display())]
+    HasChanges { path: PathBuf },
+    #[error(transparent)]
+    Git(#[from] GitError),
+}
+
+/// How hard [`remove`] tries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Removal {
+    /// Refuse when the worktree has uncommitted or untracked files.
+    Safe,
+    /// Delete the folder whatever it contains.
+    Force,
+}
+
+/// Blocking: creates a worktree on a new branch off the default base branch. `name` becomes
+/// both the folder and the branch name; `None` or a blank name picks a free generated one.
+pub fn create(project: &Project, name: Option<&str>) -> Result<Worktree, WorktreeError> {
+    let name = match name.map(sanitize).filter(|name| !name.is_empty()) {
+        Some(name) => name,
+        None => generate_name(
+            &taken_names(project)?,
+            RandomState::new().hash_one(&project.path),
+        ),
+    };
+    let path = project.worktrees_dir().join(&name);
+    let base = default_base_ref(project);
+    let path_arg = path.to_string_lossy();
+    git::run(
+        &project.host,
+        &project.path,
+        &[
+            "worktree",
+            "add",
+            "--no-track",
+            "-b",
+            &name,
+            &path_arg,
+            &base,
+        ],
+    )?;
+    tracing::info!(?path, %base, "created worktree");
+    Ok(Worktree {
+        path,
+        head: Head::Branch(name),
+    })
+}
+
+/// Blocking: removes `worktree`'s folder and registration, then deletes its branch if that
+/// branch is fully merged (`git branch -d`), so unmerged work is never lost.
+pub fn remove(
+    project: &Project,
+    worktree: &Worktree,
+    removal: Removal,
+) -> Result<(), WorktreeError> {
+    if project.is_primary(worktree) {
+        return Err(WorktreeError::Primary {
+            project: project.name.clone(),
+        });
+    }
+    let path_arg = worktree.path.to_string_lossy();
+    let mut args = vec!["worktree", "remove"];
+    if removal == Removal::Force {
+        args.push("--force");
+    }
+    args.push(&path_arg);
+    git::run(&project.host, &project.path, &args).map_err(|err| {
+        if needs_force(err.stderr()) {
+            WorktreeError::HasChanges {
+                path: worktree.path.clone(),
+            }
+        } else {
+            err.into()
+        }
+    })?;
+    tracing::info!(path = ?worktree.path, "removed worktree");
+    if let Some(branch) = worktree.branch()
+        && let Err(err) = git::run(
+            &project.host,
+            &project.path,
+            &["branch", "-d", "--", branch],
+        )
+    {
+        tracing::info!(%branch, %err, "kept the worktree's branch");
+    }
+    Ok(())
+}
+
+/// `git worktree remove` refuses a dirty worktree with "... use --force to delete it".
+fn needs_force(stderr: &str) -> bool {
+    stderr.contains("use --force")
+}
+
+/// The remote's default branch (`origin/HEAD`), else the first fallback that exists, else `HEAD`.
+fn default_base_ref(project: &Project) -> String {
+    let git = |args: &[&str]| git::run(&project.host, &project.path, args).ok();
+    if let Some(head) = git(&[
+        "symbolic-ref",
+        "--quiet",
+        "--short",
+        "refs/remotes/origin/HEAD",
+    ]) {
+        return head;
+    }
+    BASE_REF_FALLBACKS
+        .into_iter()
+        .find(|candidate| {
+            git(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{candidate}^{{commit}}"),
+            ])
+            .is_some()
+        })
+        .unwrap_or("HEAD")
+        .to_string()
+}
+
+/// Folder names of existing worktrees and local branch names: a new name must avoid both.
+fn taken_names(project: &Project) -> Result<HashSet<String>, GitError> {
+    let branches = git::run(
+        &project.host,
+        &project.path,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    )?;
+    Ok(branches
+        .lines()
+        .map(str::to_string)
+        .chain(project.worktrees.iter().map(Worktree::name))
+        .collect())
+}
+
+/// The first free name walking the pool from `seed`; once the pool is used up, the same
+/// names with `-2`, `-3`, ... appended.
+fn generate_name(taken: &HashSet<String>, seed: u64) -> String {
+    let start = (seed % NAMES.len() as u64) as usize;
+    (1..)
+        .flat_map(|tier| {
+            (0..NAMES.len()).map(move |offset| (NAMES[(start + offset) % NAMES.len()], tier))
+        })
+        .map(|(name, tier)| {
+            if tier == 1 {
+                name.to_string()
+            } else {
+                format!("{name}-{tier}")
+            }
+        })
+        .find(|name| !taken.contains(name))
+        .expect("an endless sequence of distinct names has a free one")
+}
+
+/// Turns user input into a folder and branch name: runs of anything but letters, digits,
+/// `.`, `_` and `-` become one `-`; leading/trailing `-` and `.` are dropped.
+fn sanitize(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.trim().chars() {
+        if c.is_alphanumeric() || "._-".contains(c) {
+            out.push(c);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches(['-', '.']).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::Host;
+    use crate::projects::scan;
+    use crate::state::ProjectRef;
+    use std::path::Path;
+
+    #[test]
+    fn sanitizes_names() {
+        assert_eq!(sanitize("  Fix login bug!  "), "Fix-login-bug");
+        assert_eq!(sanitize("feat/ünïcode..ok"), "feat-ünïcode..ok");
+        assert_eq!(sanitize("../.."), "");
+    }
+
+    #[test]
+    fn generated_names_skip_taken_ones_then_add_a_tier() {
+        let taken: HashSet<String> = NAMES.iter().map(|n| n.to_string()).collect();
+        assert_eq!(generate_name(&HashSet::new(), 0), NAMES[0]);
+        assert_eq!(
+            generate_name(&HashSet::from([NAMES[0].to_string()]), 0),
+            NAMES[1]
+        );
+        assert_eq!(generate_name(&taken, 0), format!("{}-2", NAMES[0]));
+    }
+
+    #[test]
+    fn detects_dirty_worktree_refusal() {
+        // Captured from git 2.50.
+        assert!(needs_force(
+            "fatal: '/tmp/r-worktrees/x' contains modified or untracked files, use --force to delete it"
+        ));
+        assert!(!needs_force("fatal: '/tmp/x' is not a working tree"));
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    /// End to end against a real repository in a temp folder.
+    #[test]
+    fn creates_and_removes_a_worktree() {
+        let root = std::env::temp_dir().join(format!("hive-worktree-test-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("repo")).expect("temp dir");
+        // git reports symlink-free paths (`/var` is `/private/var` on macOS).
+        let root = root.canonicalize().expect("temp dir exists");
+        let repo = root.join("repo");
+        git_in(&repo, &["init", "-q", "-b", "main"]);
+        git_in(
+            &repo,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        );
+        let project = || scan(&ProjectRef::new(repo.clone(), Host::Local));
+
+        let created = create(&project(), Some("my task")).expect("created");
+        assert_eq!(created.branch(), Some("my-task"));
+        assert_eq!(created.path, root.join("repo-worktrees/my-task"));
+        let generated = create(&project(), None).expect("created with a generated name");
+        assert!(NAMES.contains(&generated.name().as_str()));
+        assert_eq!(project().visible_worktrees().count(), 3);
+
+        std::fs::write(created.path.join("scratch.txt"), "wip").expect("write");
+        assert!(matches!(
+            remove(&project(), &created, Removal::Safe),
+            Err(WorktreeError::HasChanges { .. })
+        ));
+        remove(&project(), &created, Removal::Force).expect("force removed");
+        assert!(!created.path.exists());
+        assert!(matches!(
+            remove(&project(), &project().worktrees[0], Removal::Force),
+            Err(WorktreeError::Primary { .. })
+        ));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
