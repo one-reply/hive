@@ -42,9 +42,13 @@ impl State {
             projects: Vec<PathBuf>,
         }
         let state = read_json::<Legacy>(&hive_dir().join("settings.json"))
-            .map(|old| State {
-                settings: Settings { theme: old.theme },
-                projects: old.projects.into_iter().map(|path| ProjectRef { path, host: Host::Local }).collect(),
+            .map(|old| {
+                let mut settings = Settings::default();
+                settings.theme = old.theme;
+                State {
+                    settings,
+                    projects: old.projects.into_iter().map(|path| ProjectRef { path, host: Host::Local }).collect(),
+                }
             })
             .unwrap_or_default();
         state.save();

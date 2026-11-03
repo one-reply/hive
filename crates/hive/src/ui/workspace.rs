@@ -10,11 +10,11 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::dock::{DockArea, DockPlacement, DockSkin, PanelId, PanelStyle, panel_handle};
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, InteractiveElementExt as _, Sizable as _, TitleBar, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, InteractiveElementExt as _, Sizable as _, TitleBar, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use hive_core::settings::ThemeChoice;
+use hive_core::settings::{ThemeChoice, clamp_sidebar_width};
 
 use crate::app::AppState;
 use crate::state::projects::Projects;
@@ -38,6 +38,10 @@ pub struct Workspace {
     sidebar_open: bool,
     /// Set by the first toggle, so the sidebar doesn't slide in on launch.
     sidebar_animate: bool,
+    /// Live width while dragging; written to the `Store` once the drag ends.
+    sidebar_width: Pixels,
+    /// The resize handle is held down; the next mouse-up persists `sidebar_width`.
+    resizing_sidebar: bool,
     status_bar: Entity<StatusBarView>,
     projects: Entity<Projects>,
     dock: Entity<DockArea>,
@@ -51,12 +55,18 @@ pub struct Workspace {
 
 /// Height of the band at the top of the center column that behaves like a title bar.
 const TAB_BAR_HEIGHT: Pixels = px(34.);
-const SIDEBAR_WIDTH: f32 = 260.;
+/// Grab area straddling the sidebar's right border.
+const RESIZE_HANDLE_WIDTH: Pixels = px(6.);
+const HIVE_MARK: &[u8] = include_bytes!("../../assets/icons/Hive.icon/Assets/mark.svg");
+const HIVE_GOLD: u32 = 0xffc400;
+const WELCOME_LOGO_SIZE: Pixels = px(96.);
+const TITLE_LOGO_SIZE: Pixels = px(24.);
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let app = AppState::get(cx);
         let (store, projects) = (app.store.clone(), app.projects.clone());
+        let sidebar_width = px(store.read(cx).state.settings.sidebar_width());
 
         apply_theme(store.read(cx).state.settings.theme, Some(window), cx);
 
@@ -89,6 +99,8 @@ impl Workspace {
             sidebar: cx.new(Sidebar::new),
             sidebar_open: true,
             sidebar_animate: false,
+            sidebar_width,
+            resizing_sidebar: false,
             status_bar: cx.new(StatusBarView::new),
             projects,
             dock,
@@ -155,6 +167,44 @@ impl Workspace {
         cx.notify();
     }
 
+    fn finish_sidebar_resize(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.resizing_sidebar) {
+            return;
+        }
+        let width = f32::from(self.sidebar_width);
+        AppState::get(cx).store.clone().update(cx, |store, cx| {
+            if store.state.settings.sidebar_width() != width {
+                store.set_sidebar_width(width, cx);
+            }
+        });
+    }
+
+    /// Invisible band over the sidebar's right border that drags its width. Mouse-up is caught
+    /// both on and off the band because the pointer usually leaves it while dragging.
+    fn render_sidebar_resize_handle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("sidebar-resize")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(self.sidebar_width - RESIZE_HANDLE_WIDTH / 2.)
+            .w(RESIZE_HANDLE_WIDTH)
+            .occlude()
+            .cursor_col_resize()
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, _| this.resizing_sidebar = true))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.finish_sidebar_resize(cx)))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| this.finish_sidebar_resize(cx)))
+            .on_drag(SidebarResize, |_, _, _, cx| cx.new(|_| SidebarResize))
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<SidebarResize>, _, cx| {
+                // The sidebar starts at the window's left edge, so the pointer's x is its width.
+                let width = px(clamp_sidebar_width(f32::from(event.event.position.x)));
+                if width != this.sidebar_width {
+                    this.sidebar_width = width;
+                    cx.notify();
+                }
+            }))
+    }
+
     fn render_center(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         // The center column starts at the window's top edge, so its top band is where the
@@ -210,6 +260,11 @@ impl Workspace {
             .items_center()
             .justify_center()
             .gap_3()
+            .child(
+                Icon::default().data(HIVE_MARK).size(WELCOME_LOGO_SIZE).text_color(
+                    if cx.theme().is_dark() { rgb(HIVE_GOLD).into() } else { cx.theme().foreground },
+                ),
+            )
             .child(div().text_3xl().font_weight(FontWeight::BOLD).child("HIVE"))
             .child(div().text_sm().text_color(muted).child(hint))
             .child(
@@ -241,7 +296,8 @@ impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let bg = cx.theme().background;
         let title_bar = TitleBar::new().bg(bg).child(
-            h_flex().gap_2().child(div().text_sm().child("Hive")).child(
+            h_flex().gap_2().child(Icon::default().data(HIVE_MARK).size(TITLE_LOGO_SIZE))
+                .child(div().text_sm().child("Hive")).child(
                 Button::new("toggle-sidebar")
                     .cursor_pointer()
                     .ghost()
@@ -258,14 +314,15 @@ impl Render for Workspace {
         // 1.0 = fully open; `t` is the eased animation progress.
         let amount = move |t: f32| if open { t } else { 1. - t };
         let border = cx.theme().sidebar_border;
+        let width = self.sidebar_width;
         let left = move |el: Div, t: f32| {
             let a = amount(t);
-            el.w(px(SIDEBAR_WIDTH * a)).when(a > 0., |el| el.border_r_1().border_color(border))
+            el.w(width * a).when(a > 0., |el| el.border_r_1().border_color(border))
         };
         let center = move |el: Div, t: f32| el.pt(TAB_BAR_HEIGHT * (1. - amount(t)));
         let left_el = v_flex().h_full().flex_shrink_0().overflow_hidden().child(
             v_flex()
-                .w(px(SIDEBAR_WIDTH))
+                .w(width)
                 .h_full()
                 .child(div().h(TAB_BAR_HEIGHT).flex_none())
                 .child(div().flex_1().min_h_0().child(self.sidebar.clone())),
@@ -291,9 +348,10 @@ impl Render for Workspace {
                     .absolute()
                     .top_0()
                     .left_0()
-                    .map(|el| if open { el.w(px(SIDEBAR_WIDTH - 1.)) /* leave the sidebar border visible */ } else { el.w_full() })
+                    .map(|el| if open { el.w(width - px(1.)) /* leave the sidebar border visible */ } else { el.w_full() })
                     .child(title_bar),
-            );
+            )
+            .when(open, |el| el.child(self.render_sidebar_resize_handle(cx)));
         v_flex()
             .size_full()
             .key_context("Workspace")
@@ -303,5 +361,14 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground)
             .child(body)
             .child(self.status_bar.clone())
+    }
+}
+
+/// Drag payload of the sidebar resize handle; renders nothing under the pointer.
+struct SidebarResize;
+
+impl Render for SidebarResize {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
     }
 }

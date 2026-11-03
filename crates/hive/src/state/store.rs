@@ -19,6 +19,11 @@ impl Store {
         self.commit(cx);
     }
 
+    pub fn set_sidebar_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        self.state.settings.set_sidebar_width(width);
+        self.commit(cx);
+    }
+
     pub fn add_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let project = ProjectRef { path, host: Host::Local };
         if !self.state.projects.contains(&project) {
