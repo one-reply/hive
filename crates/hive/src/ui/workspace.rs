@@ -291,7 +291,7 @@ impl Render for Workspace {
                     .absolute()
                     .top_0()
                     .left_0()
-                    .map(|el| if open { el.w(px(SIDEBAR_WIDTH)) } else { el.w_full() })
+                    .map(|el| if open { el.w(px(SIDEBAR_WIDTH - 1.)) /* leave the sidebar border visible */ } else { el.w_full() })
                     .child(title_bar),
             );
         v_flex()
