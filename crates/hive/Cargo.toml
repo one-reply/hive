@@ -1,0 +1,11 @@
+[package]
+name = "hive"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hive-core.workspace = true
+gpui-kit.workspace = true
+serde.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "hive-core"
+version.workspace = true
+edition.workspace = true
+
+# No GPUI here, ever. This crate is the domain + CLI/HTTP adapters and doubles as the
+# wire/proto types for a future backend.
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+base64.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+alacritty_terminal.workspace = true
+tracing.workspace = true
