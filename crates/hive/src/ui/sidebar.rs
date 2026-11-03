@@ -133,13 +133,9 @@ impl Render for Sidebar {
         }
 
         v_flex()
-            .h_full()
-            .w(px(260.))
-            .flex_shrink_0()
+            .size_full()
             .bg(theme.sidebar)
             .text_color(fg)
-            .border_r_1()
-            .border_color(theme.sidebar_border)
             .child(
                 h_flex()
                     .justify_between()

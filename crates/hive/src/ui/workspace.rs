@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::dock::{DockArea, DockPlacement, DockSkin, PanelId, PanelStyle, panel_handle};
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, InteractiveElementExt as _, TitleBar, h_flex, v_flex,
+    ActiveTheme as _, IconName, InteractiveElementExt as _, Sizable as _, TitleBar, h_flex, v_flex,
 };
 use gpui_kit::*;
 use hive_core::settings::ThemeChoice;
@@ -22,14 +22,18 @@ use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
 use crate::ui::theme::apply_theme;
 
-actions!(workspace, [NewTerminal]);
+actions!(workspace, [NewTerminal, ToggleSidebar]);
 
 pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("cmd-t", NewTerminal, Some("Workspace"))]);
+    cx.bind_keys([
+        KeyBinding::new("cmd-t", NewTerminal, Some("Workspace")),
+        KeyBinding::new("cmd-shift-\\", ToggleSidebar, Some("Workspace")),
+    ]);
 }
 
 pub struct Workspace {
     sidebar: Entity<Sidebar>,
+    sidebar_open: bool,
     status_bar: Entity<StatusBarView>,
     projects: Entity<Projects>,
     dock: Entity<DockArea>,
@@ -78,6 +82,7 @@ impl Workspace {
 
         let mut this = Self {
             sidebar: cx.new(Sidebar::new),
+            sidebar_open: true,
             status_bar: cx.new(StatusBarView::new),
             projects,
             dock,
@@ -136,6 +141,11 @@ impl Workspace {
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.selected_path(cx);
         self.open_terminal(cwd, window, cx);
+    }
+
+    fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_open = !self.sidebar_open;
+        cx.notify();
     }
 
     fn render_center(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -221,21 +231,40 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let bg = cx.theme().background;
+        let title_bar = TitleBar::new().bg(bg).child(
+            h_flex().gap_2().child(div().text_sm().child("Hive")).child(
+                Button::new("toggle-sidebar")
+                    .ghost()
+                    .xsmall()
+                    .icon(Lucide::PanelLeft)
+                    .tooltip_with_action("Toggle sidebar", &ToggleSidebar, Some("Workspace"))
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(&ToggleSidebar, window, cx))),
+            ),
+        );
         // Orca-style: the title bar (traffic lights + name) sits above the sidebar only;
         // the center dock with its tab bar runs to the very top of the window.
-        let left = v_flex()
-            .w(px(260.))
-            .h_full()
-            .flex_shrink_0()
-            .child(TitleBar::new().bg(bg).child(div().text_sm().child("Hive")))
-            .child(div().flex_1().min_h_0().child(self.sidebar.clone()));
+        // ponytail: collapsed, the title bar spans the window above the dock; inline it into the tab bar if that looks off.
+        let body = if self.sidebar_open {
+            let left = v_flex()
+                .w(px(260.))
+                .h_full()
+                .flex_shrink_0()
+                .border_r_1()
+                .border_color(cx.theme().sidebar_border)
+                .child(title_bar)
+                .child(div().flex_1().min_h_0().child(self.sidebar.clone()));
+            h_flex().flex_1().min_h_0().child(left).child(self.render_center(cx)).into_any_element()
+        } else {
+            v_flex().flex_1().min_h_0().child(title_bar).child(self.render_center(cx)).into_any_element()
+        };
         v_flex()
             .size_full()
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_terminal))
+            .on_action(cx.listener(Self::toggle_sidebar))
             .bg(bg)
             .text_color(cx.theme().foreground)
-            .child(h_flex().flex_1().min_h_0().child(left).child(self.render_center(cx)))
+            .child(body)
             .child(self.status_bar.clone())
     }
 }

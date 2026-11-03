@@ -30,7 +30,7 @@ fn main() {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "hive starting");
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(gpui_kit::assets::AllAssets)
         .run(|cx| {
             gpui_kit::init(cx);
             AppState::init(cx);
