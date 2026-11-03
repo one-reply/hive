@@ -63,7 +63,6 @@ const TAB_BAR_HEIGHT: Pixels = px(34.);
 const RESIZE_HANDLE_WIDTH: Pixels = px(6.);
 const HIVE_MARK: &[u8] = include_bytes!("../../assets/icons/Hive.icon/Assets/mark.svg");
 const WELCOME_LOGO_SIZE: Pixels = px(96.);
-const TITLE_LOGO_SIZE: Pixels = px(24.);
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -235,9 +234,13 @@ impl Workspace {
             .w(RESIZE_HANDLE_WIDTH)
             .occlude()
             .cursor_col_resize()
+            .on_hover(|hovered, _, _| tracing::debug!(hovered, "DBG-RESIZE hover"))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.resizing_sidebar = true),
+                cx.listener(|this, event: &MouseDownEvent, _, _| {
+                    tracing::debug!(?event.position, "DBG-RESIZE down");
+                    this.resizing_sidebar = true
+                }),
             )
             .on_mouse_up(
                 MouseButton::Left,
@@ -247,11 +250,15 @@ impl Workspace {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.finish_sidebar_resize(cx)),
             )
-            .on_drag(SidebarResize, |_, _, _, cx| cx.new(|_| SidebarResize))
+            .on_drag(SidebarResize, |_, _, _, cx| {
+                tracing::debug!("DBG-RESIZE drag start");
+                cx.new(|_| SidebarResize)
+            })
             .on_drag_move(
                 cx.listener(|this, event: &DragMoveEvent<SidebarResize>, _, cx| {
                     // The sidebar starts at the window's left edge, so the pointer's x is its width.
                     let width = px(clamp_sidebar_width(f32::from(event.event.position.x)));
+                    tracing::debug!(?width, "DBG-RESIZE move");
                     if width != this.sidebar_width {
                         this.sidebar_width = width;
                         cx.notify();
@@ -374,12 +381,7 @@ impl Render for Workspace {
                 .gap_2()
                 .pr_2()
                 .when(open, |el| el.justify_between())
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(Icon::default().data(HIVE_MARK).size(TITLE_LOGO_SIZE))
-                        .child(div().text_sm().child("Hive")),
-                )
+                .child(div().text_sm().child("Hive"))
                 .child(
                     Button::new("toggle-sidebar")
                         .cursor_pointer()

@@ -3,7 +3,9 @@
 
 use std::cell::Cell;
 use std::collections::HashSet;
+use std::f32::consts::FRAC_PI_2;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
@@ -42,12 +44,23 @@ const BADGE_TEXT: Pixels = px(10.);
 const BADGE_HEIGHT: Pixels = px(16.);
 const STATUS_DOT: Pixels = px(8.);
 const CREATE_DIALOG_WIDTH: Pixels = px(420.);
+/// Rows under a project header have fixed heights, so the collapse animation knows the
+/// height of the list without measuring it.
+const CARD_HEIGHT: Pixels = px(58.);
+const CREATING_HEIGHT: Pixels = px(28.);
+const ROW_GAP: Pixels = px(2.);
+const COLLAPSE_DURATION: Duration = Duration::from_millis(200);
+/// Chevron rotation of a folded project: pointing right instead of down.
+const CHEVRON_FOLDED: f32 = -FRAC_PI_2;
 
 pub struct Sidebar {
     projects: Entity<Projects>,
     store: Entity<Store>,
     /// Projects the user folded; everything else is expanded.
     collapsed: HashSet<PathBuf>,
+    /// Projects folded or unfolded since launch: they animate, so the tree doesn't play
+    /// its animations on startup.
+    toggled: HashSet<PathBuf>,
     _observer: Subscription,
 }
 
@@ -62,6 +75,7 @@ impl Sidebar {
             projects,
             store,
             collapsed: HashSet::new(),
+            toggled: HashSet::new(),
             _observer: observer,
         }
     }
@@ -74,23 +88,44 @@ impl Sidebar {
         if !self.collapsed.remove(path) {
             self.collapsed.insert(path.to_path_buf());
         }
+        self.toggled.insert(path.to_path_buf());
         cx.notify();
     }
 
-    fn render_project(
-        &self,
-        ix: usize,
-        project: &Project,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        let collapsed = self.collapsed.contains(&project.path);
-        let mut rows = vec![
-            self.render_header(ix, project, collapsed, cx)
-                .into_any_element(),
-        ];
-        if collapsed {
-            return rows;
+    /// A project header and its worktree list, which slides open and closed.
+    fn render_project(&self, ix: usize, project: &Project, cx: &mut Context<Self>) -> AnyElement {
+        let open = !self.collapsed.contains(&project.path);
+        let animate = self.toggled.contains(&project.path);
+        let header = self
+            .render_header(ix, project, open, animate, cx)
+            .into_any_element();
+        if !open && !animate {
+            return v_flex().child(header).into_any_element();
         }
+        let rows = self.render_rows(project, cx);
+        let height = rows
+            .iter()
+            .map(|(_, height)| *height + ROW_GAP)
+            .sum::<Pixels>();
+        let list = v_flex()
+            .overflow_hidden()
+            .children(rows.into_iter().map(|(row, _)| row));
+        let list = if animate {
+            list.with_animation(
+                animation_id("project-list", &project.path, open),
+                collapse_animation(),
+                move |list, t| list.h(height * openness(open, t)),
+            )
+            .into_any_element()
+        } else {
+            list.into_any_element()
+        };
+        v_flex().child(header).child(list).into_any_element()
+    }
+
+    /// Cards under a project header with their heights.
+    fn render_rows(&self, project: &Project, cx: &mut Context<Self>) -> Vec<(AnyElement, Pixels)> {
+        let mut rows = vec![];
         let projects = self.projects.read(cx);
         let host = host_label(&project.host);
         if project.worktrees.is_empty() {
@@ -102,14 +137,20 @@ impl Sidebar {
                 is_active: projects.is_active(&project.path),
                 is_selected: projects.is_selected(&project.path, None),
             };
-            rows.push(self.render_card(project, None, folder, &host, cx));
+            rows.push((
+                self.render_card(project, None, folder, &host, cx),
+                CARD_HEIGHT,
+            ));
         }
         for (_, worktree) in project.visible_worktrees() {
             let card = WorktreeCard::new(project, worktree, projects);
-            rows.push(self.render_card(project, Some(worktree), card, &host, cx));
+            rows.push((
+                self.render_card(project, Some(worktree), card, &host, cx),
+                CARD_HEIGHT,
+            ));
         }
         for _ in 0..projects.creating_count(&project.path) {
-            rows.push(render_creating(cx).into_any_element());
+            rows.push((render_creating(cx).into_any_element(), CREATING_HEIGHT));
         }
         rows
     }
@@ -118,23 +159,33 @@ impl Sidebar {
         &self,
         ix: usize,
         project: &Project,
-        collapsed: bool,
+        open: bool,
+        animate: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let group: SharedString = format!("project-header-{ix}").into();
         let path = project.path.clone();
-        let chevron = if collapsed {
-            IconName::ChevronRight
+        let chevron = Icon::new(IconName::ChevronDown)
+            .size_3p5()
+            .text_color(cx.theme().muted_foreground);
+        let chevron = if animate {
+            chevron
+                .with_animation(
+                    animation_id("project-chevron", &project.path, open),
+                    collapse_animation(),
+                    move |icon, t| icon.rotate(radians(CHEVRON_FOLDED * (1. - openness(open, t)))),
+                )
+                .into_any_element()
         } else {
-            IconName::ChevronDown
+            let angle = if open { 0. } else { CHEVRON_FOLDED };
+            chevron.rotate(radians(angle)).into_any_element()
         };
         // Collapsed to zero width until hovered, so the chevron sits at the row's edge (Orca).
-        let actions = h_flex()
+        // The gap before the buttons lives inside, so it collapses with them.
+        let buttons = h_flex()
+            .flex_none()
+            .pl_1()
             .gap_0p5()
-            .w_0()
-            .overflow_hidden()
-            .opacity(0.)
-            .group_hover(group.clone(), |s| s.w_auto().opacity(1.))
             .child(self.project_menu(ix, project))
             .when(!project.worktrees.is_empty(), |s| {
                 let (projects, project) = (self.projects.clone(), project.clone());
@@ -150,13 +201,20 @@ impl Sidebar {
                         }),
                 )
             });
+        let actions = h_flex()
+            .w_0()
+            .overflow_hidden()
+            .opacity(0.)
+            .group_hover(group.clone(), |s| s.w_auto().opacity(1.))
+            .child(buttons);
         h_flex()
             .id(("project", ix))
             .group(group)
             .h(HEADER_HEIGHT)
             .gap_1p5()
             .pl(HEADER_INSET)
-            .pr_1()
+            // Mirrors the folder icon's inset from the card's left edge.
+            .pr_1p5()
             .rounded_md()
             .cursor_pointer()
             .child(
@@ -173,12 +231,7 @@ impl Sidebar {
                     .truncate()
                     .child(project.name.clone()),
             )
-            .child(
-                Icon::new(chevron)
-                    .size_3p5()
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .child(actions)
+            .child(h_flex().flex_none().child(chevron).child(actions))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_collapsed(&path, cx)))
     }
 
@@ -263,12 +316,14 @@ impl Sidebar {
                 "worktree:{}",
                 card.path.display()
             )))
+            .h(CARD_HEIGHT)
+            .flex_none()
+            .justify_center()
             .gap_1p5()
+            .mt(ROW_GAP)
             .ml_1()
             .pl_2()
             .pr_1p5()
-            .pt(px(5.))
-            .pb_1p5()
             .rounded_lg()
             .border_1()
             .border_color(transparent_black())
@@ -302,7 +357,7 @@ impl Render for Sidebar {
         let rows: Vec<AnyElement> = items
             .iter()
             .enumerate()
-            .flat_map(|(ix, project)| self.render_project(ix, project, cx))
+            .map(|(ix, project)| self.render_project(ix, project, cx))
             .collect();
         let theme = cx.theme();
         let (fg, muted_fg) = (theme.sidebar_foreground, theme.muted_foreground);
@@ -469,12 +524,28 @@ fn host_badge(label: SharedString, fg: Hsla, muted_fg: Hsla) -> impl IntoElement
         .child(label)
 }
 
+/// Restarts whenever `open` flips, because the id changes with it.
+fn animation_id(kind: &str, project: &Path, open: bool) -> ElementId {
+    SharedString::from(format!("{kind}:{}:{open}", project.display())).into()
+}
+
+fn collapse_animation() -> Animation {
+    Animation::new(COLLAPSE_DURATION).with_easing(ease_in_out)
+}
+
+/// 1.0 = fully open; `t` is the eased animation progress.
+fn openness(open: bool, t: f32) -> f32 {
+    if open { t } else { 1. - t }
+}
+
 /// Placeholder card while `git worktree add` runs.
 fn render_creating(cx: &App) -> impl IntoElement {
     h_flex()
+        .h(CREATING_HEIGHT)
+        .flex_none()
+        .mt(ROW_GAP)
         .ml_1()
         .pl_2()
-        .py_1p5()
         .gap_2()
         .text_size(META_TEXT)
         .text_color(cx.theme().muted_foreground)
