@@ -36,10 +36,18 @@ pub fn fetch_all() -> Vec<Provider> {
 
 fn provider(name: &'static str, result: Result<Vec<UsageWindow>, UsageError>) -> Provider {
     match result {
-        Ok(windows) => Provider { name, windows, error: None },
+        Ok(windows) => Provider {
+            name,
+            windows,
+            error: None,
+        },
         Err(error) => {
             tracing::warn!(provider = name, %error, "usage fetch failed");
-            Provider { name, windows: vec![], error: Some(error) }
+            Provider {
+                name,
+                windows: vec![],
+                error: Some(error),
+            }
         }
     }
 }
@@ -50,7 +58,10 @@ fn get_json(url: &str, headers: &[(&str, &str)]) -> Result<Value, UsageError> {
         req = req.header(*k, *v);
     }
     let mut res = req.call().map_err(|e| UsageError::Http(e.to_string()))?;
-    let text = res.body_mut().read_to_string().map_err(|e| UsageError::Http(e.to_string()))?;
+    let text = res
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| UsageError::Http(e.to_string()))?;
     tracing::debug!(url, body = %text, "usage response");
     serde_json::from_str(&text).map_err(|e| UsageError::Json(e.to_string()))
 }
@@ -73,7 +84,11 @@ pub fn parse_claude(json: &Value) -> Vec<UsageWindow> {
     let mut out = vec![];
     for (key, label) in [("five_hour", "5h"), ("seven_day", "7d")] {
         if let Some(pct) = json[key]["utilization"].as_f64() {
-            out.push(UsageWindow { label, percent: pct, resets_at: parse_time(&json[key]["resets_at"]) });
+            out.push(UsageWindow {
+                label,
+                percent: pct,
+                resets_at: parse_time(&json[key]["resets_at"]),
+            });
         }
     }
     if out.is_empty() {
@@ -84,7 +99,11 @@ pub fn parse_claude(json: &Value) -> Vec<UsageWindow> {
                 _ => continue,
             };
             if let Some(pct) = limit["percent"].as_f64() {
-                out.push(UsageWindow { label, percent: pct, resets_at: parse_time(&limit["resets_at"]) });
+                out.push(UsageWindow {
+                    label,
+                    percent: pct,
+                    resets_at: parse_time(&limit["resets_at"]),
+                });
             }
         }
     }
@@ -112,7 +131,11 @@ pub fn parse_codex(json: &Value) -> Vec<UsageWindow> {
             let w = &rl[key];
             let pct = w["used_percent"].as_f64()?;
             let secs = w["limit_window_seconds"].as_u64().unwrap_or(0);
-            Some((secs, pct, parse_time(&w["reset_at"]).or_else(|| parse_time(&w["resets_at"]))))
+            Some((
+                secs,
+                pct,
+                parse_time(&w["reset_at"]).or_else(|| parse_time(&w["resets_at"])),
+            ))
         })
         .collect();
     windows.sort_by_key(|w| w.0);
@@ -137,7 +160,10 @@ fn parse_time(v: &Value) -> Option<SystemTime> {
 
 /// "31m", "12h 3m", "5d 14h" until `t`; "now" if already passed.
 pub fn until(t: SystemTime) -> String {
-    let secs = t.duration_since(SystemTime::now()).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = t
+        .duration_since(SystemTime::now())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let (d, h, m) = (secs / 86400, secs % 86400 / 3600, secs % 3600 / 60);
     match (d, h, m) {
         (0, 0, 0) => "now".into(),
@@ -165,7 +191,10 @@ mod tests {
                          "limits": [{"kind": "weekly_all", "percent": 40, "resets_at": "2026-11-08T00:00:00+00:00"},
                                     {"kind": "session", "percent": 3, "resets_at": "2026-11-03T22:00:00Z"}]});
         let w = parse_claude(&new);
-        assert_eq!(w.iter().map(|w| (w.label, w.percent)).collect::<Vec<_>>(), vec![("7d", 40.0), ("5h", 3.0)]);
+        assert_eq!(
+            w.iter().map(|w| (w.label, w.percent)).collect::<Vec<_>>(),
+            vec![("7d", 40.0), ("5h", 3.0)]
+        );
     }
 
     #[test]
@@ -174,15 +203,24 @@ mod tests {
             "primary_window": {"used_percent": 40, "limit_window_seconds": 604800, "reset_at": 1762300000},
             "secondary_window": {"used_percent": 83, "limit_window_seconds": 18000, "reset_at": 1762200000}}});
         let w = parse_codex(&v);
-        assert_eq!(w.iter().map(|w| (w.label, w.percent)).collect::<Vec<_>>(), vec![("5h", 83.0), ("7d", 40.0)]);
+        assert_eq!(
+            w.iter().map(|w| (w.label, w.percent)).collect::<Vec<_>>(),
+            vec![("5h", 83.0), ("7d", 40.0)]
+        );
     }
 
     #[test]
     fn until_formats() {
         let now = SystemTime::now();
         assert_eq!(until(now + Duration::from_secs(31 * 60 + 5)), "31m");
-        assert_eq!(until(now + Duration::from_secs(12 * 3600 + 3 * 60 + 5)), "12h 3m");
-        assert_eq!(until(now + Duration::from_secs(5 * 86400 + 14 * 3600 + 5)), "5d 14h");
+        assert_eq!(
+            until(now + Duration::from_secs(12 * 3600 + 3 * 60 + 5)),
+            "12h 3m"
+        );
+        assert_eq!(
+            until(now + Duration::from_secs(5 * 86400 + 14 * 3600 + 5)),
+            "5d 14h"
+        );
         assert_eq!(until(now), "now");
     }
 }

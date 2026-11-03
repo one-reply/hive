@@ -18,7 +18,10 @@ impl StatusBarView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let usage = AppState::get(cx).usage.clone();
         let observer = cx.observe(&usage, |_, _, cx| cx.notify());
-        Self { usage, _observer: observer }
+        Self {
+            usage,
+            _observer: observer,
+        }
     }
 }
 

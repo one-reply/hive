@@ -32,7 +32,12 @@ impl EventEmitter<TerminalViewEvent> for TerminalView {}
 
 impl TerminalView {
     /// Wrap an already spawned [`Terminal`] (spawning can fail; entities can't).
-    pub fn new(mut terminal: Terminal, cwd: Option<&Path>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        mut terminal: Terminal,
+        cwd: Option<&Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.on_focus(&focus_handle, window, |this, _, cx| {
@@ -136,7 +141,12 @@ impl TerminalView {
     /// Shell-set title (without a `user@host:` prefix, capped so tabs stay narrow), else the
     /// cwd's last component, else "Terminal".
     pub fn title(&self) -> String {
-        if let Some(title) = self.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        if let Some(title) = self
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
             return shorten_title(title, 28);
         }
         self.cwd
@@ -164,7 +174,9 @@ impl TerminalView {
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
-        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else { return };
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
         let mode = self.terminal.mode();
         let mut bytes = Vec::with_capacity(text.len() + 12);
         if mode.contains(TermMode::BRACKETED_PASTE) {
@@ -222,7 +234,10 @@ impl Render for TerminalView {
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
             .on_scroll(cx.listener(Self::scroll_wheel))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.focus_handle.focus(window, cx)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.focus_handle.focus(window, cx)),
+            )
             .child(TerminalElement::new(cx.entity(), focused))
     }
 }
@@ -249,9 +264,18 @@ mod tests {
 
     #[test]
     fn shortens_shell_titles() {
-        assert_eq!(shorten_title("vitalii@MacBook-Pro:~/projects/hive", 28), "~/projects/hive");
-        assert_eq!(shorten_title("vim src/terminal/element.rs", 28), "vim src/terminal/element.rs");
-        assert_eq!(shorten_title("a/very/long/path/that/keeps/going/and/going", 12), "…g/and/going");
+        assert_eq!(
+            shorten_title("vitalii@MacBook-Pro:~/projects/hive", 28),
+            "~/projects/hive"
+        );
+        assert_eq!(
+            shorten_title("vim src/terminal/element.rs", 28),
+            "vim src/terminal/element.rs"
+        );
+        assert_eq!(
+            shorten_title("a/very/long/path/that/keeps/going/and/going", 12),
+            "…g/and/going"
+        );
     }
 }
 

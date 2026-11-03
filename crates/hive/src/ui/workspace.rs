@@ -7,10 +7,13 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::dock::{
+    DockArea, DockPlacement, DockSkin, PanelId, PanelStyle, panel_handle,
+};
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::dock::{DockArea, DockPlacement, DockSkin, PanelId, PanelStyle, panel_handle};
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, InteractiveElementExt as _, Sizable as _, TitleBar, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, InteractiveElementExt as _, Sizable as _, TitleBar, h_flex,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -58,7 +61,6 @@ const TAB_BAR_HEIGHT: Pixels = px(34.);
 /// Grab area straddling the sidebar's right border.
 const RESIZE_HANDLE_WIDTH: Pixels = px(6.);
 const HIVE_MARK: &[u8] = include_bytes!("../../assets/icons/Hive.icon/Assets/mark.svg");
-const HIVE_GOLD: u32 = 0xffc400;
 const WELCOME_LOGO_SIZE: Pixels = px(96.);
 const TITLE_LOGO_SIZE: Pixels = px(24.);
 
@@ -76,12 +78,20 @@ impl Workspace {
         skin.set_toggle_button_visible(false, cx);
 
         let observers = vec![
-            cx.observe(&store, |_, store, cx| apply_theme(store.read(cx).state.settings.theme, None, cx)),
-            cx.observe_in(&projects, window, |this, _, window, cx| this.sync_selection(window, cx)),
+            cx.observe(&store, |_, store, cx| {
+                apply_theme(store.read(cx).state.settings.theme, None, cx)
+            }),
+            cx.observe_in(&projects, window, |this, _, window, cx| {
+                this.sync_selection(window, cx)
+            }),
             // Tabs closed from the dock (× button, exited shell) must drop out of `terminals`
             // so the empty state with its "+" strip comes back.
             cx.observe(&dock, |this, dock, cx| {
-                this.terminals.retain(|panel| dock.read(cx).panel(PanelId::from(panel.entity_id())).is_some());
+                this.terminals.retain(|panel| {
+                    dock.read(cx)
+                        .panel(PanelId::from(panel.entity_id()))
+                        .is_some()
+                });
                 this.sync_alone(cx);
                 cx.notify();
             }),
@@ -115,7 +125,11 @@ impl Workspace {
 
     fn selected_path(&self, cx: &App) -> Option<PathBuf> {
         let (project, worktree) = self.projects.read(cx).selection()?;
-        Some(worktree.map(|w| w.path.clone()).unwrap_or_else(|| project.path.clone()))
+        Some(
+            worktree
+                .map(|w| w.path.clone())
+                .unwrap_or_else(|| project.path.clone()),
+        )
     }
 
     /// Show a terminal for the selected worktree: focus an existing tab for that path, or open one.
@@ -125,11 +139,21 @@ impl Workspace {
             return;
         };
         let dock = self.dock.clone();
-        self.terminals.retain(|panel| dock.read(cx).panel(PanelId::from(panel.entity_id())).is_some());
+        self.terminals.retain(|panel| {
+            dock.read(cx)
+                .panel(PanelId::from(panel.entity_id()))
+                .is_some()
+        });
 
-        let existing = self.terminals.iter().find(|panel| panel.read(cx).cwd(cx).as_deref() == Some(path.as_path())).cloned();
+        let existing = self
+            .terminals
+            .iter()
+            .find(|panel| panel.read(cx).cwd(cx).as_deref() == Some(path.as_path()))
+            .cloned();
         match existing {
-            Some(panel) => dock.update(cx, |dock, cx| dock.select_panel(PanelId::from(panel.entity_id()), window, cx)),
+            Some(panel) => dock.update(cx, |dock, cx| {
+                dock.select_panel(PanelId::from(panel.entity_id()), window, cx)
+            }),
             None => self.open_terminal(Some(path), window, cx),
         }
         cx.notify();
@@ -140,7 +164,13 @@ impl Workspace {
         let dock = self.dock.clone();
         if let Some(panel) = TerminalPanel::open(cwd.as_deref(), dock.downgrade(), window, cx) {
             dock.update(cx, |dock, cx| {
-                dock.add_panel_view(panel_handle(panel.clone()), DockPlacement::Center, None, window, cx);
+                dock.add_panel_view(
+                    panel_handle(panel.clone()),
+                    DockPlacement::Center,
+                    None,
+                    window,
+                    cx,
+                );
             });
             self.terminals.push(panel);
             self.sync_alone(cx);
@@ -191,18 +221,29 @@ impl Workspace {
             .w(RESIZE_HANDLE_WIDTH)
             .occlude()
             .cursor_col_resize()
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, _| this.resizing_sidebar = true))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.finish_sidebar_resize(cx)))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| this.finish_sidebar_resize(cx)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.resizing_sidebar = true),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.finish_sidebar_resize(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.finish_sidebar_resize(cx)),
+            )
             .on_drag(SidebarResize, |_, _, _, cx| cx.new(|_| SidebarResize))
-            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<SidebarResize>, _, cx| {
-                // The sidebar starts at the window's left edge, so the pointer's x is its width.
-                let width = px(clamp_sidebar_width(f32::from(event.event.position.x)));
-                if width != this.sidebar_width {
-                    this.sidebar_width = width;
-                    cx.notify();
-                }
-            }))
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<SidebarResize>, _, cx| {
+                    // The sidebar starts at the window's left edge, so the pointer's x is its width.
+                    let width = px(clamp_sidebar_width(f32::from(event.event.position.x)));
+                    if width != this.sidebar_width {
+                        this.sidebar_width = width;
+                        cx.notify();
+                    }
+                }),
+            )
     }
 
     fn render_center(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -218,9 +259,14 @@ impl Workspace {
             .min_h_0()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, _| this.should_move = event.position.y < TAB_BAR_HEIGHT),
+                cx.listener(|this, event: &MouseDownEvent, _, _| {
+                    this.should_move = event.position.y < TAB_BAR_HEIGHT
+                }),
             )
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.should_move = false))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.should_move = false),
+            )
             .on_mouse_move(cx.listener(|this, _, window, _| {
                 if this.should_move {
                     this.should_move = false;
@@ -261,9 +307,10 @@ impl Workspace {
             .justify_center()
             .gap_3()
             .child(
-                Icon::default().data(HIVE_MARK).size(WELCOME_LOGO_SIZE).text_color(
-                    if cx.theme().is_dark() { rgb(HIVE_GOLD).into() } else { cx.theme().foreground },
-                ),
+                Icon::default()
+                    .data(HIVE_MARK)
+                    .size(WELCOME_LOGO_SIZE)
+                    .text_color(cx.theme().foreground),
             )
             .child(div().text_3xl().font_weight(FontWeight::BOLD).child("HIVE"))
             .child(div().text_sm().text_color(muted).child(hint))
@@ -277,7 +324,9 @@ impl Workspace {
                             .outline()
                             .icon(IconName::FolderOpen)
                             .label("Add project")
-                            .on_click(|_, _, cx| Store::prompt_add_projects(AppState::get(cx).store.clone(), cx)),
+                            .on_click(|_, _, cx| {
+                                Store::prompt_add_projects(AppState::get(cx).store.clone(), cx)
+                            }),
                     )
                     .child(
                         Button::new("welcome-new-terminal")
@@ -285,39 +334,61 @@ impl Workspace {
                             .outline()
                             .icon(Lucide::SquareTerminal)
                             .label("New terminal")
-                            .on_click(cx.listener(|this, _, window, cx| this.new_terminal(&NewTerminal, window, cx))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_terminal(&NewTerminal, window, cx)
+                            })),
                     ),
             )
-            .child(v_flex().gap_1().mt_6().child(shortcut("New terminal", "cmd-t")))
+            .child(
+                v_flex()
+                    .gap_1()
+                    .mt_6()
+                    .child(shortcut("New terminal", "cmd-t")),
+            )
     }
 }
 
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let bg = cx.theme().background;
+        let open = self.sidebar_open;
+        // Open, the toggle sits at the sidebar's right border; collapsed, the title bar spans the
+        // window, so it stays next to the name instead of jumping to the far edge.
         let title_bar = TitleBar::new().bg(bg).child(
-            h_flex().gap_2().child(Icon::default().data(HIVE_MARK).size(TITLE_LOGO_SIZE))
-                .child(div().text_sm().child("Hive")).child(
-                Button::new("toggle-sidebar")
-                    .cursor_pointer()
-                    .ghost()
-                    .small()
-                    .icon(Lucide::PanelLeft)
-                    .tooltip_with_action("Toggle sidebar", &ToggleSidebar, Some("Workspace"))
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(&ToggleSidebar, window, cx))),
-            ),
+            h_flex()
+                .flex_1()
+                .gap_2()
+                .pr_2()
+                .when(open, |el| el.justify_between())
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(Icon::default().data(HIVE_MARK).size(TITLE_LOGO_SIZE))
+                        .child(div().text_sm().child("Hive")),
+                )
+                .child(
+                    Button::new("toggle-sidebar")
+                        .cursor_pointer()
+                        .ghost()
+                        .small()
+                        .icon(Lucide::PanelLeft)
+                        .tooltip_with_action("Toggle sidebar", &ToggleSidebar, Some("Workspace"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_sidebar(&ToggleSidebar, window, cx)
+                        })),
+                ),
         );
         // Orca-style: the title bar (traffic lights + name) sits above the sidebar only and the
         // center dock with its tab bar runs to the very top. Collapsing slides the sidebar to
         // zero width while the dock drops below the title bar, which then spans the window.
-        let open = self.sidebar_open;
         // 1.0 = fully open; `t` is the eased animation progress.
         let amount = move |t: f32| if open { t } else { 1. - t };
         let border = cx.theme().sidebar_border;
         let width = self.sidebar_width;
         let left = move |el: Div, t: f32| {
             let a = amount(t);
-            el.w(width * a).when(a > 0., |el| el.border_r_1().border_color(border))
+            el.w(width * a)
+                .when(a > 0., |el| el.border_r_1().border_color(border))
         };
         let center = move |el: Div, t: f32| el.pt(TAB_BAR_HEIGHT * (1. - amount(t)));
         let left_el = v_flex().h_full().flex_shrink_0().overflow_hidden().child(
@@ -327,15 +398,26 @@ impl Render for Workspace {
                 .child(div().h(TAB_BAR_HEIGHT).flex_none())
                 .child(div().flex_1().min_h_0().child(self.sidebar.clone())),
         );
-        let center_el = v_flex().flex_1().min_w_0().h_full().child(self.render_center(cx));
+        let center_el = v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(self.render_center(cx));
         let (left_el, center_el) = if self.sidebar_animate {
             let anim = Animation::new(Duration::from_millis(200)).with_easing(ease_in_out);
             (
-                left_el.with_animation(("sidebar-w", open as usize), anim.clone(), left).into_any_element(),
-                center_el.with_animation(("center-pt", open as usize), anim, center).into_any_element(),
+                left_el
+                    .with_animation(("sidebar-w", open as usize), anim.clone(), left)
+                    .into_any_element(),
+                center_el
+                    .with_animation(("center-pt", open as usize), anim, center)
+                    .into_any_element(),
             )
         } else {
-            (left(left_el, 1.).into_any_element(), center(center_el, 1.).into_any_element())
+            (
+                left(left_el, 1.).into_any_element(),
+                center(center_el, 1.).into_any_element(),
+            )
         };
         let body = h_flex()
             .relative()
@@ -348,7 +430,13 @@ impl Render for Workspace {
                     .absolute()
                     .top_0()
                     .left_0()
-                    .map(|el| if open { el.w(width - px(1.)) /* leave the sidebar border visible */ } else { el.w_full() })
+                    .map(|el| {
+                        if open {
+                            el.w(width - px(1.)) /* leave the sidebar border visible */
+                        } else {
+                            el.w_full()
+                        }
+                    })
                     .child(title_bar),
             )
             .when(open, |el| el.child(self.render_sidebar_resize_handle(cx)));

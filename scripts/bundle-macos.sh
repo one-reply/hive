@@ -30,16 +30,17 @@ trap 'rm -rf "$stage"' EXIT
 app="$stage/Hive.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$executable" "$app/Contents/MacOS/hive"
-cp crates/hive/assets/icons/Hive-light.icns "$app/Contents/Resources/Hive.icns"
-cp crates/hive/assets/icons/Hive-dark.icns "$app/Contents/Resources/Hive-dark.icns"
 xcrun actool crates/hive/assets/icons/Hive.icon \
     --compile "$app/Contents/Resources" --platform macosx \
     --minimum-deployment-target "$minimum_os" --app-icon Hive \
     --output-partial-info-plist "$stage/icon-info.plist" --output-format human-readable-text
-python3 - "$app" "$version" "$minimum_os" "$stage/icon-info.plist" <<'PY'
-import plistlib, sys
+# actool's fallback contains fewer sizes; keep our complete 16–1024 px ICNS.
+cp crates/hive/assets/icons/Hive-light.icns "$app/Contents/Resources/Hive.icns"
+xcrun assetutil --info "$app/Contents/Resources/Assets.car" > "$stage/catalog.json"
+python3 - "$app" "$version" "$minimum_os" "$stage/icon-info.plist" "$stage/catalog.json" <<'PY'
+import json, plistlib, sys
 from pathlib import Path
-app, version, minimum_os, partial = sys.argv[1:]
+app, version, minimum_os, partial, catalog = sys.argv[1:]
 contents = Path(app) / "Contents"
 info = plistlib.loads(Path("packaging/macos/Info.plist").read_bytes())
 info.update(plistlib.loads(Path(partial).read_bytes()))
@@ -50,6 +51,10 @@ assert info["CFBundleIconName"] == "Hive"
 assert (contents / "Resources/Assets.car").stat().st_size > 0
 icon = info["CFBundleIconFile"]
 assert (contents / "Resources" / (icon if icon.endswith(".icns") else icon + ".icns")).is_file()
+assert (contents / "Resources/Hive.icns").read_bytes() == Path("crates/hive/assets/icons/Hive-light.icns").read_bytes()
+appearances = {item.get("Appearance") for item in json.loads(Path(catalog).read_text())
+               if item.get("AssetType") == "IconImageStack" and item.get("Name") == "Hive"}
+assert {"NSAppearanceNameAqua", "NSAppearanceNameDarkAqua"} <= appearances
 PY
 plutil -lint "$app/Contents/Info.plist"
 codesign --force --sign - "$app"

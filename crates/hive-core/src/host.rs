@@ -49,7 +49,10 @@ impl Host {
 
 /// POSIX single-quote escaping.
 fn quote(s: &str) -> String {
-    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:@".contains(c)) {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@".contains(c))
+    {
         return s.to_string();
     }
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -61,9 +64,18 @@ mod tests {
 
     #[test]
     fn ssh_command_is_quoted() {
-        let host = Host::Ssh { target: "dev".into() };
-        let cmd = host.command("git", &["log", "--format=%s it's"], Some(Path::new("/my dir")));
-        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let host = Host::Ssh {
+            target: "dev".into(),
+        };
+        let cmd = host.command(
+            "git",
+            &["log", "--format=%s it's"],
+            Some(Path::new("/my dir")),
+        );
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(cmd.get_program(), "ssh");
         assert_eq!(args[3], "cd '/my dir' && git log '--format=%s it'\\''s'");
     }

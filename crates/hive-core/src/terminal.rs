@@ -6,17 +6,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use alacritty_terminal::event::{Event as AlacEvent, EventListener, Notify as _, OnResize as _, WindowSize};
+use alacritty_terminal::event::{
+    Event as AlacEvent, EventListener, Notify as _, OnResize as _, WindowSize,
+};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg, Notifier};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::tty;
 
-pub use alacritty_terminal::term::{RenderableContent, TermMode, point_to_viewport};
-pub use alacritty_terminal::term::cell::{Cell, Flags};
-pub use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 pub use alacritty_terminal::index::{Column, Line, Point};
+pub use alacritty_terminal::term::cell::{Cell, Flags};
+pub use alacritty_terminal::term::{RenderableContent, TermMode, point_to_viewport};
+pub use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TerminalError {
@@ -50,11 +52,21 @@ pub struct TerminalSize {
 
 impl TerminalSize {
     pub fn new(cols: u16, rows: u16) -> Self {
-        Self { cols: cols.max(2), rows: rows.max(1), cell_width: 8, cell_height: 16 }
+        Self {
+            cols: cols.max(2),
+            rows: rows.max(1),
+            cell_width: 8,
+            cell_height: 16,
+        }
     }
 
     fn window_size(self) -> WindowSize {
-        WindowSize { num_cols: self.cols, num_lines: self.rows, cell_width: self.cell_width, cell_height: self.cell_height }
+        WindowSize {
+            num_cols: self.cols,
+            num_lines: self.rows,
+            cell_width: self.cell_width,
+            cell_height: self.cell_height,
+        }
     }
 }
 
@@ -83,7 +95,9 @@ pub struct Listener {
 impl EventListener for Listener {
     fn send_event(&self, event: AlacEvent) {
         let forwarded = match event {
-            AlacEvent::Wakeup | AlacEvent::CursorBlinkingChange | AlacEvent::MouseCursorDirty => Some(TerminalEvent::Wakeup),
+            AlacEvent::Wakeup | AlacEvent::CursorBlinkingChange | AlacEvent::MouseCursorDirty => {
+                Some(TerminalEvent::Wakeup)
+            }
             AlacEvent::Title(title) => Some(TerminalEvent::Title(Some(title))),
             AlacEvent::ResetTitle => Some(TerminalEvent::Title(None)),
             AlacEvent::Bell => Some(TerminalEvent::Bell),
@@ -97,7 +111,9 @@ impl EventListener for Listener {
                 self.write(format(size).into_bytes());
                 None
             }
-            AlacEvent::ColorRequest(_, _) | AlacEvent::ClipboardStore(_, _) | AlacEvent::ClipboardLoad(_, _) => None,
+            AlacEvent::ColorRequest(_, _)
+            | AlacEvent::ClipboardStore(_, _)
+            | AlacEvent::ClipboardLoad(_, _) => None,
         };
         if let Some(event) = forwarded {
             let _ = self.tx.send(event);
@@ -125,7 +141,11 @@ pub struct Terminal {
 
 impl Terminal {
     /// Spawn `shell` (the user's `$SHELL` as a login shell when `None`) in `cwd`.
-    pub fn spawn(cwd: Option<&Path>, shell: Option<&str>, size: TerminalSize) -> Result<Terminal, TerminalError> {
+    pub fn spawn(
+        cwd: Option<&Path>,
+        shell: Option<&str>,
+        size: TerminalSize,
+    ) -> Result<Terminal, TerminalError> {
         let (tx, rx) = mpsc::channel();
         let window_size = size.window_size();
         let listener = Listener {
@@ -149,7 +169,8 @@ impl Terminal {
         };
         let pty = tty::new(&options, window_size, 0).map_err(TerminalError::Pty)?;
 
-        let event_loop = EventLoop::new(term.clone(), listener.clone(), pty, false, false).map_err(TerminalError::EventLoop)?;
+        let event_loop = EventLoop::new(term.clone(), listener.clone(), pty, false, false)
+            .map_err(TerminalError::EventLoop)?;
         let sender = event_loop.channel();
         *listener.pty.lock().unwrap() = Some(sender.clone());
         let handle = event_loop.spawn();
@@ -193,7 +214,9 @@ impl Terminal {
         let window_size = size.window_size();
         {
             let current = *self.size.lock().unwrap();
-            if current.num_cols == window_size.num_cols && current.num_lines == window_size.num_lines {
+            if current.num_cols == window_size.num_cols
+                && current.num_lines == window_size.num_lines
+            {
                 return;
             }
         }
@@ -204,7 +227,12 @@ impl Terminal {
 
     pub fn size(&self) -> TerminalSize {
         let s = *self.size.lock().unwrap();
-        TerminalSize { cols: s.num_cols, rows: s.num_lines, cell_width: s.cell_width, cell_height: s.cell_height }
+        TerminalSize {
+            cols: s.num_cols,
+            rows: s.num_lines,
+            cell_width: s.cell_width,
+            cell_height: s.cell_height,
+        }
     }
 
     /// Scroll the viewport through the scrollback by `lines` (positive = up / older).
@@ -238,7 +266,8 @@ mod tests {
 
     #[test]
     fn echo_round_trip() {
-        let mut term = Terminal::spawn(None, Some("/bin/sh"), TerminalSize::new(40, 5)).expect("spawn");
+        let mut term =
+            Terminal::spawn(None, Some("/bin/sh"), TerminalSize::new(40, 5)).expect("spawn");
         let rx = term.events().unwrap();
         term.write(b"printf 'hive-ok\\n'\n".to_vec());
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -256,4 +285,3 @@ mod tests {
         }
     }
 }
-

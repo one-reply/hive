@@ -11,7 +11,9 @@ pub struct Store {
 
 impl Store {
     pub fn load() -> Self {
-        Self { state: State::load() }
+        Self {
+            state: State::load(),
+        }
     }
 
     pub fn set_theme(&mut self, theme: ThemeChoice, cx: &mut Context<Self>) {
@@ -25,7 +27,10 @@ impl Store {
     }
 
     pub fn add_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let project = ProjectRef { path, host: Host::Local };
+        let project = ProjectRef {
+            path,
+            host: Host::Local,
+        };
         if !self.state.projects.contains(&project) {
             self.state.projects.push(project);
             self.commit(cx);

@@ -4,11 +4,11 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use gpui_kit::assets::IconName as Lucide;
 use hive_core::host::Host;
 
 use crate::app::AppState;
@@ -17,7 +17,9 @@ use crate::state::store::Store;
 use crate::ui::settings_sheet;
 
 /// Folder colors, cycled by project position (Orca tints each project).
-const FOLDER_COLORS: [u32; 8] = [0xf97316, 0xeab308, 0x737373, 0x22c55e, 0xec4899, 0x14b8a6, 0x8b5cf6, 0xef4444];
+const FOLDER_COLORS: [u32; 8] = [
+    0xf97316, 0xeab308, 0x737373, 0x22c55e, 0xec4899, 0x14b8a6, 0x8b5cf6, 0xef4444,
+];
 
 pub struct Sidebar {
     projects: Entity<Projects>,
@@ -34,7 +36,12 @@ impl Sidebar {
             (app.projects.clone(), app.store.clone())
         };
         let observer = cx.observe(&projects, |_, _, cx| cx.notify());
-        Self { projects, store, collapsed: HashSet::new(), _observer: observer }
+        Self {
+            projects,
+            store,
+            collapsed: HashSet::new(),
+            _observer: observer,
+        }
     }
 
     fn add_projects(&mut self, cx: &mut Context<Self>) {
@@ -42,7 +49,9 @@ impl Sidebar {
     }
 
     fn toggle_project(&mut self, i: usize, cx: &mut Context<Self>) {
-        let Some(path) = self.projects.read(cx).items.get(i).map(|p| p.path.clone()) else { return };
+        let Some(path) = self.projects.read(cx).items.get(i).map(|p| p.path.clone()) else {
+            return;
+        };
         if !self.collapsed.remove(&path) {
             self.collapsed.insert(path);
         }
@@ -53,8 +62,12 @@ impl Sidebar {
 impl Render for Sidebar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (fg, muted_fg, hover, active) =
-            (theme.sidebar_foreground, theme.muted_foreground, theme.list_hover, theme.sidebar_accent);
+        let (fg, muted_fg, hover, active) = (
+            theme.sidebar_foreground,
+            theme.muted_foreground,
+            theme.list_hover,
+            theme.sidebar_accent,
+        );
         let state = self.projects.read(cx);
         let selected = state.selected;
 
@@ -70,8 +83,18 @@ impl Render for Sidebar {
                     .cursor_pointer()
                     .hover(|s| s.bg(hover))
                     .when(selected == Some((i, None)), |s| s.bg(active))
-                    .child(Icon::new(IconName::Folder).size_4().text_color(rgb(FOLDER_COLORS[i % FOLDER_COLORS.len()])))
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).truncate().child(project.name.clone()))
+                    .child(
+                        Icon::new(IconName::Folder)
+                            .size_4()
+                            .text_color(rgb(FOLDER_COLORS[i % FOLDER_COLORS.len()])),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .truncate()
+                            .child(project.name.clone()),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle_project(i, cx)))
                     .into_any_element(),
             );
@@ -83,9 +106,17 @@ impl Render for Sidebar {
                 Host::Ssh { target } => target.clone().into(),
             };
             for (j, wt) in project.worktrees.iter().enumerate() {
-                let dir = wt.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let dir = wt
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 let detached = wt.branch == "detached";
-                let (title, subtitle) = if detached { (dir, "detached".to_string()) } else { (wt.branch.clone(), dir) };
+                let (title, subtitle) = if detached {
+                    (dir, "detached".to_string())
+                } else {
+                    (wt.branch.clone(), dir)
+                };
                 let projects = self.projects.clone();
                 rows.push(
                     v_flex()
@@ -101,7 +132,13 @@ impl Render for Sidebar {
                         .child(
                             h_flex()
                                 .gap_2()
-                                .child(div().size_2().flex_none().rounded_full().bg(muted_fg.opacity(0.5)))
+                                .child(
+                                    div()
+                                        .size_2()
+                                        .flex_none()
+                                        .rounded_full()
+                                        .bg(muted_fg.opacity(0.5)),
+                                )
                                 .child(div().text_sm().truncate().child(title))
                                 .when(j == 0, |s| {
                                     s.child(
@@ -123,10 +160,19 @@ impl Render for Sidebar {
                                 .pl_4()
                                 .text_xs()
                                 .text_color(muted_fg)
-                                .child(div().flex_none().px_1p5().rounded_sm().bg(fg.opacity(0.08)).child(host.clone()))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .px_1p5()
+                                        .rounded_sm()
+                                        .bg(fg.opacity(0.08))
+                                        .child(host.clone()),
+                                )
                                 .child(div().truncate().child(subtitle)),
                         )
-                        .on_click(move |_, _, cx| projects.update(cx, |p, cx| p.select((i, Some(j)), cx)))
+                        .on_click(move |_, _, cx| {
+                            projects.update(cx, |p, cx| p.select((i, Some(j)), cx))
+                        })
                         .into_any_element(),
                 );
             }
@@ -142,7 +188,13 @@ impl Render for Sidebar {
                     .px_4()
                     .pt_3()
                     .pb_2()
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(muted_fg).child("Projects"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(muted_fg)
+                            .child("Projects"),
+                    )
                     .child(
                         Button::new("add-project")
                             .cursor_pointer()
@@ -153,7 +205,16 @@ impl Render for Sidebar {
                             .on_click(cx.listener(|this, _, _, cx| this.add_projects(cx))),
                     ),
             )
-            .child(v_flex().id("project-tree").flex_1().min_h_0().overflow_y_scroll().px_2().gap_0p5().children(rows))
+            .child(
+                v_flex()
+                    .id("project-tree")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px_2()
+                    .gap_0p5()
+                    .children(rows),
+            )
             .child(
                 h_flex().px_3().pb_3().child(
                     Button::new("settings")

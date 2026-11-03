@@ -32,7 +32,12 @@ pub fn scan(project: &ProjectRef) -> Project {
         .filter(|o| o.status.success())
         .map(|o| parse_worktrees(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_default();
-    Project { name, path: path.clone(), host: project.host.clone(), worktrees }
+    Project {
+        name,
+        path: path.clone(),
+        host: project.host.clone(),
+        worktrees,
+    }
 }
 
 fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
@@ -58,7 +63,8 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
 mod tests {
     #[test]
     fn parses_porcelain() {
-        let out = "worktree /a\nHEAD abc\nbranch refs/heads/main\n\nworktree /b\nHEAD def\ndetached\n";
+        let out =
+            "worktree /a\nHEAD abc\nbranch refs/heads/main\n\nworktree /b\nHEAD def\ndetached\n";
         let wt = super::parse_worktrees(out);
         assert_eq!(wt.len(), 2);
         assert_eq!(wt[0].branch, "main");

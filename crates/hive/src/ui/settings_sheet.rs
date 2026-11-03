@@ -2,7 +2,9 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::radio::RadioGroup;
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::*;
 use hive_core::settings::ThemeChoice;
 
@@ -13,15 +15,23 @@ pub fn open(window: &mut Window, cx: &mut App) {
     // The builder may run again whenever the sheet layer is rebuilt; it reads live state.
     window.open_sheet(cx, move |sheet, _, cx| {
         let state = &store.read(cx).state;
-        let theme_index = ThemeChoice::ALL.iter().position(|t| *t == state.settings.theme);
-        let projects: Vec<String> = state.projects.iter().map(|p| p.path.display().to_string()).collect();
+        let theme_index = ThemeChoice::ALL
+            .iter()
+            .position(|t| *t == state.settings.theme);
+        let projects: Vec<String> = state
+            .projects
+            .iter()
+            .map(|p| p.path.display().to_string())
+            .collect();
 
         let theme_group = RadioGroup::vertical("theme")
             .selected_index(theme_index)
             .children(ThemeChoice::ALL.iter().map(|t| t.label()))
             .on_change({
                 let store = store.clone();
-                move |index, _, cx| store.update(cx, |s, cx| s.set_theme(ThemeChoice::ALL[*index], cx))
+                move |index, _, cx| {
+                    store.update(cx, |s, cx| s.set_theme(ThemeChoice::ALL[*index], cx))
+                }
             });
 
         let project_rows = projects.into_iter().enumerate().map(|(i, path)| {
@@ -36,7 +46,9 @@ pub fn open(window: &mut Window, cx: &mut App) {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Delete)
-                        .on_click(move |_, _, cx| store.update(cx, |s, cx| s.remove_project(i, cx))),
+                        .on_click(move |_, _, cx| {
+                            store.update(cx, |s, cx| s.remove_project(i, cx))
+                        }),
                 )
         });
 
@@ -48,7 +60,12 @@ pub fn open(window: &mut Window, cx: &mut App) {
                 .gap_6()
                 .p_4()
                 .child(v_flex().gap_2().child(title("Theme")).child(theme_group))
-                .child(v_flex().gap_2().child(title("Projects")).children(project_rows)),
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(title("Projects"))
+                        .children(project_rows),
+                ),
         )
     });
 }

@@ -18,7 +18,11 @@ impl Projects {
         let observer = cx.observe(store, |this, store, cx| {
             this.rescan(store.read(cx).state.projects.clone(), cx);
         });
-        let mut this = Self { items: vec![], selected: None, _store_observer: observer };
+        let mut this = Self {
+            items: vec![],
+            selected: None,
+            _store_observer: observer,
+        };
         this.rescan(store.read(cx).state.projects.clone(), cx);
         this
     }
@@ -43,7 +47,10 @@ impl Projects {
             let _ = this.update(cx, |projects, cx| {
                 projects.items = items;
                 projects.selected = projects.selected.filter(|(i, wt)| {
-                    projects.items.get(*i).is_some_and(|p| wt.is_none_or(|j| j < p.worktrees.len()))
+                    projects
+                        .items
+                        .get(*i)
+                        .is_some_and(|p| wt.is_none_or(|j| j < p.worktrees.len()))
                 });
                 cx.notify();
             });

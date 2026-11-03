@@ -47,7 +47,14 @@ impl State {
                 settings.theme = old.theme;
                 State {
                     settings,
-                    projects: old.projects.into_iter().map(|path| ProjectRef { path, host: Host::Local }).collect(),
+                    projects: old
+                        .projects
+                        .into_iter()
+                        .map(|path| ProjectRef {
+                            path,
+                            host: Host::Local,
+                        })
+                        .collect(),
                 }
             })
             .unwrap_or_default();

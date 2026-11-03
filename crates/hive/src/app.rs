@@ -18,7 +18,11 @@ impl AppState {
         let store = cx.new(|_| Store::load());
         let projects = cx.new(|cx| Projects::new(&store, cx));
         let usage = cx.new(Usage::new);
-        cx.set_global(AppState { store, projects, usage });
+        cx.set_global(AppState {
+            store,
+            projects,
+            usage,
+        });
     }
 
     pub fn get(cx: &App) -> &AppState {

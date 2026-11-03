@@ -21,7 +21,10 @@ impl Usage {
             }
         })
         .detach();
-        let mut this = Self { providers: vec![], loading: false };
+        let mut this = Self {
+            providers: vec![],
+            loading: false,
+        };
         this.refresh(cx);
         this
     }
@@ -33,7 +36,10 @@ impl Usage {
         self.loading = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let providers = cx.background_executor().spawn(async { usage::fetch_all() }).await;
+            let providers = cx
+                .background_executor()
+                .spawn(async { usage::fetch_all() })
+                .await;
             let _ = this.update(cx, |usage, cx| {
                 usage.providers = providers;
                 usage.loading = false;

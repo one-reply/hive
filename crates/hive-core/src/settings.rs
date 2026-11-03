@@ -39,7 +39,10 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { theme: ThemeChoice::default(), sidebar_width: SIDEBAR_WIDTH_DEFAULT }
+        Self {
+            theme: ThemeChoice::default(),
+            sidebar_width: SIDEBAR_WIDTH_DEFAULT,
+        }
     }
 }
 
@@ -76,9 +79,11 @@ mod tests {
 
     #[test]
     fn hand_edited_sidebar_width_is_clamped() {
-        let settings: Settings = serde_json::from_str(r#"{"sidebar_width":5}"#).expect("valid json");
+        let settings: Settings =
+            serde_json::from_str(r#"{"sidebar_width":5}"#).expect("valid json");
         assert_eq!(settings.sidebar_width(), SIDEBAR_WIDTH_MIN);
-        let settings: Settings = serde_json::from_str(r#"{"sidebar_width":9000}"#).expect("valid json");
+        let settings: Settings =
+            serde_json::from_str(r#"{"sidebar_width":9000}"#).expect("valid json");
         assert_eq!(settings.sidebar_width(), SIDEBAR_WIDTH_MAX);
     }
 
