@@ -44,6 +44,11 @@ The release notes list the macOS versions actually tested. The deployment target
 inside the executable is not a claim that every older macOS version is supported.
 See the [verification record](docs/RELEASE_CHECKS.md) for completed and pending checks.
 
+Packaged builds from **0.1.1** include signed in-app updates. Open **Settings → Updates**
+or **Hive → Check for Updates…** to check manually. Hive also checks daily and asks
+before installing and restarting. Finish active agent sessions before restarting.
+Older builds need one manual installation of a version that includes the updater.
+
 ## What you can do today
 
 | Workflow | What Hive provides |
@@ -55,6 +60,7 @@ See the [verification record](docs/RELEASE_CHECKS.md) for completed and pending 
 | **Generate commit messages** | Use an installed Codex or Claude Code CLI, or an API provider, to draft a message from staged changes. |
 | **Track usage** | View Claude Code and Codex usage limits and reset times using your existing CLI sign-ins. |
 | **Make it yours** | Switch between system, light, and dark themes; adjust UI and terminal font sizes; remap shortcuts. |
+| **Keep Hive updated** | Check your installed version and install signed updates from Settings → Updates. |
 
 Hive recognizes **Claude Code, Codex, OpenCode, Gemini CLI, Cursor Agent, Copilot CLI,
 Qwen Code, Amp, Aider, and Droid** running in its local terminals. Install and sign
