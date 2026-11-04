@@ -42,6 +42,7 @@ publisher. Managed Macs may prohibit opening an unnotarized app.
 
 The release notes list the macOS versions actually tested. The deployment target
 inside the executable is not a claim that every older macOS version is supported.
+See the [verification record](docs/RELEASE_CHECKS.md) for completed and pending checks.
 
 ## What you can do today
 

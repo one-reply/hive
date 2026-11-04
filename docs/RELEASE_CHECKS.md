@@ -17,7 +17,10 @@ Verification performed on 2026-11-04, macOS 27.2 (26B123), Apple Silicon.
 | Worktree create/remove and PTY child cleanup | Covered by automated core tests; GUI worktree flow not signed off |
 | Installed agent CLI generation | Not run; would use the maintainer's real provider sign-in |
 | Browser-downloaded release on a clean macOS account, Gatekeeper and Finder launch | Pending |
-| Public GitHub-hosted CI and anonymous download | Pending |
+| GitHub-hosted formatting, Clippy, tests and release build | Passed on macOS 26.7.2 ARM64; 165 tests passed |
+| Downloaded CI artifact checksum, archive, signature and system library dependencies | Passed |
+| GitHub-hosted secret and dependency audits | Pending runner allocation; passed locally |
+| Anonymous repository and release download | Pending public visibility |
 
 The QA build differs only in package identity, the state directory and Keychain
 service names. It protects the maintainer's existing data and credentials; it is
@@ -26,4 +29,5 @@ The public screenshot uses this build and a disposable synthetic repository.
 
 Do not promote the draft until the remaining installation checks in
 [RELEASING.md](RELEASING.md) have been recorded. Only macOS 27.2 has been exercised
-locally; no support claim is made for macOS 11 from the Mach-O deployment target.
+locally through the UI; macOS 26.7.2 has automated coverage. No support claim is made
+for macOS 11 from the Mach-O deployment target.
