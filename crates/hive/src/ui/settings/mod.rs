@@ -138,10 +138,12 @@ enum Page {
 
 impl Page {
     /// The navigation: section titles and their pages, in order.
-    const SECTIONS: [(&'static str, &'static [Page]); 3] = [
-        ("Interface", &[Page::Appearance, Page::Shortcuts]),
+    const SECTIONS: [(&'static str, &'static [Page]); 2] = [
+        (
+            "Application",
+            &[Page::Appearance, Page::Shortcuts, Page::Updates],
+        ),
         ("Workspace", &[Page::Terminal, Page::Ai, Page::Git]),
-        ("Application", &[Page::Updates]),
     ];
 
     fn label(self) -> &'static str {

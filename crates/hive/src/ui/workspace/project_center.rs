@@ -5,11 +5,13 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::component::dock::{BasePanelView, Panel};
+use gpui_kit::component::dock::{BasePanelView, DockEvent, Panel};
 
 use super::center_dock::CenterDock;
 use super::*;
 use crate::state::git::DiffRequest;
+
+mod persistence;
 
 pub(super) struct ProjectCenter {
     dock: Entity<DockArea>,
@@ -19,6 +21,8 @@ pub(super) struct ProjectCenter {
     /// Space the tab bar leaves free at its left end, shared with the dock's renderer.
     tab_inset: Rc<Cell<Pixels>>,
     _observer: Subscription,
+    _layout: Subscription,
+    focused: Option<PanelId>,
 }
 
 impl ProjectCenter {
@@ -29,13 +33,19 @@ impl ProjectCenter {
         let project = project.to_path_buf();
         // Tabs closed from the dock (× button, exited shell) must drop out of our lists so
         // the welcome screen comes back and the last tab draws its own ×.
+        let observed_project = project.clone();
         let observer = cx.observe(&dock, move |workspace, _, cx| {
-            if let Some(center) = workspace.centers.get_mut(&project) {
+            if let Some(center) = workspace.centers.get_mut(&observed_project) {
                 center.prune(cx);
                 center.sync_alone(cx);
             }
             workspace.sync_active_worktrees(cx);
             cx.notify();
+        });
+        let layout = cx.subscribe_in(&dock, window, move |workspace, _, event, window, cx| {
+            if matches!(event, DockEvent::LayoutChanged) {
+                workspace.save_center(&project, window, cx);
+            }
         });
         Self {
             dock,
@@ -43,6 +53,8 @@ impl ProjectCenter {
             diffs: Vec::new(),
             tab_inset,
             _observer: observer,
+            _layout: layout,
+            focused: None,
         }
     }
 
@@ -142,7 +154,7 @@ impl ProjectCenter {
             self.select(&panel, window, cx);
             return;
         }
-        let panel = cx.new(|cx| DiffPanel::new(request, self.dock.downgrade(), cx));
+        let panel = cx.new(|cx| DiffPanel::new(request, self.dock.downgrade(), window, cx));
         self.add(panel_handle(panel.clone()), window, cx);
         self.diffs.push(panel);
         self.sync_alone(cx);

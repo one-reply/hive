@@ -34,6 +34,7 @@ use crate::ui::{keymap, theme};
 mod center;
 mod center_dock;
 mod git;
+mod persistence;
 mod project_center;
 
 use crate::state::store::SaveError;
@@ -190,9 +191,16 @@ impl Workspace {
         }
         self.last_selection = Some(cwd.clone());
         self.shown = Some(project.clone());
-        self.center(&project, window, cx)
-            .show_terminal(&cwd, window, cx);
+        let restore = !self.centers.contains_key(&project)
+            && self
+                .saved_center(&project, cx)
+                .is_some_and(|saved| saved.worktree.as_ref() == Some(&cwd));
+        let center = self.center(&project, window, cx);
+        if !restore {
+            center.show_terminal(&cwd, window, cx);
+        }
         self.sync_active_worktrees(cx);
+        self.save_center(&project, window, cx);
         cx.notify();
     }
 
@@ -223,9 +231,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> &mut ProjectCenter {
+        let saved = (!self.centers.contains_key(project))
+            .then(|| self.saved_center(project, cx))
+            .flatten();
         self.centers
             .entry(project.to_path_buf())
-            .or_insert_with(|| ProjectCenter::new(project, window, cx))
+            .or_insert_with(|| {
+                let mut center = ProjectCenter::new(project, window, cx);
+                if let Some(saved) = saved {
+                    center.restore(&saved, window, cx);
+                }
+                center
+            })
     }
 
     /// Lets `band` drag and double-click-zoom the window the way `TitleBar` does, for the

@@ -7,14 +7,7 @@ use hive_core::worktree::{self, Removal, WorktreeError};
 
 use super::store::Store;
 
-/// What the sidebar has selected: a project and one of its worktrees, by path, so the
-/// selection survives rescans that add or remove worktrees. `worktree` is `None` only for
-/// a project that is not a git repository (the folder itself is selected).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Selection {
-    pub project: PathBuf,
-    pub worktree: Option<PathBuf>,
-}
+pub(crate) use hive_core::state::workspace::Selection;
 
 /// Scanned projects (git worktrees etc.), the current selection and worktree lifecycle.
 /// Rescans whenever the [`Store`]'s project list changes and after creating/removing a worktree.
@@ -44,7 +37,7 @@ impl Projects {
         let mut this = Self {
             items: vec![],
             selected: None,
-            pending_selection: None,
+            pending_selection: store.read(cx).state.workspace.selection.clone(),
             scan_generation: 0,
             active: HashSet::new(),
             creating: Vec::new(),
@@ -64,7 +57,14 @@ impl Projects {
             project: project.to_path_buf(),
             worktree: worktree.map(Path::to_path_buf),
         });
+        self.save_selection(cx);
         cx.notify();
+    }
+
+    fn save_selection(&self, cx: &mut Context<Self>) {
+        self.store.update(cx, |store, cx| {
+            store.set_selection(self.selected.clone(), cx)
+        });
     }
 
     pub fn selection(&self) -> Option<(&Project, Option<&Worktree>)> {
@@ -191,6 +191,7 @@ impl Projects {
                     &mut this.pending_selection,
                     items,
                 ) {
+                    this.save_selection(cx);
                     cx.notify();
                 }
             })
@@ -301,5 +302,45 @@ mod tests {
         ));
         assert_eq!(selected, Some(created));
         assert_eq!(items[0].worktrees.len(), 2);
+    }
+
+    #[test]
+    fn saved_selection_is_restored_and_missing_worktrees_fall_back_to_primary() {
+        let mut items = Vec::new();
+        let mut selected = None;
+        let mut pending = Some(Selection {
+            project: "/project".into(),
+            worktree: Some("/new-worktree".into()),
+        });
+        assert!(apply_scan(
+            1,
+            1,
+            &mut items,
+            &mut selected,
+            &mut pending,
+            vec![project()]
+        ));
+        assert_eq!(
+            selected.as_ref().unwrap().worktree.as_deref(),
+            Some(std::path::Path::new("/new-worktree"))
+        );
+        pending = Some(Selection {
+            project: "/project".into(),
+            worktree: Some("/removed".into()),
+        });
+        apply_scan(
+            2,
+            2,
+            &mut items,
+            &mut selected,
+            &mut pending,
+            vec![project()],
+        );
+        assert_eq!(
+            selected.as_ref().unwrap().worktree.as_deref(),
+            Some(std::path::Path::new("/project"))
+        );
+        apply_scan(3, 3, &mut items, &mut selected, &mut pending, vec![]);
+        assert!(selected.is_none());
     }
 }

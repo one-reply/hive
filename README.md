@@ -55,6 +55,7 @@ Older builds need one manual installation of a version that includes the updater
 | --- | --- |
 | **Organize your work** | Add local projects, create and remove Git worktrees, reorder projects, and customize their names, colors, and icons. |
 | **Run agents in terminals** | Use terminal tabs and split panes, with text selection, scrollback, and clipboard image paste. |
+| **Pick up where you left off** | Restore your selected project and worktree, terminal and diff tabs, split sizes, active pane, and shell directories after relaunch. |
 | **Find active agents** | See agents grouped by worktree in the sidebar and jump straight to their terminal panes. |
 | **Review and commit** | Inspect unified or split diffs, stage files or hunks, compare branches, browse history, and commit, fetch, pull, or push. |
 | **Generate commit messages** | Use an installed Codex or Claude Code CLI, or an API provider, to draft a message from staged changes. |
@@ -69,7 +70,10 @@ terminal.
 
 Agent activity is inferred from terminal output. **Working / Idle** is an estimate;
 it does not distinguish an approval prompt from an idle agent. Structured agent
-sessions and approval controls are on the roadmap.
+sessions and approval controls are on the roadmap. Restored terminals start fresh
+shells; running commands, agent conversations, and terminal output are not restored.
+Shell directories are sampled once per second, so an immediate quit after `cd` may
+restore the previous directory.
 
 ## Build and run
 
@@ -149,11 +153,11 @@ See [Releasing](docs/RELEASING.md).
 | Commit staged changes, while focused in the Git panel | ⌘Enter |
 | Open settings | ⌘, |
 
-Shortcuts can be changed in **Settings → Interface → Shortcuts**.
+Shortcuts can be changed in **Settings → Application → Shortcuts**.
 
 ## Data and credentials
 
-- Project references and settings are stored in `~/.hive/state.json`.
+- Project references, workspace layouts, shell directories, and settings are stored in `~/.hive/state.json`.
 - Worktrees created by Hive live beside the repository in `<repo>-worktrees/`.
 - API keys entered in Hive are stored in **macOS Keychain**, separately from settings.
 - Usage indicators read existing CLI credentials and contact the provider's usage

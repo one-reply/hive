@@ -2,6 +2,7 @@ use gpui_kit::*;
 use hive_core::host::Host;
 use hive_core::identity::ProjectIdentity;
 use hive_core::settings::ThemeChoice;
+use hive_core::state::workspace::{ProjectWorkspace, Selection};
 use hive_core::state::{LoadedState, ProjectRef, State, StateError};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -22,6 +23,33 @@ pub(crate) struct SaveError(pub(crate) String);
 impl EventEmitter<SaveError> for Store {}
 
 impl Store {
+    pub(crate) fn set_selection(&mut self, selection: Option<Selection>, cx: &mut Context<Self>) {
+        if self.state.workspace.selection != selection {
+            self.state.workspace.selection = selection;
+            self.commit(cx);
+        }
+    }
+
+    pub(crate) fn set_project_workspace(
+        &mut self,
+        workspace: ProjectWorkspace,
+        cx: &mut Context<Self>,
+    ) {
+        let projects = &mut self.state.workspace.projects;
+        if let Some(previous) = projects
+            .iter_mut()
+            .find(|p| p.project == workspace.project && p.host == workspace.host)
+        {
+            if *previous == workspace {
+                return;
+            }
+            *previous = workspace;
+        } else {
+            projects.push(workspace);
+        }
+        self.commit(cx);
+    }
+
     pub(crate) fn set_commit_generator(
         &mut self,
         generator: Option<hive_core::commit_message::Generator>,
@@ -152,6 +180,16 @@ impl Store {
         let before = self.state.projects.len();
         self.state.projects.retain(|p| p.path != path);
         if self.state.projects.len() != before {
+            self.state.workspace.projects.retain(|p| p.project != path);
+            if self
+                .state
+                .workspace
+                .selection
+                .as_ref()
+                .is_some_and(|s| s.project == path)
+            {
+                self.state.workspace.selection = None;
+            }
             self.commit(cx);
         }
     }

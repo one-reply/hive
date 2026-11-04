@@ -1,5 +1,5 @@
 //! Everything Hive persists between runs, in one JSON file (`~/.hive/state.json`).
-//! Sessions and dock layout will be added as fields here. Move to SQLite only when
+//! Move to SQLite only when
 //! we need queries over history.
 
 use crate::host::Host;
@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 mod persistence;
+pub mod workspace;
 pub use persistence::{LoadedState, StateError};
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -65,6 +66,8 @@ impl WorktreeFilter {
 pub struct State {
     pub settings: Settings,
     pub projects: Vec<ProjectRef>,
+    /// Workspace layout and selection, restored without replaying commands.
+    pub workspace: workspace::Workspace,
 }
 
 impl State {

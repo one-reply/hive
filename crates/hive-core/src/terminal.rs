@@ -8,6 +8,7 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 mod activity;
+mod directory;
 mod events;
 pub mod paste;
 mod process;
@@ -15,6 +16,7 @@ mod pty;
 mod scroll;
 mod selection;
 pub use activity::Activity;
+pub use directory::working_directory;
 use events::Publisher;
 pub use events::TerminalUpdate;
 use pty::{Completion, ManagedPty};
@@ -36,6 +38,15 @@ pub use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TerminalError {
+    /// The live shell's directory could not be read.
+    #[error("could not read working directory of shell {pid}: {source}")]
+    Directory {
+        /// Shell process id.
+        pid: u32,
+        /// Native process query failure.
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to open pty: {0}")]
     Pty(#[source] std::io::Error),
     #[error("failed to start terminal event loop: {0}")]
