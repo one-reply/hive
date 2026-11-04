@@ -7,6 +7,9 @@ use hive_core::settings::{Settings, ThemeChoice};
 
 use crate::app::AppState;
 
+/// The dock's tab bar in dark mode; the stock `#171717` reads too light next to the terminal.
+const DARK_TAB_BAR: u32 = 0x111111;
+
 /// What `apply` last wrote to the global theme; other settings changes skip the reload.
 #[derive(Clone, Copy, PartialEq)]
 struct Appearance {
@@ -55,6 +58,9 @@ fn apply(appearance: Appearance, window: Option<&mut Window>, cx: &mut App) {
     Theme::update(cx, |theme| {
         theme.font_size = px(appearance.ui_font_size);
         theme.mono_font_size = px(appearance.terminal_font_size);
+        if theme.is_dark() {
+            theme.tab_bar = rgb(DARK_TAB_BAR).into();
+        }
     });
 }
 

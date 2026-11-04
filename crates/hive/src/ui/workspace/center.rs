@@ -13,6 +13,7 @@ impl Workspace {
         // does. Tabs stop mouse-down propagation, so dragging a tab still reorders it.
         let center = v_flex()
             .id("center")
+            .relative()
             .flex_1()
             .h_full()
             .min_w_0()
@@ -38,10 +39,28 @@ impl Workspace {
                     window.titlebar_double_click();
                 }
             });
+        // With tabs open the dock's tab bar carries the right-sidebar toggle (see
+        // `TerminalPanel::toolbar_buttons`); the welcome screen has no tab bar, so draw it here.
         match self.shown_center().filter(|center| !center.is_empty()) {
             Some(shown) => center.child(div().size_full().child(shown.dock().clone())),
-            None => center.child(self.render_welcome(muted, window, cx)),
+            None => center
+                .child(self.render_welcome(muted, window, cx))
+                .when(!self.git_open, |el| el.child(self.render_welcome_toggle())),
         }
+    }
+
+    /// The right-sidebar toggle in the welcome screen's top-right corner. Stops mouse-down so
+    /// a click does not start a window drag through the title band.
+    fn render_welcome_toggle(&self) -> impl IntoElement {
+        h_flex()
+            .absolute()
+            .top_0()
+            .right_0()
+            .h(TAB_BAR_HEIGHT)
+            .px_2()
+            .items_center()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(right_sidebar_toggle().small().ghost())
     }
 
     /// Shown while the project's dock has no tabs (the dock itself draws nothing then) or no

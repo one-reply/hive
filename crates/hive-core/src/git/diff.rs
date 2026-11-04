@@ -75,8 +75,12 @@ pub fn read(
     cwd: &Path,
     path: &str,
     source: &DiffSource,
+    old_path: Option<&str>,
 ) -> Result<FileDiff, GitError> {
     validate_path(path)?;
+    if let Some(old) = old_path {
+        validate_path(old)?;
+    }
     let mut args = match source {
         DiffSource::WorkingTree => vec!["diff".into()],
         DiffSource::Staged => vec!["diff".into(), "--cached".into()],
@@ -89,7 +93,11 @@ pub fn read(
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",
-            "--no-renames",
+            if old_path.is_some() {
+                "--find-renames"
+            } else {
+                "--no-renames"
+            },
             "--src-prefix=a/",
             "--dst-prefix=b/",
             "--unified=3",
@@ -99,6 +107,9 @@ pub fn read(
     );
     if *source == DiffSource::Untracked {
         args.push("/dev/null".into());
+    }
+    if let Some(old) = old_path {
+        args.push(old.into());
     }
     args.push(path.into());
     args.insert(0, "--literal-pathspecs".into());
@@ -135,8 +146,6 @@ fn parse(patch: String) -> Result<FileDiff, GitError> {
     let header = &patch[..first];
     let regular = !header.lines().any(|line| {
         [
-            "new file mode",
-            "deleted file mode",
             "old mode",
             "new mode",
             "rename from",
@@ -147,7 +156,9 @@ fn parse(patch: String) -> Result<FileDiff, GitError> {
         .iter()
         .any(|prefix| line.starts_with(prefix))
             || (line.starts_with("index ")
-                && (line.ends_with(" 120000") || line.ends_with(" 160000")))
+                || line.starts_with("new file mode ")
+                || line.starts_with("deleted file mode "))
+                && (line.ends_with(" 120000") || line.ends_with(" 160000"))
     });
     let hunks = offsets
         .iter()
@@ -180,7 +191,7 @@ pub fn apply_hunk(
     if !matches!(source, DiffSource::WorkingTree | DiffSource::Staged) {
         return Err(GitError::Invalid("This comparison is read-only.".into()));
     }
-    if read(host, cwd, path, source)? != *reviewed {
+    if read(host, cwd, path, source, None)? != *reviewed {
         return Err(GitError::Invalid(
             "This file changed since review. Refresh and review the updated hunk.".into(),
         ));
@@ -226,10 +237,10 @@ mod tests {
     }
 
     #[test]
-    fn new_files_keep_navigation_but_require_whole_file_staging() {
+    fn new_regular_files_support_review_and_staging() {
         let patch = "diff --git a/a b/a\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/a\n@@ -0,0 +1 @@\n+new\n";
         let diff = parse(patch.into()).unwrap();
         assert_eq!(diff.hunks().len(), 1);
-        assert!(!diff.can_stage_hunks());
+        assert!(diff.can_stage_hunks());
     }
 }

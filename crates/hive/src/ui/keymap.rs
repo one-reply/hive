@@ -57,7 +57,7 @@ pub(crate) static SHORTCUTS: [Shortcut; 5] = [
         action: || Box::new(OpenSettings),
     },
     Shortcut {
-        label: "Toggle source control",
+        label: "Toggle right sidebar",
         default: "cmd-shift-g",
         action: || Box::new(ToggleGitPanel),
     },

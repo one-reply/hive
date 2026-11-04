@@ -34,12 +34,14 @@ mod center;
 mod git;
 mod project_center;
 
+pub(crate) use git::right_sidebar_toggle;
 use project_center::ProjectCenter;
 
 // Bound in `ui::keymap`, where the user can reassign them.
 actions!(workspace, [NewTerminal, ToggleSidebar, ToggleGitPanel]);
 
 pub struct Workspace {
+    focus: FocusHandle,
     sidebar: Entity<Sidebar>,
     sidebar_open: bool,
     /// Set by the first toggle, so the sidebar doesn't slide in on launch.
@@ -72,6 +74,8 @@ pub struct Workspace {
 const TAB_BAR_HEIGHT: Pixels = px(34.);
 /// Grab area straddling the sidebar's right border.
 const RESIZE_HANDLE_WIDTH: Pixels = px(6.);
+/// Marker under the active tab of the right sidebar's header.
+const RIGHT_TAB_UNDERLINE: Pixels = px(2.);
 const HIVE_MARK: &[u8] = include_bytes!("../../assets/icons/Hive.icon/Assets/mark.svg");
 const WELCOME_LOGO_SIZE: Pixels = px(96.);
 /// `TitleBar`'s left padding that clears the macOS traffic lights.
@@ -107,6 +111,7 @@ impl Workspace {
         ];
 
         let mut this = Self {
+            focus: cx.focus_handle(),
             sidebar: cx.new(Sidebar::new),
             sidebar_open: true,
             sidebar_animate: false,
@@ -293,6 +298,10 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The welcome screen has no focused input or panel to route workspace actions through.
+        if window.focused(cx).is_none() {
+            self.focus.focus(window, cx);
+        }
         let bg = cx.theme().background;
         let open = self.sidebar_open;
         // Open, the toggle sits at the sidebar's right border; collapsed, the title bar spans the
@@ -368,7 +377,7 @@ impl Render for Workspace {
             .min_h_0()
             .child(left_el)
             .child(center_el)
-            .when(self.git_open, |el| el.child(self.render_git_column()))
+            .when(self.git_open, |el| el.child(self.render_right_sidebar(cx)))
             .child(
                 div()
                     .absolute()
@@ -386,21 +395,10 @@ impl Render for Workspace {
             .when(open, |el| el.child(self.render_sidebar_resize_handle(cx)))
             .when(self.git_open, |el| {
                 el.child(self.render_git_resize_handle(cx))
-            })
-            .when(!self.git_open, |el| {
-                el.child(
-                    div().absolute().right_2().bottom_2().child(
-                        Button::new("show-git")
-                            .cursor_pointer()
-                            .small()
-                            .label("⑂ Git")
-                            .tooltip("Source control (⌘⇧G)")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_git(cx))),
-                    ),
-                )
             });
         v_flex()
             .size_full()
+            .track_focus(&self.focus)
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::toggle_sidebar))

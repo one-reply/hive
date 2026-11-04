@@ -1,9 +1,10 @@
-//! Source control sidebar. Renders snapshots and dispatches worktree-scoped intents.
-use super::{git_controls, workspace::ToggleGitPanel};
+//! Git section of the right sidebar. Renders snapshots and dispatches worktree-scoped intents.
+use super::git_controls;
 use crate::{
     app::AppState,
     state::git::{Git, Section, Target},
 };
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::{Disableable as _, Selectable as _};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
@@ -19,7 +20,6 @@ use hive_core::git::{
 mod files;
 
 actions!(source_control, [CommitChanges]);
-const HEADER_HEIGHT: Pixels = px(34.);
 const ERROR_HEIGHT: Pixels = px(120.);
 
 pub(crate) struct GitPanel {
@@ -121,12 +121,6 @@ impl Render for GitPanel {
         let can_commit = staged && !busy && !self.message.read(cx).value().trim().is_empty();
         let mut panel = v_flex().size_full().min_w_0().key_context("SourceControl").bg(cx.theme().background)
             .on_action(cx.listener(|this, _: &CommitChanges, _, cx| this.commit(cx)))
-            .child(h_flex().h(HEADER_HEIGHT).px_3().justify_between().items_center().border_b_1().border_color(cx.theme().border)
-                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Source Control"))
-                .child(h_flex().child(Button::new("git-refresh").cursor_pointer().ghost().small().label("↻").tooltip("Refresh Git").disabled(busy)
-                    .on_click(cx.listener(|this, _, _, cx| this.git.update(cx, |g, cx| { g.clear_error(cx); g.refresh(true, cx); }))))
-                    .child(Button::new("git-close").cursor_pointer().ghost().small().label("×").tooltip_with_action("Hide source control", &ToggleGitPanel, Some(super::keymap::CONTEXT))
-                        .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleGitPanel), cx)))))
             .child(v_flex().p_3().gap_2()
                 .child(div().text_xs().text_color(cx.theme().muted_foreground).truncate().child(target.as_ref().map(|t| t.path.display().to_string()).unwrap_or_else(|| "Select a worktree".into())))
                 .child(Button::new("branch-picker").cursor_pointer().ghost().small().label(branch.clone()).disabled(target.is_none() || busy)
@@ -185,28 +179,47 @@ impl Render for GitPanel {
                     ),
             );
         }
+        let sections = h_flex().gap_1().children(
+            [
+                (Section::Changes, "Changes"),
+                (Section::Compare, "Compare"),
+                (Section::History, "History"),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (value, label))| {
+                Button::new(("git-section", i))
+                    .cursor_pointer()
+                    .small()
+                    .ghost()
+                    .selected(section == value)
+                    .label(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.git.update(cx, |g, cx| g.set_section(value, cx))
+                    }))
+            }),
+        );
+        let refresh = Button::new("git-refresh")
+            .cursor_pointer()
+            .ghost()
+            .small()
+            .icon(Lucide::RefreshCw)
+            .tooltip("Refresh Git")
+            .disabled(busy)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.git.update(cx, |g, cx| {
+                    g.clear_error(cx);
+                    g.refresh(true, cx);
+                })
+            }));
         panel = panel
             .child(
-                h_flex().px_2().gap_1().children(
-                    [
-                        (Section::Changes, "Changes"),
-                        (Section::Compare, "Compare"),
-                        (Section::History, "History"),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (value, label))| {
-                        Button::new(("git-section", i))
-                            .cursor_pointer()
-                            .small()
-                            .ghost()
-                            .selected(section == value)
-                            .label(label)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.git.update(cx, |g, cx| g.set_section(value, cx))
-                            }))
-                    }),
-                ),
+                h_flex()
+                    .px_2()
+                    .justify_between()
+                    .items_center()
+                    .child(sections)
+                    .child(refresh),
             )
             .child(div().p_2().child(Input::new(&self.filter).small()))
             .child(

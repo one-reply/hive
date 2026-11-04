@@ -88,13 +88,33 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn render_git_column(&self) -> impl IntoElement {
+    /// The right sidebar: a tab bar of sections (only Git today) with the sidebar toggle at
+    /// its right end, then the selected section.
+    pub(super) fn render_right_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let border = cx.theme().border;
+        let header = h_flex()
+            .h(TAB_BAR_HEIGHT)
+            .flex_none()
+            .px_2()
+            .justify_between()
+            .items_center()
+            .border_b_1()
+            .border_color(border)
+            .child(h_flex().h_full().child(render_right_tab(
+                "right-tab-git",
+                Lucide::GitBranch,
+                true,
+                cx,
+            )))
+            .child(right_sidebar_toggle().small().ghost());
         v_flex()
             .h_full()
             .w(self.git_width)
             .flex_shrink_0()
             .border_l_1()
-            .child(self.git_panel.clone())
+            .border_color(border)
+            .child(header)
+            .child(div().flex_1().min_h_0().child(self.git_panel.clone()))
     }
 
     fn finish_git_resize(&mut self, cx: &mut Context<Self>) {
@@ -140,6 +160,51 @@ impl Workspace {
                 }),
             )
     }
+}
+
+/// An icon tab of the right sidebar's header; the active one is underlined. There is one
+/// section so far, so a tab only shows where it is.
+fn render_right_tab(id: &'static str, icon: Lucide, active: bool, cx: &App) -> impl IntoElement {
+    let color = if active {
+        cx.theme().foreground
+    } else {
+        cx.theme().muted_foreground
+    };
+    div()
+        .id(id)
+        .relative()
+        .h_full()
+        .px_2()
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .child(Icon::new(icon).small().text_color(color))
+        .when(active, |el| {
+            el.child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .h(RIGHT_TAB_UNDERLINE)
+                    .bg(cx.theme().primary),
+            )
+        })
+}
+
+/// The button that shows or hides the right sidebar. It stays in the window's top-right
+/// corner: in the sidebar's header while it is open, in the center's tab bar (or over the
+/// welcome screen) while it is closed. Callers pick the size.
+pub(crate) fn right_sidebar_toggle() -> Button {
+    Button::new("toggle-right-sidebar")
+        .cursor_pointer()
+        .icon(Lucide::PanelRight)
+        .tooltip_with_action(
+            "Toggle right sidebar",
+            &ToggleGitPanel,
+            Some(keymap::CONTEXT),
+        )
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleGitPanel), cx))
 }
 
 struct GitResize;

@@ -81,6 +81,7 @@ impl GitDiff {
                         &request.target.path,
                         &request.path,
                         &request.source,
+                        request.old_path.as_deref(),
                     )
                     .map_err(|e| e.to_string())?;
                     let files = DiffFile::parse(patch.patch()).map_err(|e| {

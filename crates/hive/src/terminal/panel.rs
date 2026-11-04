@@ -16,6 +16,8 @@ use hive_core::terminal::{Terminal, TerminalSize};
 
 use super::pane_tree::PaneTree;
 use super::view::{TerminalView, TerminalViewEvent};
+use crate::app::AppState;
+use crate::ui::workspace::{NewTerminal, right_sidebar_toggle};
 
 actions!(terminal_panel, [SplitRight, SplitDown, ClosePane]);
 
@@ -172,13 +174,13 @@ impl TerminalPanel {
         let Some(path) = self.cwd(cx) else {
             return;
         };
-        let git = crate::app::AppState::get(cx).git.clone();
+        let git = AppState::get(cx).git.clone();
         cx.defer(move |cx| git.update(cx, |g, cx| g.activate_path(&path, cx)));
     }
 
     /// Let Workspace own new tabs so close tracking includes every terminal.
     fn open_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.dispatch_action(Box::new(crate::ui::workspace::NewTerminal), cx);
+        window.dispatch_action(Box::new(NewTerminal), cx);
     }
 }
 
@@ -268,8 +270,10 @@ impl Panel for TerminalPanel {
             })
     }
 
+    /// "+" and the split buttons; the right-sidebar toggle joins them while that sidebar is
+    /// closed, so it keeps its place in the window's top-right corner.
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
-        Some(vec![
+        let mut buttons = vec![
             Button::new("terminal-new")
                 .cursor_pointer()
                 .icon(IconName::Plus)
@@ -289,7 +293,11 @@ impl Panel for TerminalPanel {
                 .on_click(
                     cx.listener(|this, _, window, cx| this.split(Axis::Vertical, window, cx)),
                 ),
-        ])
+        ];
+        if !AppState::get(cx).git.read(cx).panel_visible {
+            buttons.push(right_sidebar_toggle());
+        }
+        Some(buttons)
     }
 
     fn zoom_control(&self, _: &App) -> Option<PanelControl> {

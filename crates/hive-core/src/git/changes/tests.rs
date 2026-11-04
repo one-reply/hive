@@ -61,6 +61,7 @@ fn hunk_staging_preserves_worktree_and_rejects_stale_review() {
         &repo.0,
         "файл [1].txt",
         &DiffSource::WorkingTree,
+        None,
     )
     .unwrap();
     assert_eq!(reviewed.hunks().len(), 2);
@@ -91,7 +92,14 @@ fn hunk_staging_preserves_worktree_and_rejects_stale_review() {
         )
         .is_err()
     );
-    let staged = diff::read(&Host::Local, &repo.0, "файл [1].txt", &DiffSource::Staged).unwrap();
+    let staged = diff::read(
+        &Host::Local,
+        &repo.0,
+        "файл [1].txt",
+        &DiffSource::Staged,
+        None,
+    )
+    .unwrap();
     diff::apply_hunk(
         &Host::Local,
         &repo.0,
@@ -183,7 +191,7 @@ fn binary_rename_deletion_and_missing_newline() {
     repo.commit();
     repo.write("a", "changed");
     repo.write("b", "binary\0two");
-    let patch = diff::read(&Host::Local, &repo.0, "a", &DiffSource::WorkingTree).unwrap();
+    let patch = diff::read(&Host::Local, &repo.0, "a", &DiffSource::WorkingTree, None).unwrap();
     assert!(patch.patch().contains("No newline at end of file"));
     diff::apply_hunk(
         &Host::Local,
@@ -196,13 +204,24 @@ fn binary_rename_deletion_and_missing_newline() {
     .unwrap();
     assert_eq!(repo.git(&["show", ":a"]), "changed");
     assert!(
-        diff::read(&Host::Local, &repo.0, "b", &DiffSource::WorkingTree)
+        diff::read(&Host::Local, &repo.0, "b", &DiffSource::WorkingTree, None)
             .unwrap()
             .hunks()
             .is_empty()
     );
     repo.git(&["commit", "-m", "text change"]);
     repo.git(&["mv", "a", "renamed"]);
+    let rename = diff::read(
+        &Host::Local,
+        &repo.0,
+        "renamed",
+        &DiffSource::Staged,
+        Some("a"),
+    )
+    .unwrap();
+    assert!(rename.patch().contains("rename from a"));
+    assert!(rename.patch().contains("rename to renamed"));
+    assert!(!rename.can_stage_hunks());
     let status = status::read(&Host::Local, &repo.0).unwrap();
     assert!(
         status
@@ -218,6 +237,43 @@ fn binary_rename_deletion_and_missing_newline() {
             .iter()
             .any(|f| f.unstaged == Some(status::Change::Deleted))
     );
+}
+
+#[test]
+fn added_and_deleted_text_hunks_preserve_working_files() {
+    let repo = Repo::new();
+    repo.write("new", "new text\n");
+    repo.git(&["add", "new"]);
+    let patch = diff::read(&Host::Local, &repo.0, "new", &DiffSource::Staged, None).unwrap();
+    diff::apply_hunk(&Host::Local, &repo.0, "new", &DiffSource::Staged, &patch, 0).unwrap();
+    assert_eq!(repo.git(&["ls-files"]), "");
+    assert!(repo.0.join("new").exists());
+    repo.commit();
+    std::fs::remove_file(repo.0.join("new")).unwrap();
+    let patch = diff::read(&Host::Local, &repo.0, "new", &DiffSource::WorkingTree, None).unwrap();
+    diff::apply_hunk(
+        &Host::Local,
+        &repo.0,
+        "new",
+        &DiffSource::WorkingTree,
+        &patch,
+        0,
+    )
+    .unwrap();
+    assert_eq!(repo.git(&["ls-files"]), "");
+    assert!(!repo.0.join("new").exists());
+}
+
+#[test]
+fn unrelated_history_reports_no_common_ancestor() {
+    let repo = Repo::new();
+    repo.write("first", "first\n");
+    repo.commit();
+    repo.git(&["switch", "--orphan", "unrelated"]);
+    repo.write("other", "other\n");
+    repo.commit();
+    let error = history::compare_files(&Host::Local, &repo.0, "main").unwrap_err();
+    assert!(error.to_string().contains("no available common ancestor"));
 }
 
 #[test]
@@ -332,6 +388,7 @@ fn merge_conflicts_and_first_parent_review() {
         &repo.0,
         "a",
         &DiffSource::Commit("HEAD".into()),
+        None,
     )
     .unwrap();
     assert!(patch.patch().contains("-main") && patch.patch().contains("+resolved"));
@@ -348,7 +405,7 @@ fn clean_checkout_still_rejects_unfinished_rebase_and_large_preview() {
     std::fs::remove_dir(&marker).unwrap();
     repo.write("large", &"x".repeat(diff::PREVIEW_LIMIT + 1));
     assert!(matches!(
-        diff::read(&Host::Local, &repo.0, "large", &DiffSource::Untracked),
+        diff::read(&Host::Local, &repo.0, "large", &DiffSource::Untracked, None),
         Err(GitError::TooLarge(_))
     ));
     assert!(
@@ -356,7 +413,8 @@ fn clean_checkout_still_rejects_unfinished_rebase_and_large_preview() {
             &Host::Local,
             &repo.0,
             "../outside",
-            &DiffSource::WorkingTree
+            &DiffSource::WorkingTree,
+            None
         )
         .is_err()
     );

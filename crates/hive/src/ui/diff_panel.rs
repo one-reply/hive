@@ -6,6 +6,7 @@ use crate::{
         git_diff::GitDiff,
         store::Store,
     },
+    ui::workspace::right_sidebar_toggle,
 };
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -56,6 +57,18 @@ impl DiffPanel {
             }
             cx.notify();
         }
+    }
+
+    fn label(&self, cx: &App) -> SharedString {
+        let request = &self.review.read(cx).request;
+        let source = match &request.source {
+            DiffSource::WorkingTree => "Unstaged".into(),
+            DiffSource::Staged => "Staged".into(),
+            DiffSource::Untracked => "Untracked".into(),
+            DiffSource::Commit(oid) => format!("Commit {}", &oid[..oid.len().min(7)]),
+            DiffSource::Compare(base) => format!("Compare {base}"),
+        };
+        format!("{} · {source}", request.path).into()
     }
 
     fn close(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -137,21 +150,22 @@ impl BasePanel for DiffPanel {
 }
 impl Panel for DiffPanel {
     fn tab_name(&self, cx: &App) -> Option<SharedString> {
-        (!self.alone).then(|| format!("{} · diff", self.review.read(cx).request.path).into())
+        (!self.alone).then(|| self.label(cx))
     }
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .gap_2()
-            .child(format!("{} · diff", self.review.read(cx).request.path))
-            .child(
-                Button::new("diff-close")
-                    .cursor_pointer()
-                    .ghost()
-                    .small()
-                    .label("×")
-                    .tooltip("Close diff")
-                    .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
-            )
+        h_flex().gap_2().child(self.label(cx)).child(
+            Button::new("diff-close")
+                .cursor_pointer()
+                .ghost()
+                .small()
+                .label("×")
+                .tooltip("Close diff")
+                .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
+        )
+    }
+    /// The right-sidebar toggle keeps the window's top-right corner while that sidebar is closed.
+    fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        (!self.git.read(cx).panel_visible).then(|| vec![right_sidebar_toggle()])
     }
     fn inner_padding(&self, _: &App) -> bool {
         false
