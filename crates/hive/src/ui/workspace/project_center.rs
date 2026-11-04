@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 use gpui_kit::component::dock::{BasePanelView, Panel};
 
+use super::center_dock::CenterDock;
 use super::*;
 use crate::state::git::DiffRequest;
 
 pub(super) struct ProjectCenter {
     dock: Entity<DockArea>,
-    _skin: Rc<DockSkin>,
     /// Tabs we opened; pruned when the dock no longer holds them.
     terminals: Vec<Entity<TerminalPanel>>,
     diffs: Vec<Entity<DiffPanel>>,
@@ -20,10 +20,7 @@ pub(super) struct ProjectCenter {
 impl ProjectCenter {
     pub(super) fn new(project: &Path, window: &mut Window, cx: &mut Context<Workspace>) -> Self {
         let id = format!("center:{}", project.display());
-        let (dock, skin) = DockSkin::dock_area(id, None, window, cx);
-        skin.set_panel_style(PanelStyle::TabBar, cx);
-        skin.set_close_button_visible(true, cx);
-        skin.set_toggle_button_visible(false, cx);
+        let dock = CenterDock::dock_area(id, window, cx);
         let project = project.to_path_buf();
         // Tabs closed from the dock (× button, exited shell) must drop out of our lists so
         // the welcome screen comes back and the last tab draws its own ×.
@@ -37,7 +34,6 @@ impl ProjectCenter {
         });
         Self {
             dock,
-            _skin: skin,
             terminals: Vec::new(),
             diffs: Vec::new(),
             _observer: observer,

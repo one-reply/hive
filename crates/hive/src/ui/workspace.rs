@@ -4,14 +4,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::dock::{
-    DockArea, DockPlacement, DockSkin, PanelId, PanelStyle, panel_handle,
-};
+use gpui_kit::component::dock::{DockArea, DockPlacement, PanelId, panel_handle};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, InteractiveElementExt as _, Sizable as _, TitleBar, h_flex,
@@ -31,6 +28,7 @@ use crate::ui::{diff_panel::DiffPanel, git_panel::GitPanel};
 use crate::ui::{keymap, theme};
 
 mod center;
+mod center_dock;
 mod git;
 mod project_center;
 
@@ -62,6 +60,8 @@ pub struct Workspace {
     shown: Option<PathBuf>,
     git_panel: Entity<GitPanel>,
     git_open: bool,
+    /// Set by the first toggle, so the right sidebar doesn't slide in on launch.
+    git_animate: bool,
     git_width: Pixels,
     resizing_git: bool,
     last_selection: Option<PathBuf>,
@@ -83,6 +83,8 @@ const TRAFFIC_LIGHTS_INSET: Pixels = px(80.);
 /// Left padding `TitleBar` adds on its own in fullscreen, where the traffic lights are hidden.
 const FULLSCREEN_INSET: Pixels = px(12.);
 const TITLE_INSET_DURATION: Duration = Duration::from_millis(200);
+/// Both sidebars slide open and closed at this pace.
+pub(super) const SIDEBAR_SLIDE_DURATION: Duration = Duration::from_millis(200);
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -125,6 +127,7 @@ impl Workspace {
             shown: None,
             git_panel: cx.new(|cx| GitPanel::new(window, cx)),
             git_open,
+            git_animate: false,
             git_width,
             resizing_git: false,
             last_selection: None,
@@ -356,7 +359,7 @@ impl Render for Workspace {
             .h_full()
             .child(self.render_center(window, cx));
         let (left_el, center_el) = if self.sidebar_animate {
-            let anim = Animation::new(Duration::from_millis(200)).with_easing(ease_in_out);
+            let anim = Animation::new(SIDEBAR_SLIDE_DURATION).with_easing(ease_in_out);
             (
                 left_el
                     .with_animation(("sidebar-w", open as usize), anim.clone(), left)
@@ -377,7 +380,9 @@ impl Render for Workspace {
             .min_h_0()
             .child(left_el)
             .child(center_el)
-            .when(self.git_open, |el| el.child(self.render_right_sidebar(cx)))
+            .when(self.git_open || self.git_animate, |el| {
+                el.child(self.render_right_sidebar(cx))
+            })
             .child(
                 div()
                     .absolute()

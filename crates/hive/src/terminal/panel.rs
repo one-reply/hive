@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::dock::{BasePanel, DockArea, Panel, PanelControl, PanelEvent, TabGroup};
+use gpui_kit::component::dock::{BasePanel, DockArea, Panel, PanelEvent, TabGroup};
 use gpui_kit::component::resizable::{h_resizable, v_resizable};
 use gpui_kit::component::{IconName, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -298,10 +298,6 @@ impl Panel for TerminalPanel {
             buttons.push(right_sidebar_toggle());
         }
         Some(buttons)
-    }
-
-    fn zoom_control(&self, _: &App) -> Option<PanelControl> {
-        Some(PanelControl::Menu)
     }
 
     fn inner_padding(&self, _: &App) -> bool {

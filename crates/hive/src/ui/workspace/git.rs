@@ -76,6 +76,7 @@ impl Workspace {
 
     pub(super) fn toggle_git(&mut self, cx: &mut Context<Self>) {
         self.git_open = !self.git_open;
+        self.git_animate = true;
         let app = AppState::get(cx);
         let (store, git) = (app.store.clone(), app.git.clone());
         store.update(cx, |s, cx| s.set_git_panel_open(self.git_open, cx));
@@ -89,9 +90,13 @@ impl Workspace {
     }
 
     /// The right sidebar: a tab bar of sections (only Git today) with the sidebar toggle at
-    /// its right end, then the selected section.
-    pub(super) fn render_right_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// its right end, then the selected section. Toggling slides it in from or out past the
+    /// window's right edge: the content keeps its width and is clipped by an outer column
+    /// whose width animates, the same way the left sidebar collapses.
+    pub(super) fn render_right_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let border = cx.theme().border;
+        let open = self.git_open;
+        let width = self.git_width;
         let header = h_flex()
             .h(TAB_BAR_HEIGHT)
             .flex_none()
@@ -107,14 +112,33 @@ impl Workspace {
                 cx,
             )))
             .child(right_sidebar_toggle().small().ghost());
-        v_flex()
+        let content = v_flex()
             .h_full()
-            .w(self.git_width)
-            .flex_shrink_0()
+            .w(width)
+            .flex_none()
             .border_l_1()
             .border_color(border)
             .child(header)
-            .child(div().flex_1().min_h_0().child(self.git_panel.clone()))
+            .child(div().flex_1().min_h_0().child(self.git_panel.clone()));
+        // Right-aligned so the content's left edge moves while its right edge stays put.
+        let outer = v_flex()
+            .h_full()
+            .flex_shrink_0()
+            .items_end()
+            .overflow_hidden()
+            .child(content);
+        if !self.git_animate {
+            return outer.w(width).into_any_element();
+        }
+        // 1.0 = fully open; `t` is the eased animation progress.
+        let amount = move |t: f32| if open { t } else { 1. - t };
+        outer
+            .with_animation(
+                ("right-sidebar-w", open as usize),
+                Animation::new(SIDEBAR_SLIDE_DURATION).with_easing(ease_in_out),
+                move |el, t| el.w(width * amount(t)),
+            )
+            .into_any_element()
     }
 
     fn finish_git_resize(&mut self, cx: &mut Context<Self>) {
