@@ -171,8 +171,14 @@ impl GitPanel {
                         git_controls::confirm(
                             this.git.clone(),
                             action,
-                            "Publish branch",
-                            format!("Push {branch} to {remote} and set its upstream?"),
+                            git_controls::Confirmation {
+                                title: "Publish Branch",
+                                description: format!(
+                                    "{branch} will be pushed to {remote} and start tracking {remote}/{branch}."
+                                ),
+                                ok_text: "Publish",
+                                danger: false,
+                            },
                             window,
                             cx,
                         );

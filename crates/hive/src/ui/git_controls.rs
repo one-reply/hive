@@ -1,14 +1,18 @@
 //! Branch selection and confirmations with their original worktree captured at opening.
 use crate::state::git::{Git, Target};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::assets::IconName as Lucide;
+use gpui_kit::component::alert::Alert;
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hive_core::git::{branches::Branch, changes::Action};
 
 const DIALOG_WIDTH: Pixels = px(460.);
 const BRANCH_LIST_HEIGHT: Pixels = px(320.);
+const BRANCH_ROW_HEIGHT: Pixels = px(28.);
 
 pub(super) fn branches(git: Entity<Git>, compare: bool, window: &mut Window, cx: &mut App) {
     git.update(cx, |g, cx| g.refresh(true, cx));
@@ -94,48 +98,159 @@ impl Render for BranchPicker {
         } else {
             vec![]
         };
-        let rows = branches
+        let matching: Vec<Branch> = branches
             .into_iter()
             .filter(|b| b.name.to_lowercase().contains(&filter))
-            .enumerate()
-            .map(|(i, b)| {
-                let detail = if b.worktree.is_some() {
-                    " · open worktree"
-                } else if b.remote {
-                    " · remote"
-                } else {
-                    ""
-                };
-                Button::new(("branch", i))
-                    .cursor_pointer()
-                    .ghost()
-                    .small()
-                    .w_full()
-                    .label(format!("{}{detail}", b.name))
-                    .on_click(cx.listener(move |this, _, window, cx| this.choose(&b, window, cx)))
-            })
-            .collect::<Vec<_>>();
+            .collect();
+        let (remote, local): (Vec<_>, Vec<_>) = matching.into_iter().partition(|b| b.remote);
+        let current = self
+            .git
+            .read(cx)
+            .status
+            .as_ref()
+            .and_then(|s| s.branch.clone());
+        let mut list = v_flex()
+            .id("branches")
+            .max_h(BRANCH_LIST_HEIGHT)
+            .overflow_y_scroll()
+            .gap_0p5();
+        for (title, group) in [("Local", local), ("Remote", remote)] {
+            if group.is_empty() {
+                continue;
+            }
+            let rows: Vec<AnyElement> = group
+                .into_iter()
+                .enumerate()
+                .map(|(i, b)| {
+                    let current = !b.remote && current.as_deref() == Some(b.name.as_str());
+                    self.branch_row(title, i, b, current, cx)
+                })
+                .collect();
+            list = list.child(section_title(title, cx)).children(rows);
+        }
+        let error: Option<SharedString> = self.git.read(cx).error.clone().map(Into::into);
         v_flex()
             .gap_2()
-            .child(Input::new(&self.filter))
+            .when_some(error, |col, error| {
+                let git = self.git.clone();
+                col.child(
+                    Alert::error("branch-error", error)
+                        .small()
+                        .on_close(move |_, _, cx| git.update(cx, |g, cx| g.clear_error(cx))),
+                )
+            })
             .child(
-                v_flex()
-                    .id("branches")
-                    .max_h(BRANCH_LIST_HEIGHT)
-                    .overflow_y_scroll()
-                    .children(rows),
+                h_flex()
+                    .gap_2()
+                    .child(div().flex_1().child(Input::new(&self.filter)))
+                    .child(
+                        Button::new("new-branch")
+                            .cursor_pointer()
+                            .outline()
+                            .icon(Lucide::Plus)
+                            .label("Create branch…")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                window.close_dialog(cx);
+                                create_branch(
+                                    this.git.clone(),
+                                    this.target.clone(),
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    ),
             )
-            .child(
-                Button::new("new-branch")
-                    .cursor_pointer()
-                    .small()
-                    .label("Create branch…")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        window.close_dialog(cx);
-                        create_branch(this.git.clone(), this.target.clone(), None, window, cx);
-                    })),
-            )
+            .child(list)
     }
+}
+
+impl BranchPicker {
+    fn branch_row(
+        &self,
+        group: &'static str,
+        ix: usize,
+        branch: Branch,
+        current: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (fg, muted) = (cx.theme().foreground, cx.theme().muted_foreground);
+        let deletable = !branch.remote && !current && branch.worktree.is_none();
+        let group_id: SharedString = format!("branch-{group}-{ix}").into();
+        let detail: Option<&'static str> = if current {
+            Some("current")
+        } else if branch.worktree.is_some() {
+            Some("open worktree")
+        } else {
+            None
+        };
+        h_flex()
+            .id(group_id.clone())
+            .group(group_id.clone())
+            .h(BRANCH_ROW_HEIGHT)
+            .flex_none()
+            .px_2()
+            .gap_2()
+            .items_center()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|s| s.bg(fg.opacity(0.05)))
+            .when(current, |s| s.bg(fg.opacity(0.08)))
+            .child(
+                Icon::new(if branch.remote {
+                    Lucide::Cloud
+                } else {
+                    Lucide::GitBranch
+                })
+                .size_3p5()
+                .text_color(muted),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(branch.name.clone()),
+            )
+            .when_some(detail, |row, detail| {
+                row.child(div().text_xs().text_color(muted).child(detail))
+            })
+            .when(deletable, |row| {
+                let (git, name) = (self.git.clone(), branch.name.clone());
+                // Hidden until the row is hovered; the button stops the row's own click.
+                row.child(
+                    div()
+                        .opacity(0.)
+                        .group_hover(group_id, |s| s.opacity(1.))
+                        .child(
+                            Button::new(SharedString::from(format!("delete-{group}-{ix}")))
+                                .cursor_pointer()
+                                .ghost()
+                                .xsmall()
+                                .icon(Lucide::Trash)
+                                .tooltip("Delete branch")
+                                .on_click(move |_, window, cx| {
+                                    // The row behind would otherwise switch to this branch.
+                                    cx.stop_propagation();
+                                    confirm_delete(git.clone(), name.clone(), window, cx);
+                                }),
+                        ),
+                )
+            })
+            .on_click(cx.listener(move |this, _, window, cx| this.choose(&branch, window, cx)))
+            .into_any_element()
+    }
+}
+
+fn section_title(title: &'static str, cx: &App) -> impl IntoElement {
+    div()
+        .px_2()
+        .pt_2()
+        .pb_1()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(cx.theme().muted_foreground)
+        .child(title)
 }
 
 fn create_branch(
@@ -200,38 +315,95 @@ fn create_branch(
     });
 }
 
+/// Checks off the main thread whether `name` is merged into HEAD, then asks accordingly:
+/// a plain delete, or a force delete that spells out what is discarded. A failed check
+/// falls back to the safe delete, which Git explains itself.
+fn confirm_delete(git: Entity<Git>, name: String, window: &mut Window, cx: &mut App) {
+    let Some(target) = git.read(cx).target.clone() else {
+        return;
+    };
+    let check = {
+        let (host, path, name) = (target.host.clone(), target.path.clone(), name.clone());
+        cx.background_executor()
+            .spawn(async move { hive_core::git::branches::is_merged(&host, &path, &name) })
+    };
+    window
+        .spawn(cx, async move |cx| {
+            let merged = check.await.unwrap_or_else(|error| {
+                tracing::warn!(%error, branch = %name, "merge check failed");
+                true
+            });
+            let confirmation = if merged {
+                Confirmation {
+                    title: "Delete Branch",
+                    description: format!("The local branch {name} will be deleted."),
+                    ok_text: "Delete",
+                    danger: true,
+                }
+            } else {
+                Confirmation {
+                    title: "Branch Has Unmerged Commits",
+                    description: format!(
+                        "{name} has commits that are not merged into the current branch. Force delete discards them; Git keeps them in the reflog for a while."
+                    ),
+                    ok_text: "Force Delete",
+                    danger: true,
+                }
+            };
+            let action = Action::DeleteBranch {
+                name,
+                force: !merged,
+            };
+            cx.update(|window, cx| confirm(git, action, confirmation, window, cx))
+                .ok();
+        })
+        .detach();
+}
+
+/// What a confirmation modal says: the title, what will happen, and the button that does it.
+pub(super) struct Confirmation {
+    pub title: &'static str,
+    pub description: String,
+    pub ok_text: &'static str,
+    /// Destructive actions get a red button.
+    pub danger: bool,
+}
+
+/// Modal confirmation of a worktree mutation: what will happen, where, then Cancel or act.
 pub(super) fn confirm(
     git: Entity<Git>,
     action: Action,
-    title: &'static str,
-    description: String,
+    confirmation: Confirmation,
     window: &mut Window,
     cx: &mut App,
 ) {
     let Some(target) = git.read(cx).target.clone() else {
+        tracing::warn!(?action, "confirmation skipped: no active worktree");
         return;
     };
-    window.open_dialog(cx, move |dialog, _, cx| {
+    let Confirmation {
+        title,
+        description,
+        ok_text,
+        danger,
+    } = confirmation;
+    let description: SharedString =
+        format!("{description}\n\nWorktree: {}", target.path.display()).into();
+    window.open_alert_dialog(cx, move |alert, _, _| {
         let (git, target, action) = (git.clone(), target.clone(), action.clone());
-        dialog
+        alert
+            .confirm()
             .title(title)
-            .w(DIALOG_WIDTH)
-            .child(
-                v_flex().gap_2().child(description.clone()).child(
-                    h_flex()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(target.path.display().to_string()),
-                ),
-            )
-            .button_props(
-                DialogButtonProps::default()
-                    .ok_text(title)
-                    .show_cancel(true)
-                    .on_ok(move |_, _, cx| {
-                        git.update(cx, |g, cx| g.perform_at(target.clone(), action.clone(), cx));
-                        true
-                    }),
-            )
+            .description(description.clone())
+            .ok_text(ok_text)
+            .ok_variant(if danger {
+                ButtonVariant::Danger
+            } else {
+                ButtonVariant::Primary
+            })
+            .on_ok(move |_, _, cx| {
+                git.update(cx, |g, cx| g.perform_at(target.clone(), action.clone(), cx));
+                true
+            })
     });
 }

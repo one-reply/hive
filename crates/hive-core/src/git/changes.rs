@@ -23,6 +23,9 @@ pub enum Action {
         base: String,
         track: bool,
     },
+    /// Delete a local branch that no worktree has checked out; `force` discards unmerged
+    /// commits, which the caller must have confirmed separately.
+    DeleteBranch { name: String, force: bool },
     /// Fetch an explicitly selected remote.
     Fetch(String),
     /// Fast-forward the current branch from its configured upstream.
@@ -137,6 +140,7 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<(), GitError>
             .map(drop)
         }
         Action::Switch(name) => branches::switch(host, cwd, name),
+        Action::DeleteBranch { name, force } => branches::delete(host, cwd, name, *force),
         Action::CreateBranch { name, base, track } => {
             branches::create(host, cwd, name, base, *track)
         }

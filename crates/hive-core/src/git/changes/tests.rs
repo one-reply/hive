@@ -37,6 +37,66 @@ impl Repo {
         self.git(&["add", "-A"]);
         self.git(&["commit", "-m", "fixture"]);
     }
+    /// Commits with a fixed committer date, so branch ordering is deterministic.
+    fn commit_at(&self, date: &str) {
+        self.git(&["add", "-A"]);
+        let status = std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "fixture"])
+            .env("GIT_COMMITTER_DATE", date)
+            .env("GIT_AUTHOR_DATE", date)
+            .current_dir(&self.0)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+}
+
+#[test]
+fn delete_branch_refuses_checked_out_and_unmerged_unless_forced() {
+    let repo = Repo::new();
+    repo.write("a", "1");
+    repo.commit();
+    repo.git(&["branch", "merged"]);
+    repo.git(&["checkout", "-b", "unmerged"]);
+    repo.write("a", "2");
+    repo.commit();
+    repo.git(&["checkout", "main"]);
+    assert!(branches::is_merged(&Host::Local, &repo.0, "merged").unwrap());
+    assert!(!branches::is_merged(&Host::Local, &repo.0, "unmerged").unwrap());
+    let delete = |name: &str, force| {
+        repo.action(Action::DeleteBranch {
+            name: name.into(),
+            force,
+        })
+    };
+    assert!(delete("main", true).is_err());
+    assert!(delete("unmerged", false).is_err());
+    assert!(delete("missing", false).is_err());
+    delete("merged", false).unwrap();
+    delete("unmerged", true).unwrap();
+    let names: Vec<_> = branches::list(&Host::Local, &repo.0)
+        .unwrap()
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
+    assert_eq!(names, ["main"]);
+}
+
+#[test]
+fn branches_list_newest_commit_first() {
+    let repo = Repo::new();
+    repo.write("a", "1");
+    repo.commit_at("2020-01-01T00:00:00Z");
+    repo.git(&["branch", "old"]);
+    repo.git(&["checkout", "-b", "fresh"]);
+    repo.write("a", "2");
+    repo.commit_at("2024-06-01T00:00:00Z");
+    let names: Vec<_> = branches::list(&Host::Local, &repo.0)
+        .unwrap()
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
+    assert_eq!(names, ["fresh", "main", "old"]);
 }
 impl Drop for Repo {
     fn drop(&mut self) {

@@ -17,14 +17,17 @@ pub struct Branch {
     pub worktree: Option<PathBuf>,
 }
 
-/// Blocking: lists local and remote branches, excluding remote HEAD aliases.
+/// Blocking: lists local and remote branches, most recently committed first (name as the
+/// tie-breaker), excluding remote HEAD aliases.
 pub fn list(host: &Host, cwd: &Path) -> Result<Vec<Branch>, GitError> {
+    // Git treats the last `--sort` as the primary key.
     let raw = bytes(
         host,
         cwd,
         &[
             "for-each-ref",
             "--sort=refname",
+            "--sort=-committerdate",
             "--format=%(refname)%00%(refname:short)%00%(worktreepath)%00%(symref)",
             "refs/heads",
             "refs/remotes",
@@ -194,6 +197,34 @@ pub fn create(
     } else {
         run(host, cwd, &["switch", "--no-track", "-c", name, &oid]).map(drop)
     }
+}
+
+/// Whether every commit of `name` is reachable from HEAD, as `git branch -d` requires.
+pub fn is_merged(host: &Host, cwd: &Path, name: &str) -> Result<bool, GitError> {
+    validate_name(host, cwd, name)?;
+    match run(host, cwd, &["merge-base", "--is-ancestor", name, "HEAD"]) {
+        Ok(_) => Ok(true),
+        Err(GitError::Failed { code: Some(1), .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Delete a local branch. Without `force` Git's safe delete refuses unmerged work; a branch
+/// checked out in any worktree is refused up front with a clear message instead of Git's.
+pub fn delete(host: &Host, cwd: &Path, name: &str, force: bool) -> Result<(), GitError> {
+    validate_name(host, cwd, name)?;
+    let branch = list(host, cwd)?
+        .into_iter()
+        .find(|b| !b.remote && b.name == name)
+        .ok_or_else(|| GitError::Invalid(format!("Branch {name} no longer exists.")))?;
+    if let Some(worktree) = branch.worktree {
+        return Err(GitError::Invalid(format!(
+            "{name} is checked out in {}. Switch that worktree away first.",
+            worktree.display()
+        )));
+    }
+    let flag = if force { "-D" } else { "-d" };
+    run(host, cwd, &["branch", flag, "--", name]).map(drop)
 }
 
 fn validate_name(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {

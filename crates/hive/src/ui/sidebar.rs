@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::assets::IconName as Lucide;
+use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
@@ -47,6 +48,10 @@ const CARD_HEIGHT: Pixels = px(58.);
 const CREATING_HEIGHT: Pixels = px(28.);
 const ROW_GAP: Pixels = px(2.);
 const COLLAPSE_DURATION: Duration = Duration::from_millis(200);
+const SELECTION_DURATION: Duration = Duration::from_millis(200);
+const SELECTED_BACKGROUND_OPACITY: f32 = 0.09;
+const SELECTED_BORDER_OPACITY: f32 = 0.14;
+const HOVER_BACKGROUND_OPACITY: f32 = 0.05;
 /// Chevron rotation of a folded project: pointing right instead of down.
 const CHEVRON_FOLDED: f32 = -FRAC_PI_2;
 
@@ -90,7 +95,13 @@ impl Sidebar {
     }
 
     /// A project header and its worktree list, which slides open and closed.
-    fn render_project(&self, ix: usize, project: &Project, cx: &mut Context<Self>) -> AnyElement {
+    fn render_project(
+        &self,
+        ix: usize,
+        project: &Project,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let open = !self.collapsed.contains(&project.path);
         let animate = self.toggled.contains(&project.path);
         let header = self
@@ -99,7 +110,7 @@ impl Sidebar {
         if !open && !animate {
             return v_flex().child(header).into_any_element();
         }
-        let rows = self.render_rows(project, cx);
+        let rows = self.render_rows(project, window, cx);
         let height = rows
             .iter()
             .map(|(_, height)| *height + ROW_GAP)
@@ -121,7 +132,12 @@ impl Sidebar {
     }
 
     /// Cards under a project header with their heights.
-    fn render_rows(&self, project: &Project, cx: &mut Context<Self>) -> Vec<(AnyElement, Pixels)> {
+    fn render_rows(
+        &self,
+        project: &Project,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<(AnyElement, Pixels)> {
         let mut rows = vec![];
         let projects = self.projects.read(cx);
         let host = host_label(&project.host);
@@ -135,18 +151,18 @@ impl Sidebar {
                 is_selected: projects.is_selected(&project.path, None),
             };
             rows.push((
-                self.render_card(project, None, folder, &host, cx),
+                self.render_card(project, None, folder, &host, window, cx),
                 CARD_HEIGHT,
             ));
         }
         for (_, worktree) in project.visible_worktrees() {
-            let card = WorktreeCard::new(project, worktree, projects);
+            let card = WorktreeCard::new(project, worktree, self.projects.read(cx));
             rows.push((
-                self.render_card(project, Some(worktree), card, &host, cx),
+                self.render_card(project, Some(worktree), card, &host, window, cx),
                 CARD_HEIGHT,
             ));
         }
-        for _ in 0..projects.creating_count(&project.path) {
+        for _ in 0..self.projects.read(cx).creating_count(&project.path) {
             rows.push((render_creating(cx).into_any_element(), CREATING_HEIGHT));
         }
         rows
@@ -280,7 +296,8 @@ impl Sidebar {
         worktree: Option<&Worktree>,
         card: WorktreeCard,
         host: &SharedString,
-        cx: &App,
+        window: &mut Window,
+        cx: &mut App,
     ) -> AnyElement {
         let theme = cx.theme();
         let (fg, muted_fg) = (theme.sidebar_foreground, theme.muted_foreground);
@@ -313,6 +330,20 @@ impl Sidebar {
         let project_path = project.path.clone();
         let worktree_path = worktree.map(|w| w.path.clone());
         let menu_target = worktree.map(|w| (project.clone(), w.clone()));
+        // A stable channel retargets from the current opacity on rapid selection changes.
+        let selection = transition(
+            format!(
+                "worktree-selection:{}:{}",
+                project.path.display(),
+                card.path.display()
+            ),
+            if card.is_selected { 1.0_f32 } else { 0. },
+            Transition::new(SELECTION_DURATION).ease(ease_in_out),
+            window,
+            cx,
+        );
+        let hover = HOVER_BACKGROUND_OPACITY
+            + (SELECTED_BACKGROUND_OPACITY - HOVER_BACKGROUND_OPACITY) * selection;
         let element = v_flex()
             .id(SharedString::from(format!(
                 "worktree:{}",
@@ -328,12 +359,10 @@ impl Sidebar {
             .pr_1p5()
             .rounded_lg()
             .border_1()
-            .border_color(transparent_black())
+            .bg(fg.opacity(SELECTED_BACKGROUND_OPACITY * selection))
+            .border_color(fg.opacity(SELECTED_BORDER_OPACITY * selection))
             .cursor_pointer()
-            .hover(|s| s.bg(fg.opacity(0.05)))
-            .when(card.is_selected, |s| {
-                s.bg(fg.opacity(0.09)).border_color(fg.opacity(0.14))
-            })
+            .hover(move |style| style.bg(fg.opacity(hover)))
             .child(title_row)
             .child(meta_row)
             .on_click(move |_, _, cx| {
@@ -354,12 +383,12 @@ impl Sidebar {
 }
 
 impl Render for Sidebar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let items = self.projects.read(cx).items.clone();
         let rows: Vec<AnyElement> = items
             .iter()
             .enumerate()
-            .map(|(ix, project)| self.render_project(ix, project, cx))
+            .map(|(ix, project)| self.render_project(ix, project, window, cx))
             .collect();
         let theme = cx.theme();
         let (fg, muted_fg) = (theme.sidebar_foreground, theme.muted_foreground);

@@ -118,6 +118,8 @@ impl GitPanel {
                     .tooltip(if staged { "Unstage file" } else { "Stage file" })
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        // The row behind would otherwise open the diff too.
+                        cx.stop_propagation();
                         this.git.update(cx, |g, cx| g.perform(action.clone(), cx))
                     })),
             );
@@ -133,13 +135,18 @@ impl GitPanel {
                     .tooltip("Discard unstaged changes")
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
                         git_controls::confirm(
                             this.git.clone(),
                             Action::Discard(path.clone()),
-                            "Discard changes",
-                            format!(
-                                "Restore {path} from its staged version? Unstaged edits will be lost."
-                            ),
+                            git_controls::Confirmation {
+                                title: "Discard Changes",
+                                description: format!(
+                                    "{path} will be restored from its staged version. Unstaged edits are lost and cannot be recovered."
+                                ),
+                                ok_text: "Discard",
+                                danger: true,
+                            },
                             window,
                             cx,
                         )
@@ -230,6 +237,8 @@ impl GitPanel {
                                 .label(text)
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                    // The header behind would otherwise fold the group.
+                                    cx.stop_propagation();
                                     this.git.update(cx, |g, cx| g.perform(action.clone(), cx))
                                 })),
                         ),

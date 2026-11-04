@@ -44,6 +44,7 @@ impl Git {
             self.error = None;
         }
         self.failures.remove(&target);
+        tracing::info!(path = ?target.path, ?action, hunk = hunk.is_some(), "source control mutation");
         cx.notify();
         let key = target.clone();
         let task = cx.spawn(async move |this, cx| {
