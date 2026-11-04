@@ -46,6 +46,7 @@ fn main() {
                     AppState::init(loaded, cx);
                     ui::app_menu::init(cx);
                     ui::theme::init(cx);
+                    ui::syntax::init();
                     // After every layer has bound its keys: it rebuilds the keymap around them.
                     ui::keymap::init(cx);
                     ui::settings::init(cx);

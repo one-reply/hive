@@ -11,6 +11,7 @@ pub(crate) mod project_badge;
 pub mod settings;
 pub mod sidebar;
 pub mod status_bar;
+pub(crate) mod syntax;
 pub(crate) mod text_field;
 pub mod theme;
 pub mod workspace;
