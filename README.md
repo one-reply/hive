@@ -153,7 +153,7 @@ See [Releasing](docs/RELEASING.md).
 | Commit staged changes, while focused in the Git panel | ⌘Enter |
 | Open settings | ⌘, |
 
-Shortcuts can be changed in **Settings → Interface → Shortcuts**.
+Shortcuts can be changed in **Settings → Application → Shortcuts**.
 
 ## Data and credentials
 
