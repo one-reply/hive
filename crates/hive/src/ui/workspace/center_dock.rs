@@ -230,7 +230,7 @@ impl CenterTabs {
         Tab::new()
             .child(label)
             // Mirrors `TabGroup::close_panel`, which refuses the last tab: that one closes
-            // itself from inside `Panel::title` (see wiki/gotchas/dock-last-tab).
+            // itself from inside `Panel::title` through `DockArea::remove_panel`.
             .when(group.is_panel_closable(panel_id, cx), |this| {
                 this.suffix(render_close_button(group, ix, panel_id, cx))
             })

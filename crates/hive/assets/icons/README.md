@@ -1,47 +1,50 @@
-# Іконки Hive
+# Hive icons
 
-Модульна H: три окремі фігури, одна геометрія для всіх розмірів.
-Світла версія — чорний знак на білому, темна — білий на чорному.
+A modular H: three separate shapes, with the same geometry at every size.
+The light variant is black on white; the dark variant is white on black.
 
-| Файл | Призначення |
+| File | Purpose |
 | --- | --- |
-| `Hive.icon/` | Редаговане джерело Icon Composer зі світлим і темним appearance; SVG у `Assets/mark.svg` |
-| `hive-light.png`, `hive-dark.png` | Прозоре полотно 1024×1024, macOS-відступ 100 px навколо плитки 824×824 |
-| `Hive-light.iconset/`, `Hive-dark.iconset/` | По 10 PNG: 16, 32, 128, 256, 512 pt у масштабах 1× і 2×; фізично до 1024 px |
-| `Hive-light.icns`, `Hive-dark.icns` | Повні статичні набори для macOS |
-| `source/generated-mark.png` | Генеративний ескіз до нормалізації геометрії у SVG; не ресурс застосунку |
+| `Hive.icon/` | Editable Icon Composer source with light and dark appearances; SVG in `Assets/mark.svg` |
+| `hive-light.png`, `hive-dark.png` | Transparent 1024×1024 canvas, with 100 px macOS padding around an 824×824 tile |
+| `Hive-light.iconset/`, `Hive-dark.iconset/` | Ten PNGs each: 16, 32, 128, 256, 512 pt at 1× and 2×, up to 1024 physical pixels |
+| `Hive-light.icns`, `Hive-dark.icns` | Complete static macOS icon sets |
+| `source/generated-mark.png` | Generated sketch before normalizing the geometry into SVG; not an app resource |
 
-У GUI `Icon::data` використовує той самий SVG як маску й бере колір із поточної теми.
-Логотип є у title bar і на welcome-екрані.
+In the UI, `Icon::data` uses the same SVG as a mask with the current theme color.
+The logo appears in the title bar and welcome screen.
 
-## Відтворення
+## Rebuilding
 
-З кореня репозиторію, на macOS з Xcode 26+ (Icon Composer), Swift та Python 3:
+From the repository root, on macOS with Xcode 26+ (Icon Composer), Swift and Python 3:
 
 ```sh
 bash scripts/generate-icons.sh
 python3 scripts/check-icons.py
+python3 scripts/install-release-tools.py target/release-tools
+export PATH="$PWD/target/release-tools:$PATH"
 bash scripts/bundle-macos.sh          # target/debug/bundle/Hive.app
 bash scripts/bundle-macos.sh release  # target/release/bundle/Hive.app
 open target/debug/bundle/Hive.app
 ```
 
-`generate-icons.sh` експортує обидва appearance штатним `ictool`, додає macOS-відступ
-через CoreGraphics, масштабує PNG через `sips` і збирає `.icns` через `iconutil`.
-Перевірка контролює PNG-розміри/alpha та наявність малих і Retina-зображень у `.icns`.
+`generate-icons.sh` exports both appearances with Apple's `ictool`, adds macOS padding
+through CoreGraphics, resizes PNGs with `sips`, and builds `.icns` with `iconutil`.
+The checks verify PNG dimensions/alpha and small and Retina images in each `.icns`.
 
-Пакування компілює `.icon` через `actool` у `Assets.car`, перевіряє обидва appearance,
-записує версію Cargo й мінімальну macOS із Mach-O у `Info.plist`, додає нативний `.icns`
-і ставить локальний ad-hoc підпис. Іконка доступна Finder, Dock і перемикачу застосунків.
-Це локальна збірка для поточної архітектури; Developer ID та notarization сюди не входять.
+Packaging compiles `.icon` into `Assets.car` with `actool`, validates both appearances,
+writes the Cargo version and Mach-O deployment target into `Info.plist`, includes the
+static `.icns`, and applies an ad-hoc signature. The icon is available in Finder, the
+Dock and the app switcher. Builds are ARM64 only, without Developer ID or notarization.
 
-macOS 26+ обирає appearance нативної іконки за системним стилем іконок. Налаштування
-теми всередині Hive змінює його інтерфейс. На старішій macOS використовується статичний
-світлий fallback. Звичайний `cargo run` запускає бінарник без `.app`-метаданих;
-для перевірки Finder/Dock запускайте зібраний `Hive.app`.
+macOS 26+ chooses the native icon appearance using the system icon style. Hive's
+theme setting controls its interface. A static light fallback is included for older
+macOS versions; this is not a claim that those systems have been tested.
+`cargo run` launches without `.app` metadata; use the bundled `Hive.app` to check
+Finder and Dock behavior. See the [release process](../../../../docs/RELEASING.md).
 
-## Джерела
+## Sources
 
 - [Apple: Icon Composer](https://developer.apple.com/documentation/xcode/creating-your-app-icon-using-icon-composer)
-- [Apple: склад iconset](https://developer.apple.com/library/archive/documentation/Xcode/Reference/xcode_ref-Asset_Catalog_Format/IconSetType.html)
-- Генеративний ескіз: вбудований `imagegen`, [збережений prompt](source/prompt.md).
+- [Apple: iconset contents](https://developer.apple.com/library/archive/documentation/Xcode/Reference/xcode_ref-Asset_Catalog_Format/IconSetType.html)
+- Generated sketch: the built-in `imagegen` tool, with the [original prompt](source/prompt.md).

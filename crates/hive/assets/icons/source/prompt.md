@@ -1,8 +1,8 @@
-# Генеративне джерело
+# Generated source
 
-2026-11-03 · вбудований `imagegen` · прозорий bitmap-ескіз `generated-mark.png`.
-Після генерації геометрію нормалізовано вручну у `../Hive.icon/Assets/mark.svg`.
-Остаточна палітра за вказівкою користувача — чорний/білий; кольори задає `icon.json`.
+2026-11-03 · built-in `imagegen` · transparent bitmap sketch `generated-mark.png`.
+The geometry was then normalized manually in `../Hive.icon/Assets/mark.svg`.
+The final requested palette is black and white; colors are defined by `icon.json`.
 
 ## Prompt
 
