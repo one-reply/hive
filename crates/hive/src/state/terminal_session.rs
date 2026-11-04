@@ -18,6 +18,7 @@ pub(crate) enum SessionStatus {
 
 pub(crate) enum SessionEvent {
     TitleChanged,
+    DirectoryChanged,
     Exited,
     PasteFailed(String),
 }
@@ -26,9 +27,11 @@ pub(crate) struct TerminalSession {
     pub(crate) status: SessionStatus,
     pub(crate) title: Option<String>,
     pub(crate) exited: bool,
+    pub(crate) directory: Option<PathBuf>,
     focused: bool,
     _start: Task<()>,
     _events: Option<Task<()>>,
+    _directory: Option<Task<()>>,
     pending_input: VecDeque<Input>,
     paste_task: Option<Task<()>>,
 }
@@ -36,9 +39,13 @@ pub(crate) struct TerminalSession {
 impl EventEmitter<SessionEvent> for TerminalSession {}
 
 impl TerminalSession {
-    pub(crate) fn new(cwd: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        cwd: Option<PathBuf>,
+        worktree: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let starting = AppState::get(cx).terminals.begin();
-        let worktree = cwd.clone();
+        let directory = cwd.clone();
         let start = cx.background_executor().spawn(async move {
             let Some(starting) = starting else {
                 return Err("Hive is shutting down".to_owned());
@@ -58,6 +65,7 @@ impl TerminalSession {
             let _ = this.update(cx, |this, cx| {
                 this.status = match result {
                     Ok(mut terminal) => {
+                        this.watch_directory(terminal.shell_pid(), cx);
                         terminal.set_focused(this.focused);
                         if let Some(worktree) = &worktree {
                             let session = cx.entity();
@@ -105,12 +113,55 @@ impl TerminalSession {
             status: SessionStatus::Starting,
             title: None,
             exited: false,
+            directory,
             focused: false,
             _start: start,
             _events: None,
+            _directory: None,
             pending_input: VecDeque::new(),
             paste_task: None,
         }
+    }
+
+    fn watch_directory(&mut self, pid: u32, cx: &mut Context<Self>) {
+        // shortcut: sampled each second; use shell directory events if immediate cd-and-quit must be exact.
+        self._directory = Some(cx.spawn(async move |this, cx| {
+            let mut reported = false;
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                if !matches!(this.update(cx, |this, _| !this.exited), Ok(true)) {
+                    break;
+                }
+                let directory = cx
+                    .background_executor()
+                    .spawn(async move { hive_core::terminal::working_directory(pid) })
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        if this.exited {
+                            return;
+                        }
+                        match directory {
+                            Ok(directory) => {
+                                reported = false;
+                                if this.directory.as_ref() != Some(&directory) {
+                                    this.directory = Some(directory);
+                                    cx.emit(SessionEvent::DirectoryChanged);
+                                }
+                            }
+                            Err(error) if !reported => {
+                                tracing::warn!(%error, "keeping last known terminal directory");
+                                reported = true;
+                            }
+                            Err(_) => {}
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
     }
 
     pub(crate) fn terminal(&self) -> Option<&Terminal> {

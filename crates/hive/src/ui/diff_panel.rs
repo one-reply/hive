@@ -12,7 +12,7 @@ use crate::{
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::diff::{Diff, DiffAnnotation, DiffLinePosition, DiffSide};
-use gpui_kit::component::dock::{BasePanel, DockArea, Panel, PanelEvent, TabGroup};
+use gpui_kit::component::dock::{BasePanel, DockArea, DockEvent, Panel, PanelEvent, TabGroup};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 use hive_core::git::diff::DiffSource;
@@ -29,11 +29,22 @@ pub(crate) struct DiffPanel {
 }
 
 impl DiffPanel {
-    pub fn new(request: DiffRequest, area: WeakEntity<DockArea>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        request: DiffRequest,
+        area: WeakEntity<DockArea>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let app = AppState::get(cx);
         let (git, store) = (app.git.clone(), app.store.clone());
         let review = cx.new(|cx| GitDiff::new(request, git.clone(), store.clone(), cx));
+        let focus = review.read(cx).display.read(cx).focus_handle(cx);
         let subscriptions = vec![
+            cx.on_focus(&focus, window, |this, _, cx| {
+                if let Some(area) = this.area.upgrade() {
+                    cx.defer(move |cx| area.update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged)));
+                }
+            }),
             cx.observe(&review, |_, _, cx| cx.notify()),
             cx.observe(&git, |_, _, cx| cx.notify()),
             cx.observe(&store, |_, _, cx| cx.notify()),

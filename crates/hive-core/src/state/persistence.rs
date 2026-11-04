@@ -53,7 +53,9 @@ fn io_error(operation: &'static str, path: &Path, source: io::Error) -> StateErr
 impl State {
     /// Blocking: load state, migrating only when it is absent and preserving malformed files.
     pub fn load() -> Result<LoadedState, StateError> {
-        Self::load_from(&hive_dir())
+        let mut loaded = Self::load_from(&hive_dir())?;
+        loaded.state.workspace.prepare(&loaded.state.projects);
+        Ok(loaded)
     }
 
     fn load_from(dir: &Path) -> Result<LoadedState, StateError> {
@@ -102,6 +104,7 @@ impl State {
                         .into_iter()
                         .map(|p| ProjectRef::new(p, Host::Local))
                         .collect(),
+                    ..State::default()
                 };
                 state.save_to(&dir.join("state.json"))?;
                 state

@@ -55,6 +55,46 @@ fn missing_shell_returns_a_launch_error() {
 }
 
 #[test]
+fn live_shell_directory_follows_cd_without_title_sequences() {
+    let terminal = shell();
+    terminal.write(b"cd /private/tmp\n".to_vec());
+    wait_for(|| {
+        working_directory(terminal.shell_pid()).is_ok_and(|path| path == Path::new("/private/tmp"))
+    });
+}
+
+#[test]
+fn restored_login_shell_starts_in_requested_directory() {
+    let terminal = Terminal::spawn(
+        Some(Path::new("/private/tmp")),
+        None,
+        TerminalSize::new(80, 24),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let directory = working_directory(terminal.shell_pid());
+        if directory
+            .as_deref()
+            .is_ok_and(|path| path == Path::new("/private/tmp"))
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let text: String = terminal
+                .term()
+                .lock()
+                .renderable_content()
+                .display_iter
+                .map(|c| c.c)
+                .collect();
+            panic!("directory {directory:?}; output {text}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
 fn spawning_a_pty_does_not_install_a_sigchld_handler() {
     const ISOLATED: &str = "HIVE_TEST_SIGCHLD_ISOLATED";
     if std::env::var_os(ISOLATED).is_none() {

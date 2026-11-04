@@ -8,8 +8,7 @@ use std::path::{Path, PathBuf};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::dock::{BasePanel, DockArea, Panel, PanelEvent, TabGroup};
-use gpui_kit::component::resizable::{h_resizable, v_resizable};
+use gpui_kit::component::dock::{BasePanel, DockArea, DockEvent, Panel, PanelEvent, TabGroup};
 use gpui_kit::component::{ActiveTheme as _, IconName, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -23,6 +22,9 @@ use crate::ui::workspace::{NewTerminal, right_sidebar_toggle};
 
 actions!(terminal_panel, [SplitRight, SplitDown, ClosePane]);
 
+mod persistence;
+mod tiles;
+
 /// Gap between a pane's top-right corner and its hover close button.
 const PANE_CLOSE_INSET: Pixels = px(6.);
 
@@ -35,9 +37,18 @@ pub struct TerminalPanel {
     area: WeakEntity<DockArea>,
     group: Option<WeakEntity<TabGroup>>,
     alone: bool,
+    split_sizes: HashMap<SharedString, Vec<f32>>,
 }
 
 impl TerminalPanel {
+    fn layout_changed(&self, cx: &mut Context<Self>) {
+        let Some(area) = self.area.upgrade() else {
+            return;
+        };
+        // gpui-base does not forward PanelEvent::LayoutChanged to its DockArea.
+        cx.defer(move |cx| area.update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged)));
+    }
+
     /// Open a panel immediately; its session starts the shell in the background.
     pub fn open(
         cwd: Option<&Path>,
@@ -54,6 +65,7 @@ impl TerminalPanel {
                 area,
                 group: None,
                 alone: false,
+                split_sizes: HashMap::new(),
             };
             this.watch_pane(&view, window, cx);
             this
@@ -74,6 +86,7 @@ impl TerminalPanel {
             cx.observe(view, |_, _, cx| cx.notify()),
             cx.subscribe_in(view, window, |this, view, event, window, cx| match event {
                 TerminalViewEvent::TitleChanged => this.notify_group(cx),
+                TerminalViewEvent::DirectoryChanged => this.layout_changed(cx),
                 TerminalViewEvent::Exited => this.close_pane(view, window, cx),
             }),
             cx.on_focus(&focus_handle, window, move |this, _, cx| {
@@ -82,6 +95,7 @@ impl TerminalPanel {
                     this.select_workspace(cx);
                     this.notify_group(cx);
                 }
+                this.layout_changed(cx);
             }),
         ];
         self.pane_subscriptions
@@ -124,6 +138,7 @@ impl TerminalPanel {
         self.active = view;
         self.focus_active(window, cx);
         self.notify_group(cx);
+        self.layout_changed(cx);
     }
 
     /// Split the active pane: a new shell in the same cwd lands after it along `axis`.
@@ -135,6 +150,7 @@ impl TerminalPanel {
         self.active = view;
         self.focus_active(window, cx);
         self.notify_group(cx);
+        self.layout_changed(cx);
     }
 
     /// Close one pane; closing the last one closes the tab.
@@ -157,6 +173,7 @@ impl TerminalPanel {
             self.focus_active(window, cx);
         }
         self.notify_group(cx);
+        self.layout_changed(cx);
     }
 
     /// Remove this tab. Goes through the dock, not the tab group, so the last
@@ -194,92 +211,6 @@ impl TerminalPanel {
     /// Let Workspace own new tabs so close tracking includes every terminal.
     fn open_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.dispatch_action(Box::new(NewTerminal), cx);
-    }
-}
-
-impl TerminalPanel {
-    /// Splits become resizable groups. The group id encodes the node's structure (axis, first
-    /// pane, child count), so its keyed size state resets to equal shares whenever the structure
-    /// changes and survives drags otherwise.
-    fn render_pane(
-        &self,
-        pane: &PaneTree<Entity<TerminalView>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        match pane {
-            PaneTree::Leaf(view) => self.render_leaf(view, window, cx),
-            PaneTree::Split { axis, children } => {
-                let id = SharedString::from(format!(
-                    "pane-split-{axis:?}-{}-{}",
-                    pane.first_leaf().entity_id(),
-                    children.len()
-                ));
-                let group = match axis {
-                    Axis::Horizontal => h_resizable(id),
-                    Axis::Vertical => v_resizable(id),
-                };
-                let children: Vec<AnyElement> = children
-                    .iter()
-                    .map(|child| self.render_pane(child, window, cx))
-                    .collect();
-                group.children(children).into_any_element()
-            }
-        }
-    }
-
-    /// One pane. Among split panes, hovering one fades in a close button in its top-right
-    /// corner; a lone pane is closed with its tab instead.
-    fn render_leaf(
-        &self,
-        view: &Entity<TerminalView>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let pane_id = SharedString::from(format!("terminal-pane-{}", view.entity_id()));
-        let pane = div()
-            .id(pane_id.clone())
-            .relative()
-            .size_full()
-            .child(view.clone());
-        if matches!(self.panes, PaneTree::Leaf(_)) {
-            return pane.into_any_element();
-        }
-        let hover = Hover::new(pane_id.clone(), window, cx);
-        let close_hover = Hover::new((ElementId::from(pane_id), "close"), window, cx);
-        let theme = cx.theme();
-        let (background, border) = (theme.background, theme.border);
-        let close = Button::new(("close-pane", view.entity_id()))
-            .cursor_pointer()
-            .xsmall()
-            .icon(IconName::Close)
-            .tooltip_with_action("Close pane", &ClosePane, Some(keymap::TERMINAL_CONTEXT))
-            .on_click(cx.listener({
-                let view = view.clone();
-                move |this, _, window, cx| {
-                    // The pane's own handlers must not see a click that just closed it.
-                    cx.stop_propagation();
-                    this.close_pane(&view, window, cx)
-                }
-            }))
-            .smooth_hover(ButtonLook::Ghost, &close_hover, cx);
-        pane.on_hover(hover.listener())
-            // An invisible button must not catch clicks meant for the terminal.
-            .when(hover.progress() > 0., |pane| {
-                pane.child(
-                    div()
-                        .absolute()
-                        .top(PANE_CLOSE_INSET)
-                        .right(PANE_CLOSE_INSET)
-                        .rounded_md()
-                        .border_1()
-                        .border_color(border)
-                        .bg(background)
-                        .opacity(hover.progress())
-                        .child(close),
-                )
-            })
-            .into_any_element()
     }
 }
 

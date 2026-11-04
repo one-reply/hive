@@ -14,6 +14,7 @@ use crate::ui::keymap;
 
 pub enum TerminalViewEvent {
     TitleChanged,
+    DirectoryChanged,
     Exited,
 }
 
@@ -32,7 +33,22 @@ impl EventEmitter<TerminalViewEvent> for TerminalView {}
 
 impl TerminalView {
     pub fn new(cwd: Option<&Path>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let session = cx.new(|cx| TerminalSession::new(cwd.map(Path::to_path_buf), cx));
+        Self::in_directory(cwd, cwd, window, cx)
+    }
+
+    pub(crate) fn in_directory(
+        cwd: Option<&Path>,
+        directory: Option<&Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let session = cx.new(|cx| {
+            TerminalSession::new(
+                directory.map(Path::to_path_buf),
+                cwd.map(Path::to_path_buf),
+                cx,
+            )
+        });
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.on_focus(&focus_handle, window, |this, _, cx| {
@@ -49,6 +65,7 @@ impl TerminalView {
             cx.observe(&session, |_, _, cx| cx.notify()),
             cx.subscribe_in(&session, window, |_, _, event, window, cx| match event {
                 SessionEvent::TitleChanged => cx.emit(TerminalViewEvent::TitleChanged),
+                SessionEvent::DirectoryChanged => cx.emit(TerminalViewEvent::DirectoryChanged),
                 SessionEvent::Exited => cx.emit(TerminalViewEvent::Exited),
                 SessionEvent::PasteFailed(error) => window.push_notification(
                     Notification::error(error.clone()).title("Could not paste image"),
@@ -77,6 +94,15 @@ impl TerminalView {
 
     pub fn cwd(&self) -> Option<&Path> {
         self.cwd.as_deref()
+    }
+
+    pub(crate) fn restore_directory(&self, cx: &App) -> PathBuf {
+        self.session
+            .read(cx)
+            .directory
+            .clone()
+            .or_else(|| self.cwd.clone())
+            .unwrap_or_default()
     }
 
     pub fn exited(&self, cx: &App) -> bool {
