@@ -26,6 +26,10 @@ Other queries and grammars are provided by the dependencies listed in `Cargo.loc
 
 ## Rust dependencies
 
+The macOS bundle includes [Sparkle 2.10.1](https://github.com/sparkle-project/Sparkle/releases/tag/2.10.1)
+for software updates. Its MIT license and bundled dependency notices are preserved in
+`Contents/Resources/licenses/Sparkle.txt` and in the framework's resources.
+
 The app bundle includes `Contents/Resources/THIRD_PARTY_LICENSES.html`, generated
 from the locked Apple Silicon dependency graph by cargo-about. Licensing policy is
 checked by cargo-deny. The `licenses/` directory and this notice are also bundled.

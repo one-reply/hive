@@ -2,6 +2,7 @@ mod app;
 mod state;
 mod terminal;
 mod ui;
+mod updater;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;

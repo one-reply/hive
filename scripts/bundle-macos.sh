@@ -10,6 +10,10 @@ case "${1:-debug}" in
 esac
 [[ $# -le 1 && "$(uname -s)" == Darwin ]] || { echo "Requires macOS; use [debug|release]." >&2; exit 2; }
 python3 scripts/check-icons.py
+sparkle="$PWD/target/sparkle"
+[[ -f "$sparkle/Sparkle.framework/Sparkle" ]] || {
+    echo 'Run python3 scripts/install-sparkle.py target/sparkle first.' >&2; exit 1;
+}
 executable="$(cargo build "${build_args[@]}" | python3 -c '
 import json, sys
 paths = [m["executable"] for line in sys.stdin if (m := json.loads(line)).get("reason") == "compiler-artifact"
@@ -32,9 +36,12 @@ stage="$(mktemp -d "$output/.hive.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 app="$stage/Hive.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+mkdir -p "$app/Contents/Frameworks"
+ditto "$sparkle/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 cp "$executable" "$app/Contents/MacOS/hive"
 cp LICENSE NOTICE THIRD_PARTY_NOTICES.md "$app/Contents/Resources/"
 cp -R licenses "$app/Contents/Resources/licenses"
+cp "$sparkle/LICENSE" "$app/Contents/Resources/licenses/Sparkle.txt"
 cargo about generate --locked --fail packaging/third-party.hbs \
     --output-file "$app/Contents/Resources/THIRD_PARTY_LICENSES.html"
 # MPL-covered source is shipped alongside the binary instead of relying on an external host.
@@ -72,6 +79,11 @@ info.update(plistlib.loads(Path(partial).read_bytes()))
 info.update(CFBundleShortVersionString=version, CFBundleVersion=version, LSMinimumSystemVersion=minimum_os)
 (contents / "Info.plist").write_bytes(plistlib.dumps(info))
 assert (contents / "MacOS" / info["CFBundleExecutable"]).is_file()
+assert (contents / "Frameworks/Sparkle.framework/Sparkle").is_file()
+assert (contents / "Frameworks/Sparkle.framework/Versions/Current").is_symlink()
+assert info["SUFeedURL"].startswith("https://")
+assert info["SUVerifyUpdateBeforeExtraction"] and info["SURequireSignedFeed"]
+assert not info["SUAllowsAutomaticUpdates"]
 for notice in ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LICENSES.html"]:
     assert (contents / "Resources" / notice).stat().st_size > 0, notice
 assert "gpui-kit" in (contents / "Resources/THIRD_PARTY_LICENSES.html").read_text()
@@ -85,8 +97,10 @@ appearances = {item.get("Appearance") for item in json.loads(Path(catalog).read_
 assert {"NSAppearanceNameAqua", "NSAppearanceNameDarkAqua"} <= appearances
 PY
 plutil -lint "$app/Contents/Info.plist"
+# Nested Sparkle helpers keep their upstream signatures; the host uses the preview ad-hoc identity.
+codesign --verify --deep --strict "$app/Contents/Frameworks/Sparkle.framework"
 codesign --force --sign - "$app"
-codesign --verify --strict "$app"
+codesign --verify --deep --strict "$app"
 rm -rf "$output/Hive.app"
 mv "$app" "$output/Hive.app"
 echo "Built $output/Hive.app"

@@ -7,6 +7,7 @@ mod git;
 mod project;
 mod shortcuts;
 mod terminal;
+mod updates;
 
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
@@ -59,6 +60,10 @@ pub fn open_project(path: &Path, cx: &mut App) {
 
 pub(crate) fn open_git(cx: &mut App) {
     open_at(None, Some(Page::Git), cx);
+}
+
+pub(crate) fn open_updates(cx: &mut App) {
+    open_at(None, Some(Page::Updates), cx);
 }
 
 fn open_at(project: Option<PathBuf>, page: Option<Page>, cx: &mut App) {
@@ -128,13 +133,15 @@ enum Page {
     Terminal,
     Ai,
     Git,
+    Updates,
 }
 
 impl Page {
     /// The navigation: section titles and their pages, in order.
-    const SECTIONS: [(&'static str, &'static [Page]); 2] = [
+    const SECTIONS: [(&'static str, &'static [Page]); 3] = [
         ("Interface", &[Page::Appearance, Page::Shortcuts]),
         ("Workspace", &[Page::Terminal, Page::Ai, Page::Git]),
+        ("Application", &[Page::Updates]),
     ];
 
     fn label(self) -> &'static str {
@@ -144,6 +151,7 @@ impl Page {
             Page::Terminal => "Terminal",
             Page::Ai => "AI",
             Page::Git => "Git",
+            Page::Updates => "Updates",
         }
     }
 
@@ -155,6 +163,7 @@ impl Page {
             }
             Page::Terminal => "How terminal tabs look.",
             Page::Git => "Commit generation for every project and worktree.",
+            Page::Updates => "Your version of Hive and software updates.",
             Page::Ai => {
                 "Connect LLM providers. Keys are verified online and stored in macOS Keychain."
             }
@@ -168,6 +177,7 @@ impl Page {
             Page::Terminal => Lucide::SquareTerminal,
             Page::Ai => Lucide::Sparkles,
             Page::Git => Lucide::GitBranch,
+            Page::Updates => Lucide::Download,
         }
     }
 }
@@ -183,6 +193,7 @@ pub struct SettingsWindow {
     shortcuts: Entity<ShortcutsPage>,
     ai: Entity<AiPage>,
     git: Entity<git::GitPage>,
+    updates: Entity<updates::UpdatesPage>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -195,6 +206,7 @@ impl SettingsWindow {
             shortcuts: cx.new(ShortcutsPage::new),
             ai: cx.new(|cx| AiPage::new(window, cx)),
             git: cx.new(|cx| git::GitPage::new(window, cx)),
+            updates: cx.new(updates::UpdatesPage::new),
             _subscriptions: vec![
                 cx.observe(&store, |this, _, cx| {
                     this.leave_removed_project(cx);
@@ -398,6 +410,7 @@ impl SettingsWindow {
                     Page::Terminal => terminal::render(window, cx).into_any_element(),
                     Page::Ai => self.ai.clone().into_any_element(),
                     Page::Git => self.git.clone().into_any_element(),
+                    Page::Updates => self.updates.clone().into_any_element(),
                 };
                 (page.label().into(), page.description().into(), body)
             }

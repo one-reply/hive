@@ -15,6 +15,7 @@ actions!(
     [
         Quit,
         About,
+        CheckForUpdates,
         Hide,
         HideOthers,
         ShowAll,
@@ -47,6 +48,10 @@ pub fn init(cx: &mut App) {
         with_active_window(cx, |window| window.toggle_fullscreen())
     });
     cx.on_action(|_: &About, cx| show_about(cx));
+    cx.on_action(|_: &CheckForUpdates, cx| {
+        crate::ui::settings::open_updates(cx);
+        AppState::get(cx).updates.read(cx).check();
+    });
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-h", Hide, None),
@@ -61,6 +66,7 @@ pub(crate) fn install(cx: &mut App) {
     cx.set_menus([
         Menu::new("Hive").items([
             MenuItem::action("About Hive", About),
+            MenuItem::action("Check for Updates…", CheckForUpdates),
             MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),

@@ -7,6 +7,7 @@ use crate::state::agents::Agents;
 use crate::state::ai_providers::AiProviders;
 use crate::state::git::Git;
 use crate::state::terminals::Terminals;
+use crate::state::updates::Updates;
 use crate::state::{projects::Projects, store::Store, usage::Usage};
 use hive_core::state::{LoadedState, StateError};
 use std::sync::Arc;
@@ -20,6 +21,7 @@ pub struct AppState {
     pub(crate) agents: Entity<Agents>,
     pub(crate) git: Entity<Git>,
     pub(crate) terminals: Arc<Terminals>,
+    pub(crate) updates: Entity<Updates>,
     _quit: Subscription,
 }
 
@@ -33,6 +35,7 @@ impl AppState {
         let ai_providers = cx.new(AiProviders::new);
         let agents = cx.new(Agents::new);
         let git = cx.new(|cx| Git::new(projects.clone(), cx));
+        let updates = cx.new(Updates::new);
         let quit = cx.on_app_quit(|cx| {
             let deadline = Instant::now() + Duration::from_secs(3);
             let app = Self::get(cx);
@@ -58,6 +61,7 @@ impl AppState {
             agents,
             git,
             terminals: Arc::default(),
+            updates,
             _quit: quit,
         });
     }

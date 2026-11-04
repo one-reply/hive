@@ -9,4 +9,5 @@ pub mod projects;
 pub mod store;
 pub(crate) mod terminal_session;
 pub(crate) mod terminals;
+pub(crate) mod updates;
 pub mod usage;
