@@ -60,8 +60,10 @@ signatures are generated from those final bytes. No Developer ID private key is
 exported into GitHub.
 
 If Apple is still processing or export fails, the script preserves the archive and
-`upload.log` at the printed path. Inspect the error before retrying. For a pending
-submission, resume its export without uploading another copy:
+`upload.log` at the printed path. On a local Mac, a pending submission can be
+resumed without uploading another copy. Hosted runners are ephemeral: their archive
+and raw logs are not published as artifacts, so this recovery path is local only.
+Inspect the error before retrying:
 
 ```sh
 xcodebuild -exportNotarizedApp -archivePath /path/to/Hive.xcarchive \
