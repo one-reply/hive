@@ -12,10 +12,12 @@ and Git. The Rust toolchain and release-tool versions are pinned in the reposito
 
 ```sh
 python3 scripts/install-release-tools.py target/release-tools
+python3 scripts/install-sparkle.py target/sparkle
 export PATH="$PWD/target/release-tools:$PATH"
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
+python3 -m unittest discover -s scripts -p 'test_*.py'
 cargo deny --locked check licenses advisories sources
 bash scripts/bundle-macos.sh release
 ```
@@ -66,7 +68,8 @@ publish the cleaned history in a fresh repository while keeping the original pri
 1. Update the workspace version, document changes, and wait for CI on the intended
    commit. Push a matching `v<version>` tag. CI verifies the tag/version match,
    runs security and build checks, and creates a **draft prerelease** with the ZIP
-   and its checksum. Only the final release job has repository write permission.
+   and its checksum, plus a signed `appcast.xml`. Only the final release job has
+   repository write permission and access to the update-signing secret.
 2. Download that draft ZIP through a browser, rather than copying the local `.app`.
    Verify the checksum, extract it, and install it in Applications. Use a separate
    test account or Mac so existing projects, credentials and running agents are safe.
@@ -88,6 +91,55 @@ all the same checks and create a private draft for installation testing. Record 
 build provenance and failed runner allocation in its notes. Run `workflow_dispatch`
 on that tag when runners recover; the release job only runs on tag pushes, so this
 does not replace draft assets. CI and installation checks must pass before promotion.
+
+## In-app updates
+
+Settings → Updates and Hive → Check for Updates use Sparkle 2. The packaged app
+checks daily and requires the user's confirmation to install; silent installation
+is disabled because agent sessions may be running. `cargo run` has no embedded
+framework and shows a link to download the packaged application instead.
+
+The framework and signing tools are pinned and checksum-verified by
+`scripts/install-sparkle.py`. The bundle includes Sparkle's complete license notices.
+`objc2` and `objc2-foundation`, already present through GPUI, provide the native API
+bridge; no Sparkle build dependency or updater code is added to `hive-core`.
+
+The public key in `packaging/macos/Info.plist` verifies both update archives and
+appcasts. The private key lives in the maintainer's Keychain under account
+`dev.hive.Hive`, and in the repository Actions secret `SPARKLE_PRIVATE_KEY` for
+the tag-only release job. Keep a secure backup of this key: replacing it in a new
+build does not make already installed copies trust the replacement. Never print
+the private key or pass it in command-line arguments.
+
+For a local signed draft, put only the version's ZIP and checksum in a fresh directory:
+
+```sh
+target/sparkle/bin/generate_appcast --account dev.hive.Hive --maximum-deltas 0 \
+  --download-url-prefix "https://github.com/vitaliits-stack/hive/releases/download/v<version>/" \
+  --link "https://github.com/vitaliits-stack/hive/releases/tag/v<version>" <release-directory>
+target/sparkle/bin/sign_update --account dev.hive.Hive --verify <release-directory>/appcast.xml
+```
+
+Upload the generated signed `appcast.xml` alongside the ZIP and checksum. Do not
+edit that XML after signing. Sparkle's Ed25519 signature is independent of Apple
+Developer ID/notarization; the preview still uses ad-hoc Apple code signing.
+
+GitHub Pages uses **GitHub Actions** as its source. `Publish update feed` runs when
+a release is published, unpublished or deleted, or through `workflow_dispatch`.
+It copies the highest numeric `vMAJOR.MINOR.PATCH` release's signed appcast without
+changing its bytes. Published previews are included; drafts, incomplete uploads
+and non-numeric tags are excluded. Until the first signed release is published,
+the signed empty feed reports no updates. Downloads are public and clients need
+no GitHub token. The workflow has no access to the private signing key.
+
+Before raising the minimum macOS version, extend the feed to retain updates for
+older supported systems; the current feed advertises one release. To withdraw an
+update, unpublish/delete its release and rerun the feed workflow if needed. Existing
+installations are never automatically downgraded.
+
+Test an update from a disposable older bundle: check, download, verify, install,
+restart, and check again. Confirm that normal quit cleanup runs. Also test an
+unreachable feed and a tampered signature; neither may replace the installed app.
 
 ## Publish
 

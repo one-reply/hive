@@ -25,7 +25,7 @@ def install(destination):
             raise ValueError("Sparkle archive checksum mismatch")
         with tarfile.open(archive) as package:
             members = [item for item in package.getmembers()
-                       if item.name.split("/")[0] in {"Sparkle.framework", "bin", "LICENSE"}]
+                       if item.name.removeprefix("./").split("/")[0] in {"Sparkle.framework", "bin", "LICENSE"}]
             package.extractall(destination, members=members, filter="data")
     assert (destination / "Sparkle.framework/Sparkle").is_file()
     assert (destination / "Sparkle.framework/Versions/Current").is_symlink()
