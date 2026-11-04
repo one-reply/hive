@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::ui::text_field::TextField;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -319,7 +320,10 @@ impl ProjectPage {
         let body = match self.tab {
             BadgeTab::Avatar => self.render_avatar(snapshot, cx).into_any_element(),
             BadgeTab::Icon => self.render_icons(snapshot, cx).into_any_element(),
-            BadgeTab::Emoji => Input::new(&self.emoji_input).into_any_element(),
+            BadgeTab::Emoji => {
+                TextField::input(Input::new(&self.emoji_input), &self.emoji_input, cx)
+                    .into_any_element()
+            }
         };
         v_flex().gap_3().child(tabs).child(body)
     }
@@ -378,7 +382,11 @@ impl Render for ProjectPage {
                             .font_weight(FontWeight::MEDIUM)
                             .child("Display Name"),
                     )
-                    .child(Input::new(&self.name_input)),
+                    .child(TextField::input(
+                        Input::new(&self.name_input),
+                        &self.name_input,
+                        cx,
+                    )),
             )
             .child(self.render_preview(&snapshot, cx))
             .child(self.render_colors(&snapshot, cx))

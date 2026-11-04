@@ -1,5 +1,6 @@
 //! Git section of the right sidebar. Renders snapshots and dispatches worktree-scoped intents.
 use super::git_controls;
+use crate::ui::text_field::TextField;
 use crate::{
     app::AppState,
     state::git::{Git, Section, Target},
@@ -11,6 +12,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
@@ -202,7 +204,11 @@ impl GitPanel {
             .gap_2()
             .border_t_1()
             .border_color(cx.theme().border)
-            .child(Textarea::new(&self.message))
+            .child(TextField::textarea(
+                Textarea::new(&self.message),
+                &self.message,
+                cx,
+            ))
             .child(
                 h_flex()
                     .gap_2()
@@ -266,12 +272,14 @@ impl Render for GitPanel {
             .child(div().px_2().child(self.tabs(section, changes)))
             .when(has_files, |p| {
                 p.child(
-                    div().px_3().py_2().child(
+                    div().px_3().py_2().child(TextField::input(
                         Input::new(&self.filter)
                             .small()
                             .prefix(Icon::new(Lucide::Search).size_3p5())
                             .cleanable(true),
-                    ),
+                        &self.filter,
+                        cx,
+                    )),
                 )
             })
             .child(
@@ -349,6 +357,6 @@ fn loading_row(label: &'static str, cx: &App) -> impl IntoElement {
         .items_center()
         .text_size(META_TEXT)
         .text_color(cx.theme().muted_foreground)
-        .child(Icon::new(Lucide::LoaderCircle).size_3())
+        .child(Spinner::new().icon(Lucide::LoaderCircle).xsmall())
         .child(label)
 }

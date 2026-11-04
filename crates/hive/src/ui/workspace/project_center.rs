@@ -76,8 +76,8 @@ impl ProjectCenter {
             .filter_map(|panel| panel.read(cx).cwd(cx))
     }
 
-    /// Activates the terminal tab whose shell runs in `cwd`, or opens one. Tells whether a
-    /// tab is now showing: `false` when no tab existed and the PTY could not be spawned.
+    /// Activates and focuses the terminal tab whose shell runs in `cwd`, or opens one. Tells
+    /// whether a tab is now showing: `false` when no tab existed and the PTY could not be spawned.
     pub(super) fn show_terminal(&mut self, cwd: &Path, window: &mut Window, cx: &mut App) -> bool {
         self.prune(cx);
         let existing = self
@@ -85,13 +85,15 @@ impl ProjectCenter {
             .iter()
             .find(|panel| panel.read(cx).cwd(cx).as_deref() == Some(cwd))
             .cloned();
-        match existing {
-            Some(panel) => {
-                self.select(&panel, window, cx);
-                true
-            }
-            None => self.open_terminal(Some(cwd), window, cx),
-        }
+        let Some(panel) = existing else {
+            return self.open_terminal(Some(cwd), window, cx);
+        };
+        self.select(&panel, window, cx);
+        // Selecting a tab the dock already displays is a no-op there, including its focus:
+        // the sidebar shows this tab on selection, so by the time the Git panel asks for it
+        // the shell is usually visible already and only the focus is missing.
+        panel.update(cx, |panel, cx| panel.focus_active(window, cx));
+        true
     }
 
     /// Opens a shell in `cwd` (`None` = the user's home directory) as a new tab.

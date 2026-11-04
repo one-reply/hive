@@ -96,7 +96,9 @@ impl TerminalPanel {
         cx.notify();
     }
 
-    fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Moves keyboard focus into the pane that last had it. The dock focuses a tab only when
+    /// it becomes active, so callers that show an already active tab call this themselves.
+    pub(crate) fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
         let handle = self.active.read(cx).focus_handle().clone();
         handle.focus(window, cx);
     }

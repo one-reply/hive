@@ -7,6 +7,7 @@ use std::f32::consts::FRAC_PI_2;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::ui::text_field::TextField;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
@@ -14,6 +15,7 @@ use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
@@ -571,7 +573,7 @@ fn render_creating(cx: &App) -> impl IntoElement {
         .gap_2()
         .text_size(META_TEXT)
         .text_color(cx.theme().muted_foreground)
-        .child(Icon::new(IconName::LoaderCircle).size_3())
+        .child(Spinner::new().icon(IconName::LoaderCircle).xsmall())
         .child("Creating worktree…")
 }
 
@@ -638,7 +640,7 @@ fn open_create_dialog(
                 v_flex()
                     .gap_2()
                     .child(div().text_sm().child("Name"))
-                    .child(Input::new(&input))
+                    .child(TextField::input(Input::new(&input), &input, cx))
                     .child(div().text_xs().text_color(muted_fg).child(hint.clone())),
             )
             .button_props(

@@ -49,26 +49,23 @@ impl GitPanel {
                     })
                     .child(name),
             )
-            .child(if spinning {
-                Icon::new(Lucide::LoaderCircle)
-                    .size_3p5()
-                    .text_color(muted)
-                    .into_any_element()
-            } else {
+            // Same control as "Refresh limits" in the status bar: a loading button spins
+            // its own icon and ignores clicks until the operation ends.
+            .child(
                 Button::new("git-refresh")
                     .cursor_pointer()
                     .ghost()
                     .xsmall()
                     .icon(Lucide::RefreshCw)
+                    .loading(spinning)
                     .tooltip("Refresh")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.git.update(cx, |g, cx| {
                             g.clear_error(cx);
                             g.refresh(true, cx);
                         })
-                    }))
-                    .into_any_element()
-            });
+                    })),
+            );
 
         let branch_row = h_flex()
             .gap_1p5()

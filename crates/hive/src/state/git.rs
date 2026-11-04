@@ -222,6 +222,7 @@ impl Git {
     }
     pub fn terminal(&self, cx: &mut Context<Self>) {
         if let Some(t) = &self.target {
+            tracing::debug!(path = %t.path.display(), "source control: open terminal");
             cx.emit(GitEvent::Terminal(t.clone()));
         }
     }

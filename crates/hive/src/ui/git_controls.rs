@@ -1,5 +1,6 @@
 //! Branch selection and confirmations with their original worktree captured at opening.
 use crate::state::git::{Git, Target};
+use crate::ui::text_field::TextField;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
@@ -142,7 +143,11 @@ impl Render for BranchPicker {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(div().flex_1().child(Input::new(&self.filter)))
+                    .child(div().flex_1().child(TextField::input(
+                        Input::new(&self.filter),
+                        &self.filter,
+                        cx,
+                    )))
                     .child(
                         Button::new("new-branch")
                             .cursor_pointer()
@@ -280,7 +285,7 @@ fn create_branch(
             .unwrap_or(&remote.name);
         name.update(cx, |n, cx| n.set_value(suggested.to_string(), window, cx));
     }
-    window.open_dialog(cx, move |dialog, _, _| {
+    window.open_dialog(cx, move |dialog, _, cx| {
         let (git, target, name, base) = (git.clone(), target.clone(), name.clone(), base.clone());
         let track = remote.is_some();
         dialog
@@ -294,9 +299,9 @@ fn create_branch(
                 v_flex()
                     .gap_2()
                     .child("Branch name")
-                    .child(Input::new(&name))
+                    .child(TextField::input(Input::new(&name), &name, cx))
                     .child("Start from")
-                    .child(Input::new(&base)),
+                    .child(TextField::input(Input::new(&base), &base, cx)),
             )
             .button_props(
                 DialogButtonProps::default()
