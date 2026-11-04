@@ -31,56 +31,72 @@ the code signature, ZIP integrity, and checksum. Artifacts are written to
 
 ## Developer ID and notarization
 
-Choose the Apple Developer team authorized to publish Hive. Its organization name
-will appear in the application's signing identity. A local **Developer ID
-Application** certificate and its private key are required; an Apple Development
-certificate cannot replace it. The team's Account Holder can issue a certificate
-for a certificate signing request generated on the signing Mac. See
-[Apple's certificate instructions](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/).
-Cloud-managed certificates are a different signing workflow and cannot simply be
-exported as the `.p12` identity used here.
+Hive uses Xcode's cloud-managed **Developer ID Application** signing workflow.
+Choose the Apple Developer team authorized to publish Hive: its organization name
+will appear in the signature. The Xcode account must have access to cloud-managed
+Developer ID certificates for that team. A local Apple Development certificate
+alone does not grant that permission. See [Apple's cloud signing documentation](https://developer.apple.com/help/account/certificates/cloud-managed-certificates/).
 
-For a local release, store notarization credentials with `xcrun notarytool
-store-credentials hive-notary`, using its interactive password prompt or a local
-App Store Connect API key. Keep private keys outside the checkout. Then run:
+For a local release, sign in to the authorized team in Xcode → Settings → Accounts:
 
 ```sh
-export HIVE_SIGNING_IDENTITY='Developer ID Application: Your Organization (TEAMID)'
-export HIVE_NOTARY_PROFILE=hive-notary
+export HIVE_APPLE_TEAM_ID='YOURTEAMID'
 PATH="$PWD/target/release-tools:$PATH" bash scripts/bundle-macos.sh release
 ```
 
-`HIVE_SIGNING_KEYCHAIN` optionally selects a dedicated keychain containing both the
-signing identity and notarization profile. Without either signing setting, the
-packager produces a local ad-hoc preview. Partial configuration fails instead of
-silently producing a preview. To sign an already built, disposable copy of Hive.app,
-run `python3 scripts/sign_macos.py /absolute/path/to/Hive.app` with the same variables.
+The ten-character team ID is available in the Apple Developer account. Without any
+Apple variables, the packager produces a local ad-hoc preview. Partial configuration
+fails instead of silently producing a preview. To sign an already built disposable
+copy, run `python3 scripts/sign_macos.py /absolute/path/to/Hive.app` with the same
+variable. The script uses `-allowProvisioningUpdates`, allowing Xcode to manage the
+certificates and provisioning resources required for that team's distribution.
 
-The script signs Sparkle's nested helpers, the framework, and finally the host,
-using hardened runtime and a secure timestamp. It retains Sparkle helper
-entitlements without disabling library validation on Hive. Only Apple's `Accepted`
-response permits stapling; ticket validation, recursive signature verification and
-Gatekeeper assessment must all succeed. The final ZIP is created **after** stapling,
-then its SHA-256 and Sparkle signatures are generated from those final bytes.
+The script wraps the existing build in an `.xcarchive`; it does not rebuild Rust.
+Xcode signs the app and nested Sparkle code with Developer ID and uploads the result
+to Apple's notary service. The script waits up to 30 minutes for notarized export,
+then requires ticket validation, recursive signature verification and Gatekeeper
+assessment. The final ZIP is created **after** stapling; SHA-256 and Sparkle
+signatures are generated from those final bytes. No Developer ID private key is
+exported into GitHub.
 
-Configure these repository settings before pushing a release tag:
+If Apple is still processing or export fails, the script preserves the archive and
+`upload.log` at the printed path. Inspect the error before retrying. For a pending
+submission, resume its export without uploading another copy:
+
+```sh
+xcodebuild -exportNotarizedApp -archivePath /path/to/Hive.xcarchive \
+  -exportPath /path/to/notarized -allowProvisioningUpdates
+xcrun stapler validate /path/to/notarized/Hive.app
+codesign --verify --deep --strict /path/to/notarized/Hive.app
+spctl --assess --type execute --verbose=2 /path/to/notarized/Hive.app
+```
+
+Use the exported app to create a new ZIP, checksum and Sparkle appcast; never reuse
+the checksum or update signatures from the ad-hoc input.
+
+For unattended GitHub releases, an authorized maintainer must configure:
 
 | Setting | Value |
 | --- | --- |
-| Variable `APPLE_SIGNING_IDENTITY` | Full `Developer ID Application: Organization (TEAMID)` identity |
-| Secret `DEVELOPER_ID_CERTIFICATE_BASE64` | Base64 of an encrypted `.p12` containing the certificate and private key |
-| Secret `DEVELOPER_ID_CERTIFICATE_PASSWORD` | Password for that `.p12` |
-| Secret `NOTARY_API_KEY_BASE64` | Base64 of the team's App Store Connect API `.p8` key authorized for notarization |
-| Secret `NOTARY_KEY_ID` | That API key's ID |
-| Secret `NOTARY_ISSUER_ID` | That team API key's issuer UUID |
+| Variable `APPLE_TEAM_ID` | Authorized ten-character Apple Developer team ID |
+| Secret `APPLE_API_KEY_BASE64` | Base64 of a private App Store Connect `.p8` API key authorized for this team's cloud signing |
+| Secret `APPLE_API_KEY_ID` | The API key's ID |
+| Secret `APPLE_API_ISSUER_ID` | The team API key's issuer UUID |
 
-Use GitHub's secret-entry UI or pipe a private file into `gh secret set`; never put
-secret values into chat, shell history, commits or logs. The release step imports
-credentials into a temporary runner keychain and deletes it and the private files
-on exit. PR/build jobs never receive these secrets. The existing
-`SPARKLE_PRIVATE_KEY` remains separate and signs the final update archive and feed.
-See [GitHub's certificate setup](https://docs.github.com/en/actions/how-tos/deploy/deploy-to-third-party-platforms/sign-xcode-applications)
-and [Apple's notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
+The API key must have the team's cloud-managed Developer ID permissions; a
+notarization-only key is not sufficient for cloud signing. Review its actual access
+with the organization before storing it in GitHub. A successful local Xcode export
+does not establish that a separately configured API key works on a hosted runner.
+The release job fails if credentials are missing; it never falls back to ad-hoc.
+
+The workflow writes the API key to a permission-restricted temporary file and removes
+it on exit. PR/build jobs never receive it. For local API authentication, set
+`HIVE_APPLE_API_KEY` to that file's path, plus `HIVE_APPLE_API_KEY_ID` and
+`HIVE_APPLE_API_ISSUER_ID`; otherwise Xcode uses its signed-in account. Keep keys
+outside the checkout and never paste their contents into chat or command arguments.
+The existing `SPARKLE_PRIVATE_KEY` separately signs the final update archive and feed.
+See [Apple's automation workflow](https://developer.apple.com/videos/play/wwdc2021/10204/)
+and [notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
 
 Before publishing, download the final draft ZIP through a browser and test first
 launch in a clean macOS profile, along with terminal, Keychain and Sparkle updates.

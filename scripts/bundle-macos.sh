@@ -111,7 +111,7 @@ plutil -lint "$app/Contents/Info.plist"
 codesign --verify --deep --strict "$app/Contents/Frameworks/Sparkle.framework"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
-if [[ -n "${HIVE_SIGNING_IDENTITY:-}${HIVE_NOTARY_PROFILE:-}${HIVE_SIGNING_KEYCHAIN:-}" ]]; then
+if [[ -n "${HIVE_APPLE_TEAM_ID:-}${HIVE_APPLE_API_KEY:-}${HIVE_APPLE_API_KEY_ID:-}${HIVE_APPLE_API_ISSUER_ID:-}" ]]; then
     python3 scripts/sign_macos.py "$app"
 fi
 rm -rf "$output/Hive.app"
