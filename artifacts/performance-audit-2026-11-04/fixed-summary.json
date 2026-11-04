@@ -1,0 +1,103 @@
+{
+  "units": "milliseconds, except row indices and list_check steps",
+  "phases": {
+    "visible_start": 1793811829033007,
+    "visible_end": 1793811859037914,
+    "hidden_start": 1793811861038487,
+    "hidden_end": 1793811891039687
+  },
+  "scenarios": {
+    "visible": {
+      "frame_draw": {
+        "n": 808,
+        "p50": 10.2845,
+        "p95": 13.598,
+        "max": 18.644,
+        "over50": 0
+      },
+      "dirty_to_present": {
+        "n": 808,
+        "p50": 21.8555,
+        "p95": 34.701,
+        "max": 40.927,
+        "over50": 0
+      },
+      "heartbeat_lateness": {
+        "n": 2398,
+        "p50": 1.048,
+        "p95": 9.695,
+        "max": 15.55,
+        "over50": 0
+      },
+      "git_changes_render": {
+        "n": 793,
+        "p50": 0.099,
+        "p95": 0.131,
+        "max": 0.169,
+        "over50": 0
+      },
+      "git_status_stats": {
+        "n": 1,
+        "p50": 67.498,
+        "p95": 67.498,
+        "max": 67.498,
+        "over50": 1
+      },
+      "terminal_lock_wait": {
+        "n": 788,
+        "p50": 0.0,
+        "p95": 0.0,
+        "max": 0.068,
+        "over50": 0
+      },
+      "git_rows": {
+        "events": 12688,
+        "max_index": 15,
+        "unique_indices": 16
+      }
+    },
+    "hidden": {
+      "frame_draw": {
+        "n": 770,
+        "p50": 11.399000000000001,
+        "p95": 13.582,
+        "max": 42.565,
+        "over50": 0
+      },
+      "dirty_to_present": {
+        "n": 770,
+        "p50": 28.303,
+        "p95": 35.16,
+        "max": 45.809,
+        "over50": 0
+      },
+      "heartbeat_lateness": {
+        "n": 2420,
+        "p50": 1.037,
+        "p95": 9.281,
+        "max": 37.882,
+        "over50": 0
+      },
+      "git_changes_render": {
+        "n": 0
+      },
+      "git_status_stats": {
+        "n": 0
+      },
+      "terminal_lock_wait": {
+        "n": 741,
+        "p50": 0.0,
+        "p95": 0.0,
+        "max": 0.047,
+        "over50": 0
+      },
+      "git_rows": {
+        "events": 0,
+        "max_index": -1,
+        "unique_indices": 0
+      }
+    }
+  },
+  "list_checks": [],
+  "limitations": "Primary 30s phases valid; subsequent scroll-to-reveal assertion failed because unmeasured items have no height. Follow-up uses ListState::scroll_to_end; malformed final CSV row excluded."
+}

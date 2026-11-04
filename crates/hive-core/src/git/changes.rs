@@ -11,7 +11,7 @@ pub enum Action {
     Stage(Vec<String>),
     /// Restore the listed index paths to HEAD, preserving working files.
     Unstage(Vec<String>),
-    /// Restore one tracked working file from its index version.
+    /// Restore one tracked working file from its index version, or delete it when untracked.
     Discard(String),
     /// Commit only the index, honoring hooks and signing configuration.
     Commit(String),
@@ -110,14 +110,21 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<(), GitError>
                 .iter()
                 .find(|f| f.path == *path)
                 .ok_or_else(|| GitError::Invalid("This file no longer has changes.".into()))?;
-            if matches!(
-                file.unstaged,
-                None | Some(status::Change::Untracked | status::Change::Conflicted)
-            ) || file.submodule
-            {
+            if matches!(file.unstaged, None | Some(status::Change::Conflicted)) || file.submodule {
                 return Err(GitError::Invalid(
-                    "Only unstaged tracked files can be discarded here.".into(),
+                    "Only unstaged files can be discarded here.".into(),
                 ));
+            }
+            if file.unstaged == Some(status::Change::Untracked) {
+                diff::validate_path(path)?;
+                // `clean` has no --pathspec-from-file; status lists untracked files one by one,
+                // so a single literal file path never needs `-d`.
+                return run(
+                    host,
+                    cwd,
+                    &["--literal-pathspecs", "clean", "-f", "-q", "--", path],
+                )
+                .map(drop);
             }
             paths(
                 host,

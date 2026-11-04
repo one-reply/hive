@@ -1,0 +1,580 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -7,7 +7,7 @@
+ edition = "2024"
+ 
+ [workspace.dependencies]
+-hive-core = { path = "crates/hive-core" }
++hive-core = { package = "hive-core-perf-fixed", path = "crates/hive-core" }
+ 
+ gpui-kit = { version = "0.9", features = ["tree-sitter-languages"] }
+ serde = { version = "1", features = ["derive"] }
+@@ -20,7 +20,7 @@
+ thiserror = "2"
+ alacritty_terminal = "0.26"
+ rustix-openpty = "0.2"
+-libc = { version = "0.2", default-features = false }
++libc = "0.2"
+ image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
+ async-channel = "2.5"
+ polling = "3.11"
+--- a/crates/hive/Cargo.toml
++++ b/crates/hive/Cargo.toml
+@@ -1,5 +1,5 @@
+ [package]
+-name = "hive"
++name = "hive-perf-fixed"
+ version.workspace = true
+ edition.workspace = true
+ 
+@@ -10,3 +10,5 @@
+ serde.workspace = true
+ tracing.workspace = true
+ tracing-subscriber.workspace = true
++
++gpui-profiler = { package = "gpui-pre", version = "=0.3.11", features = ["profiler"] }
+--- a/crates/hive/src/main.rs
++++ b/crates/hive/src/main.rs
+@@ -1,4 +1,5 @@
+ mod app;
++mod perf;
+ mod state;
+ mod terminal;
+ mod ui;
+@@ -37,6 +38,7 @@
+         .with_assets(gpui_kit::assets::AllAssets)
+         .run(|cx| {
+             gpui_kit::init(cx);
++            perf::start(cx);
+             cx.spawn(async move |cx| {
+                 let loaded = cx
+                     .background_executor()
+@@ -61,10 +63,56 @@
+                         ))),
+                         ..TitleBar::window_options()
+                     };
+-                    gpui_kit::open_window(options, cx, |window, cx| {
++                    let (audit_window, audit_workspace) = gpui_kit::open_window(options, cx, |window, cx| {
+                         cx.new(|cx| Workspace::new(window, cx))
+                     })
+                     .expect("failed to open window");
++                    cx.spawn(async move |cx| {
++                        let mut previous = std::collections::HashMap::new();
++                        loop {
++                            cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
++                            if audit_window.update(cx, |_, window, _| {
++                                let frames = window.frame_duration_snapshot();
++                                let input = window.input_latency_snapshot();
++                                for (name, histogram) in [
++                                    ("frame_draw", frames.draw_duration_histogram),
++                                    ("dirty_to_present", frames.dirty_to_present_histogram),
++                                    ("animation_interval", frames.present_interval_histogram),
++                                    ("input_to_frame", input.latency_histogram),
++                                ] {
++                                    let mut delta = histogram.clone();
++                                    if let Some(old) = previous.insert(name, histogram) { let _ = delta.subtract(&old); }
++                                    for entry in delta.iter_recorded() {
++                                        for _ in 0..entry.count_at_value() {
++                                            perf::record(name, u128::from(entry.value_iterated_to()) / 1000);
++                                        }
++                                    }
++                                }
++                            }).is_err() { break; }
++                        }
++                    }).detach();
++                    cx.spawn(async move |cx| {
++                        cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
++                        cx.update(|cx| {
++                            let projects = AppState::get(cx).projects.clone();
++                            let path = std::path::Path::new("/tmp/hive-perf-audit/repo-1000");
++                            projects.update(cx, |p, cx| p.select(path, Some(std::path::Path::new("/private/tmp/hive-perf-audit/repo-1000")), cx));
++                        });
++                        for (seconds, name, toggle) in [(6, "visible_start", false), (10, "visible_end", true), (2, "hidden_start", false), (10, "hidden_end", true)] {
++                            cx.background_executor().timer(std::time::Duration::from_secs(seconds)).await;
++                            if name == "visible_start" {
++                                cx.update(|cx| assert_eq!(AppState::get(cx).git.read(cx).status.as_ref().unwrap().files.len(), 1000));
++                            }
++                            perf::record(name, 0);
++                            if toggle { audit_workspace.update(cx, |w, cx| w.toggle_git(cx)); }
++                        }
++                        for step in 0..4 {
++                            cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
++                            audit_workspace.update(cx, |w, cx| w.audit_step(step, cx));
++                        }
++                        cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
++                        cx.update(|cx| cx.quit());
++                    }).detach();
+                     cx.activate(true);
+                 });
+             })
+--- a/crates/hive/src/perf.rs
++++ b/crates/hive/src/perf.rs
+@@ -0,0 +1,26 @@
++use std::sync::{Mutex, OnceLock};
++use std::time::{Instant, SystemTime, UNIX_EPOCH};
++use std::io::Write;
++static SAMPLES: OnceLock<Mutex<Vec<(u128, &'static str, u128)>>> = OnceLock::new();
++pub fn record(name: &'static str, us: u128) {
++ let mut data = SAMPLES.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap();
++ if data.len() < 100000 { data.push((SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros(),name,us)); }
++}
++pub struct Timer(&'static str, Instant);
++impl Timer { pub fn new(name: &'static str) -> Self { Self(name, Instant::now()) } }
++impl Drop for Timer { fn drop(&mut self) { record(self.0,self.1.elapsed().as_micros()); } }
++pub fn start(cx: &mut gpui_kit::App) {
++ std::thread::spawn(|| {
++  let mut out=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/hive-perf-fixed/timing.csv").unwrap();
++  loop { std::thread::sleep(std::time::Duration::from_secs(1));
++   let data=std::mem::take(&mut *SAMPLES.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap());
++   for (ts,name,us) in data { writeln!(out,"{ts},{name},{us}").unwrap(); }
++   out.flush().unwrap();
++  }
++ });
++ cx.spawn(async |cx| { loop {
++   let start=Instant::now();
++   cx.background_executor().timer(std::time::Duration::from_millis(8)).await;
++   record("heartbeat_lateness", start.elapsed().as_micros().saturating_sub(8000));
++ }}).detach();
++}
+--- a/crates/hive/src/state/git.rs
++++ b/crates/hive/src/state/git.rs
+@@ -270,7 +270,9 @@
+                 .background_executor()
+                 .spawn(async move {
+                     let t = &query_target;
++                    let timer = crate::perf::Timer::new("git_status_stats");
+                     let status = git::status::read_with_stats(&t.host, &t.path)?;
++                    drop(timer);
+                     let metadata = if force
+                         || old_head
+                             != Some((
+--- a/crates/hive/src/state/git_diff.rs
++++ b/crates/hive/src/state/git_diff.rs
+@@ -76,6 +76,7 @@
+             let result = cx
+                 .background_executor()
+                 .spawn(async move {
++                    let _perf = crate::perf::Timer::new("diff_read_parse");
+                     let patch = diff::read(
+                         &request.target.host,
+                         &request.target.path,
+--- a/crates/hive/src/state/terminal_session.rs
++++ b/crates/hive/src/state/terminal_session.rs
+@@ -43,9 +43,10 @@
+             let Some(starting) = starting else {
+                 return Err("Hive is shutting down".to_owned());
+             };
+-            let result = Terminal::spawn(cwd.as_deref(), None, TerminalSize::new(80, 24));
++            let result = Terminal::spawn(cwd.as_deref(), Some("/bin/sh"), TerminalSize::new(80, 24));
+             if let Ok(terminal) = &result {
+                 starting.register(terminal);
++                terminal.write(b"python3 /tmp/hive-perf-audit/stream.py 90\n".to_vec());
+             }
+             result.map_err(|error| {
+                 tracing::error!(?cwd, %error, "failed to start terminal");
+--- a/crates/hive/src/state/usage.rs
++++ b/crates/hive/src/state/usage.rs
+@@ -1,5 +1,5 @@
+ use gpui_kit::*;
+-use hive_core::usage::{self, Provider};
++use hive_core::usage::Provider;
+ use std::time::Duration;
+ 
+ /// Anthropic's usage endpoint rate-limits aggressively; keep polling slow.
+@@ -29,23 +29,5 @@
+         this
+     }
+ 
+-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+-        if self.loading {
+-            return;
+-        }
+-        self.loading = true;
+-        cx.notify();
+-        cx.spawn(async move |this, cx| {
+-            let providers = cx
+-                .background_executor()
+-                .spawn(async { usage::fetch_all() })
+-                .await;
+-            let _ = this.update(cx, |usage, cx| {
+-                usage.providers = providers;
+-                usage.loading = false;
+-                cx.notify();
+-            });
+-        })
+-        .detach();
+-    }
++    pub fn refresh(&mut self, _cx: &mut Context<Self>) {}
+ }
+--- a/crates/hive/src/terminal/element.rs
++++ b/crates/hive/src/terminal/element.rs
+@@ -166,6 +166,7 @@
+         window: &mut Window,
+         cx: &mut App,
+     ) -> Prepaint {
++        let _perf = crate::perf::Timer::new("terminal_prepaint");
+         let theme = cx.theme();
+         let font_size = theme.mono_font_size.max(MIN_FONT_SIZE);
+         let base_font = Font {
+@@ -216,7 +217,10 @@
+         let terminal = session
+             .terminal()
+             .expect("terminal element renders only ready sessions");
++        let wait = std::time::Instant::now();
+         let term = terminal.term().lock();
++        crate::perf::record("terminal_lock_wait", wait.elapsed().as_micros());
++        let hold = std::time::Instant::now();
+         let mut content = term.renderable_content();
+         let display_offset = content.display_offset;
+         let display_iter = std::mem::replace(&mut content.display_iter, term.grid().display_iter());
+@@ -328,6 +332,7 @@
+             glyphs.push((origin, line));
+         }
+         drop(term);
++        crate::perf::record("terminal_lock_hold", hold.elapsed().as_micros());
+ 
+         Prepaint {
+             background: palette.bg,
+--- a/crates/hive/src/ui/git_panel/commit/actions.rs
++++ b/crates/hive/src/ui/git_panel/commit/actions.rs
+@@ -50,7 +50,7 @@
+     ) -> impl IntoElement {
+         let mode = Mode::for_status(status);
+         let key: SharedString = format!("commit-actions:{:?}", self.git.read(cx).target).into();
+-        let mut slot = div().relative().w_full().h_6().flex_none();
++        let mut slot = div().relative().h_6().flex_none();
+         for shown in [Mode::Stage, Mode::Commit, Mode::Push] {
+             let presence = Presence::new((key.clone(), shown.id()), mode == shown)
+                 .transition(Transition::new(TRANSITION_DURATION).ease(ease_in_out))
+@@ -62,7 +62,6 @@
+             slot = slot.child(
+                 self.action_row(shown, status, interactive, busy, window, cx)
+                     .absolute()
+-                    .w_full()
+                     .left_0()
+                     .right_0()
+                     .top(TRANSITION_OFFSET * (1. - presence.progress))
+@@ -123,7 +122,7 @@
+                 ButtonLook::Primary,
+             ),
+         };
+-        let mut row = h_flex().w_full().gap_2().items_center().child(
++        let mut row = h_flex().gap_2().items_center().child(
+             Button::new(mode.id())
+                 .cursor_pointer()
+                 .small()
+@@ -162,7 +161,6 @@
+                 Button::new("commit-and-push")
+                     .cursor_pointer()
+                     .small()
+-                    .flex_1()
+                     .icon(Lucide::ArrowUp)
+                     .label("Commit & Push")
+                     .loading(loading)
+--- a/crates/hive/src/ui/git_panel/file_row.rs
++++ b/crates/hive/src/ui/git_panel/file_row.rs
+@@ -85,9 +85,7 @@
+         let busy = self.git.read(cx).is_busy();
+         let fg = cx.theme().foreground;
+         let can_act = mutable && !conflicted;
+-        let untracked = source == DiffSource::Untracked;
+-        let can_discard =
+-            (source == DiffSource::WorkingTree || untracked) && !conflicted && !file.submodule;
++        let can_discard = source == DiffSource::WorkingTree && !conflicted && !file.submodule;
+         let row_id: SharedString = format!(
+             "file-row:{:?}:{source:?}:{}",
+             self.git.read(cx).target,
+@@ -128,8 +126,8 @@
+                     .w(ACTION_WIDTH)
+                     .h(ROW_HEIGHT)
+                     .rounded_none()
+-                    .icon(if untracked { Lucide::Trash } else { Lucide::Undo2 })
+-                    .tooltip(if untracked { "Delete file" } else { "Discard unstaged changes" })
++                    .icon(Lucide::Undo2)
++                    .tooltip("Discard unstaged changes")
+                     .disabled(busy)
+                     .on_click(cx.listener(move |this, _, window, cx| {
+                         if !show_actions {
+@@ -139,24 +137,13 @@
+                         git_controls::confirm(
+                             this.git.clone(),
+                             Action::Discard(path.clone()),
+-                            if untracked {
+-                                git_controls::Confirmation {
+-                                    title: "Delete File",
+-                                    description: format!(
+-                                        "{path} is not tracked by Git and will be deleted. It cannot be recovered."
+-                                    ),
+-                                    ok_text: "Delete",
+-                                    danger: true,
+-                                }
+-                            } else {
+-                                git_controls::Confirmation {
+-                                    title: "Discard Changes",
+-                                    description: format!(
+-                                        "{path} will be restored from its staged version. Unstaged edits are lost and cannot be recovered."
+-                                    ),
+-                                    ok_text: "Discard",
+-                                    danger: true,
+-                                }
++                            git_controls::Confirmation {
++                                title: "Discard Changes",
++                                description: format!(
++                                    "{path} will be restored from its staged version. Unstaged edits are lost and cannot be recovered."
++                                ),
++                                ok_text: "Discard",
++                                danger: true,
+                             },
+                             window,
+                             cx,
+@@ -199,7 +186,6 @@
+         let (selected, open_source) = (file.clone(), source);
+         h_flex()
+             .id(row_id)
+-            .w_full()
+             .h(ROW_HEIGHT)
+             .flex_none()
+             .gap_2()
+@@ -254,9 +240,7 @@
+                         slot.child(
+                             actions
+                                 .absolute()
+-                                .top_0()
+-                                .bottom_0()
+-                                .right_0()
++                                .inset_0()
+                                 .rounded_md()
+                                 .bg(fg.opacity(ACTION_BACKGROUND_OPACITY))
+                                 .opacity(progress),
+--- a/crates/hive/src/ui/git_panel/files.rs
++++ b/crates/hive/src/ui/git_panel/files.rs
+@@ -89,6 +89,7 @@
+     }
+ 
+     pub(super) fn changes(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
++        let _perf = crate::perf::Timer::new("git_changes_render");
+         let state = self.git.read(cx);
+         let Some(status) = &state.status else {
+             return if state.loading {
+@@ -141,6 +142,7 @@
+         let view = cx.entity().downgrade();
+         list(self.changes_list.clone(), move |index, window, cx| {
+             view.update(cx, |this, cx| {
++                crate::perf::record("git_row_index", index as u128);
+                 let (group, file) = rows[index];
+                 let (label, source) = &GROUPS[group];
+                 if let Some(file) = file {
+@@ -179,3 +181,16 @@
+         .into_any_element()
+     }
+ }
++
++impl GitPanel {
++ pub(crate) fn audit_step(&mut self, step: usize, cx: &mut Context<Self>) {
++  match step {
++   0 => { assert_eq!(self.change_rows.len(), 1001); self.changes_list.scroll_to_end(); }
++   1 => { assert!(self.changes_list.logical_scroll_top().item_ix > 950); self.toggle_group("Untracked", cx); }
++   2 => { assert_eq!(self.change_rows.len(), 1); self.toggle_group("Untracked", cx); }
++   _ => assert_eq!(self.change_rows.len(), 1001),
++  }
++  crate::perf::record("list_check", step as u128);
++  cx.notify();
++ }
++}
+--- a/crates/hive/src/ui/workspace/git.rs
++++ b/crates/hive/src/ui/workspace/git.rs
+@@ -74,7 +74,7 @@
+         cx.notify();
+     }
+ 
+-    pub(super) fn toggle_git(&mut self, cx: &mut Context<Self>) {
++    pub(crate) fn toggle_git(&mut self, cx: &mut Context<Self>) {
+         self.git_open = !self.git_open;
+         self.git_animate = true;
+         self.git_animation = Some(cx.spawn(async |this, cx| {
+--- a/crates/hive/src/ui/workspace.rs
++++ b/crates/hive/src/ui/workspace.rs
+@@ -521,3 +521,9 @@
+         Empty
+     }
+ }
++
++impl Workspace {
++ pub(crate) fn audit_step(&mut self, step: usize, cx: &mut Context<Self>) {
++  self.git_panel.update(cx, |panel, cx| panel.audit_step(step, cx));
++ }
++}
+--- a/crates/hive-core/Cargo.toml
++++ b/crates/hive-core/Cargo.toml
+@@ -1,5 +1,5 @@
+ [package]
+-name = "hive-core"
++name = "hive-core-perf-fixed"
+ version.workspace = true
+ edition.workspace = true
+ 
+--- a/crates/hive-core/examples/perf.rs
++++ b/crates/hive-core/examples/perf.rs
+@@ -0,0 +1,22 @@
++use hive_core::{git::status, host::Host};
++use std::{path::Path, time::Instant};
++fn main() {
++ if std::env::args().any(|a| a == "stall") {
++   status::read(&Host::Local, Path::new("/tmp/hive-perf-audit/repo-0")).unwrap();
++   return;
++ }
++ for n in [100,1000] {
++  let path=format!("/tmp/hive-perf-audit/repo-{n}");
++  for run in 0..4 {
++   let start=Instant::now();
++   let base=status::read(&Host::Local,Path::new(&path)).unwrap();
++   let base_ms=start.elapsed().as_secs_f64()*1000.;
++   let start=Instant::now();
++   let full=status::read_with_stats(&Host::Local,Path::new(&path)).unwrap();
++   let full_ms=start.elapsed().as_secs_f64()*1000.;
++   assert_eq!(base.files.len(),n); assert_eq!(full.files.len(),n);
++   assert!(full.files.iter().all(|f| f.unstaged_stats.is_some_and(|s|s.added==100 && s.removed==0)));
++   println!("{n},{run},{base_ms:.3},{full_ms:.3}");
++  }
++ }
++}
+--- a/crates/hive-core/src/git/changes/tests.rs
++++ b/crates/hive-core/src/git/changes/tests.rs
+@@ -195,13 +195,8 @@
+     repo.action(Action::Commit("index only".into())).unwrap();
+     assert_eq!(repo.git(&["show", &format!("HEAD:{path}")]), "two");
+     assert_eq!(std::fs::read_to_string(repo.0.join(path)).unwrap(), "three");
+-    let untracked = "dir/-[y] нове.txt";
+-    std::fs::create_dir(repo.0.join("dir")).unwrap();
+-    repo.write(untracked, "gone");
+-    repo.write("dir/keep", "keep");
+-    repo.action(Action::Discard(untracked.into())).unwrap();
+-    assert!(!repo.0.join(untracked).exists());
+-    assert!(repo.0.join("dir/keep").exists());
++    repo.write("new", "keep");
++    assert!(repo.action(Action::Discard("new".into())).is_err());
+ }
+ 
+ #[test]
+--- a/crates/hive-core/src/git/changes.rs
++++ b/crates/hive-core/src/git/changes.rs
+@@ -11,7 +11,7 @@
+     Stage(Vec<String>),
+     /// Restore the listed index paths to HEAD, preserving working files.
+     Unstage(Vec<String>),
+-    /// Restore one tracked working file from its index version, or delete it when untracked.
++    /// Restore one tracked working file from its index version.
+     Discard(String),
+     /// Commit only the index, honoring hooks and signing configuration.
+     Commit(String),
+@@ -110,21 +110,14 @@
+                 .iter()
+                 .find(|f| f.path == *path)
+                 .ok_or_else(|| GitError::Invalid("This file no longer has changes.".into()))?;
+-            if matches!(file.unstaged, None | Some(status::Change::Conflicted)) || file.submodule {
++            if matches!(
++                file.unstaged,
++                None | Some(status::Change::Untracked | status::Change::Conflicted)
++            ) || file.submodule
++            {
+                 return Err(GitError::Invalid(
+-                    "Only unstaged files can be discarded here.".into(),
++                    "Only unstaged tracked files can be discarded here.".into(),
+                 ));
+-            }
+-            if file.unstaged == Some(status::Change::Untracked) {
+-                diff::validate_path(path)?;
+-                // `clean` has no --pathspec-from-file; status lists untracked files one by one,
+-                // so a single literal file path never needs `-d`.
+-                return run(
+-                    host,
+-                    cwd,
+-                    &["--literal-pathspecs", "clean", "-f", "-q", "--", path],
+-                )
+-                .map(drop);
+             }
+             paths(
+                 host,
+--- a/crates/hive-core/src/git/numstat.rs
++++ b/crates/hive-core/src/git/numstat.rs
+@@ -292,34 +292,14 @@
+         let root = std::env::temp_dir().join(format!("hive-numstat-{}", std::process::id()));
+         std::fs::create_dir_all(&root).unwrap();
+         super::super::run(&Host::Local, &root, &["init", "-q"]).unwrap();
+-        super::super::run(
+-            &Host::Local,
+-            &root,
+-            &["config", "core.bigFileThreshold", "512m"],
+-        )
+-        .unwrap();
+         std::fs::write(root.join("new.txt"), "one\nlast").unwrap();
+         let status = super::super::status::read(&Host::Local, &root).unwrap();
+         let (attributes, threshold) = untracked_settings(&Host::Local, &root, &status).unwrap();
+         assert_eq!(threshold, 512 * 1024 * 1024);
+         assert_eq!(attributes["new.txt"], "unspecified");
+-        assert_eq!(
+-            local_untracked_counts(&root, "new.txt", &attributes["new.txt"], threshold).unwrap(),
+-            Some(LineStats {
+-                added: 2,
+-                removed: 0
+-            })
+-        );
+-        super::super::run(
+-            &Host::Local,
+-            &root,
+-            &["config", "core.bigFileThreshold", "2k"],
+-        )
+-        .unwrap();
+-        assert_eq!(
+-            untracked_settings(&Host::Local, &root, &status).unwrap().1,
+-            2048
+-        );
++        assert_eq!(local_untracked_counts(&root, "new.txt", &attributes["new.txt"], threshold).unwrap(), Some(LineStats { added: 2, removed: 0 }));
++        super::super::run(&Host::Local, &root, &["config", "core.bigFileThreshold", "2k"]).unwrap();
++        assert_eq!(untracked_settings(&Host::Local, &root, &status).unwrap().1, 2048);
+         std::fs::remove_dir_all(root).unwrap();
+     }
+ 
+--- a/crates/hive-core/src/state.rs
++++ b/crates/hive-core/src/state.rs
+@@ -124,7 +124,7 @@
+ }
+ 
+ pub fn hive_dir() -> PathBuf {
+-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".hive")
++    PathBuf::from("/tmp/hive-perf-fixed/state")
+ }
+ 
+ #[cfg(test)]
+--- a/crates/hive-core/src/terminal/process.rs
++++ b/crates/hive-core/src/terminal/process.rs
+@@ -155,29 +155,3 @@
+         ));
+     }
+ }
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::remove_inherited_agent_env;
+-    use std::process::Command;
+-
+-    #[test]
+-    fn child_shell_does_not_inherit_claude_code_markers() {
+-        let mut command = Command::new("env");
+-        command
+-            .env("CLAUDE_CODE_CHILD_SESSION", "1")
+-            .env("CLAUDECODE", "1")
+-            .env("HIVE_KEEP", "1");
+-        // The filter reads the process environment, so the markers must be set there too.
+-        unsafe {
+-            std::env::set_var("CLAUDE_CODE_CHILD_SESSION", "1");
+-            std::env::set_var("CLAUDECODE", "1");
+-        }
+-        remove_inherited_agent_env(&mut command);
+-        let output = command.output().expect("env is always available");
+-        let env = String::from_utf8_lossy(&output.stdout);
+-        assert!(!env.contains("CLAUDE_CODE_CHILD_SESSION="), "{env}");
+-        assert!(!env.contains("CLAUDECODE="), "{env}");
+-        assert!(env.contains("HIVE_KEEP=1"), "{env}");
+-    }
+-}

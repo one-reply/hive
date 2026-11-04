@@ -292,14 +292,34 @@ mod tests {
         let root = std::env::temp_dir().join(format!("hive-numstat-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         super::super::run(&Host::Local, &root, &["init", "-q"]).unwrap();
+        super::super::run(
+            &Host::Local,
+            &root,
+            &["config", "core.bigFileThreshold", "512m"],
+        )
+        .unwrap();
         std::fs::write(root.join("new.txt"), "one\nlast").unwrap();
         let status = super::super::status::read(&Host::Local, &root).unwrap();
         let (attributes, threshold) = untracked_settings(&Host::Local, &root, &status).unwrap();
         assert_eq!(threshold, 512 * 1024 * 1024);
         assert_eq!(attributes["new.txt"], "unspecified");
-        assert_eq!(local_untracked_counts(&root, "new.txt", &attributes["new.txt"], threshold).unwrap(), Some(LineStats { added: 2, removed: 0 }));
-        super::super::run(&Host::Local, &root, &["config", "core.bigFileThreshold", "2k"]).unwrap();
-        assert_eq!(untracked_settings(&Host::Local, &root, &status).unwrap().1, 2048);
+        assert_eq!(
+            local_untracked_counts(&root, "new.txt", &attributes["new.txt"], threshold).unwrap(),
+            Some(LineStats {
+                added: 2,
+                removed: 0
+            })
+        );
+        super::super::run(
+            &Host::Local,
+            &root,
+            &["config", "core.bigFileThreshold", "2k"],
+        )
+        .unwrap();
+        assert_eq!(
+            untracked_settings(&Host::Local, &root, &status).unwrap().1,
+            2048
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

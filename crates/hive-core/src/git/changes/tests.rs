@@ -195,8 +195,13 @@ fn literal_paths_unborn_unstage_discard_and_index_only_commit() {
     repo.action(Action::Commit("index only".into())).unwrap();
     assert_eq!(repo.git(&["show", &format!("HEAD:{path}")]), "two");
     assert_eq!(std::fs::read_to_string(repo.0.join(path)).unwrap(), "three");
-    repo.write("new", "keep");
-    assert!(repo.action(Action::Discard("new".into())).is_err());
+    let untracked = "dir/-[y] нове.txt";
+    std::fs::create_dir(repo.0.join("dir")).unwrap();
+    repo.write(untracked, "gone");
+    repo.write("dir/keep", "keep");
+    repo.action(Action::Discard(untracked.into())).unwrap();
+    assert!(!repo.0.join(untracked).exists());
+    assert!(repo.0.join("dir/keep").exists());
 }
 
 #[test]

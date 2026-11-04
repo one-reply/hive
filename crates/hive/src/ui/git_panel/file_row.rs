@@ -85,7 +85,9 @@ impl GitPanel {
         let busy = self.git.read(cx).is_busy();
         let fg = cx.theme().foreground;
         let can_act = mutable && !conflicted;
-        let can_discard = source == DiffSource::WorkingTree && !conflicted && !file.submodule;
+        let untracked = source == DiffSource::Untracked;
+        let can_discard =
+            (source == DiffSource::WorkingTree || untracked) && !conflicted && !file.submodule;
         let row_id: SharedString = format!(
             "file-row:{:?}:{source:?}:{}",
             self.git.read(cx).target,
@@ -126,8 +128,8 @@ impl GitPanel {
                     .w(ACTION_WIDTH)
                     .h(ROW_HEIGHT)
                     .rounded_none()
-                    .icon(Lucide::Undo2)
-                    .tooltip("Discard unstaged changes")
+                    .icon(if untracked { Lucide::Trash } else { Lucide::Undo2 })
+                    .tooltip(if untracked { "Delete file" } else { "Discard unstaged changes" })
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if !show_actions {
@@ -137,13 +139,24 @@ impl GitPanel {
                         git_controls::confirm(
                             this.git.clone(),
                             Action::Discard(path.clone()),
-                            git_controls::Confirmation {
-                                title: "Discard Changes",
-                                description: format!(
-                                    "{path} will be restored from its staged version. Unstaged edits are lost and cannot be recovered."
-                                ),
-                                ok_text: "Discard",
-                                danger: true,
+                            if untracked {
+                                git_controls::Confirmation {
+                                    title: "Delete File",
+                                    description: format!(
+                                        "{path} is not tracked by Git and will be deleted. It cannot be recovered."
+                                    ),
+                                    ok_text: "Delete",
+                                    danger: true,
+                                }
+                            } else {
+                                git_controls::Confirmation {
+                                    title: "Discard Changes",
+                                    description: format!(
+                                        "{path} will be restored from its staged version. Unstaged edits are lost and cannot be recovered."
+                                    ),
+                                    ok_text: "Discard",
+                                    danger: true,
+                                }
                             },
                             window,
                             cx,
@@ -186,6 +199,7 @@ impl GitPanel {
         let (selected, open_source) = (file.clone(), source);
         h_flex()
             .id(row_id)
+            .w_full()
             .h(ROW_HEIGHT)
             .flex_none()
             .gap_2()
@@ -240,7 +254,9 @@ impl GitPanel {
                         slot.child(
                             actions
                                 .absolute()
-                                .inset_0()
+                                .top_0()
+                                .bottom_0()
+                                .right_0()
                                 .rounded_md()
                                 .bg(fg.opacity(ACTION_BACKGROUND_OPACITY))
                                 .opacity(progress),

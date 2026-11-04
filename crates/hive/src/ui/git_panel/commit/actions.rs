@@ -50,7 +50,7 @@ impl GitPanel {
     ) -> impl IntoElement {
         let mode = Mode::for_status(status);
         let key: SharedString = format!("commit-actions:{:?}", self.git.read(cx).target).into();
-        let mut slot = div().relative().h_6().flex_none();
+        let mut slot = div().relative().w_full().h_6().flex_none();
         for shown in [Mode::Stage, Mode::Commit, Mode::Push] {
             let presence = Presence::new((key.clone(), shown.id()), mode == shown)
                 .transition(Transition::new(TRANSITION_DURATION).ease(ease_in_out))
@@ -62,6 +62,7 @@ impl GitPanel {
             slot = slot.child(
                 self.action_row(shown, status, interactive, busy, window, cx)
                     .absolute()
+                    .w_full()
                     .left_0()
                     .right_0()
                     .top(TRANSITION_OFFSET * (1. - presence.progress))
@@ -122,7 +123,7 @@ impl GitPanel {
                 ButtonLook::Primary,
             ),
         };
-        let mut row = h_flex().gap_2().items_center().child(
+        let mut row = h_flex().w_full().gap_2().items_center().child(
             Button::new(mode.id())
                 .cursor_pointer()
                 .small()
@@ -161,6 +162,7 @@ impl GitPanel {
                 Button::new("commit-and-push")
                     .cursor_pointer()
                     .small()
+                    .flex_1()
                     .icon(Lucide::ArrowUp)
                     .label("Commit & Push")
                     .loading(loading)
