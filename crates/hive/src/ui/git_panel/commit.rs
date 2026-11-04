@@ -1,6 +1,7 @@
 //! Commit composer and its staged-change controls.
 use super::*;
-use gpui_kit::component::kbd::Kbd;
+
+mod actions;
 
 impl GitPanel {
     fn generate_message(&self, cx: &mut Context<Self>) {
@@ -39,6 +40,41 @@ impl GitPanel {
         });
     }
 
+    fn commit_and_push(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.git.read(cx);
+        let message = self.message.read(cx).value();
+        if state.is_busy() || commit_blocker(state.status.as_ref(), &message).is_some() {
+            return;
+        }
+        let Some(Action::Push { remote, publish }) = state.push_action() else {
+            return;
+        };
+        let description = format!(
+            "Commit staged changes and publish this branch to {remote}, setting its upstream."
+        );
+        let action = Action::CommitAndPush {
+            message: message.to_string(),
+            remote,
+            publish,
+        };
+        if publish {
+            git_controls::confirm(
+                self.git.clone(),
+                action,
+                git_controls::Confirmation {
+                    title: "Commit & Publish Branch",
+                    description,
+                    ok_text: "Commit & Push",
+                    danger: false,
+                },
+                window,
+                cx,
+            );
+        } else {
+            self.git.update(cx, |git, cx| git.perform(action, cx));
+        }
+    }
+
     pub(super) fn footer(
         &self,
         status: Option<&Status>,
@@ -49,35 +85,8 @@ impl GitPanel {
         let staged = status.map(staged_count).unwrap_or(0);
         let generating = self.git.read(cx).is_generating();
         let conflicts = status.is_some_and(Status::has_conflicts);
-        let stage_paths: Vec<_> = status
-            .into_iter()
-            .flat_map(|s| &s.files)
-            .filter(|file| file.unstaged.is_some_and(|c| c != Change::Conflicted))
-            .map(|file| file.path.clone())
-            .collect();
-        let blocker = if staged > 0 {
-            commit_blocker(status, &self.message.read(cx).value())
-        } else if conflicts {
-            Some("Resolve conflicts first")
-        } else if status.is_none() {
-            Some("Waiting for changes")
-        } else if stage_paths.is_empty() {
-            Some("No changes to stage")
-        } else {
-            None
-        };
         let generate_hover = Hover::new("generate-commit-message", window, cx)
             .enabled(!busy && !conflicts && staged > 0);
-        let commit_hover =
-            Hover::new("commit-staged", window, cx).enabled(!busy && blocker.is_none());
-        let commit_look = if staged == 0 {
-            ButtonLook::Outline
-        } else {
-            ButtonLook::Primary
-        };
-        let shortcut = (staged > 0)
-            .then(|| Kbd::binding_for_action(&CommitChanges, Some("SourceControl"), window))
-            .flatten();
         v_flex()
             .p_3()
             .gap_2()
@@ -120,48 +129,7 @@ impl GitPanel {
                         .child("Generating…"),
                 )
             })
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Button::new("commit-staged")
-                            .cursor_pointer()
-                            .small()
-                            .flex_1()
-                            .icon(if staged == 0 {
-                                Lucide::Plus
-                            } else {
-                                Lucide::GitCommitHorizontal
-                            })
-                            .label(if staged == 0 { "Stage All" } else { "Commit" })
-                            .loading(busy && !generating)
-                            .disabled(busy || blocker.is_some())
-                            .when_some(blocker, |b, reason| b.tooltip(reason))
-                            .when(blocker.is_none() && staged == 0, |b| {
-                                b.tooltip("Stage all changes and untracked files")
-                            })
-                            .when(blocker.is_none() && staged > 0, |b| {
-                                b.tooltip_with_action(
-                                    "Commit staged changes",
-                                    &CommitChanges,
-                                    Some("SourceControl"),
-                                )
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if staged == 0 {
-                                    this.git.update(cx, |g, cx| {
-                                        g.perform(Action::Stage(stage_paths.clone()), cx)
-                                    });
-                                } else {
-                                    this.commit(cx);
-                                }
-                            }))
-                            .smooth_hover(commit_look, &commit_hover, cx)
-                            .flex_1(),
-                    )
-                    .when_some(shortcut, |row, kbd| row.child(kbd.outline())),
-            )
+            .child(self.commit_actions(status, busy, window, cx))
     }
 }
 

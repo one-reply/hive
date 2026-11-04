@@ -2,6 +2,21 @@
 use super::*;
 
 impl Git {
+    pub(crate) fn push_action(&self) -> Option<Action> {
+        let status = self.status.as_ref()?;
+        status.branch.as_ref()?;
+        let publish = status.upstream.is_none();
+        let remote = if publish {
+            self.remote.as_ref()?
+        } else {
+            self.upstream_remote.as_ref()?
+        };
+        Some(Action::Push {
+            remote: remote.clone(),
+            publish,
+        })
+    }
+
     pub fn perform(&mut self, action: Action, cx: &mut Context<Self>) {
         let Some(target) = self.target.clone() else {
             return;
@@ -71,16 +86,26 @@ impl Git {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy.remove(&target);
-                match result {
-                    Ok(()) => {
-                        if let Some(Action::Commit(message)) = action
-                            && this.draft(&target) == message
-                        {
-                            this.drafts.remove(&target);
-                        }
-                        this.projects.update(cx, |p, cx| p.rescan(cx)).detach();
+                let message = match &action {
+                    Some(Action::Commit(message)) if result.is_ok() => Some(message),
+                    Some(Action::CommitAndPush { message, .. })
+                        if result.is_ok()
+                            || matches!(&result, Err(git::GitError::PushAfterCommit { .. })) =>
+                    {
+                        Some(message)
                     }
-                    Err(error) => this.report(&target, error, cx),
+                    _ => None,
+                };
+                if let Some(message) = message
+                    && this.draft(&target) == message
+                {
+                    this.drafts.remove(&target);
+                }
+                if result.is_ok() || message.is_some() {
+                    this.projects.update(cx, |p, cx| p.rescan(cx)).detach();
+                }
+                if let Err(error) = result {
+                    this.report(&target, error, cx);
                 }
                 if this.target.as_ref() == Some(&target) {
                     this.refresh(true, cx);

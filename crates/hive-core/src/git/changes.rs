@@ -15,6 +15,12 @@ pub enum Action {
     Discard(String),
     /// Commit only the index, honoring hooks and signing configuration.
     Commit(String),
+    /// Commit the index, then push; a push failure leaves the local commit intact.
+    CommitAndPush {
+        message: String,
+        remote: String,
+        publish: bool,
+    },
     /// Switch to an existing local branch with a clean checkout.
     Switch(String),
     /// Create a branch from a base; tracking is explicit.
@@ -120,24 +126,20 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<(), GitError>
                 std::slice::from_ref(path),
             )
         }
-        Action::Commit(message) => {
-            if message.trim().is_empty() {
-                return Err(GitError::Invalid("Enter a commit message.".into()));
-            }
-            if status::read(host, cwd)?.has_conflicts() {
-                return Err(GitError::Invalid(
-                    "Resolve conflicts in the terminal before committing.".into(),
-                ));
-            }
-            bytes(
-                host,
-                cwd,
-                &["commit", "--file=-"],
-                Some(message.as_bytes()),
-                READ_LIMIT,
-                false,
-            )
-            .map(drop)
+        Action::Commit(message) => commit(host, cwd, message),
+        Action::CommitAndPush {
+            message,
+            remote,
+            publish,
+        } => {
+            // Reject an unavailable destination before creating a local commit.
+            let destination = push_destination(host, cwd, remote, *publish)?;
+            commit(host, cwd, message)?;
+            push(host, cwd, remote, *publish, &destination).map_err(|source| {
+                GitError::PushAfterCommit {
+                    source: Box::new(source),
+                }
+            })
         }
         Action::Switch(name) => branches::switch(host, cwd, name),
         Action::DeleteBranch { name, force } => branches::delete(host, cwd, name, *force),
@@ -174,35 +176,71 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<(), GitError>
             .map(drop)
         }
         Action::Push { remote, publish } => {
-            remote_exists(host, cwd, remote)?;
-            let state = status::read(host, cwd)?;
-            let branch = state.branch.ok_or_else(|| {
-                GitError::Invalid("Create a branch before pushing detached HEAD.".into())
-            })?;
-            let destination = if *publish {
-                format!("refs/heads/{branch}")
-            } else {
-                let configured = upstream_remote(host, cwd, &branch)?;
-                if configured.as_deref() != Some(remote) {
-                    return Err(GitError::Invalid(
-                        "Push must use this branch's configured upstream remote.".into(),
-                    ));
-                }
-                run(
-                    host,
-                    cwd,
-                    &["config", "--get", &format!("branch.{branch}.merge")],
-                )?
-            };
-            let refspec = format!("HEAD:{destination}");
-            let mut args = vec!["-c", "credential.interactive=false", "push"];
-            if *publish {
-                args.push("--set-upstream");
-            }
-            args.extend([remote.as_str(), refspec.as_str()]);
-            run(host, cwd, &args).map(drop)
+            let destination = push_destination(host, cwd, remote, *publish)?;
+            push(host, cwd, remote, *publish, &destination)
         }
     }
+}
+
+fn commit(host: &Host, cwd: &Path, message: &str) -> Result<(), GitError> {
+    if message.trim().is_empty() {
+        return Err(GitError::Invalid("Enter a commit message.".into()));
+    }
+    if status::read(host, cwd)?.has_conflicts() {
+        return Err(GitError::Invalid(
+            "Resolve conflicts in the terminal before committing.".into(),
+        ));
+    }
+    bytes(
+        host,
+        cwd,
+        &["commit", "--file=-"],
+        Some(message.as_bytes()),
+        READ_LIMIT,
+        false,
+    )
+    .map(drop)
+}
+
+fn push_destination(
+    host: &Host,
+    cwd: &Path,
+    remote: &str,
+    publish: bool,
+) -> Result<String, GitError> {
+    remote_exists(host, cwd, remote)?;
+    let branch = status::read(host, cwd)?
+        .branch
+        .ok_or_else(|| GitError::Invalid("Create a branch before pushing detached HEAD.".into()))?;
+    if publish {
+        return Ok(format!("refs/heads/{branch}"));
+    }
+    if upstream_remote(host, cwd, &branch)?.as_deref() != Some(remote) {
+        return Err(GitError::Invalid(
+            "Push must use this branch's configured upstream remote.".into(),
+        ));
+    }
+    run(
+        host,
+        cwd,
+        &["config", "--get", &format!("branch.{branch}.merge")],
+    )
+}
+
+fn push(
+    host: &Host,
+    cwd: &Path,
+    remote: &str,
+    publish: bool,
+    destination: &str,
+) -> Result<(), GitError> {
+    let refspec = format!("HEAD:{destination}");
+    let mut args = vec!["-c", "credential.interactive=false", "push"];
+    if publish {
+        args.push("--set-upstream");
+    }
+    args.extend([remote, &refspec]);
+    run(host, cwd, &args).map(drop)
 }
 
 #[cfg(test)]

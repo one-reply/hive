@@ -39,6 +39,12 @@ pub enum GitError {
     /// A bounded read exceeded the preview budget.
     #[error("Git output exceeds the {0} byte preview limit. Open this change in the terminal.")]
     TooLarge(usize),
+    /// The commit succeeded locally, but its subsequent push failed.
+    #[error("Commit created locally, but push failed. Use Push to retry.\n{source}")]
+    PushAfterCommit {
+        #[source]
+        source: Box<GitError>,
+    },
 }
 
 impl GitError {
@@ -47,6 +53,7 @@ impl GitError {
         match self {
             GitError::Spawn { .. } | GitError::Invalid(_) | GitError::TooLarge(_) => "",
             GitError::Failed { stderr, .. } => stderr,
+            GitError::PushAfterCommit { source } => source.stderr(),
         }
     }
 }

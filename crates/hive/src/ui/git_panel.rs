@@ -176,7 +176,7 @@ impl GitPanel {
 impl Render for GitPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.git.read(cx);
-        let target = state.target.clone();
+        let has_target = state.target.is_some();
         let status = state.status.clone();
         let busy = state.is_busy();
         let section = state.section;
@@ -193,23 +193,22 @@ impl Render for GitPanel {
             .key_context("SourceControl")
             .bg(cx.theme().background)
             .on_action(cx.listener(|this, _: &CommitChanges, _, cx| this.commit(cx)));
-        let Some(target) = target else {
+        if !has_target {
             return panel.child(empty_state(
                 Lucide::GitBranch,
                 "No worktree selected",
                 "Pick a worktree in the sidebar to see its changes.",
                 cx,
             ));
-        };
+        }
         panel
-            .child(self.header(&target, window, cx))
+            .child(self.header(window, cx))
             .when_some(error, |p, error| p.child(self.error(error, window, cx)))
             .child(div().px_2().child(self.tabs(section, changes)))
             .when(has_files, |p| {
                 p.child(
                     div().px_3().py_2().child(TextField::input(
                         Input::new(&self.filter)
-                            .small()
                             .prefix(Icon::new(Lucide::Search).size_3p5())
                             .cleanable(true),
                         &self.filter,

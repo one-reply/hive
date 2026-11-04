@@ -1,14 +1,45 @@
-//! Worktree name, branch picker with sync counters, and the remote actions.
+//! Remote actions with refresh, then the branch picker with sync counters.
 use super::*;
 
 impl GitPanel {
-    /// Worktree name, branch picker with sync counters, then the remote actions.
-    pub(super) fn header(
-        &self,
-        target: &Target,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    pub(super) fn push(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.git.read(cx);
+        if state.is_busy() {
+            return;
+        }
+        let Some(Action::Push { remote, publish }) = state.push_action() else {
+            return;
+        };
+        let Some(branch) = state
+            .status
+            .as_ref()
+            .and_then(|status| status.branch.as_ref())
+        else {
+            return;
+        };
+        let description =
+            format!("{branch} will be pushed to {remote} and start tracking {remote}/{branch}.");
+        let action = Action::Push { remote, publish };
+        if publish {
+            git_controls::confirm(
+                self.git.clone(),
+                action,
+                git_controls::Confirmation {
+                    title: "Publish Branch",
+                    description,
+                    ok_text: "Publish",
+                    danger: false,
+                },
+                window,
+                cx,
+            );
+        } else {
+            self.git.update(cx, |git, cx| git.perform(action, cx));
+        }
+    }
+
+    /// Remote actions and refresh, then the branch picker with sync counters.
+    pub(super) fn header(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.git.read(cx);
         let status = state.status.clone();
         let busy = state.is_busy();
@@ -25,14 +56,9 @@ impl GitPanel {
         let state = self.git.read(cx);
         let remotes = state.remotes.clone();
         let remote = state.remote.clone();
-        let upstream_remote = state.upstream_remote.clone();
+        let push_available = state.push_action().is_some();
         let theme = cx.theme();
         let muted = theme.muted_foreground;
-        let name = target
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| target.path.display().to_string());
         let detached = status.as_ref().is_some_and(|s| s.branch.is_none());
         let branch: SharedString = status
             .as_ref()
@@ -45,42 +71,6 @@ impl GitPanel {
             .unwrap_or_default();
         let upstream = status.as_ref().and_then(|s| s.upstream.clone());
         let has_upstream = upstream.is_some();
-
-        let title = h_flex()
-            .justify_between()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .id("worktree-name")
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(TITLE_TEXT)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .truncate()
-                    .tooltip({
-                        let path: SharedString = target.path.display().to_string().into();
-                        move |window, cx| Tooltip::new(path.clone()).build(window, cx)
-                    })
-                    .child(name),
-            )
-            // Same control as "Refresh limits" in the status bar: a loading button spins
-            // its own icon and ignores clicks until the operation ends.
-            .child(
-                Button::new("git-refresh")
-                    .cursor_pointer()
-                    .xsmall()
-                    .icon(Lucide::RefreshCw)
-                    .loading(spinning)
-                    .tooltip("Refresh")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.git.update(cx, |g, cx| {
-                            g.clear_error(cx);
-                            g.refresh(true, cx);
-                        })
-                    }))
-                    .smooth_hover(ButtonLook::Ghost, &refresh_hover.enabled(!spinning), cx),
-            );
 
         let branch_row = h_flex()
             .gap_1p5()
@@ -122,19 +112,15 @@ impl GitPanel {
                     .child(upstream.clone().unwrap_or_else(|| "No upstream".into())),
             );
 
-        let push_disabled = busy
-            || status.is_none()
-            || if has_upstream {
-                upstream_remote.is_none()
-            } else {
-                remote.is_none()
-            };
+        let push_disabled = busy || !push_available;
         let push_label: SharedString = match (has_upstream, ahead) {
             (false, _) => "Publish".into(),
             (true, 0) => "Push".into(),
             (true, n) => format!("Push {n}").into(),
         };
         let mut actions = h_flex()
+            .flex_1()
+            .min_w_0()
             .gap_1()
             .child(
                 sync_button("fetch", Lucide::CloudDownload, "Fetch", "Fetch from remote")
@@ -179,41 +165,18 @@ impl GitPanel {
                 )
                 .disabled(push_disabled)
                 .when(!busy && push_disabled && status.is_some(), |b| {
-                    b.tooltip("No remote configured")
+                    b.tooltip(if detached {
+                        "Create a branch before pushing detached HEAD"
+                    } else {
+                        "No remote configured"
+                    })
                 })
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    let state = this.git.read(cx);
-                    let publish = state.status.as_ref().is_none_or(|s| s.upstream.is_none());
-                    let remote = if publish {
-                        state.remote.clone()
-                    } else {
-                        state.upstream_remote.clone()
-                    };
-                    let Some(remote) = remote else { return };
-                    let action = Action::Push {
-                        remote: remote.clone(),
-                        publish,
-                    };
-                    if publish {
-                        git_controls::confirm(
-                            this.git.clone(),
-                            action,
-                            git_controls::Confirmation {
-                                title: "Publish Branch",
-                                description: format!(
-                                    "{branch} will be pushed to {remote} and start tracking {remote}/{branch}."
-                                ),
-                                ok_text: "Publish",
-                                danger: false,
-                            },
-                            window,
-                            cx,
-                        );
-                    } else {
-                        this.git.update(cx, |g, cx| g.perform(action, cx));
-                    }
-                }))
-                .smooth_hover(ButtonLook::Outline, &push_hover.enabled(!push_disabled), cx),
+                .on_click(cx.listener(|this, _, window, cx| this.push(window, cx)))
+                .smooth_hover(
+                    ButtonLook::Outline,
+                    &push_hover.enabled(!push_disabled),
+                    cx,
+                ),
             );
         if remotes.len() > 1 {
             let git = self.git.clone();
@@ -239,14 +202,36 @@ impl GitPanel {
                     }),
             );
         }
+        let top_row = h_flex()
+            .justify_between()
+            .items_center()
+            .gap_2()
+            .child(actions)
+            // Same control as "Refresh limits" in the status bar: a loading button spins
+            // its own icon and ignores clicks until the operation ends.
+            .child(
+                Button::new("git-refresh")
+                    .cursor_pointer()
+                    .xsmall()
+                    .icon(Lucide::RefreshCw)
+                    .loading(spinning)
+                    .tooltip("Refresh")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.git.update(cx, |g, cx| {
+                            g.clear_error(cx);
+                            g.refresh(true, cx);
+                        })
+                    }))
+                    .smooth_hover(ButtonLook::Ghost, &refresh_hover.enabled(!spinning), cx),
+            );
+
         v_flex()
             .px_3()
             .pt_3()
             .pb_2()
             .gap_1p5()
-            .child(title)
+            .child(top_row)
             .child(branch_row)
-            .child(actions)
     }
 }
 
