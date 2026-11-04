@@ -83,6 +83,12 @@ publish the cleaned history in a fresh repository while keeping the original pri
    Use only synthetic project data in public screenshots. Do not mark skipped tests
    as passed. Keep the draft private if an installation gate is unresolved.
 
+If hosted runners cannot start, a maintainer may build the exact tag locally with
+all the same checks and create a private draft for installation testing. Record the
+build provenance and failed runner allocation in its notes. Run `workflow_dispatch`
+on that tag when runners recover; the release job only runs on tag pushes, so this
+does not replace draft assets. CI and installation checks must pass before promotion.
+
 ## Publish
 
 After the audit and installation gates pass, make the repository public and enable
