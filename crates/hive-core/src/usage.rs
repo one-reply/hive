@@ -1,5 +1,5 @@
 //! Usage limits of the Claude Code and Codex CLIs. Both endpoints are undocumented;
-//! parsers are lenient and the raw JSON is logged at debug level.
+//! parsers are lenient; debug logs contain response metadata, never response bodies.
 
 use crate::keychain::{self, CredentialError};
 use serde_json::Value;
@@ -71,11 +71,12 @@ fn get_json_with_timeout(
         req = req.header(*k, *v);
     }
     let mut res = req.call().map_err(|e| UsageError::Http(e.to_string()))?;
+    let status = res.status().as_u16();
     let text = res
         .body_mut()
         .read_to_string()
         .map_err(|e| UsageError::Http(e.to_string()))?;
-    tracing::debug!(url, body = %text, "usage response");
+    tracing::debug!(status, response_bytes = text.len(), "usage response");
     serde_json::from_str(&text).map_err(|e| UsageError::Json(e.to_string()))
 }
 
@@ -190,6 +191,66 @@ pub fn until(t: SystemTime) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn usage_debug_log_does_not_expose_credentials_or_response_body() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Log(Arc<Mutex<Vec<u8>>>);
+
+        impl Write for Log {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let log = Log(Arc::default());
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/usage", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = [0; 2048];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            let body = r#"{"account":"private-account-marker"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        tracing::subscriber::with_default(subscriber, || {
+            let value =
+                get_json(&url, &[("Authorization", "Bearer private-token-marker")]).unwrap();
+            assert_eq!(value["account"], "private-account-marker");
+        });
+        server.join().unwrap();
+        let bytes = log.0.lock().unwrap();
+        let output = std::str::from_utf8(&bytes).unwrap();
+        assert!(output.contains("usage response"));
+        assert!(output.contains("status=200"));
+        assert!(output.contains("response_bytes="));
+        assert!(!output.contains("private-account-marker"));
+        assert!(!output.contains("private-token-marker"));
+    }
 
     #[test]
     fn http_deadline_includes_headers_and_body_and_allows_retry() {

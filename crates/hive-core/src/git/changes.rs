@@ -2,6 +2,7 @@
 use super::{GitError, READ_LIMIT, branches, bytes, diff, run, status};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::path::Path;
 
 /// A user-requested Git mutation, scoped by the caller to one host and worktree.
@@ -38,6 +39,57 @@ pub enum Action {
     Pull,
     /// Push to the configured upstream or explicitly publish to a remote.
     Push { remote: String, publish: bool },
+}
+
+/// What a fetch, pull or push changed, for a short confirmation once it finishes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Synced {
+    /// Fetched `remote`; `incoming` counts upstream commits not yet in HEAD, known only
+    /// when the current branch tracks that remote.
+    Fetched {
+        remote: String,
+        incoming: Option<usize>,
+    },
+    /// Fast-forwarded HEAD by this many commits; zero means it was already up to date.
+    Pulled { commits: usize },
+    /// Sent this many commits to the branch's upstream on `remote`.
+    Pushed { remote: String, commits: usize },
+    /// Created the branch on `remote` and started tracking it.
+    Published { remote: String },
+}
+
+impl fmt::Display for Synced {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fetched {
+                remote,
+                incoming: Some(0),
+            } => write!(f, "Fetched {remote} · up to date"),
+            Self::Fetched {
+                remote,
+                incoming: Some(count),
+            } => write!(f, "Fetched {remote} · {} to pull", commits(*count)),
+            Self::Fetched {
+                remote,
+                incoming: None,
+            } => write!(f, "Fetched {remote}"),
+            Self::Pulled { commits: 0 } => f.write_str("Already up to date"),
+            Self::Pulled { commits: count } => write!(f, "Pulled {}", commits(*count)),
+            Self::Pushed { remote, commits: 0 } => write!(f, "Pushed to {remote}"),
+            Self::Pushed {
+                remote,
+                commits: count,
+            } => write!(f, "Pushed {} to {remote}", commits(*count)),
+            Self::Published { remote } => write!(f, "Published to {remote}"),
+        }
+    }
+}
+
+fn commits(count: usize) -> String {
+    match count {
+        1 => "1 commit".into(),
+        count => format!("{count} commits"),
+    }
 }
 
 /// Configured remote names, never URLs containing credentials.
@@ -88,8 +140,15 @@ fn paths(host: &Host, cwd: &Path, args: &[&str], paths: &[String]) -> Result<(),
 }
 
 /// Execute one mutation synchronously. Call only on a background executor.
-pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<(), GitError> {
-    match action {
+///
+/// Fetch, pull and push report what they changed; local mutations return `None`.
+pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<Option<Synced>, GitError> {
+    let local = match action {
+        Action::Fetch(remote) => return fetch(host, cwd, remote).map(Some),
+        Action::Pull => return pull(host, cwd).map(Some),
+        Action::Push { remote, publish } => {
+            return push_branch(host, cwd, remote, *publish).map(Some);
+        }
         Action::Stage(selected) => paths(host, cwd, &["add", "-A"], selected),
         Action::Unstage(selected) => {
             if status::read(host, cwd)?.oid.is_some() {
@@ -119,19 +178,20 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<(), GitError>
                 diff::validate_path(path)?;
                 // `clean` has no --pathspec-from-file; status lists untracked files one by one,
                 // so a single literal file path never needs `-d`.
-                return run(
+                run(
                     host,
                     cwd,
                     &["--literal-pathspecs", "clean", "-f", "-q", "--", path],
                 )
-                .map(drop);
+                .map(drop)
+            } else {
+                paths(
+                    host,
+                    cwd,
+                    &["restore", "--worktree"],
+                    std::slice::from_ref(path),
+                )
             }
-            paths(
-                host,
-                cwd,
-                &["restore", "--worktree"],
-                std::slice::from_ref(path),
-            )
         }
         Action::Commit(message) => commit(host, cwd, message),
         Action::CommitAndPush {
@@ -153,40 +213,78 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<(), GitError>
         Action::CreateBranch { name, base, track } => {
             branches::create(host, cwd, name, base, *track)
         }
-        Action::Fetch(remote) => {
-            remote_exists(host, cwd, remote)?;
-            run(
-                host,
-                cwd,
-                &["-c", "credential.interactive=false", "fetch", remote],
-            )
-            .map(drop)
-        }
-        Action::Pull => {
-            branches::require_clean(host, cwd)?;
-            if status::read(host, cwd)?.upstream.is_none() {
-                return Err(GitError::Invalid(
-                    "Publish this branch or configure an upstream before pulling.".into(),
-                ));
-            }
-            run(
-                host,
-                cwd,
-                &[
-                    "-c",
-                    "credential.interactive=false",
-                    "pull",
-                    "--no-rebase",
-                    "--ff-only",
-                ],
-            )
-            .map(drop)
-        }
-        Action::Push { remote, publish } => {
-            let destination = push_destination(host, cwd, remote, *publish)?;
-            push(host, cwd, remote, *publish, &destination)
-        }
+    };
+    local.map(|()| None)
+}
+
+fn fetch(host: &Host, cwd: &Path, remote: &str) -> Result<Synced, GitError> {
+    remote_exists(host, cwd, remote)?;
+    run(
+        host,
+        cwd,
+        &["-c", "credential.interactive=false", "fetch", remote],
+    )?;
+    let status = status::read(host, cwd)?;
+    let tracks_remote = match (&status.branch, &status.upstream) {
+        (Some(branch), Some(_)) => upstream_remote(host, cwd, branch)?.as_deref() == Some(remote),
+        _ => false,
+    };
+    Ok(Synced::Fetched {
+        remote: remote.into(),
+        incoming: tracks_remote.then_some(status.behind),
+    })
+}
+
+fn pull(host: &Host, cwd: &Path) -> Result<Synced, GitError> {
+    branches::require_clean(host, cwd)?;
+    let before = status::read(host, cwd)?;
+    if before.upstream.is_none() {
+        return Err(GitError::Invalid(
+            "Publish this branch or configure an upstream before pulling.".into(),
+        ));
     }
+    run(
+        host,
+        cwd,
+        &[
+            "-c",
+            "credential.interactive=false",
+            "pull",
+            "--no-rebase",
+            "--ff-only",
+        ],
+    )?;
+    // Fast-forward only, so the new commits are exactly those between the old and new HEAD.
+    let range = match before.oid {
+        Some(oid) => format!("{oid}..HEAD"),
+        None => "HEAD".into(),
+    };
+    Ok(Synced::Pulled {
+        commits: count_commits(host, cwd, &range)?,
+    })
+}
+
+fn push_branch(host: &Host, cwd: &Path, remote: &str, publish: bool) -> Result<Synced, GitError> {
+    let destination = push_destination(host, cwd, remote, publish)?;
+    let ahead = status::read(host, cwd)?.ahead;
+    push(host, cwd, remote, publish, &destination)?;
+    Ok(if publish {
+        Synced::Published {
+            remote: remote.into(),
+        }
+    } else {
+        Synced::Pushed {
+            remote: remote.into(),
+            commits: ahead,
+        }
+    })
+}
+
+fn count_commits(host: &Host, cwd: &Path, range: &str) -> Result<usize, GitError> {
+    let raw = run(host, cwd, &["rev-list", "--count", range, "--"])?;
+    raw.trim()
+        .parse()
+        .map_err(|_| GitError::Invalid(format!("Unexpected `git rev-list --count` output: {raw}")))
 }
 
 fn commit(host: &Host, cwd: &Path, message: &str) -> Result<(), GitError> {

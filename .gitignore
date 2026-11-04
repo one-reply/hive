@@ -1,1 +1,11 @@
 /target
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+*.p12
+*.pfx
+*.key
+*.pem
+*.mobileprovision

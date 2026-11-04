@@ -2,6 +2,9 @@
 name = "hive-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 # No GPUI here, ever. This crate is the domain + CLI/HTTP adapters and doubles as the
 # wire/proto types for a future backend.
@@ -25,3 +28,6 @@ tracing.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

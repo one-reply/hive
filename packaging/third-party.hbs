@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hive — third-party licenses</title>
+<style>body{font:16px/1.5 system-ui;margin:2rem auto;padding:0 1rem;max-width:70rem}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>
+<h1>Hive — third-party licenses</h1>
+<p>Dependencies of the Apple Silicon build. See THIRD_PARTY_NOTICES.md for bundled artwork and other resources.</p>
+{{#each licenses}}
+<section>
+<h2>{{name}}</h2>
+<ul>{{#each used_by}}<li><a href="https://crates.io/crates/{{crate.name}}/{{crate.version}}">{{crate.name}} {{crate.version}}</a></li>{{/each}}</ul>
+<pre>{{text}}</pre>
+</section>
+{{/each}}
+</html>

@@ -59,6 +59,7 @@ impl Git {
             self.error = None;
         }
         self.failures.remove(&target);
+        self.start_remote_operation(&target, action.as_ref());
         tracing::info!(path = ?target.path, ?action, hunk = hunk.is_some(), "source control mutation");
         cx.notify();
         let key = target.clone();
@@ -79,13 +80,19 @@ impl Git {
                             &diff,
                             index,
                         )
+                        .map(|()| None)
                     } else {
-                        Ok(())
+                        Ok(None)
                     }
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy.remove(&target);
+                let (result, synced) = match result {
+                    Ok(synced) => (Ok(()), synced),
+                    Err(error) => (Err(error), None),
+                };
+                this.finish_remote_operation(&target, synced, cx);
                 let message = match &action {
                     Some(Action::Commit(message)) if result.is_ok() => Some(message),
                     Some(Action::CommitAndPush { message, .. })

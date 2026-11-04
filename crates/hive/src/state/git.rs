@@ -16,7 +16,10 @@ use std::time::Duration;
 
 mod generation;
 mod mutations;
+mod remote;
 mod review;
+
+pub(crate) use remote::RemoteOperation;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Target {
@@ -71,6 +74,8 @@ pub(crate) struct Git {
     failures: HashMap<Target, String>,
     operations: HashMap<Target, Task<()>>,
     busy: std::collections::HashSet<Target>,
+    remote_operations: HashMap<Target, RemoteOperation>,
+    synced: Option<(Target, git::changes::Synced)>,
     generations: HashMap<Target, std::sync::Arc<hive_core::commit_message::cli::Cancellation>>,
     visible_diffs: HashMap<EntityId, Target>,
     projects: Entity<Projects>,
@@ -79,6 +84,7 @@ pub(crate) struct Git {
     _poll: Task<()>,
     _refresh: Option<Task<()>>,
     _review: Option<Task<()>>,
+    _synced_timeout: Option<Task<()>>,
 }
 
 impl EventEmitter<GitEvent> for Git {}
@@ -124,6 +130,8 @@ impl Git {
             failures: HashMap::new(),
             operations: HashMap::new(),
             busy: Default::default(),
+            remote_operations: HashMap::new(),
+            synced: None,
             generations: HashMap::new(),
             visible_diffs: Default::default(),
             projects,
@@ -132,6 +140,7 @@ impl Git {
             _poll: poll,
             _refresh: None,
             _review: None,
+            _synced_timeout: None,
         }
     }
 

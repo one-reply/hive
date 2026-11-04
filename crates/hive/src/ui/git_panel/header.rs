@@ -1,5 +1,10 @@
 //! Remote actions with refresh, then the branch picker with sync counters.
 use super::*;
+use crate::state::git::RemoteOperation;
+use std::time::Duration;
+
+/// Fade-in of the confirmation that replaces the upstream name after a remote operation.
+const SYNCED_FADE_IN: Duration = Duration::from_millis(200);
 
 impl GitPanel {
     pub(super) fn push(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -43,7 +48,10 @@ impl GitPanel {
         let state = self.git.read(cx);
         let status = state.status.clone();
         let busy = state.is_busy();
-        let spinning = busy || state.loading;
+        let operation = state.remote_operation();
+        // A remote operation spins its own button, so the refresh icon stays still meanwhile.
+        let spinning = state.loading || (busy && operation.is_none());
+        let synced: Option<SharedString> = state.synced().map(|s| s.to_string().into());
         let has_remote = state.remote.is_some();
         let [
             refresh_hover,
@@ -101,57 +109,79 @@ impl GitPanel {
             })
             .when(ahead > 0, |s| s.child(counter(Lucide::ArrowUp, ahead)))
             .when(behind > 0, |s| s.child(counter(Lucide::ArrowDown, behind)))
-            .child(
-                div()
+            .child(match synced {
+                Some(synced) => synced_note(synced, cx).into_any_element(),
+                None => div()
                     .flex_1()
                     .min_w_0()
                     .text_size(META_TEXT)
                     .text_color(muted)
                     .truncate()
                     .text_right()
-                    .child(upstream.clone().unwrap_or_else(|| "No upstream".into())),
-            );
+                    .child(upstream.clone().unwrap_or_else(|| "No upstream".into()))
+                    .into_any_element(),
+            });
 
         let nothing_to_push = has_upstream && ahead == 0;
         let push_disabled = busy || !push_available || nothing_to_push;
-        let push_label: SharedString = match (has_upstream, ahead) {
-            (false, _) => "Publish".into(),
-            (true, 0) => "Push".into(),
-            (true, n) => format!("Push {n}").into(),
+        let fetching = operation == Some(RemoteOperation::Fetch);
+        let pulling = operation == Some(RemoteOperation::Pull);
+        let pushing = matches!(
+            operation,
+            Some(RemoteOperation::Push | RemoteOperation::Publish)
+        );
+        let push_label: SharedString = match (operation, has_upstream, ahead) {
+            (Some(RemoteOperation::Push), ..) => "Pushing…".into(),
+            (Some(RemoteOperation::Publish), ..) => "Publishing…".into(),
+            (_, false, _) => "Publish".into(),
+            (_, true, 0) => "Push".into(),
+            (_, true, n) => format!("Push {n}").into(),
         };
         let mut actions = h_flex()
             .flex_1()
             .min_w_0()
             .gap_1()
             .child(
-                sync_button("fetch", Lucide::CloudDownload, "Fetch", "Fetch from remote")
-                    .disabled(busy || remote.is_none())
-                    .when(remote.is_none(), |b| b.tooltip("No remote configured"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let remote = this.git.read(cx).remote.clone();
-                        if let Some(remote) = remote {
-                            this.git
-                                .update(cx, |g, cx| g.perform(Action::Fetch(remote), cx));
-                        }
-                    }))
-                    .smooth_hover(
-                        ButtonLook::Outline,
-                        &fetch_hover.enabled(!busy && has_remote),
-                        cx,
-                    ),
+                sync_button(
+                    "fetch",
+                    Lucide::CloudDownload,
+                    if fetching { "Fetching…" } else { "Fetch" },
+                    "Fetch from remote",
+                    fetching,
+                )
+                .disabled((busy && !fetching) || remote.is_none())
+                .when(remote.is_none(), |b| b.tooltip("No remote configured"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let remote = this.git.read(cx).remote.clone();
+                    if let Some(remote) = remote {
+                        this.git
+                            .update(cx, |g, cx| g.perform(Action::Fetch(remote), cx));
+                    }
+                }))
+                .smooth_hover(
+                    ButtonLook::Outline,
+                    &fetch_hover.enabled(!busy && has_remote),
+                    cx,
+                ),
             )
             .child(
-                sync_button("pull", Lucide::ArrowDown, "Pull", "Pull fast-forward only")
-                    .disabled(busy || !has_upstream)
-                    .when(!has_upstream, |b| b.tooltip("No upstream to pull from"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.git.update(cx, |g, cx| g.perform(Action::Pull, cx))
-                    }))
-                    .smooth_hover(
-                        ButtonLook::Outline,
-                        &pull_hover.enabled(!busy && has_upstream),
-                        cx,
-                    ),
+                sync_button(
+                    "pull",
+                    Lucide::ArrowDown,
+                    if pulling { "Pulling…" } else { "Pull" },
+                    "Pull fast-forward only",
+                    pulling,
+                )
+                .disabled((busy && !pulling) || !has_upstream)
+                .when(!has_upstream, |b| b.tooltip("No upstream to pull from"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.git.update(cx, |g, cx| g.perform(Action::Pull, cx))
+                }))
+                .smooth_hover(
+                    ButtonLook::Outline,
+                    &pull_hover.enabled(!busy && has_upstream),
+                    cx,
+                ),
             )
             .child(
                 sync_button(
@@ -163,8 +193,9 @@ impl GitPanel {
                     } else {
                         "Push and set upstream"
                     },
+                    pushing,
                 )
-                .disabled(push_disabled)
+                .disabled(push_disabled && !pushing)
                 .when(!busy && push_disabled && status.is_some(), |b| {
                     b.tooltip(if detached {
                         "Create a branch before pushing detached HEAD"
@@ -238,11 +269,14 @@ impl GitPanel {
     }
 }
 
+/// A remote action; while it runs, its icon spins and the button ignores clicks without
+/// greying out like the other, disabled ones.
 fn sync_button(
     id: &'static str,
     icon: Lucide,
     label: impl Into<SharedString>,
     tooltip: &'static str,
+    running: bool,
 ) -> Button {
     Button::new(id)
         .cursor_pointer()
@@ -250,6 +284,26 @@ fn sync_button(
         .icon(icon)
         .label(label)
         .tooltip(tooltip)
+        .loading(running)
+}
+
+/// What the last remote operation changed, in place of the upstream name for a few seconds.
+fn synced_note(text: SharedString, cx: &App) -> impl IntoElement {
+    h_flex()
+        .flex_1()
+        .min_w_0()
+        .justify_end()
+        .items_center()
+        .gap_1()
+        .text_size(META_TEXT)
+        .text_color(cx.theme().success)
+        .child(Icon::new(Lucide::Check).size_3())
+        .child(div().min_w_0().truncate().child(text))
+        .with_animation(
+            "git-synced-note",
+            Animation::new(SYNCED_FADE_IN).with_easing(ease_in_out),
+            |note, progress| note.opacity(progress),
+        )
 }
 
 /// Ahead/behind counter next to the branch name.

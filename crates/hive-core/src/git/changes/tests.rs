@@ -34,7 +34,7 @@ impl Repo {
     fn write(&self, path: &str, value: &str) {
         std::fs::write(self.0.join(path), value).unwrap();
     }
-    fn action(&self, action: Action) -> Result<(), GitError> {
+    fn action(&self, action: Action) -> Result<Option<Synced>, GitError> {
         execute(&Host::Local, &self.0, &action)
     }
     fn commit(&self) {
@@ -353,11 +353,18 @@ fn remote_publish_fetch_pull_and_divergence() {
     let remote = Repo::new();
     remote.git(&["config", "core.bare", "true"]);
     repo.git(&["remote", "add", "origin", remote.0.to_str().unwrap()]);
-    repo.action(Action::Push {
-        remote: "origin".into(),
-        publish: true,
-    })
-    .unwrap();
+    let published = repo
+        .action(Action::Push {
+            remote: "origin".into(),
+            publish: true,
+        })
+        .unwrap();
+    assert_eq!(
+        published,
+        Some(Synced::Published {
+            remote: "origin".into()
+        })
+    );
     assert_eq!(
         status::read(&Host::Local, &repo.0)
             .unwrap()
@@ -367,19 +374,39 @@ fn remote_publish_fetch_pull_and_divergence() {
     );
     let second = Repo::new();
     second.git(&["remote", "add", "origin", remote.0.to_str().unwrap()]);
-    second.action(Action::Fetch("origin".into())).unwrap();
+    // Without an upstream there is nothing to compare the fetched remote with.
+    assert_eq!(
+        second.action(Action::Fetch("origin".into())).unwrap(),
+        Some(Synced::Fetched {
+            remote: "origin".into(),
+            incoming: None
+        })
+    );
     second.git(&["reset", "--hard", "origin/main"]);
     second.git(&["branch", "--set-upstream-to=origin/main"]);
     second.write("remote", "new");
     second.commit();
-    second
-        .action(Action::Push {
+    assert_eq!(
+        second
+            .action(Action::Push {
+                remote: "origin".into(),
+                publish: false,
+            })
+            .unwrap(),
+        Some(Synced::Pushed {
             remote: "origin".into(),
-            publish: false,
+            commits: 1
         })
-        .unwrap();
-    repo.action(Action::Pull).unwrap();
+    );
+    assert_eq!(
+        repo.action(Action::Pull).unwrap(),
+        Some(Synced::Pulled { commits: 1 })
+    );
     assert!(repo.0.join("remote").exists());
+    assert_eq!(
+        repo.action(Action::Pull).unwrap(),
+        Some(Synced::Pulled { commits: 0 })
+    );
     repo.write("local", "local");
     repo.commit();
     second.write("remote", "again");
@@ -390,6 +417,13 @@ fn remote_publish_fetch_pull_and_divergence() {
             publish: false,
         })
         .unwrap();
+    assert_eq!(
+        repo.action(Action::Fetch("origin".into())).unwrap(),
+        Some(Synced::Fetched {
+            remote: "origin".into(),
+            incoming: Some(1)
+        })
+    );
     assert!(repo.action(Action::Pull).is_err());
     assert!(
         repo.action(Action::Push {
@@ -487,4 +521,55 @@ fn clean_checkout_still_rejects_unfinished_rebase_and_large_preview() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn synced_summaries_read_naturally() {
+    let origin = || "origin".to_string();
+    let cases = [
+        (
+            Synced::Fetched {
+                remote: origin(),
+                incoming: Some(0),
+            },
+            "Fetched origin · up to date",
+        ),
+        (
+            Synced::Fetched {
+                remote: origin(),
+                incoming: Some(3),
+            },
+            "Fetched origin · 3 commits to pull",
+        ),
+        (
+            Synced::Fetched {
+                remote: origin(),
+                incoming: None,
+            },
+            "Fetched origin",
+        ),
+        (Synced::Pulled { commits: 0 }, "Already up to date"),
+        (Synced::Pulled { commits: 1 }, "Pulled 1 commit"),
+        (
+            Synced::Pushed {
+                remote: origin(),
+                commits: 2,
+            },
+            "Pushed 2 commits to origin",
+        ),
+        (
+            Synced::Pushed {
+                remote: origin(),
+                commits: 0,
+            },
+            "Pushed to origin",
+        ),
+        (
+            Synced::Published { remote: origin() },
+            "Published to origin",
+        ),
+    ];
+    for (synced, text) in cases {
+        assert_eq!(synced.to_string(), text);
+    }
 }
