@@ -2,6 +2,7 @@
 use super::*;
 
 mod actions;
+mod generating;
 mod resize;
 
 pub(super) use resize::{MessageResize, MessageSize};
@@ -115,6 +116,7 @@ impl GitPanel {
                         cx,
                     ))
                     .child(self.message_size.measure())
+                    .when(generating, |field| field.child(generating::sweep(cx)))
                     .child(
                         div().absolute().top_1().right(AI_BUTTON_RIGHT).child(
                             Button::new("generate-commit-message")
@@ -136,14 +138,6 @@ impl GitPanel {
                         ),
                     ),
             )
-            .when(generating, |col| {
-                col.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Generating…"),
-                )
-            })
             .child(self.commit_actions(status, busy, window, cx))
     }
 }
