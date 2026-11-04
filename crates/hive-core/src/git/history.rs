@@ -152,3 +152,44 @@ fn files(host: &Host, cwd: &Path, mut args: Vec<String>) -> Result<Vec<FileChang
     }
     Ok(result)
 }
+
+/// Human age of an ISO-8601 author date: "just now", "5m ago", "3h ago", "2d ago", then the
+/// plain calendar date. Unparseable input is returned as is.
+pub fn relative_date(iso: &str) -> String {
+    relative_date_at(iso, chrono::Utc::now())
+}
+
+fn relative_date_at(iso: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let Ok(date) = chrono::DateTime::parse_from_rfc3339(iso) else {
+        return iso.to_string();
+    };
+    let seconds = (now - date.with_timezone(&chrono::Utc)).num_seconds();
+    if seconds < 60 {
+        "just now".into()
+    } else if seconds < 3600 {
+        format!("{}m ago", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h ago", seconds / 3600)
+    } else if seconds < 2_592_000 {
+        format!("{}d ago", seconds / 86_400)
+    } else {
+        date.format("%Y-%m-%d").to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relative_date_at as relative_date;
+    use chrono::{DateTime, Utc};
+
+    #[test]
+    fn relative_dates() {
+        let now: DateTime<Utc> = "2026-11-04T12:00:00Z".parse().unwrap();
+        assert_eq!(relative_date("2026-11-04T11:59:30Z", now), "just now");
+        assert_eq!(relative_date("2026-11-04T11:15:00+00:00", now), "45m ago");
+        assert_eq!(relative_date("2026-11-04T05:00:00+02:00", now), "9h ago");
+        assert_eq!(relative_date("2026-11-01T12:00:00Z", now), "3d ago");
+        assert_eq!(relative_date("2026-01-15T12:00:00Z", now), "2026-01-15");
+        assert_eq!(relative_date("yesterday", now), "yesterday");
+    }
+}
