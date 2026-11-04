@@ -1,4 +1,4 @@
-//! Bottom bar: usage limits per provider + refresh.
+//! Bottom bar: usage limits per provider + refresh, and the settings gear.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::status_bar::StatusBar;
@@ -8,6 +8,7 @@ use hive_core::usage;
 
 use crate::app::AppState;
 use crate::state::usage::Usage;
+use crate::ui::settings;
 
 pub struct StatusBarView {
     usage: Entity<Usage>,
@@ -55,14 +56,27 @@ impl Render for StatusBarView {
             .bg(cx.theme().background)
             .left(h_flex().gap_6().children(providers))
             .right(
-                Button::new("refresh-usage")
-                    .cursor_pointer()
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::RefreshCw)
-                    .loading(state.loading)
-                    .tooltip("Refresh limits")
-                    .on_click(move |_, _, cx| usage.update(cx, |u, cx| u.refresh(cx))),
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("refresh-usage")
+                            .cursor_pointer()
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::RefreshCw)
+                            .loading(state.loading)
+                            .tooltip("Refresh limits")
+                            .on_click(move |_, _, cx| usage.update(cx, |u, cx| u.refresh(cx))),
+                    )
+                    .child(
+                        Button::new("settings")
+                            .cursor_pointer()
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Settings)
+                            .tooltip("Settings")
+                            .on_click(|_, _, cx| settings::open(cx)),
+                    ),
             )
     }
 }

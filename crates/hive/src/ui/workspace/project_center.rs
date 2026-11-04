@@ -101,9 +101,7 @@ impl ProjectCenter {
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
-        let Some(panel) = TerminalPanel::open(cwd, self.dock.downgrade(), window, cx) else {
-            return false;
-        };
+        let panel = TerminalPanel::open(cwd, self.dock.downgrade(), window, cx);
         self.add(panel_handle(panel.clone()), window, cx);
         self.terminals.push(panel);
         self.sync_alone(cx);

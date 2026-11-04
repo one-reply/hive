@@ -1,4 +1,5 @@
-//! Shortcuts page: Hive's shortcuts with their keys, and recording new keys for one.
+//! Shortcuts page: Hive's shortcuts grouped by category, with their keys, and recording new
+//! keys for one.
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -9,7 +10,7 @@ use gpui_kit::*;
 
 use super::{setting_row, setting_title};
 use crate::app::AppState;
-use crate::ui::keymap::{self, Assignment, Rejection, SHORTCUTS};
+use crate::ui::keymap::{self, Assignment, Category, Rejection, SHORTCUTS};
 
 /// Whether a row is waiting for keys.
 enum Recording {
@@ -93,6 +94,27 @@ impl ShortcutsPage {
         self.cancel(cx);
     }
 
+    /// A category header above its shortcuts, in registry order.
+    fn render_category(&self, category: Category, cx: &mut Context<Self>) -> Div {
+        let muted = cx.theme().muted_foreground;
+        let rows = SHORTCUTS
+            .iter()
+            .enumerate()
+            .filter(|(_, shortcut)| shortcut.category == category)
+            .map(|(ix, _)| self.render_row(ix, cx))
+            .collect::<Vec<_>>();
+        v_flex()
+            .child(
+                div()
+                    .pb_1()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(muted)
+                    .child(category.label().to_uppercase()),
+            )
+            .children(rows)
+    }
+
     fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> Div {
         let shortcut = &SHORTCUTS[ix];
         let theme = cx.theme();
@@ -171,6 +193,8 @@ impl ShortcutsPage {
 
 impl Render for ShortcutsPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex().children((0..SHORTCUTS.len()).map(|ix| self.render_row(ix, cx)))
+        v_flex()
+            .gap_6()
+            .children(Category::ALL.map(|category| self.render_category(category, cx)))
     }
 }

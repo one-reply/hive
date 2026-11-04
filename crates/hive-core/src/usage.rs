@@ -53,7 +53,20 @@ fn provider(name: &'static str, result: Result<Vec<UsageWindow>, UsageError>) ->
 }
 
 fn get_json(url: &str, headers: &[(&str, &str)]) -> Result<Value, UsageError> {
-    let mut req = ureq::get(url);
+    get_json_with_timeout(url, headers, Duration::from_secs(10))
+}
+
+fn get_json_with_timeout(
+    url: &str,
+    headers: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<Value, UsageError> {
+    let config = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(3).min(timeout)))
+        .timeout_global(Some(timeout))
+        .build();
+    let agent = ureq::Agent::new_with_config(config);
+    let mut req = agent.get(url);
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
@@ -177,6 +190,48 @@ pub fn until(t: SystemTime) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn http_deadline_includes_headers_and_body_and_allows_retry() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Instant;
+
+        for delay_body in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/usage", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                for attempt in 0..2 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let mut request = [0; 2048];
+                    assert!(stream.read(&mut request).unwrap() > 0);
+                    if attempt == 0 && !delay_body {
+                        std::thread::sleep(Duration::from_millis(300));
+                    }
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n",
+                    );
+                    if attempt == 0 && delay_body {
+                        std::thread::sleep(Duration::from_millis(300));
+                    }
+                    let _ = stream.write_all(br#"{"ok":true}"#);
+                }
+            });
+            let start = Instant::now();
+            let error = get_json_with_timeout(&url, &[], Duration::from_millis(100)).unwrap_err();
+            assert!(matches!(error, UsageError::Http(_)), "{error}");
+            assert!(error.to_string().contains("timeout"), "{error}");
+            assert!(start.elapsed() < Duration::from_millis(250));
+            assert_eq!(
+                get_json_with_timeout(&url, &[], Duration::from_secs(2)).unwrap(),
+                json!({"ok": true})
+            );
+            server.join().unwrap();
+        }
+    }
 
     #[test]
     fn claude_old_and_new_shapes() {

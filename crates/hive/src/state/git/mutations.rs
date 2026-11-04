@@ -16,7 +16,7 @@ impl Git {
     pub fn apply_hunk(
         &mut self,
         request: DiffRequest,
-        diff: FileDiff,
+        diff: std::sync::Arc<FileDiff>,
         hunk: usize,
         cx: &mut Context<Self>,
     ) {
@@ -32,7 +32,7 @@ impl Git {
         &mut self,
         target: Target,
         action: Option<Action>,
-        hunk: Option<(DiffRequest, FileDiff, usize)>,
+        hunk: Option<(DiffRequest, std::sync::Arc<FileDiff>, usize)>,
         cx: &mut Context<Self>,
     ) {
         if !self.busy.insert(target.clone()) {

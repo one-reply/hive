@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 hive-core.workspace = true
+async-channel.workspace = true
 gpui-kit.workspace = true
 serde.workspace = true
 tracing.workspace = true

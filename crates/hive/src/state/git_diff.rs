@@ -10,7 +10,7 @@ use hive_core::git::diff::{self, FileDiff};
 pub(crate) struct GitDiff {
     pub request: DiffRequest,
     pub display: Entity<DiffState>,
-    pub patch: Option<FileDiff>,
+    pub patch: Option<std::sync::Arc<FileDiff>>,
     pub error: Option<String>,
     pub loading: bool,
     pub active: bool,
@@ -94,10 +94,10 @@ impl GitDiff {
                 this.loading = false;
                 match result {
                     Ok((patch, files)) => {
-                        let changed = this.patch.as_ref() != Some(&patch) || this.error.is_some();
+                        let changed = this.patch.as_deref() != Some(&patch) || this.error.is_some();
                         this.error = None;
                         if changed {
-                            this.patch = Some(patch);
+                            this.patch = Some(std::sync::Arc::new(patch));
                             this.display.update(cx, |d, cx| d.set_files(files, cx));
                             cx.notify();
                         }

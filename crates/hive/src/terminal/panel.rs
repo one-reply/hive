@@ -1,6 +1,6 @@
 //! A dock tab holding a tree of terminal panes (Orca-style tiles), with "+" (new tab) and
 //! "split" toolbar buttons and ⌘D / ⌘⇧D / ⌘W for splitting and closing the active pane.
-//! The split shortcuts are reassignable, so they live in `ui::keymap`; ⌘W is bound here.
+//! All three are reassignable, so their bindings live in `ui::keymap`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,6 @@ use gpui_kit::component::resizable::{h_resizable, v_resizable};
 use gpui_kit::component::{IconName, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use hive_core::terminal::{Terminal, TerminalSize};
 
 use super::pane_tree::PaneTree;
 use super::view::{TerminalView, TerminalViewEvent};
@@ -22,15 +21,6 @@ use crate::ui::keymap;
 use crate::ui::workspace::{NewTerminal, right_sidebar_toggle};
 
 actions!(terminal_panel, [SplitRight, SplitDown, ClosePane]);
-
-/// Keymap entry for closing a pane. Call once at startup.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new(
-        "cmd-w",
-        ClosePane,
-        Some(keymap::TERMINAL_CONTEXT),
-    )]);
-}
 
 pub struct TerminalPanel {
     panes: PaneTree<Entity<TerminalView>>,
@@ -44,16 +34,15 @@ pub struct TerminalPanel {
 }
 
 impl TerminalPanel {
-    /// Spawn a shell in `cwd` and wrap it in a panel. `None` when the PTY could not be opened.
+    /// Open a panel immediately; its session starts the shell in the background.
     pub fn open(
         cwd: Option<&Path>,
         area: WeakEntity<DockArea>,
         window: &mut Window,
         cx: &mut App,
-    ) -> Option<Entity<Self>> {
-        let terminal = spawn_terminal(cwd)?;
-        Some(cx.new(|cx| {
-            let view = cx.new(|cx| TerminalView::new(terminal, cwd, window, cx));
+    ) -> Entity<Self> {
+        cx.new(|cx| {
+            let view = cx.new(|cx| TerminalView::new(cwd, window, cx));
             let mut this = Self {
                 panes: PaneTree::Leaf(view.clone()),
                 active: view.clone(),
@@ -64,7 +53,7 @@ impl TerminalPanel {
             };
             this.watch_pane(&view, window, cx);
             this
-        }))
+        })
     }
 
     fn watch_pane(
@@ -115,10 +104,7 @@ impl TerminalPanel {
     /// Split the active pane: a new shell in the same cwd lands after it along `axis`.
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.cwd(cx);
-        let Some(terminal) = spawn_terminal(cwd.as_deref()) else {
-            return;
-        };
-        let view = cx.new(|cx| TerminalView::new(terminal, cwd.as_deref(), window, cx));
+        let view = cx.new(|cx| TerminalView::new(cwd.as_deref(), window, cx));
         self.watch_pane(&view, window, cx);
         self.panes.split(&self.active, view.clone(), axis);
         self.active = view;
@@ -186,16 +172,6 @@ impl TerminalPanel {
     }
 }
 
-fn spawn_terminal(cwd: Option<&Path>) -> Option<Terminal> {
-    match Terminal::spawn(cwd, None, TerminalSize::new(80, 24)) {
-        Ok(terminal) => Some(terminal),
-        Err(err) => {
-            tracing::error!(?cwd, %err, "failed to spawn terminal");
-            None
-        }
-    }
-}
-
 /// Splits become resizable groups. The group id encodes the node's structure (axis, first pane,
 /// child count), so its keyed size state resets to equal shares whenever the structure changes
 /// and survives drags otherwise.
@@ -248,16 +224,16 @@ impl Panel for TerminalPanel {
     /// A plain name while the tab bar draws its own close button; `None` when we are the
     /// last tab, so the bar renders [`Panel::title`] with our own "×" inside the tab instead.
     fn tab_name(&self, cx: &App) -> Option<SharedString> {
-        (!self.alone).then(|| self.active.read(cx).title().into())
+        (!self.alone).then(|| self.active.read(cx).title(cx).into())
     }
 
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = self.active.read(cx);
-        let title = view.title();
+        let title = view.title(cx);
         h_flex()
             .gap_2()
             .items_center()
-            .when(view.exited(), |d| d.opacity(0.6))
+            .when(view.exited(cx), |d| d.opacity(0.6))
             .child(title)
             .when(self.alone, |this| {
                 this.child(

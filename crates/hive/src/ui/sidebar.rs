@@ -349,6 +349,8 @@ impl Sidebar {
                 "worktree:{}",
                 card.path.display()
             )))
+            .role(Role::Button)
+            .aria_label(format!("Open {}: {}", project.name, card.title))
             .h(CARD_HEIGHT)
             .flex_none()
             .justify_center()
@@ -431,17 +433,6 @@ impl Render for Sidebar {
                     .px_2()
                     .gap_0p5()
                     .children(rows),
-            )
-            .child(
-                h_flex().px_3().pb_3().child(
-                    Button::new("settings")
-                        .cursor_pointer()
-                        .ghost()
-                        .small()
-                        .icon(IconName::Settings)
-                        .tooltip("Settings")
-                        .on_click(|_, _, cx| settings::open(cx)),
-                ),
             )
     }
 }

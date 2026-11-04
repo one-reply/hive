@@ -5,4 +5,6 @@ pub(crate) mod git;
 pub(crate) mod git_diff;
 pub mod projects;
 pub mod store;
+pub(crate) mod terminal_session;
+pub(crate) mod terminals;
 pub mod usage;

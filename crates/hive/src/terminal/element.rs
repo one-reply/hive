@@ -192,14 +192,18 @@ impl Element for TerminalElement {
         };
         let cols = (inner.size.width / cell_width).floor().max(2.) as u16;
         let rows = (inner.size.height / line_height).floor().max(1.) as u16;
-        self.view.update(cx, |view, _| view.resize(cols, rows));
+        self.view.update(cx, |view, cx| view.resize(cols, rows, cx));
 
         let mut rects = Vec::new();
         let mut glyphs = Vec::new();
         let mut cursor = None;
 
         let view = self.view.read(cx);
-        let term = view.terminal().term().lock();
+        let session = view.session().read(cx);
+        let terminal = session
+            .terminal()
+            .expect("terminal element renders only ready sessions");
+        let term = terminal.term().lock();
         let mut content = term.renderable_content();
         let display_offset = content.display_offset;
         let display_iter = std::mem::replace(&mut content.display_iter, term.grid().display_iter());

@@ -2,13 +2,24 @@ use gpui_kit::*;
 use hive_core::host::Host;
 use hive_core::identity::ProjectIdentity;
 use hive_core::settings::ThemeChoice;
-use hive_core::state::{ProjectRef, State};
+use hive_core::state::{LoadedState, ProjectRef, State, StateError};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+mod writer;
+use writer::Writer;
 
 /// Persisted state. Every mutation saves to disk and notifies observers.
 pub struct Store {
     pub state: State,
+    pub(crate) notice: Option<String>,
+    writer: Option<Writer>,
+    stopping: bool,
+    _errors: Option<Task<()>>,
 }
+
+pub(crate) struct SaveError(pub(crate) String);
+impl EventEmitter<SaveError> for Store {}
 
 impl Store {
     pub(crate) fn set_git_panel_width(&mut self, width: f32, cx: &mut Context<Self>) {
@@ -25,10 +36,50 @@ impl Store {
         self.state.settings.diff_split = split;
         self.commit(cx);
     }
-    pub fn load() -> Self {
+    pub(crate) fn new(loaded: Result<LoadedState, StateError>, cx: &mut Context<Self>) -> Self {
+        let (state, notice) = match loaded {
+            Ok(loaded) => (loaded.state, loaded.recovered_from.map(|path| format!(
+                "State was damaged. The original was preserved at {}. Default settings are in use.", path.display()
+            ))),
+            Err(error) => {
+                tracing::error!(%error, "state loading failed; persistence disabled");
+                return Self {
+                    state: State::default(),
+                    notice: Some(format!("{error}. Saving is disabled to protect the original state. Restart Hive after fixing the file.")),
+                    writer: None,
+                    stopping: false,
+                    _errors: None,
+                };
+            }
+        };
+        let (writer, errors) = Writer::new(cx.background_executor());
+        let errors = cx.spawn(async move |this, cx| {
+            while let Ok(error) = errors.recv().await {
+                if this.update(cx, |_, cx| cx.emit(SaveError(error))).is_err() {
+                    break;
+                }
+            }
+        });
         Self {
-            state: State::load(),
+            state,
+            notice,
+            writer: Some(writer),
+            stopping: false,
+            _errors: Some(errors),
         }
+    }
+
+    pub(crate) fn stop(&mut self) {
+        self.stopping = true;
+        if let Some(writer) = &self.writer {
+            writer.close();
+        }
+    }
+
+    pub(crate) fn wait_until(&self, deadline: Instant) -> bool {
+        self.writer
+            .as_ref()
+            .is_none_or(|writer| writer.wait_until(deadline))
     }
 
     pub fn set_theme(&mut self, theme: ThemeChoice, cx: &mut Context<Self>) {
@@ -133,7 +184,12 @@ impl Store {
     }
 
     fn commit(&mut self, cx: &mut Context<Self>) {
-        self.state.save();
+        if self.stopping {
+            return;
+        }
+        if let Some(writer) = &self.writer {
+            writer.submit(self.state.clone());
+        }
         cx.notify();
     }
 }

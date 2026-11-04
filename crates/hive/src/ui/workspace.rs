@@ -34,7 +34,9 @@ mod center_dock;
 mod git;
 mod project_center;
 
+use crate::state::store::SaveError;
 pub(crate) use git::right_sidebar_toggle;
+use gpui_kit::component::{WindowExt as _, notification::Notification};
 use project_center::ProjectCenter;
 
 // Bound in `ui::keymap`, where the user can reassign them.
@@ -98,7 +100,19 @@ impl Workspace {
         let git_width = px(store.read(cx).state.settings.git_panel_width());
         let git_open = store.read(cx).state.settings.git_panel_open;
 
+        if let Some(notice) = &store.read(cx).notice {
+            let notice = notice.clone();
+            window.defer(cx, move |window, cx| {
+                window.push_notification(Notification::error(notice).title("State recovery"), cx);
+            });
+        }
         let observers = vec![
+            cx.subscribe_in(&store, window, |_, _, error: &SaveError, window, cx| {
+                window.push_notification(
+                    Notification::error(error.0.clone()).title("Could not save state"),
+                    cx,
+                );
+            }),
             cx.observe_in(&projects, window, |this, _, window, cx| {
                 this.sync_selection(window, cx)
             }),

@@ -21,6 +21,8 @@ pub struct Selection {
 pub struct Projects {
     pub items: Vec<Project>,
     selected: Option<Selection>,
+    pending_selection: Option<Selection>,
+    scan_generation: u64,
     /// Worktree paths with an open terminal: the sidebar lights their status dot.
     active: HashSet<PathBuf>,
     /// One entry per worktree being created, holding its project's path.
@@ -42,6 +44,8 @@ impl Projects {
         let mut this = Self {
             items: vec![],
             selected: None,
+            pending_selection: None,
+            scan_generation: 0,
             active: HashSet::new(),
             creating: Vec::new(),
             store: store.clone(),
@@ -55,6 +59,7 @@ impl Projects {
         if self.is_selected(project, worktree) {
             return;
         }
+        self.pending_selection = None;
         self.selected = Some(Selection {
             project: project.to_path_buf(),
             worktree: worktree.map(Path::to_path_buf),
@@ -114,20 +119,22 @@ impl Projects {
                     async move { worktree::create(&project, Some(&name)) }
                 })
                 .await;
-            let Ok(rescan) = this.update(cx, |this, cx| {
+            let rescan = this.update(cx, |this, cx| {
                 if let Some(ix) = this.creating.iter().position(|path| *path == project.path) {
                     this.creating.remove(ix);
                 }
+                if let Ok(created) = &created {
+                    this.pending_selection = Some(Selection {
+                        project: project.path.clone(),
+                        worktree: Some(created.path.clone()),
+                    });
+                }
                 this.rescan(cx)
-            }) else {
-                return created.map(drop);
-            };
-            rescan.await;
-            let created = created?;
-            this.update(cx, |this, cx| {
-                this.select(&project.path, Some(&created.path), cx)
-            })
-            .ok();
+            });
+            if let Ok(rescan) = rescan {
+                rescan.await;
+            }
+            created?;
             Ok(())
         })
     }
@@ -167,6 +174,8 @@ impl Projects {
     }
 
     pub(crate) fn rescan(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        self.scan_generation += 1;
+        let generation = self.scan_generation;
         let refs = self.store.read(cx).state.projects.clone();
         cx.spawn(async move |this, cx| {
             let items = cx
@@ -174,32 +183,123 @@ impl Projects {
                 .spawn(async move { refs.iter().map(projects::scan).collect::<Vec<_>>() })
                 .await;
             this.update(cx, |this, cx| {
-                this.items = items;
-                this.selected = this
-                    .selected
-                    .take()
-                    .and_then(|selection| this.revalidate(selection));
-                cx.notify();
+                if apply_scan(
+                    this.scan_generation,
+                    generation,
+                    &mut this.items,
+                    &mut this.selected,
+                    &mut this.pending_selection,
+                    items,
+                ) {
+                    cx.notify();
+                }
             })
             .ok();
         })
     }
+}
 
-    /// Keeps a selection whose worktree still exists; a removed worktree falls back to the
-    /// project's primary one.
-    fn revalidate(&self, selection: Selection) -> Option<Selection> {
-        let project = self.project(&selection.project)?;
-        let exists = |path: &PathBuf| project.worktrees.iter().any(|w| &w.path == path);
-        let worktree = match selection.worktree {
-            Some(path) if exists(&path) => Some(path),
-            _ => project
-                .worktrees
-                .first()
-                .map(|primary| primary.path.clone()),
+/// Accept a complete scan atomically, before notifying views that may close project tabs.
+fn apply_scan(
+    current: u64,
+    generation: u64,
+    items: &mut Vec<Project>,
+    selected: &mut Option<Selection>,
+    pending: &mut Option<Selection>,
+    scanned: Vec<Project>,
+) -> bool {
+    if generation != current {
+        return false;
+    }
+    *items = scanned;
+    *selected = pending
+        .take()
+        .or_else(|| selected.take())
+        .and_then(|selection| {
+            let project = items
+                .iter()
+                .find(|project| project.path == selection.project)?;
+            let worktree = match selection.worktree {
+                Some(path) if project.worktrees.iter().any(|w| w.path == path) => Some(path),
+                _ => project
+                    .worktrees
+                    .first()
+                    .map(|primary| primary.path.clone()),
+            };
+            Some(Selection {
+                worktree,
+                ..selection
+            })
+        });
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Project, Selection, Worktree, apply_scan};
+    use hive_core::{host::Host, identity::ProjectIdentity, projects::Head, state::WorktreeFilter};
+
+    fn project() -> Project {
+        Project {
+            name: "project".into(),
+            path: "/project".into(),
+            host: Host::Local,
+            filter: WorktreeFilter::All,
+            identity: ProjectIdentity::default(),
+            worktrees: vec!["/project", "/new-worktree"]
+                .into_iter()
+                .map(|path| Worktree {
+                    path: path.into(),
+                    head: Head::Branch("main".into()),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn delayed_scan_cannot_change_projects_selection_or_consume_created_worktree() {
+        let mut items = vec![project()];
+        let selected_worktree = Selection {
+            project: "/project".into(),
+            worktree: Some("/project".into()),
         };
-        Some(Selection {
-            worktree,
-            ..selection
-        })
+        let created = Selection {
+            project: "/project".into(),
+            worktree: Some("/new-worktree".into()),
+        };
+        let mut selected = Some(selected_worktree.clone());
+        let mut pending = Some(created.clone());
+        assert!(!apply_scan(
+            3,
+            2,
+            &mut items,
+            &mut selected,
+            &mut pending,
+            vec![]
+        ));
+        assert_eq!(selected, Some(selected_worktree));
+        assert_eq!(pending, Some(created.clone()));
+        assert_eq!(items.len(), 1);
+        assert!(apply_scan(
+            3,
+            3,
+            &mut items,
+            &mut selected,
+            &mut pending,
+            vec![project()]
+        ));
+        assert_eq!(selected, Some(created.clone()));
+        assert!(pending.is_none());
+        // The oldest scan completes last, reporting that every project was removed.
+        assert!(!apply_scan(
+            3,
+            1,
+            &mut items,
+            &mut selected,
+            &mut pending,
+            vec![]
+        ));
+        assert_eq!(selected, Some(created));
+        assert_eq!(items[0].worktrees.len(), 2);
     }
 }

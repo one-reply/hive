@@ -14,4 +14,7 @@ base64.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 alacritty_terminal.workspace = true
+async-channel.workspace = true
+polling.workspace = true
+rustix.workspace = true
 tracing.workspace = true

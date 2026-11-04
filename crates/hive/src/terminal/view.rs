@@ -1,16 +1,15 @@
-//! The terminal entity: owns the PTY session, pumps its events into `cx.notify()`,
-//! turns keyboard/scroll input into PTY writes.
+//! Terminal presentation and keyboard/scroll dispatch to its session entity.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
-use std::time::Duration;
 
+use crate::state::terminal_session::{SessionEvent, SessionStatus, TerminalSession};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
-use hive_core::terminal::{TermMode, Terminal, TerminalEvent, TerminalSize};
+use hive_core::terminal::TermMode;
 
 use super::element::TerminalElement;
 use super::keys;
+use crate::ui::keymap;
 
 pub enum TerminalViewEvent {
     TitleChanged,
@@ -18,11 +17,9 @@ pub enum TerminalViewEvent {
 }
 
 pub struct TerminalView {
-    terminal: Terminal,
+    session: Entity<TerminalSession>,
     focus_handle: FocusHandle,
     cwd: Option<PathBuf>,
-    title: Option<String>,
-    exited: bool,
     /// Fractional scroll-wheel lines not yet applied.
     scroll_remainder: f32,
     _subscriptions: Vec<Subscription>,
@@ -31,96 +28,39 @@ pub struct TerminalView {
 impl EventEmitter<TerminalViewEvent> for TerminalView {}
 
 impl TerminalView {
-    /// Wrap an already spawned [`Terminal`] (spawning can fail; entities can't).
-    pub fn new(
-        mut terminal: Terminal,
-        cwd: Option<&Path>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(cwd: Option<&Path>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let session = cx.new(|cx| TerminalSession::new(cwd.map(Path::to_path_buf), cx));
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.on_focus(&focus_handle, window, |this, _, cx| {
-                this.terminal.set_focused(true);
+                this.session
+                    .update(cx, |session, _| session.set_focused(true));
                 cx.notify();
             }),
             cx.on_blur(&focus_handle, window, |this, _, cx| {
-                this.terminal.set_focused(false);
+                this.session
+                    .update(cx, |session, _| session.set_focused(false));
                 cx.notify();
             }),
+            cx.observe(&session, |_, _, cx| cx.notify()),
+            cx.subscribe(&session, |_, _, event, cx| {
+                cx.emit(match event {
+                    SessionEvent::TitleChanged => TerminalViewEvent::TitleChanged,
+                    SessionEvent::Exited => TerminalViewEvent::Exited,
+                });
+            }),
         ];
-        if let Some(events) = terminal.events() {
-            Self::pump_events(events, cx);
-        }
         Self {
-            terminal,
+            session,
             focus_handle,
             cwd: cwd.map(Path::to_path_buf),
-            title: None,
-            exited: false,
             scroll_remainder: 0.,
             _subscriptions: subscriptions,
         }
     }
 
-    /// Block on the channel in the background; coalesce bursts of wakeups into one notify.
-    fn pump_events(events: Receiver<TerminalEvent>, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            let mut events = Some(events);
-            loop {
-                let rx = events.take().expect("receiver is always put back");
-                let (rx, batch) = cx
-                    .background_executor()
-                    .spawn(async move {
-                        let mut batch = Vec::new();
-                        match rx.recv() {
-                            Ok(event) => batch.push(event),
-                            Err(_) => return (rx, batch),
-                        }
-                        // Let the shell finish its burst of output before we repaint.
-                        std::thread::sleep(Duration::from_millis(4));
-                        while let Ok(event) = rx.try_recv() {
-                            batch.push(event);
-                        }
-                        (rx, batch)
-                    })
-                    .await;
-                events = Some(rx);
-                if batch.is_empty() {
-                    break; // sender gone: the event loop thread ended
-                }
-                let alive = this.update(cx, |this, cx| {
-                    for event in batch {
-                        this.handle_event(event, cx);
-                    }
-                    cx.notify();
-                    !this.exited
-                });
-                if !matches!(alive, Ok(true)) {
-                    break;
-                }
-            }
-        })
-        .detach();
-    }
-
-    fn handle_event(&mut self, event: TerminalEvent, cx: &mut Context<Self>) {
-        match event {
-            TerminalEvent::Wakeup => {}
-            TerminalEvent::Title(title) => {
-                self.title = title;
-                cx.emit(TerminalViewEvent::TitleChanged);
-            }
-            TerminalEvent::Bell => {}
-            TerminalEvent::Exit => {
-                self.exited = true;
-                cx.emit(TerminalViewEvent::Exited);
-            }
-        }
-    }
-
-    pub fn terminal(&self) -> &Terminal {
-        &self.terminal
+    pub(crate) fn session(&self) -> &Entity<TerminalSession> {
+        &self.session
     }
 
     pub fn focus_handle(&self) -> &FocusHandle {
@@ -131,14 +71,16 @@ impl TerminalView {
         self.cwd.as_deref()
     }
 
-    pub fn exited(&self) -> bool {
-        self.exited
+    pub fn exited(&self, cx: &App) -> bool {
+        self.session.read(cx).exited
     }
 
     /// Shell-set title (without a `user@host:` prefix, capped so tabs stay narrow), else the
     /// cwd's last component, else "Terminal".
-    pub fn title(&self) -> String {
+    pub fn title(&self, cx: &App) -> String {
         if let Some(title) = self
+            .session
+            .read(cx)
             .title
             .as_deref()
             .map(str::trim)
@@ -154,18 +96,24 @@ impl TerminalView {
     }
 
     /// Called by the element once it knows how many cells fit.
-    pub fn resize(&mut self, cols: u16, rows: u16) {
-        self.terminal.resize(TerminalSize::new(cols, rows));
+    pub fn resize(&mut self, cols: u16, rows: u16, cx: &mut Context<Self>) {
+        self.session
+            .update(cx, |session, _| session.resize(cols, rows));
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.exited {
-            return;
-        }
-        let mode = self.terminal.mode();
-        if let Some(bytes) = keys::to_bytes(&event.keystroke, mode) {
-            self.terminal.scroll_to_bottom();
-            self.terminal.write(bytes);
+        let handled = self.session.update(cx, |session, _| {
+            let Some(terminal) = session.terminal().filter(|_| !session.exited) else {
+                return false;
+            };
+            if let Some(bytes) = keys::to_bytes(&event.keystroke, terminal.mode()) {
+                terminal.scroll_to_bottom();
+                terminal.write(bytes);
+                return true;
+            }
+            false
+        });
+        if handled {
             cx.stop_propagation();
         }
     }
@@ -174,17 +122,21 @@ impl TerminalView {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        let mode = self.terminal.mode();
-        let mut bytes = Vec::with_capacity(text.len() + 12);
-        if mode.contains(TermMode::BRACKETED_PASTE) {
-            bytes.extend_from_slice(b"\x1b[200~");
-            bytes.extend_from_slice(text.as_bytes());
-            bytes.extend_from_slice(b"\x1b[201~");
-        } else {
-            bytes.extend_from_slice(text.replace("\r\n", "\r").replace('\n', "\r").as_bytes());
-        }
-        self.terminal.scroll_to_bottom();
-        self.terminal.write(bytes);
+        self.session.update(cx, |session, _| {
+            let Some(terminal) = session.terminal().filter(|_| !session.exited) else {
+                return;
+            };
+            let mut bytes = Vec::with_capacity(text.len() + 12);
+            if terminal.mode().contains(TermMode::BRACKETED_PASTE) {
+                bytes.extend_from_slice(b"\x1b[200~");
+                bytes.extend_from_slice(text.as_bytes());
+                bytes.extend_from_slice(b"\x1b[201~");
+            } else {
+                bytes.extend_from_slice(text.replace("\r\n", "\r").replace('\n', "\r").as_bytes());
+            }
+            terminal.scroll_to_bottom();
+            terminal.write(bytes);
+        });
     }
 
     fn scroll_wheel(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -196,17 +148,22 @@ impl TerminalView {
             return;
         }
         self.scroll_remainder -= lines as f32;
-        let mode = self.terminal.mode();
-        if mode.contains(TermMode::ALT_SCREEN) {
-            // Alternate screen (less, vim…): translate the wheel into arrow keys.
-            if mode.contains(TermMode::ALTERNATE_SCROLL) {
-                let key: &[u8] = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
-                let bytes = key.repeat(lines.unsigned_abs() as usize);
-                self.terminal.write(bytes);
+        self.session.update(cx, |session, _| {
+            let Some(terminal) = session.terminal() else {
+                return;
+            };
+            let mode = terminal.mode();
+            if mode.contains(TermMode::ALT_SCREEN) {
+                // Alternate screen (less, vim…): translate the wheel into arrow keys.
+                if mode.contains(TermMode::ALTERNATE_SCROLL) {
+                    let key: &[u8] = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
+                    let bytes = key.repeat(lines.unsigned_abs() as usize);
+                    terminal.write(bytes);
+                }
+            } else {
+                terminal.scroll(lines);
             }
-        } else {
-            self.terminal.scroll(lines);
-        }
+        });
         cx.notify();
     }
 }
@@ -224,7 +181,7 @@ impl Render for TerminalView {
         div()
             .id("terminal")
             .track_focus(&self.focus_handle)
-            .key_context("Terminal")
+            .key_context(keymap::TERMINAL_VIEW_CONTEXT)
             .size_full()
             .bg(bg)
             .cursor(CursorStyle::IBeam)
@@ -235,7 +192,18 @@ impl Render for TerminalView {
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.focus_handle.focus(window, cx)),
             )
-            .child(TerminalElement::new(cx.entity(), focused))
+            .child(match &self.session.read(cx).status {
+                SessionStatus::Starting => {
+                    div().p_4().child("Starting terminal…").into_any_element()
+                }
+                SessionStatus::Failed(error) => div()
+                    .p_4()
+                    .child(format!("Could not start terminal: {error}"))
+                    .into_any_element(),
+                SessionStatus::Ready(_) => {
+                    TerminalElement::new(cx.entity(), focused).into_any_element()
+                }
+            })
     }
 }
 
@@ -254,11 +222,6 @@ fn shorten_title(title: &str, max_chars: usize) -> String {
 }
 
 actions!(terminal, [Paste]);
-
-/// Keymap entries the terminal needs. Call once at startup.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("cmd-v", Paste, Some("Terminal"))]);
-}
 
 #[cfg(test)]
 mod tests {

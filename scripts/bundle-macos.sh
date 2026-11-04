@@ -21,6 +21,9 @@ version="$(cargo metadata --no-deps --format-version 1 | python3 -c '
 import json, sys
 print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "hive"))
 ')"
+# macOS ships Apple Silicon only (wiki/decisions/macos-apple-silicon-only.md): refuse Intel or universal.
+architectures="$(lipo -archs "$executable")"
+[[ "$architectures" == arm64 ]] || { echo "Expected an arm64-only executable, got: $architectures" >&2; exit 1; }
 minimum_os="$(xcrun vtool -show-build "$executable" | awk '/minos/ {print $2; exit}')"
 [[ -n "$minimum_os" ]] || { echo "Missing Mach-O deployment version." >&2; exit 1; }
 output="$(dirname "$executable")/bundle"

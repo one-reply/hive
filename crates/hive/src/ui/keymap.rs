@@ -8,7 +8,8 @@ use gpui_kit::*;
 use hive_core::settings::Settings;
 
 use crate::app::AppState;
-use crate::terminal::panel::{SplitDown, SplitRight};
+use crate::terminal::panel::{ClosePane, SplitDown, SplitRight};
+use crate::terminal::view::Paste;
 use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
 use crate::ui::workspace::{NewTerminal, ToggleGitPanel, ToggleSidebar};
@@ -19,11 +20,39 @@ pub(crate) const CONTEXT: &str = "Workspace";
 pub(crate) const COMMIT_CONTEXT: &str = "(SourceControl > Input) || SourceControl";
 /// Key context of pane shortcuts: a focused terminal tab.
 pub(crate) const TERMINAL_CONTEXT: &str = "TerminalPanel";
+/// Key context of a focused terminal pane's own shortcuts.
+pub(crate) const TERMINAL_VIEW_CONTEXT: &str = "Terminal";
+
+/// The group a shortcut is listed under on the Shortcuts page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Category {
+    Workspace,
+    Terminal,
+    SourceControl,
+}
+
+impl Category {
+    /// Every category, in the order the Shortcuts page shows them.
+    pub const ALL: [Category; 3] = [
+        Category::Workspace,
+        Category::Terminal,
+        Category::SourceControl,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Category::Workspace => "Workspace",
+            Category::Terminal => "Terminal",
+            Category::SourceControl => "Source control",
+        }
+    }
+}
 
 /// An action the user can reassign.
 pub(crate) struct Shortcut {
     pub label: &'static str,
     pub default: &'static str,
+    pub category: Category,
     /// Where the binding applies; narrower than `CONTEXT` when a wider one would steal keys.
     pub context: &'static str,
     action: fn() -> Box<dyn Action>,
@@ -45,48 +74,69 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 7] = [
+pub(crate) static SHORTCUTS: [Shortcut; 9] = [
     Shortcut {
         label: "New terminal",
         default: "cmd-t",
+        category: Category::Workspace,
         context: CONTEXT,
         action: || Box::new(NewTerminal),
     },
     Shortcut {
-        label: "Toggle sidebar",
+        label: "Toggle left sidebar",
         default: "cmd-shift-\\",
+        category: Category::Workspace,
         context: CONTEXT,
         action: || Box::new(ToggleSidebar),
     },
     Shortcut {
-        label: "Open settings",
-        default: "cmd-,",
-        context: CONTEXT,
-        action: || Box::new(OpenSettings),
-    },
-    Shortcut {
         label: "Toggle right sidebar",
-        default: "cmd-shift-g",
+        default: "cmd-\\",
+        category: Category::Workspace,
         context: CONTEXT,
         action: || Box::new(ToggleGitPanel),
     },
     Shortcut {
-        label: "Commit staged changes",
-        default: "cmd-enter",
-        context: COMMIT_CONTEXT,
-        action: || Box::new(CommitChanges),
+        label: "Open settings",
+        default: "cmd-,",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(OpenSettings),
     },
     Shortcut {
         label: "Split terminal right",
         default: "cmd-d",
+        category: Category::Terminal,
         context: TERMINAL_CONTEXT,
         action: || Box::new(SplitRight),
     },
     Shortcut {
         label: "Split terminal down",
         default: "cmd-shift-d",
+        category: Category::Terminal,
         context: TERMINAL_CONTEXT,
         action: || Box::new(SplitDown),
+    },
+    Shortcut {
+        label: "Close terminal pane",
+        default: "cmd-w",
+        category: Category::Terminal,
+        context: TERMINAL_CONTEXT,
+        action: || Box::new(ClosePane),
+    },
+    Shortcut {
+        label: "Paste into terminal",
+        default: "cmd-v",
+        category: Category::Terminal,
+        context: TERMINAL_VIEW_CONTEXT,
+        action: || Box::new(Paste),
+    },
+    Shortcut {
+        label: "Commit staged changes",
+        default: "cmd-enter",
+        category: Category::SourceControl,
+        context: COMMIT_CONTEXT,
+        action: || Box::new(CommitChanges),
     },
 ];
 
@@ -211,7 +261,7 @@ pub(crate) fn assign(
 #[cfg(test)]
 mod tests {
     // Not `super::*`: the `gpui_kit::*` glob brings in GPUI's own `test` macro.
-    use super::{Assignment, BTreeMap, Rejection, SHORTCUTS, assign};
+    use super::{Assignment, BTreeMap, Category, Rejection, SHORTCUTS, assign};
     use gpui_kit::{Keystroke, OperatingSystem};
 
     const MAC: OperatingSystem = OperatingSystem::Mac;
@@ -272,6 +322,20 @@ mod tests {
     }
 
     #[test]
+    fn every_category_lists_its_shortcuts_contiguously() {
+        // The Shortcuts page renders the registry in order under category headers.
+        let order: Vec<Category> = SHORTCUTS.iter().map(|s| s.category).collect();
+        let mut seen: Vec<Category> = Vec::new();
+        for category in order {
+            if seen.last() != Some(&category) {
+                assert!(!seen.contains(&category), "{category:?} appears twice");
+                seen.push(category);
+            }
+        }
+        assert_eq!(seen, Category::ALL);
+    }
+
+    #[test]
     fn plain_keys_are_rejected() {
         let none = BTreeMap::new();
         assert_eq!(
@@ -290,7 +354,7 @@ mod tests {
         let none = BTreeMap::new();
         assert_eq!(
             assign(0, &keystroke("cmd-shift-\\"), &none, MAC),
-            Err(Rejection::TakenBy("Toggle sidebar"))
+            Err(Rejection::TakenBy("Toggle left sidebar"))
         );
     }
 
@@ -304,7 +368,7 @@ mod tests {
         );
         assert_eq!(
             assign(0, &keystroke("cmd-b"), &keybindings, MAC),
-            Err(Rejection::TakenBy("Toggle sidebar"))
+            Err(Rejection::TakenBy("Toggle left sidebar"))
         );
     }
 
