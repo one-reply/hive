@@ -51,6 +51,8 @@ pub(crate) struct GitPanel {
     collapsed: HashSet<&'static str>,
     changes_list: ListState,
     change_rows: Vec<(usize, Option<usize>)>,
+    /// Session-only height of the commit message box.
+    message_size: commit::MessageSize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -97,6 +99,7 @@ impl GitPanel {
             collapsed: HashSet::new(),
             changes_list: ListState::new(0, ListAlignment::Top, ROW_HEIGHT),
             change_rows: Vec::new(),
+            message_size: commit::MessageSize::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -196,7 +199,18 @@ impl Render for GitPanel {
             .min_w_0()
             .key_context("SourceControl")
             .bg(cx.theme().background)
-            .on_action(cx.listener(|this, _: &CommitChanges, _, cx| this.commit(cx)));
+            .on_action(cx.listener(|this, _: &CommitChanges, _, cx| this.commit(cx)))
+            // The panel's bounds cap the message box at half its height.
+            .on_drag_move(cx.listener(
+                |this, event: &DragMoveEvent<commit::MessageResize>, _, cx| {
+                    if this
+                        .message_size
+                        .drag(event.event.position.y, event.bounds.size.height)
+                    {
+                        cx.notify();
+                    }
+                },
+            ));
         if !has_target {
             return panel.child(empty_state(
                 Lucide::GitBranch,
