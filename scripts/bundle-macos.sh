@@ -30,6 +30,14 @@ architectures="$(lipo -archs "$executable")"
 [[ "$architectures" == arm64 ]] || { echo "Expected an arm64-only executable, got: $architectures" >&2; exit 1; }
 minimum_os="$(xcrun vtool -show-build "$executable" | awk '/minos/ {print $2; exit}')"
 [[ -n "$minimum_os" ]] || { echo "Missing Mach-O deployment version." >&2; exit 1; }
+# The embedded updater can require a newer system than the Rust executable.
+minimum_os="$(python3 - "$minimum_os" "$sparkle/Sparkle.framework/Resources/Info.plist" <<'PY'
+import plistlib, sys
+from pathlib import Path
+framework_minimum = plistlib.loads(Path(sys.argv[2]).read_bytes())["LSMinimumSystemVersion"]
+print(max(sys.argv[1], framework_minimum, key=lambda version: tuple(map(int, version.split(".")))))
+PY
+)"
 output="$(dirname "$executable")/bundle"
 mkdir -p "$output"
 stage="$(mktemp -d "$output/.hive.XXXXXX")"
@@ -81,6 +89,8 @@ info.update(CFBundleShortVersionString=version, CFBundleVersion=version, LSMinim
 assert (contents / "MacOS" / info["CFBundleExecutable"]).is_file()
 assert (contents / "Frameworks/Sparkle.framework/Sparkle").is_file()
 assert (contents / "Frameworks/Sparkle.framework/Versions/Current").is_symlink()
+framework_info = plistlib.loads((contents / "Frameworks/Sparkle.framework/Resources/Info.plist").read_bytes())
+assert tuple(map(int, info["LSMinimumSystemVersion"].split("."))) >= tuple(map(int, framework_info["LSMinimumSystemVersion"].split(".")))
 assert info["SUFeedURL"].startswith("https://")
 assert info["SUVerifyUpdateBeforeExtraction"] and info["SURequireSignedFeed"]
 assert not info["SUAllowsAutomaticUpdates"]
