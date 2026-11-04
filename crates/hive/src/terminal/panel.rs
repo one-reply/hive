@@ -1,5 +1,6 @@
 //! A dock tab holding a tree of terminal panes (Orca-style tiles), with "+" (new tab) and
 //! "split" toolbar buttons and ⌘D / ⌘⇧D / ⌘W for splitting and closing the active pane.
+//! The split shortcuts are reassignable, so they live in `ui::keymap`; ⌘W is bound here.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,17 +18,18 @@ use hive_core::terminal::{Terminal, TerminalSize};
 use super::pane_tree::PaneTree;
 use super::view::{TerminalView, TerminalViewEvent};
 use crate::app::AppState;
+use crate::ui::keymap;
 use crate::ui::workspace::{NewTerminal, right_sidebar_toggle};
 
 actions!(terminal_panel, [SplitRight, SplitDown, ClosePane]);
 
-/// Keymap entries for pane management. Call once at startup.
+/// Keymap entry for closing a pane. Call once at startup.
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("cmd-d", SplitRight, Some("TerminalPanel")),
-        KeyBinding::new("cmd-shift-d", SplitDown, Some("TerminalPanel")),
-        KeyBinding::new("cmd-w", ClosePane, Some("TerminalPanel")),
-    ]);
+    cx.bind_keys([KeyBinding::new(
+        "cmd-w",
+        ClosePane,
+        Some(keymap::TERMINAL_CONTEXT),
+    )]);
 }
 
 pub struct TerminalPanel {
@@ -282,14 +284,14 @@ impl Panel for TerminalPanel {
             Button::new("terminal-split-right")
                 .cursor_pointer()
                 .icon(Lucide::SquareSplitHorizontal)
-                .tooltip("Split right (⌘D)")
+                .tooltip_with_action("Split right", &SplitRight, Some(keymap::TERMINAL_CONTEXT))
                 .on_click(
                     cx.listener(|this, _, window, cx| this.split(Axis::Horizontal, window, cx)),
                 ),
             Button::new("terminal-split-down")
                 .cursor_pointer()
                 .icon(Lucide::SquareSplitVertical)
-                .tooltip("Split down (⌘⇧D)")
+                .tooltip_with_action("Split down", &SplitDown, Some(keymap::TERMINAL_CONTEXT))
                 .on_click(
                     cx.listener(|this, _, window, cx| this.split(Axis::Vertical, window, cx)),
                 ),
@@ -309,7 +311,7 @@ impl Render for TerminalPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
-            .key_context("TerminalPanel")
+            .key_context(keymap::TERMINAL_CONTEXT)
             .on_action(cx.listener(|this, _: &SplitRight, window, cx| {
                 this.split(Axis::Horizontal, window, cx)
             }))

@@ -1,6 +1,8 @@
 //! One project's center: its own dock of terminal and diff tabs. A center stays alive while
 //! another project is shown, so switching projects in the sidebar switches whole tab sets.
+use std::cell::Cell;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::dock::{BasePanelView, Panel};
@@ -14,13 +16,16 @@ pub(super) struct ProjectCenter {
     /// Tabs we opened; pruned when the dock no longer holds them.
     terminals: Vec<Entity<TerminalPanel>>,
     diffs: Vec<Entity<DiffPanel>>,
+    /// Space the tab bar leaves free at its left end, shared with the dock's renderer.
+    tab_inset: Rc<Cell<Pixels>>,
     _observer: Subscription,
 }
 
 impl ProjectCenter {
     pub(super) fn new(project: &Path, window: &mut Window, cx: &mut Context<Workspace>) -> Self {
         let id = format!("center:{}", project.display());
-        let dock = CenterDock::dock_area(id, window, cx);
+        let tab_inset = Rc::new(Cell::new(px(0.)));
+        let dock = CenterDock::dock_area(id, tab_inset.clone(), window, cx);
         let project = project.to_path_buf();
         // Tabs closed from the dock (× button, exited shell) must drop out of our lists so
         // the welcome screen comes back and the last tab draws its own ×.
@@ -36,12 +41,19 @@ impl ProjectCenter {
             dock,
             terminals: Vec::new(),
             diffs: Vec::new(),
+            tab_inset,
             _observer: observer,
         }
     }
 
     pub(super) fn dock(&self) -> &Entity<DockArea> {
         &self.dock
+    }
+
+    /// The cell the dock's tab bar reads its left inset from. The dock is its own view, so
+    /// the workspace hands the value over through this cell rather than through render args.
+    pub(super) fn tab_inset(&self) -> Rc<Cell<Pixels>> {
+        self.tab_inset.clone()
     }
 
     pub(super) fn is_empty(&self) -> bool {

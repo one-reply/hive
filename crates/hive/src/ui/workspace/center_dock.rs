@@ -27,18 +27,21 @@ const CLOSE_BUTTON_PULL: Pixels = px(8.);
 /// `DockSkin` with Hive's own tab bar. Build it with [`CenterDock::dock_area`].
 pub(super) struct CenterDock {
     skin: Rc<DockSkin>,
+    tab_inset: Rc<Cell<Pixels>>,
 }
 
 impl CenterDock {
-    /// A center `DockArea` wearing this appearance.
+    /// A center `DockArea` wearing this appearance. `tab_inset` is the space the tab bar
+    /// leaves free at its left end; the workspace writes it when the title bar sits there.
     pub(super) fn dock_area(
         id: impl Into<SharedString>,
+        tab_inset: Rc<Cell<Pixels>>,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<DockArea> {
         cx.new(|cx| {
             let skin = DockSkin::new(cx);
-            DockArea::new(id, None, window, cx).with_renderer(Rc::new(Self { skin }))
+            DockArea::new(id, None, window, cx).with_renderer(Rc::new(Self { skin, tab_inset }))
         })
     }
 }
@@ -95,6 +98,7 @@ impl DockAreaRenderer for CenterDock {
             skin: self.skin.tab_group_renderer(),
             scroll_handle: ScrollHandle::default(),
             last_active_ix: Rc::new(Cell::new(None)),
+            tab_inset: self.tab_inset.clone(),
         })
     }
 }
@@ -108,6 +112,8 @@ struct CenterTabs {
     /// scrolls the new tab into view. A clicked tab reveals itself, so a click records its
     /// index first and skips the snap.
     last_active_ix: Rc<Cell<Option<usize>>>,
+    /// Width kept free before the first tab; see [`CenterDock::dock_area`].
+    tab_inset: Rc<Cell<Pixels>>,
 }
 
 impl TabGroupRenderer for CenterTabs {
@@ -159,8 +165,10 @@ impl TabGroupRenderer for CenterTabs {
         });
         let droppable = group.is_droppable();
 
+        let inset = self.tab_inset.get();
         TabBar::new("tab-bar")
             .track_scroll(&self.scroll_handle)
+            .when(inset > px(0.), |bar| bar.prefix(div().w(inset).flex_none()))
             .children(visible.into_iter().map(|ix| {
                 self.render_tab(group, ix, displayed_ix == Some(ix), droppable, window, cx)
             }))

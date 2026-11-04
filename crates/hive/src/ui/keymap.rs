@@ -8,19 +8,24 @@ use gpui_kit::*;
 use hive_core::settings::Settings;
 
 use crate::app::AppState;
+use crate::terminal::panel::{SplitDown, SplitRight};
 use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
 use crate::ui::workspace::{NewTerminal, ToggleGitPanel, ToggleSidebar};
 
-/// Key context every Hive shortcut is bound in: the main window's root.
+/// Key context of window-wide shortcuts: the main window's root.
 pub(crate) const CONTEXT: &str = "Workspace";
 // Match the input dispatch node too, where Textarea binds its own Cmd-Enter.
 pub(crate) const COMMIT_CONTEXT: &str = "(SourceControl > Input) || SourceControl";
+/// Key context of pane shortcuts: a focused terminal tab.
+pub(crate) const TERMINAL_CONTEXT: &str = "TerminalPanel";
 
 /// An action the user can reassign.
 pub(crate) struct Shortcut {
     pub label: &'static str,
     pub default: &'static str,
+    /// Where the binding applies; narrower than `CONTEXT` when a wider one would steal keys.
+    pub context: &'static str,
     action: fn() -> Box<dyn Action>,
 }
 
@@ -40,31 +45,48 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 5] = [
+pub(crate) static SHORTCUTS: [Shortcut; 7] = [
     Shortcut {
         label: "New terminal",
         default: "cmd-t",
+        context: CONTEXT,
         action: || Box::new(NewTerminal),
     },
     Shortcut {
         label: "Toggle sidebar",
         default: "cmd-shift-\\",
+        context: CONTEXT,
         action: || Box::new(ToggleSidebar),
     },
     Shortcut {
         label: "Open settings",
         default: "cmd-,",
+        context: CONTEXT,
         action: || Box::new(OpenSettings),
     },
     Shortcut {
         label: "Toggle right sidebar",
         default: "cmd-shift-g",
+        context: CONTEXT,
         action: || Box::new(ToggleGitPanel),
     },
     Shortcut {
         label: "Commit staged changes",
         default: "cmd-enter",
+        context: COMMIT_CONTEXT,
         action: || Box::new(CommitChanges),
+    },
+    Shortcut {
+        label: "Split terminal right",
+        default: "cmd-d",
+        context: TERMINAL_CONTEXT,
+        action: || Box::new(SplitRight),
+    },
+    Shortcut {
+        label: "Split terminal down",
+        default: "cmd-shift-d",
+        context: TERMINAL_CONTEXT,
+        action: || Box::new(SplitDown),
     },
 ];
 
@@ -93,21 +115,14 @@ fn install(cx: &mut App) {
         .filter(|binding| !ours.contains(binding.action().name()))
         .cloned()
         .collect();
-    let context = KeyBindingContextPredicate::parse(CONTEXT)
-        .map(Rc::new)
-        .inspect_err(|err| tracing::error!(%err, "invalid shortcut context"))
-        .ok();
     let settings = &AppState::get(cx).store.read(cx).state.settings;
     let bindings: Vec<KeyBinding> = SHORTCUTS
         .iter()
         .filter_map(|shortcut| {
-            let context = if shortcut.name() == CommitChanges.name() {
-                KeyBindingContextPredicate::parse(COMMIT_CONTEXT)
-                    .ok()
-                    .map(Rc::new)
-            } else {
-                context.clone()
-            };
+            let context = KeyBindingContextPredicate::parse(shortcut.context)
+                .map(Rc::new)
+                .inspect_err(|err| tracing::error!(%err, context = shortcut.context, "invalid shortcut context"))
+                .ok();
             load(shortcut, settings, context, cx)
         })
         .collect();
@@ -220,6 +235,40 @@ mod tests {
 
     fn keystroke(source: &'static str) -> Keystroke {
         Keystroke::parse(source).expect("valid keystroke")
+    }
+
+    #[test]
+    fn every_shortcut_has_a_parsable_context_and_default() {
+        use gpui_kit::KeyBindingContextPredicate;
+        for shortcut in &SHORTCUTS {
+            assert!(
+                KeyBindingContextPredicate::parse(shortcut.context).is_ok(),
+                "context of {}",
+                shortcut.label
+            );
+            assert!(
+                Keystroke::parse(shortcut.default).is_ok(),
+                "default of {}",
+                shortcut.label
+            );
+        }
+    }
+
+    #[test]
+    fn split_shortcuts_apply_only_inside_a_terminal_tab() {
+        use gpui_kit::{KeyBindingContextPredicate, KeyContext};
+        let predicate =
+            KeyBindingContextPredicate::parse(super::TERMINAL_CONTEXT).expect("terminal context");
+        let contexts = |names: &[&str]| {
+            names
+                .iter()
+                .map(|n| KeyContext::parse(n).expect("context"))
+                .collect::<Vec<_>>()
+        };
+        // GPUI matches an identifier against the innermost node of the prefix it is given.
+        assert!(predicate.eval(&contexts(&["Workspace", "TerminalPanel"])));
+        assert!(!predicate.eval(&contexts(&["Workspace"])));
+        assert!(!predicate.eval(&contexts(&["Workspace", "SourceControl"])));
     }
 
     #[test]

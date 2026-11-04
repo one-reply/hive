@@ -2,8 +2,10 @@
 //! The center shows the selected project's own `DockArea` of terminal and diff tabs
 //! (`ProjectCenter`); every project keeps its tabs while another one is shown.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::assets::IconName as Lucide;
@@ -80,6 +82,8 @@ const HIVE_MARK: &[u8] = include_bytes!("../../assets/icons/Hive.icon/Assets/mar
 const WELCOME_LOGO_SIZE: Pixels = px(96.);
 /// `TitleBar`'s left padding that clears the macOS traffic lights.
 const TRAFFIC_LIGHTS_INSET: Pixels = px(80.);
+/// Width of the name and the sidebar toggle in the collapsed title bar, after the inset.
+const COLLAPSED_TITLE_CONTENT_WIDTH: Pixels = px(72.);
 /// Left padding `TitleBar` adds on its own in fullscreen, where the traffic lights are hidden.
 const FULLSCREEN_INSET: Pixels = px(12.);
 const TITLE_INSET_DURATION: Duration = Duration::from_millis(200);
@@ -223,6 +227,17 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Width of the title bar once the sidebar is collapsed: the traffic lights' inset (gone
+    /// in fullscreen, where `TitleBar` pads by `FULLSCREEN_INSET` instead) plus its content.
+    fn collapsed_title_width(&self) -> Pixels {
+        let inset = if self.fullscreen {
+            FULLSCREEN_INSET
+        } else {
+            TRAFFIC_LIGHTS_INSET
+        };
+        inset + COLLAPSED_TITLE_CONTENT_WIDTH
+    }
+
     /// Slides the title from the traffic lights' inset to the left edge on entering fullscreen;
     /// `TitleBar` alone would jump. Leaving fullscreen snaps it back at once: macOS draws no
     /// frames during its exit transition, so a slide would freeze under the traffic lights.
@@ -307,14 +322,19 @@ impl Render for Workspace {
         }
         let bg = cx.theme().background;
         let open = self.sidebar_open;
-        // Open, the toggle sits at the sidebar's right border; collapsed, the title bar spans the
-        // window, so it stays next to the name instead of jumping to the far edge.
+        // Open, the toggle sits at the sidebar's right border; collapsed, the title bar shrinks
+        // to the name and the toggle, and the center's tab bar starts right after it.
         let title_bar = TitleBar::new().bg(bg).child(
             h_flex()
-                .flex_1()
-                .gap_2()
+                .justify_between()
                 .pr_2()
-                .when(open, |el| el.justify_between())
+                .map(|el| {
+                    if open {
+                        el.flex_1()
+                    } else {
+                        el.w(COLLAPSED_TITLE_CONTENT_WIDTH).flex_none()
+                    }
+                })
                 .child(div().text_sm().child("Hive"))
                 .child(
                     Button::new("toggle-sidebar")
@@ -335,8 +355,8 @@ impl Render for Workspace {
         let title_bar = self.animate_title_inset(title_bar);
         // Orca-style: the title bar (traffic lights + name) sits above the sidebar only and the
         // center dock with its tab bar runs to the very top. Collapsing slides the sidebar to
-        // zero width while the dock drops below the title bar, which then spans the window.
-        // 1.0 = fully open; `t` is the eased animation progress.
+        // zero width while the title bar shrinks into the tab bar's row, whose tabs move left
+        // up to the title bar's edge. 1.0 = fully open; `t` is the eased animation progress.
         let amount = move |t: f32| if open { t } else { 1. - t };
         let border = cx.theme().sidebar_border;
         let width = self.sidebar_width;
@@ -345,7 +365,16 @@ impl Render for Workspace {
             el.w(width * a)
                 .when(a > 0., |el| el.border_r_1().border_color(border))
         };
-        let center = move |el: Div, t: f32| el.pt(TAB_BAR_HEIGHT * (1. - amount(t)));
+        // The dock draws its own tab bar in its own view, so the inset reaches it through the
+        // center's cell; the animated element itself does not change.
+        let title_width = self.collapsed_title_width();
+        let tab_inset: Option<Rc<Cell<Pixels>>> = self.shown_center().map(ProjectCenter::tab_inset);
+        let center = move |el: Div, t: f32| {
+            if let Some(cell) = &tab_inset {
+                cell.set(title_width * (1. - amount(t)));
+            }
+            el
+        };
         let left_el = v_flex().h_full().flex_shrink_0().overflow_hidden().child(
             v_flex()
                 .w(width)
@@ -392,7 +421,7 @@ impl Render for Workspace {
                         if open {
                             el.w(width - px(1.)) /* leave the sidebar border visible */
                         } else {
-                            el.w_full()
+                            el.w(title_width)
                         }
                     })
                     .child(title_bar),
