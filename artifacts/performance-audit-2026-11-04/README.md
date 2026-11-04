@@ -8,6 +8,8 @@ Interpretation and limitations: `wiki/performance-audit-2026-11-04.md`.
 - `signal-before.txt`: isolated regression test fails on the original SIGCHLD integration.
 - `tests-fixed.txt`, `clippy-fixed.txt`, `core-tree-fixed.txt`, `release-bundle.txt`: verification.
 - `fixed-manifest.json`: source hashes of the instrumented native QA snapshot.
+- `fixed-summary.json`, `fixed-timing-primary.csv.gz`: valid 30-second visible/hidden phases.
+- `fixed-ui-checks.csv.gz`: final native scroll/collapse/expand checks, all passed.
 - `instrumentation/fixed-qa.patch`: temporary profiling, separate state, disabled usage,
   deterministic stream, 1000-file selection, visible/hidden phases and list assertions.
   It is for a disposable checkout only, never the installed application.
@@ -18,7 +20,9 @@ an isolated copy of `hive-core`; it validates counts as well as recording durati
 The original repo-0 fixture later gained a large diff and history, so the fixed Git
 benchmark covers 100 and 1000 only.
 
-For native QA, apply the patch to a disposable copy matching its source base, build
+For native QA, apply the patch with `git apply --unidiff-zero` to a disposable copy
+matching the `patch_base` hashes in the manifest (other concurrent workspace edits
+are intentionally absent from the measured snapshot), then build
 `cargo build --release -p hive-perf-fixed` with the temporary `gpui-pre` profiler feature,
 and package it with a unique
 bundle ID (`dev.hive.perf-fixed`). Its own state is `/tmp/hive-perf-fixed/state`, with
@@ -40,3 +44,6 @@ The native UI tool disconnected during follow-up. macOS denied the fallback scre
 Accessibility APIs; the final native checks are internal assertions and frame data,
 not a manual visual approval or a complete input-latency study. Timing percentiles
 exclude two seconds at each phase boundary, since GPUI histograms flush once a second.
+The final diagnostic script uses shorter phases to check list transitions; its frame
+percentiles are not substituted for the primary 30-second measurements. A follow-up
+which stopped producing frames after hide was excluded from timed layout assertions.

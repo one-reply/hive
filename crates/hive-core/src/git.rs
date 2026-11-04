@@ -92,7 +92,7 @@ fn bytes(
     args: &[&str],
     input: Option<&[u8]>,
     limit: usize,
-    diff_exit: bool,
+    allow_exit_one: bool,
 ) -> Result<Vec<u8>, GitError> {
     let failure = |source| GitError::Spawn {
         command: args.join(" "),
@@ -134,7 +134,7 @@ fn bytes(
     let join_error = || GitError::Invalid("Git output reader stopped unexpectedly".into());
     let (output, oversized) = output.map_err(|_| join_error())?.map_err(failure)?;
     let (errors, _) = errors.map_err(|_| join_error())?.map_err(failure)?;
-    if !status.success() && !(diff_exit && status.code() == Some(1)) {
+    if !status.success() && !(allow_exit_one && status.code() == Some(1)) {
         return Err(GitError::Failed {
             command: args.join(" "),
             host: host.clone(),

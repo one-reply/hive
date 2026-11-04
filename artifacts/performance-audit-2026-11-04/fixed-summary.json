@@ -98,6 +98,17 @@
       }
     }
   },
-  "list_checks": [],
-  "limitations": "Primary 30s phases valid; subsequent scroll-to-reveal assertion failed because unmeasured items have no height. Follow-up uses ListState::scroll_to_end; malformed final CSV row excluded."
+  "list_checks": {
+    "steps": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "check_scroll_index": 985,
+    "check_collapsed_rows": 1,
+    "check_expanded_rows": 1001,
+    "last_row_rendered": 1000
+  },
+  "limitations": "Primary 30s phases valid. Later scroll-to-reveal assertion used unmeasured heights; follow-up selected scroll_to_end. Final separate-package QA passed every list check and rendered row 1000. Manual native UI/screenshot tools unavailable. Other applications were active; no post-fix CPU/RSS claim."
 }
