@@ -129,18 +129,30 @@ mod native {
     use super::*;
 
     pub(super) fn has_key(_: &str, provider: Provider) -> Result<bool, Error> {
-        Err(Error::UnsupportedPlatform { provider })
+        Err(Error::UnsupportedPlatform {
+            provider,
+            operation: "check",
+        })
     }
 
     pub(super) fn load_key(_: &str, provider: Provider) -> Result<Option<ApiKey>, Error> {
-        Err(Error::UnsupportedPlatform { provider })
+        Err(Error::UnsupportedPlatform {
+            provider,
+            operation: "read",
+        })
     }
 
     pub(super) fn save_key(_: &str, provider: Provider, _: &ApiKey) -> Result<(), Error> {
-        Err(Error::UnsupportedPlatform { provider })
+        Err(Error::UnsupportedPlatform {
+            provider,
+            operation: "save",
+        })
     }
 
     pub(super) fn delete_key(_: &str, provider: Provider) -> Result<(), Error> {
-        Err(Error::UnsupportedPlatform { provider })
+        Err(Error::UnsupportedPlatform {
+            provider,
+            operation: "delete",
+        })
     }
 }

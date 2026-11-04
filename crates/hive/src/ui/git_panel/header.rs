@@ -3,11 +3,26 @@ use super::*;
 
 impl GitPanel {
     /// Worktree name, branch picker with sync counters, then the remote actions.
-    pub(super) fn header(&self, target: &Target, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn header(
+        &self,
+        target: &Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let state = self.git.read(cx);
         let status = state.status.clone();
         let busy = state.is_busy();
         let spinning = busy || state.loading;
+        let has_remote = state.remote.is_some();
+        let [
+            refresh_hover,
+            branch_hover,
+            fetch_hover,
+            pull_hover,
+            push_hover,
+        ] = ["git-refresh", "branch-picker", "fetch", "pull", "push"]
+            .map(|id| Hover::new(id, window, cx));
+        let state = self.git.read(cx);
         let remotes = state.remotes.clone();
         let remote = state.remote.clone();
         let upstream_remote = state.upstream_remote.clone();
@@ -54,7 +69,6 @@ impl GitPanel {
             .child(
                 Button::new("git-refresh")
                     .cursor_pointer()
-                    .ghost()
                     .xsmall()
                     .icon(Lucide::RefreshCw)
                     .loading(spinning)
@@ -64,7 +78,8 @@ impl GitPanel {
                             g.clear_error(cx);
                             g.refresh(true, cx);
                         })
-                    })),
+                    }))
+                    .smooth_hover(ButtonLook::Ghost, &refresh_hover.enabled(!spinning), cx),
             );
 
         let branch_row = h_flex()
@@ -74,7 +89,6 @@ impl GitPanel {
             .child(
                 Button::new("branch-picker")
                     .cursor_pointer()
-                    .ghost()
                     .xsmall()
                     .min_w_0()
                     .icon(Lucide::GitBranch)
@@ -84,7 +98,13 @@ impl GitPanel {
                     .disabled(status.is_none() || busy)
                     .on_click(cx.listener(|this, _, window, cx| {
                         git_controls::branches(this.git.clone(), false, window, cx)
-                    })),
+                    }))
+                    .smooth_hover(
+                        ButtonLook::Ghost,
+                        &branch_hover.enabled(status.is_some() && !busy),
+                        cx,
+                    )
+                    .min_w_0(),
             )
             .when(detached, |s| {
                 s.child(Tag::warning().xsmall().child("detached"))
@@ -126,7 +146,12 @@ impl GitPanel {
                             this.git
                                 .update(cx, |g, cx| g.perform(Action::Fetch(remote), cx));
                         }
-                    })),
+                    }))
+                    .smooth_hover(
+                        ButtonLook::Outline,
+                        &fetch_hover.enabled(!busy && has_remote),
+                        cx,
+                    ),
             )
             .child(
                 sync_button("pull", Lucide::ArrowDown, "Pull", "Pull fast-forward only")
@@ -134,7 +159,12 @@ impl GitPanel {
                     .when(!has_upstream, |b| b.tooltip("No upstream to pull from"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.git.update(cx, |g, cx| g.perform(Action::Pull, cx))
-                    })),
+                    }))
+                    .smooth_hover(
+                        ButtonLook::Outline,
+                        &pull_hover.enabled(!busy && has_upstream),
+                        cx,
+                    ),
             )
             .child(
                 sync_button(
@@ -182,7 +212,8 @@ impl GitPanel {
                     } else {
                         this.git.update(cx, |g, cx| g.perform(action, cx));
                     }
-                })),
+                }))
+                .smooth_hover(ButtonLook::Outline, &push_hover.enabled(!push_disabled), cx),
             );
         if remotes.len() > 1 {
             let git = self.git.clone();
@@ -227,7 +258,6 @@ fn sync_button(
 ) -> Button {
     Button::new(id)
         .cursor_pointer()
-        .outline()
         .xsmall()
         .icon(icon)
         .label(label)

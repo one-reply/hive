@@ -4,7 +4,7 @@ use super::*;
 impl Workspace {
     pub(super) fn render_center(
         &self,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
@@ -26,7 +26,9 @@ impl Workspace {
             None => center
                 .child(self.render_welcome(muted, window, cx))
                 .child(self.render_welcome_band(cx))
-                .when(!self.git_open, |el| el.child(self.render_welcome_toggle())),
+                .when(!self.git_open, |el| {
+                    el.child(self.render_welcome_toggle(window, cx))
+                }),
         }
     }
 
@@ -45,7 +47,8 @@ impl Workspace {
 
     /// The right-sidebar toggle in the welcome screen's top-right corner. Stops mouse-down so
     /// a click does not start a window drag through the title band.
-    fn render_welcome_toggle(&self) -> impl IntoElement {
+    fn render_welcome_toggle(&self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let hover = Hover::new("toggle-right-sidebar", window, cx);
         h_flex()
             .absolute()
             .top_0()
@@ -54,7 +57,11 @@ impl Workspace {
             .px_2()
             .items_center()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(right_sidebar_toggle().small().ghost())
+            .child(
+                right_sidebar_toggle()
+                    .small()
+                    .smooth_hover(ButtonLook::Ghost, &hover, cx),
+            )
     }
 
     /// Shown while the project's dock has no tabs (the dock itself draws nothing then) or no
@@ -62,9 +69,11 @@ impl Workspace {
     fn render_welcome(
         &self,
         muted: Hsla,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let add_hover = Hover::new("welcome-add-project", window, cx);
+        let terminal_hover = Hover::new("welcome-new-terminal", window, cx);
         let has_selection = self.projects.read(cx).selection().is_some();
         let hint = if has_selection {
             "Open a terminal in the selected worktree to begin."
@@ -105,23 +114,23 @@ impl Workspace {
                     .child(
                         Button::new("welcome-add-project")
                             .cursor_pointer()
-                            .outline()
                             .icon(IconName::FolderOpen)
                             .label("Add project")
                             .on_click(|_, _, cx| {
                                 Store::prompt_add_projects(AppState::get(cx).store.clone(), cx)
-                            }),
+                            })
+                            .smooth_hover(ButtonLook::Outline, &add_hover, cx),
                     )
                     .when(has_selection, |el| {
                         el.child(
                             Button::new("welcome-new-terminal")
                                 .cursor_pointer()
-                                .outline()
                                 .icon(Lucide::SquareTerminal)
                                 .label("New terminal")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.new_terminal(&NewTerminal, window, cx)
-                                })),
+                                }))
+                                .smooth_hover(ButtonLook::Outline, &terminal_hover, cx),
                         )
                     }),
             )

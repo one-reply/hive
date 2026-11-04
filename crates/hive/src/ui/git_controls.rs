@@ -1,9 +1,10 @@
 //! Branch selection and confirmations with their original worktree captured at opening.
 use crate::state::git::{Git, Target};
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
 use crate::ui::text_field::TextField;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
@@ -92,7 +93,7 @@ impl BranchPicker {
     }
 }
 impl Render for BranchPicker {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filter = self.filter.read(cx).value().to_lowercase();
         let branches = if self.git.read(cx).target.as_ref() == Some(&self.target) {
             self.git.read(cx).branches.clone()
@@ -124,11 +125,12 @@ impl Render for BranchPicker {
                 .enumerate()
                 .map(|(i, b)| {
                     let current = !b.remote && current.as_deref() == Some(b.name.as_str());
-                    self.branch_row(title, i, b, current, cx)
+                    self.branch_row(title, i, b, current, window, cx)
                 })
                 .collect();
             list = list.child(section_title(title, cx)).children(rows);
         }
+        let new_branch_hover = Hover::new("new-branch", window, cx);
         let error: Option<SharedString> = self.git.read(cx).error.clone().map(Into::into);
         v_flex()
             .gap_2()
@@ -151,7 +153,6 @@ impl Render for BranchPicker {
                     .child(
                         Button::new("new-branch")
                             .cursor_pointer()
-                            .outline()
                             .icon(Lucide::Plus)
                             .label("Create branch…")
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -163,7 +164,8 @@ impl Render for BranchPicker {
                                     window,
                                     cx,
                                 );
-                            })),
+                            }))
+                            .smooth_hover(ButtonLook::Outline, &new_branch_hover, cx),
                     ),
             )
             .child(list)
@@ -177,11 +179,15 @@ impl BranchPicker {
         ix: usize,
         branch: Branch,
         current: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (fg, muted) = (cx.theme().foreground, cx.theme().muted_foreground);
         let deletable = !branch.remote && !current && branch.worktree.is_none();
-        let group_id: SharedString = format!("branch-{group}-{ix}").into();
+        let row_id: SharedString = format!("branch-{group}-{ix}").into();
+        let delete_id: SharedString = format!("delete-{group}-{ix}").into();
+        let row_hover = Hover::new(row_id.clone(), window, cx);
+        let delete_hover = Hover::new(delete_id.clone(), window, cx);
         let detail: Option<&'static str> = if current {
             Some("current")
         } else if branch.worktree.is_some() {
@@ -189,9 +195,13 @@ impl BranchPicker {
         } else {
             None
         };
+        let idle_bg = if current {
+            fg.opacity(0.08)
+        } else {
+            fg.opacity(0.)
+        };
         h_flex()
-            .id(group_id.clone())
-            .group(group_id.clone())
+            .id(row_id)
             .h(BRANCH_ROW_HEIGHT)
             .flex_none()
             .px_2()
@@ -199,8 +209,7 @@ impl BranchPicker {
             .items_center()
             .rounded_md()
             .cursor_pointer()
-            .hover(|s| s.bg(fg.opacity(0.05)))
-            .when(current, |s| s.bg(fg.opacity(0.08)))
+            .hover_bg(&row_hover, idle_bg, fg.opacity(0.05))
             .child(
                 Icon::new(if branch.remote {
                     Lucide::Cloud
@@ -224,22 +233,19 @@ impl BranchPicker {
                 let (git, name) = (self.git.clone(), branch.name.clone());
                 // Hidden until the row is hovered; the button stops the row's own click.
                 row.child(
-                    div()
-                        .opacity(0.)
-                        .group_hover(group_id, |s| s.opacity(1.))
-                        .child(
-                            Button::new(SharedString::from(format!("delete-{group}-{ix}")))
-                                .cursor_pointer()
-                                .ghost()
-                                .xsmall()
-                                .icon(Lucide::Trash)
-                                .tooltip("Delete branch")
-                                .on_click(move |_, window, cx| {
-                                    // The row behind would otherwise switch to this branch.
-                                    cx.stop_propagation();
-                                    confirm_delete(git.clone(), name.clone(), window, cx);
-                                }),
-                        ),
+                    div().opacity(row_hover.progress()).child(
+                        Button::new(delete_id)
+                            .cursor_pointer()
+                            .xsmall()
+                            .icon(Lucide::Trash)
+                            .tooltip("Delete branch")
+                            .on_click(move |_, window, cx| {
+                                // The row behind would otherwise switch to this branch.
+                                cx.stop_propagation();
+                                confirm_delete(git.clone(), name.clone(), window, cx);
+                            })
+                            .smooth_hover(ButtonLook::Ghost, &delete_hover, cx),
+                    ),
                 )
             })
             .on_click(cx.listener(move |this, _, window, cx| this.choose(&branch, window, cx)))

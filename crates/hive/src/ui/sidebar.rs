@@ -29,6 +29,7 @@ use hive_core::worktree::{Removal, WorktreeError};
 use crate::app::AppState;
 use crate::state::projects::Projects;
 use crate::state::store::Store;
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
 use crate::ui::{project_badge, settings};
 
 /// Status dot of a worktree with an open terminal (Tailwind emerald-500, as in Orca).
@@ -107,7 +108,7 @@ impl Sidebar {
         let open = !self.collapsed.contains(&project.path);
         let animate = self.toggled.contains(&project.path);
         let header = self
-            .render_header(ix, project, open, animate, cx)
+            .render_header(ix, project, open, animate, window, cx)
             .into_any_element();
         if !open && !animate {
             return v_flex().child(header).into_any_element();
@@ -176,9 +177,11 @@ impl Sidebar {
         project: &Project,
         open: bool,
         animate: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let group: SharedString = format!("project-header-{ix}").into();
+        let header_hover = Hover::new(("project", ix), window, cx);
+        let new_worktree_hover = Hover::new(("new-worktree", ix), window, cx);
         let path = project.path.clone();
         let chevron = Icon::new(IconName::ChevronDown)
             .size_3p5()
@@ -207,24 +210,24 @@ impl Sidebar {
                 s.child(
                     Button::new(("new-worktree", ix))
                         .cursor_pointer()
-                        .ghost()
                         .xsmall()
                         .icon(IconName::Plus)
                         .tooltip(format!("New worktree in {}", project.name))
                         .on_click(move |_, window, cx| {
                             open_create_dialog(projects.clone(), &project, window, cx)
-                        }),
+                        })
+                        .smooth_hover(ButtonLook::Ghost, &new_worktree_hover, cx),
                 )
             });
         let actions = h_flex()
             .w_0()
             .overflow_hidden()
-            .opacity(0.)
-            .group_hover(group.clone(), |s| s.w_auto().opacity(1.))
+            .when(header_hover.is_hovered(cx), |s| s.w_auto())
+            .opacity(header_hover.progress())
             .child(buttons);
         h_flex()
             .id(("project", ix))
-            .group(group)
+            .on_hover(header_hover.listener())
             .h(HEADER_HEIGHT)
             .gap_1p5()
             .pl(HEADER_INSET)
@@ -346,11 +349,10 @@ impl Sidebar {
         );
         let hover = HOVER_BACKGROUND_OPACITY
             + (SELECTED_BACKGROUND_OPACITY - HOVER_BACKGROUND_OPACITY) * selection;
+        let card_id = SharedString::from(format!("worktree:{}", card.path.display()));
+        let card_hover = Hover::new(card_id.clone(), window, cx);
         let element = v_flex()
-            .id(SharedString::from(format!(
-                "worktree:{}",
-                card.path.display()
-            )))
+            .id(card_id)
             .role(Role::Button)
             .aria_label(format!("Open {}: {}", project.name, card.title))
             .h(CARD_HEIGHT)
@@ -363,10 +365,13 @@ impl Sidebar {
             .pr_1p5()
             .rounded_lg()
             .border_1()
-            .bg(fg.opacity(SELECTED_BACKGROUND_OPACITY * selection))
+            .hover_bg(
+                &card_hover,
+                fg.opacity(SELECTED_BACKGROUND_OPACITY * selection),
+                fg.opacity(hover),
+            )
             .border_color(fg.opacity(SELECTED_BORDER_OPACITY * selection))
             .cursor_pointer()
-            .hover(move |style| style.bg(fg.opacity(hover)))
             .child(title_row)
             .child(meta_row)
             .on_click(move |_, _, cx| {
@@ -394,6 +399,7 @@ impl Render for Sidebar {
             .enumerate()
             .map(|(ix, project)| self.render_project(ix, project, window, cx))
             .collect();
+        let add_hover = Hover::new("add-project", window, cx);
         let theme = cx.theme();
         let (fg, muted_fg) = (theme.sidebar_foreground, theme.muted_foreground);
 
@@ -419,11 +425,11 @@ impl Render for Sidebar {
                     .child(
                         Button::new("add-project")
                             .cursor_pointer()
-                            .ghost()
                             .small()
                             .icon(Lucide::FolderPlus)
                             .tooltip("Add project")
-                            .on_click(cx.listener(|this, _, _, cx| this.add_projects(cx))),
+                            .on_click(cx.listener(|this, _, _, cx| this.add_projects(cx)))
+                            .smooth_hover(ButtonLook::Ghost, &add_hover, cx),
                     ),
             )
             .child(

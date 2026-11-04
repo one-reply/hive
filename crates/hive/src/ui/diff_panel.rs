@@ -1,4 +1,5 @@
 //! Dockable readonly diff with explicit index actions for complete text hunks.
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::{
     app::AppState,
     state::{
@@ -9,7 +10,7 @@ use crate::{
     ui::workspace::right_sidebar_toggle,
 };
 use gpui_kit::base::Disableable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::diff::{Diff, DiffAnnotation, DiffLinePosition, DiffSide};
 use gpui_kit::component::dock::{BasePanel, DockArea, Panel, PanelEvent, TabGroup};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
@@ -152,15 +153,16 @@ impl Panel for DiffPanel {
     fn tab_name(&self, cx: &App) -> Option<SharedString> {
         (!self.alone).then(|| self.label(cx))
     }
-    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let close_hover = Hover::new("diff-close", window, cx);
         h_flex().gap_2().child(self.label(cx)).child(
             Button::new("diff-close")
                 .cursor_pointer()
-                .ghost()
                 .small()
                 .label("×")
                 .tooltip("Close diff")
-                .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
+                .on_click(cx.listener(|this, _, window, cx| this.close(window, cx)))
+                .smooth_hover(ButtonLook::Ghost, &close_hover, cx),
         )
     }
     /// The right-sidebar toggle keeps the window's top-right corner while that sidebar is closed.
@@ -172,7 +174,10 @@ impl Panel for DiffPanel {
     }
 }
 impl Render for DiffPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let [prev_hover, next_hover, mode_hover, refresh_hover] =
+            ["diff-prev", "diff-next", "diff-mode", "diff-refresh"]
+                .map(|id| Hover::new(id, window, cx));
         let review = self.review.read(cx);
         let request = review.request.clone();
         let patch = review.patch.clone();
@@ -218,7 +223,8 @@ impl Render for DiffPanel {
             .flex_1()
             .min_h_0()
             .annotations(annotations)
-            .render_annotation(move |annotation, _, _| {
+            .render_annotation(move |annotation, window, cx| {
+                let hover = Hover::new(annotation.id().clone(), window, cx).enabled(!busy);
                 let index = ids.iter().position(|id| id == annotation.id());
                 let (git, request, patch) =
                     (git.clone(), request_action.clone(), patch_action.clone());
@@ -226,7 +232,6 @@ impl Render for DiffPanel {
                     Button::new(annotation.id().clone())
                         .cursor_pointer()
                         .small()
-                        .outline()
                         .label(if request.source == DiffSource::Staged {
                             "Unstage hunk"
                         } else {
@@ -239,7 +244,8 @@ impl Render for DiffPanel {
                                     g.apply_hunk(request.clone(), patch.clone(), index, cx)
                                 });
                             }
-                        }),
+                        })
+                        .smooth_hover(ButtonLook::Outline, &hover, cx),
                 )
             });
         let mut content = v_flex().size_full().min_w_0().min_h_0().child(
@@ -253,42 +259,42 @@ impl Render for DiffPanel {
                 .child(
                     Button::new("diff-prev")
                         .cursor_pointer()
-                        .ghost()
                         .small()
                         .label("↑")
                         .tooltip("Previous hunk")
-                        .on_click(cx.listener(|this, _, _, cx| this.navigate(false, cx))),
+                        .on_click(cx.listener(|this, _, _, cx| this.navigate(false, cx)))
+                        .smooth_hover(ButtonLook::Ghost, &prev_hover, cx),
                 )
                 .child(
                     Button::new("diff-next")
                         .cursor_pointer()
-                        .ghost()
                         .small()
                         .label("↓")
                         .tooltip("Next hunk")
-                        .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx))),
+                        .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx)))
+                        .smooth_hover(ButtonLook::Ghost, &next_hover, cx),
                 )
                 .child(
                     Button::new("diff-mode")
                         .cursor_pointer()
-                        .ghost()
                         .small()
                         .label(if split { "Split" } else { "Unified" })
                         .on_click(cx.listener(|this, _, _, cx| {
                             let split = this.store.read(cx).state.settings.diff_split;
                             this.store.update(cx, |s, cx| s.set_diff_split(!split, cx));
-                        })),
+                        }))
+                        .smooth_hover(ButtonLook::Ghost, &mode_hover, cx),
                 )
                 .child(
                     Button::new("diff-refresh")
                         .cursor_pointer()
-                        .ghost()
                         .small()
                         .label("↻")
                         .tooltip("Refresh diff")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.review.update(cx, |r, cx| r.refresh(cx))
-                        })),
+                        }))
+                        .smooth_hover(ButtonLook::Ghost, &refresh_hover, cx),
                 ),
         );
         if let Some(error) = error {

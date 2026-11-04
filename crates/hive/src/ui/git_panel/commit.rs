@@ -18,7 +18,7 @@ impl GitPanel {
         &self,
         status: Option<&Status>,
         busy: bool,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let staged = status.map(staged_count).unwrap_or(0);
@@ -39,6 +39,15 @@ impl GitPanel {
             Some("No changes to stage")
         } else {
             None
+        };
+        let generate_hover = Hover::new("generate-commit-message", window, cx)
+            .enabled(!busy && !conflicts && staged > 0);
+        let commit_hover =
+            Hover::new("commit-staged", window, cx).enabled(!busy && blocker.is_none());
+        let commit_look = if staged == 0 {
+            ButtonLook::Outline
+        } else {
+            ButtonLook::Primary
         };
         let shortcut = (staged > 0)
             .then(|| Kbd::binding_for_action(&CommitChanges, Some("SourceControl"), window))
@@ -61,7 +70,6 @@ impl GitPanel {
                             // shortcut: UI only; attach generation when an AI runner is available.
                             Button::new("generate-commit-message")
                                 .cursor_pointer()
-                                .ghost()
                                 .small()
                                 .icon(Lucide::Sparkles)
                                 .accessibility_label("Generate commit message with AI")
@@ -72,7 +80,8 @@ impl GitPanel {
                                     "Stage changes to enable AI generation"
                                 } else {
                                     "Generate commit message with AI — coming soon"
-                                }),
+                                })
+                                .smooth_hover(ButtonLook::Ghost, &generate_hover, cx),
                         ),
                     ),
             )
@@ -83,8 +92,6 @@ impl GitPanel {
                     .child(
                         Button::new("commit-staged")
                             .cursor_pointer()
-                            .when(staged == 0, |b| b.outline())
-                            .when(staged > 0, |b| b.primary())
                             .small()
                             .flex_1()
                             .icon(if staged == 0 {
@@ -114,7 +121,9 @@ impl GitPanel {
                                 } else {
                                     this.commit(cx);
                                 }
-                            })),
+                            }))
+                            .smooth_hover(commit_look, &commit_hover, cx)
+                            .flex_1(),
                     )
                     .when_some(shortcut, |row, kbd| row.child(kbd.outline())),
             )

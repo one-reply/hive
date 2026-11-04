@@ -1,7 +1,7 @@
 //! API key forms. Credential IO and validation belong to AiProviders / hive-core.
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex,
@@ -12,6 +12,7 @@ use hive_core::llm::Provider;
 
 use crate::app::AppState;
 use crate::state::ai_providers::{AiProviders, KeyStatus};
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::ui::text_field::TextField;
 
 const INPUT_MIN_WIDTH: Pixels = px(150.);
@@ -86,10 +87,19 @@ impl AiPage {
             .update(cx, |providers, cx| providers.save(provider, value, cx));
     }
 
-    fn render_provider(&self, row: &ProviderInput, cx: &mut Context<Self>) -> Div {
+    fn render_provider(
+        &self,
+        row: &ProviderInput,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let provider = row.provider;
         let state = self.providers.read(cx).provider(provider);
         let (status, error) = (state.status, state.error.clone());
+        let can_save = !status.is_busy() && !row.input.read(cx).value().is_empty();
+        let save_hover = Hover::new(("save-key", provider as usize), window, cx).enabled(can_save);
+        let action_hover =
+            Hover::new(("key-action", provider as usize), window, cx).enabled(!status.is_busy());
         let theme = cx.theme();
         let (muted, border, success, danger) = (
             theme.muted_foreground,
@@ -117,12 +127,12 @@ impl AiPage {
                 .child(
                     Button::new(("save-key", provider as usize))
                         .cursor_pointer()
-                        .primary()
                         .small()
                         .label("Verify & Save")
                         .loading(status == KeyStatus::Saving)
-                        .disabled(status.is_busy() || row.input.read(cx).value().is_empty())
-                        .on_click(cx.listener(move |this, _, _, cx| this.save(provider, cx))),
+                        .disabled(!can_save)
+                        .on_click(cx.listener(move |this, _, _, cx| this.save(provider, cx)))
+                        .smooth_hover(ButtonLook::Primary, &save_hover, cx),
                 ),
             _ => {
                 let providers = self.providers.clone();
@@ -146,7 +156,6 @@ impl AiPage {
                     .child(
                         Button::new(("key-action", provider as usize))
                             .cursor_pointer()
-                            .ghost()
                             .small()
                             .label(if configured { "Reset Key" } else { "Retry" })
                             .icon(Lucide::RotateCcw)
@@ -159,7 +168,8 @@ impl AiPage {
                                     providers
                                         .update(cx, |providers, cx| providers.check(provider, cx));
                                 }
-                            }),
+                            })
+                            .smooth_hover(ButtonLook::Ghost, &action_hover, cx),
                     )
             }
         };
@@ -188,11 +198,11 @@ impl AiPage {
 }
 
 impl Render for AiPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex().gap_6().pt_2().children(
             self.inputs
                 .iter()
-                .map(|row| self.render_provider(row, cx))
+                .map(|row| self.render_provider(row, window, cx))
                 .collect::<Vec<_>>(),
         )
     }

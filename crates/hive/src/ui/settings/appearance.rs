@@ -8,7 +8,7 @@ use hive_core::settings::{ThemeChoice, UI_FONT_SIZE_DEFAULT, UI_FONT_SIZE_MAX, U
 use super::{font_size_stepper, setting_row, setting_title};
 use crate::app::AppState;
 
-pub(super) fn render(cx: &App) -> impl IntoElement {
+pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
     let store = AppState::get(cx).store.clone();
     let settings = &store.read(cx).state.settings;
     let (current, font_size) = (settings.theme, settings.ui_font_size());
@@ -36,6 +36,8 @@ pub(super) fn render(cx: &App) -> impl IntoElement {
         UI_FONT_SIZE_MIN..=UI_FONT_SIZE_MAX,
         UI_FONT_SIZE_DEFAULT,
         move |size, cx| store.update(cx, |store, cx| store.set_ui_font_size(size, cx)),
+        window,
+        cx,
     );
 
     v_flex()

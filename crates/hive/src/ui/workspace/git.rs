@@ -93,7 +93,12 @@ impl Workspace {
     /// its right end, then the selected section. Toggling slides it in from or out past the
     /// window's right edge: the content keeps its width and is clipped by an outer column
     /// whose width animates, the same way the left sidebar collapses.
-    pub(super) fn render_right_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_right_sidebar(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let toggle_hover = Hover::new("toggle-right-sidebar", window, cx);
         let border = cx.theme().border;
         let open = self.git_open;
         let width = self.git_width;
@@ -113,7 +118,11 @@ impl Workspace {
                 true,
                 cx,
             )))
-            .child(right_sidebar_toggle().small().ghost());
+            .child(right_sidebar_toggle().small().smooth_hover(
+                ButtonLook::Ghost,
+                &toggle_hover,
+                cx,
+            ));
         let header = self.window_drag_band(header, |_| true, cx);
         let content = v_flex()
             .h_full()

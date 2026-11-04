@@ -92,14 +92,16 @@ impl GitPanel {
             file.path
         )
         .into();
-        let interaction = window.use_keyed_state(
-            (ElementId::from(row_id.clone()), "interaction"),
-            cx,
-            |_, cx| (false, cx.focus_handle()),
-        );
-        let (hovered, focus) = interaction.read(cx);
-        let focus = focus.clone();
-        let show_actions = can_act && (*hovered || focus.contains_focused(window, cx));
+        let row_key = ElementId::from(row_id.clone());
+        let row_hover = Hover::new(row_key.clone(), window, cx);
+        let discard_hover = Hover::new((row_key.clone(), "discard"), window, cx).enabled(!busy);
+        let stage_hover = Hover::new((row_key.clone(), "stage"), window, cx).enabled(!busy);
+        let focus = window
+            .use_keyed_state((row_key, "focus"), cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        let show_actions =
+            can_act && (row_hover.is_hovered(cx) || focus.contains_focused(window, cx));
         let progress = transition(
             (row_id.clone(), "actions"),
             if show_actions { 1.0_f32 } else { 0. },
@@ -120,7 +122,6 @@ impl GitPanel {
             actions = actions.child(
                 Button::new(("file-discard", index))
                     .cursor_pointer()
-                    .ghost()
                     .xsmall()
                     .w(ACTION_WIDTH)
                     .h(ROW_HEIGHT)
@@ -147,7 +148,8 @@ impl GitPanel {
                             window,
                             cx,
                         )
-                    })),
+                    }))
+                    .smooth_hover(ButtonLook::Ghost, &discard_hover, cx),
             );
         }
         if can_act {
@@ -163,7 +165,6 @@ impl GitPanel {
             actions = actions.child(
                 Button::new(("file-stage", index))
                     .cursor_pointer()
-                    .ghost()
                     .xsmall()
                     .w(ACTION_WIDTH)
                     .h(ROW_HEIGHT)
@@ -178,7 +179,8 @@ impl GitPanel {
                         // The row behind would otherwise open the diff too.
                         cx.stop_propagation();
                         this.git.update(cx, |g, cx| g.perform(action.clone(), cx))
-                    })),
+                    }))
+                    .smooth_hover(ButtonLook::Ghost, &stage_hover, cx),
             );
         }
         let (selected, open_source) = (file.clone(), source);
@@ -192,7 +194,7 @@ impl GitPanel {
             .pr_1()
             .rounded_md()
             .cursor_pointer()
-            .hover(|s| s.bg(fg.opacity(0.05)))
+            .hover_bg(&row_hover, fg.opacity(0.), fg.opacity(0.05))
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .child(path_label(&file.path, cx))
             .child(
@@ -245,16 +247,6 @@ impl GitPanel {
                         )
                     }),
             )
-            .when(can_act, |row| {
-                row.on_hover(move |hovered, _, cx| {
-                    interaction.update(cx, |(current, _), cx| {
-                        if *current != *hovered {
-                            *current = *hovered;
-                            cx.notify();
-                        }
-                    });
-                })
-            })
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.git
                     .update(cx, |g, cx| g.open_diff(&selected, open_source.clone(), cx))

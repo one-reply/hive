@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{DockArea, DockPlacement, PanelId, panel_handle};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{
@@ -24,6 +24,7 @@ use crate::app::AppState;
 use crate::state::projects::Projects;
 use crate::state::store::Store;
 use crate::terminal::TerminalPanel;
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
 use crate::ui::{diff_panel::DiffPanel, git_panel::GitPanel};
@@ -367,6 +368,7 @@ impl Render for Workspace {
         if window.focused(cx).is_none() {
             self.focus.focus(window, cx);
         }
+        let toggle_hover = Hover::new("toggle-sidebar", window, cx);
         let bg = cx.theme().background;
         let open = self.sidebar_open;
         // Open, the toggle sits at the sidebar's right border; collapsed, the title bar shrinks
@@ -386,7 +388,6 @@ impl Render for Workspace {
                 .child(
                     Button::new("toggle-sidebar")
                         .cursor_pointer()
-                        .ghost()
                         .small()
                         .icon(Lucide::PanelLeft)
                         .tooltip_with_action(
@@ -396,7 +397,8 @@ impl Render for Workspace {
                         )
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.toggle_sidebar(&ToggleSidebar, window, cx)
-                        })),
+                        }))
+                        .smooth_hover(ButtonLook::Ghost, &toggle_hover, cx),
                 ),
         );
         let title_bar = self.animate_title_inset(title_bar);
@@ -457,7 +459,7 @@ impl Render for Workspace {
             .child(left_el)
             .child(center_el)
             .when(self.git_open || self.git_animate, |el| {
-                el.child(self.render_right_sidebar(cx))
+                el.child(self.render_right_sidebar(window, cx))
             })
             .child(
                 div()

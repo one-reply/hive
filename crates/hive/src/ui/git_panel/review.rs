@@ -10,6 +10,7 @@ fn short(oid: &str) -> &str {
 
 impl GitPanel {
     pub(super) fn compare(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let base_hover = Hover::new("compare-base", window, cx);
         let state = self.git.read(cx);
         let base = state.base.clone();
         let loading = state.review_loading;
@@ -25,7 +26,6 @@ impl GitPanel {
                 .child(
                     Button::new("compare-base")
                         .cursor_pointer()
-                        .outline()
                         .xsmall()
                         .icon(Lucide::GitCompareArrows)
                         .label(base.clone().unwrap_or_else(|| "Choose base…".into()))
@@ -33,7 +33,8 @@ impl GitPanel {
                         .tooltip("Compare against another branch")
                         .on_click(cx.listener(|this, _, window, cx| {
                             git_controls::branches(this.git.clone(), true, window, cx)
-                        })),
+                        }))
+                        .smooth_hover(ButtonLook::Outline, &base_hover, cx),
                 )
                 .child(
                     div()
@@ -69,6 +70,12 @@ impl GitPanel {
     }
 
     pub(super) fn history(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let back_hover = Hover::new("history-back", window, cx);
+        let more_hover = Hover::new("history-more", window, cx);
+        let commit_count = self.git.read(cx).commits.len();
+        let commit_hovers: Vec<Hover> = (0..commit_count)
+            .map(|i| Hover::new(("commit", i), window, cx))
+            .collect();
         let state = self.git.read(cx);
         let loading = state.review_loading;
         let files = state.files.clone();
@@ -80,7 +87,6 @@ impl GitPanel {
                 .child(
                     Button::new("history-back")
                         .cursor_pointer()
-                        .ghost()
                         .xsmall()
                         .mt_1()
                         .icon(Lucide::ArrowLeft)
@@ -88,7 +94,8 @@ impl GitPanel {
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.git
                                 .update(cx, |g, cx| g.set_section(Section::History, cx))
-                        })),
+                        }))
+                        .smooth_hover(ButtonLook::Ghost, &back_hover, cx),
                 )
                 .child(
                     v_flex()
@@ -121,40 +128,43 @@ impl GitPanel {
         }
         let commits = state.commits.clone();
         let more = state.history_more;
-        content = content.children(commits.into_iter().enumerate().map(|(i, commit)| {
-            let oid = commit.oid.clone();
-            v_flex()
-                .id(("commit", i))
-                .px_2()
-                .py_1()
-                .gap_0p5()
-                .rounded_md()
-                .cursor_pointer()
-                .hover(|s| s.bg(cx.theme().foreground.opacity(0.05)))
-                .child(
-                    div()
-                        .text_size(META_TEXT + px(1.))
-                        .truncate()
-                        .child(commit.subject.clone()),
-                )
-                .child(
-                    h_flex()
-                        .gap_1p5()
-                        .text_size(META_TEXT)
-                        .text_color(muted)
-                        .child(
-                            div()
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .child(short(&commit.oid).to_string()),
-                        )
-                        .child(div().min_w_0().truncate().child(commit.author.clone()))
-                        .child(div().flex_none().child(relative_date(&commit.date))),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.git
-                        .update(cx, |g, cx| g.select_commit(oid.clone(), cx))
-                }))
-        }));
+        let fg = cx.theme().foreground;
+        content = content.children(commits.into_iter().zip(commit_hovers).enumerate().map(
+            |(i, (commit, hover))| {
+                let oid = commit.oid.clone();
+                v_flex()
+                    .id(("commit", i))
+                    .px_2()
+                    .py_1()
+                    .gap_0p5()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover_bg(&hover, fg.opacity(0.), fg.opacity(0.05))
+                    .child(
+                        div()
+                            .text_size(META_TEXT + px(1.))
+                            .truncate()
+                            .child(commit.subject.clone()),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .text_size(META_TEXT)
+                            .text_color(muted)
+                            .child(
+                                div()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .child(short(&commit.oid).to_string()),
+                            )
+                            .child(div().min_w_0().truncate().child(commit.author.clone()))
+                            .child(div().flex_none().child(relative_date(&commit.date))),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.git
+                            .update(cx, |g, cx| g.select_commit(oid.clone(), cx))
+                    }))
+            },
+        ));
         if loading {
             content = content.child(loading_row("Loading commits…", cx));
         } else if more {
@@ -162,12 +172,12 @@ impl GitPanel {
                 h_flex().justify_center().py_2().child(
                     Button::new("history-more")
                         .cursor_pointer()
-                        .outline()
                         .xsmall()
                         .label("Load 50 more")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.git.update(cx, |g, cx| g.load_review(true, cx))
-                        })),
+                        }))
+                        .smooth_hover(ButtonLook::Outline, &more_hover, cx),
                 ),
             );
         }

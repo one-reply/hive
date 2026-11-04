@@ -150,10 +150,14 @@ pub enum Error {
         provider: Provider,
     },
     /// No secure storage implementation is available on this OS.
-    #[error("{provider}: secure API key storage is currently supported only on macOS.")]
+    #[error(
+        "{provider}: cannot {operation} the key. Secure API key storage is currently supported only on macOS."
+    )]
     UnsupportedPlatform {
         /// Provider whose record was accessed.
         provider: Provider,
+        /// Operation that could not be performed.
+        operation: &'static str,
     },
 }
 

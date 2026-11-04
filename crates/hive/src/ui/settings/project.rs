@@ -14,6 +14,7 @@ use gpui_kit::*;
 use hive_core::identity::{Badge, ProjectIcon, ProjectIdentity};
 
 use crate::app::AppState;
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
 use crate::ui::project_badge::{self, PALETTE};
 
 const PREVIEW_TILE: Pixels = px(40.);
@@ -23,6 +24,8 @@ const ICON_TILE: Pixels = px(32.);
 const ICON_SIZE: Pixels = px(18.);
 const ICONS_PER_ROW: usize = 10;
 const AVATAR_TILE: Pixels = px(32.);
+const TILE_HOVER_OPACITY: f32 = 0.06;
+const TILE_CHOSEN_OPACITY: f32 = 0.12;
 
 /// The badge picker's tabs, in order.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -174,7 +177,13 @@ impl ProjectPage {
         cx.notify();
     }
 
-    fn render_header(&self, snapshot: &Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(
+        &self,
+        snapshot: &Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let remove_hover = Hover::new("remove-project", window, cx);
         let muted = cx.theme().muted_foreground;
         let path = self.path.clone();
         h_flex()
@@ -198,18 +207,24 @@ impl ProjectPage {
             .child(
                 Button::new("remove-project")
                     .cursor_pointer()
-                    .outline()
                     .small()
                     .icon(Lucide::Trash)
                     .tooltip("Remove from Hive")
                     .on_click(move |_, _, cx| {
                         let store = AppState::get(cx).store.clone();
                         store.update(cx, |store, cx| store.remove_project(&path, cx));
-                    }),
+                    })
+                    .smooth_hover(ButtonLook::Outline, &remove_hover, cx),
             )
     }
 
-    fn render_preview(&self, snapshot: &Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_preview(
+        &self,
+        snapshot: &Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let reset_hover = Hover::new("reset-identity", window, cx);
         let theme = cx.theme();
         let color = project_badge::color(&snapshot.identity, snapshot.ix);
         let caption = match snapshot.identity.badge() {
@@ -259,11 +274,11 @@ impl ProjectPage {
                 row.child(
                     Button::new("reset-identity")
                         .cursor_pointer()
-                        .outline()
                         .small()
                         .icon(Lucide::RotateCcw)
                         .label("Reset")
-                        .on_click(cx.listener(|this, _, window, cx| this.reset(window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.reset(window, cx)))
+                        .smooth_hover(ButtonLook::Outline, &reset_hover, cx),
                 )
             })
     }
@@ -304,7 +319,12 @@ impl ProjectPage {
             )
     }
 
-    fn render_badge_picker(&self, snapshot: &Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_badge_picker(
+        &self,
+        snapshot: &Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let selected = BadgeTab::ALL
             .iter()
             .position(|tab| *tab == self.tab)
@@ -318,8 +338,8 @@ impl ProjectPage {
                 cx.notify();
             }));
         let body = match self.tab {
-            BadgeTab::Avatar => self.render_avatar(snapshot, cx).into_any_element(),
-            BadgeTab::Icon => self.render_icons(snapshot, cx).into_any_element(),
+            BadgeTab::Avatar => self.render_avatar(snapshot, window, cx).into_any_element(),
+            BadgeTab::Icon => self.render_icons(snapshot, window, cx).into_any_element(),
             BadgeTab::Emoji => {
                 TextField::input(Input::new(&self.emoji_input), &self.emoji_input, cx)
                     .into_any_element()
@@ -328,10 +348,15 @@ impl ProjectPage {
         v_flex().gap_3().child(tabs).child(body)
     }
 
-    fn render_avatar(&self, snapshot: &Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_avatar(
+        &self,
+        snapshot: &Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let color = project_badge::color(&snapshot.identity, snapshot.ix);
         let chosen = *snapshot.identity.badge() == Badge::Avatar;
-        tile("avatar", chosen, cx)
+        tile("avatar", chosen, window, cx)
             .child(project_badge::avatar(
                 &snapshot.name,
                 color,
@@ -342,7 +367,12 @@ impl ProjectPage {
             }))
     }
 
-    fn render_icons(&self, snapshot: &Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_icons(
+        &self,
+        snapshot: &Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let rows = ProjectIcon::ALL
             .chunks(ICONS_PER_ROW)
             .enumerate()
@@ -351,13 +381,18 @@ impl ProjectPage {
                     .gap_2()
                     .children(icons.iter().enumerate().map(|(col, &icon)| {
                         let chosen = *snapshot.identity.badge() == Badge::Icon(icon);
-                        tile(("project-icon", row * ICONS_PER_ROW + col), chosen, cx)
-                            .child(Icon::new(project_badge::lucide(icon)).size(ICON_SIZE))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.update_identity(cx, |identity| {
-                                    identity.set_badge(Badge::Icon(icon))
-                                });
-                            }))
+                        tile(
+                            ("project-icon", row * ICONS_PER_ROW + col),
+                            chosen,
+                            window,
+                            cx,
+                        )
+                        .child(Icon::new(project_badge::lucide(icon)).size(ICON_SIZE))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.update_identity(cx, |identity| {
+                                identity.set_badge(Badge::Icon(icon))
+                            });
+                        }))
                     }))
             });
         v_flex().gap_2().children(rows)
@@ -365,14 +400,14 @@ impl ProjectPage {
 }
 
 impl Render for ProjectPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The window swaps this page out once the project is removed; until then, nothing.
         let Some(snapshot) = self.snapshot(cx) else {
             return div().into_any_element();
         };
         v_flex()
             .gap_5()
-            .child(self.render_header(&snapshot, cx))
+            .child(self.render_header(&snapshot, window, cx))
             .child(
                 v_flex()
                     .gap_2()
@@ -388,16 +423,24 @@ impl Render for ProjectPage {
                         cx,
                     )),
             )
-            .child(self.render_preview(&snapshot, cx))
+            .child(self.render_preview(&snapshot, window, cx))
             .child(self.render_colors(&snapshot, cx))
-            .child(self.render_badge_picker(&snapshot, cx))
+            .child(self.render_badge_picker(&snapshot, window, cx))
             .into_any_element()
     }
 }
 
 /// A square picker cell, highlighted when `chosen`.
-fn tile(id: impl Into<ElementId>, chosen: bool, cx: &App) -> Stateful<Div> {
+fn tile(
+    id: impl Into<ElementId>,
+    chosen: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Stateful<Div> {
+    let id: ElementId = id.into();
+    let hover = Hover::new(id.clone(), window, cx);
     let fg = cx.theme().foreground;
+    let idle = fg.opacity(if chosen { TILE_CHOSEN_OPACITY } else { 0. });
     div()
         .id(id)
         .size(ICON_TILE)
@@ -406,8 +449,7 @@ fn tile(id: impl Into<ElementId>, chosen: bool, cx: &App) -> Stateful<Div> {
         .justify_center()
         .rounded_md()
         .cursor_pointer()
-        .hover(|style| style.bg(fg.opacity(0.06)))
-        .when(chosen, |tile| tile.bg(fg.opacity(0.12)))
+        .hover_bg(&hover, idle, fg.opacity(TILE_HOVER_OPACITY))
 }
 
 /// Text fields save on Enter or when they lose focus, not per keystroke: every save rescans

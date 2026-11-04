@@ -1,6 +1,5 @@
 //! Settings window (Zed-style): sections of pages on the left, the selected page on the right.
-//! Controls write straight to the `Store`; the theme and keymap observers apply each change to
-//! every window at once, so the effect is visible while the window is open.
+//! Settings dispatch to `Store` or `AiProviders`; views do not perform IO.
 
 mod ai;
 mod appearance;
@@ -14,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::Root;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Sizable as _, TitleBar, h_flex, v_flex,
 };
@@ -22,6 +21,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::AppState;
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
 use crate::ui::project_badge;
 use ai::AiPage;
 use project::ProjectPage;
@@ -36,6 +36,8 @@ const WINDOW_MIN_HEIGHT: Pixels = px(420.);
 const NAV_WIDTH: Pixels = px(220.);
 const NAV_PROJECT_INDENT: Pixels = px(20.);
 const NAV_BADGE: Pixels = px(14.);
+const NAV_HOVER_OPACITY: f32 = 0.05;
+const NAV_SELECTED_OPACITY: f32 = 0.09;
 const PAGE_MAX_WIDTH: Pixels = px(680.);
 const STEPPER_VALUE_WIDTH: Pixels = px(32.);
 /// Font sizes change by whole pixels.
@@ -237,12 +239,13 @@ impl SettingsWindow {
         }
     }
 
-    fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_nav(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let sections: Vec<Div> = Page::SECTIONS
             .iter()
             .map(|(title, pages)| {
                 v_flex()
+                    .flex_none()
                     .gap_0p5()
                     .child(
                         div()
@@ -254,9 +257,9 @@ impl SettingsWindow {
                             .child(title.to_uppercase()),
                     )
                     .children(pages.iter().flat_map(|page| {
-                        let mut items = vec![self.render_nav_item(*page, cx)];
+                        let mut items = vec![self.render_nav_item(*page, window, cx)];
                         if *page == Page::Projects {
-                            items.extend(self.render_nav_projects(cx));
+                            items.extend(self.render_nav_projects(window, cx));
                         }
                         items
                     }))
@@ -264,8 +267,11 @@ impl SettingsWindow {
             .collect();
         let theme = cx.theme();
         v_flex()
+            .id("settings-navigation")
+            .tab_group()
             .w(NAV_WIDTH)
             .h_full()
+            .overflow_y_scroll()
             .flex_none()
             .px_2()
             .py_3()
@@ -276,12 +282,21 @@ impl SettingsWindow {
             .children(sections)
     }
 
-    fn render_nav_item(&self, page: Page, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_nav_item(
+        &self,
+        page: Page,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let hover = Hover::new(page.label(), window, cx);
         let theme = cx.theme();
         let (fg, muted) = (theme.sidebar_foreground, theme.muted_foreground);
         let selected = matches!(self.view, View::Page(shown) if shown == page);
         h_flex()
             .id(page.label())
+            .role(Role::Button)
+            .aria_label(page.label())
+            .tab_index(0)
             .gap_2()
             .px_3()
             .py_1p5()
@@ -289,15 +304,29 @@ impl SettingsWindow {
             .cursor_pointer()
             .text_sm()
             .text_color(if selected { fg } else { muted })
-            .hover(|style| style.bg(fg.opacity(0.05)))
-            .when(selected, |el| el.bg(fg.opacity(0.09)))
+            .hover_bg(
+                &hover,
+                nav_idle_bg(selected, fg),
+                fg.opacity(NAV_HOVER_OPACITY),
+            )
+            .focus_visible(|style| style.bg(fg.opacity(NAV_SELECTED_OPACITY)))
             .child(Icon::new(page.icon()).size_4())
             .child(page.label())
             .on_click(cx.listener(move |this, _, window, cx| this.show_page(page, window, cx)))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    this.show_page(page, window, cx);
+                }
+            }))
     }
 
     /// One nav item per project, indented under "Projects".
-    fn render_nav_projects(&self, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
+    fn render_nav_projects(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Stateful<Div>> {
         let shown = self.shown_project(cx);
         let theme = cx.theme();
         let (fg, muted) = (theme.sidebar_foreground, theme.muted_foreground);
@@ -326,6 +355,7 @@ impl SettingsWindow {
         items
             .into_iter()
             .map(|(ix, path, name, badge, selected)| {
+                let hover = Hover::new(("nav-project", ix), window, cx);
                 h_flex()
                     .id(("nav-project", ix))
                     .gap_2()
@@ -336,8 +366,11 @@ impl SettingsWindow {
                     .cursor_pointer()
                     .text_sm()
                     .text_color(if selected { fg } else { muted })
-                    .hover(|style| style.bg(fg.opacity(0.05)))
-                    .when(selected, |el| el.bg(fg.opacity(0.09)))
+                    .hover_bg(
+                        &hover,
+                        nav_idle_bg(selected, fg),
+                        fg.opacity(NAV_HOVER_OPACITY),
+                    )
                     .child(badge)
                     .child(div().min_w_0().truncate().child(name))
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -347,16 +380,16 @@ impl SettingsWindow {
             .collect()
     }
 
-    fn render_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_page(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let (title, description, body): (SharedString, SharedString, AnyElement) = match &self.view
         {
             View::Page(page) => {
                 let body = match page {
-                    Page::Appearance => appearance::render(cx).into_any_element(),
+                    Page::Appearance => appearance::render(window, cx).into_any_element(),
                     Page::Shortcuts => self.shortcuts.clone().into_any_element(),
-                    Page::Projects => projects::render(cx).into_any_element(),
-                    Page::Terminal => terminal::render(cx).into_any_element(),
+                    Page::Projects => projects::render(window, cx).into_any_element(),
+                    Page::Terminal => terminal::render(window, cx).into_any_element(),
                     Page::Ai => self.ai.clone().into_any_element(),
                 };
                 (page.label().into(), page.description().into(), body)
@@ -403,7 +436,8 @@ impl SettingsWindow {
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let nav = self.render_nav(window, cx).into_any_element();
         let theme = cx.theme();
         let (bg, fg) = (theme.background, theme.foreground);
         v_flex()
@@ -419,13 +453,18 @@ impl Render for SettingsWindow {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(self.render_nav(cx))
-                    .child(self.render_page(cx)),
+                    .child(nav)
+                    .child(self.render_page(window, cx)),
             )
     }
 }
 
 /// One setting: its title block on the left, its control on the right.
+/// A selected nav item keeps its surface; the others are clear until hovered.
+fn nav_idle_bg(selected: bool, fg: Hsla) -> Hsla {
+    fg.opacity(if selected { NAV_SELECTED_OPACITY } else { 0. })
+}
+
 fn setting_row(title: impl IntoElement, control: impl IntoElement, cx: &App) -> Div {
     h_flex()
         .justify_between()
@@ -463,17 +502,22 @@ fn font_size_stepper(
     range: RangeInclusive<f32>,
     default: f32,
     set: impl Fn(f32, &mut App) + Clone + 'static,
-) -> impl IntoElement {
-    let step = |delta: f32, ix: usize, icon: Lucide, disabled: bool| {
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
+    let [decrease_hover, increase_hover, reset_hover] =
+        [0usize, 1, 2].map(|ix| Hover::new((id, ix), window, cx));
+    let step = |delta: f32, ix: usize, icon: Lucide, disabled: bool, hover: &Hover| {
         let set = set.clone();
         Button::new((id, ix))
             .cursor_pointer()
-            .ghost()
             .small()
             .icon(icon)
             .disabled(disabled)
             .on_click(move |_, _, cx| set(value + delta, cx))
+            .smooth_hover(ButtonLook::Ghost, &hover.clone().enabled(!disabled), cx)
     };
+    let (at_min, at_max) = (value <= *range.start(), value >= *range.end());
     h_flex()
         .gap_1()
         .items_center()
@@ -481,7 +525,8 @@ fn font_size_stepper(
             -FONT_SIZE_STEP,
             0,
             Lucide::Minus,
-            value <= *range.start(),
+            at_min,
+            &decrease_hover,
         ))
         .child(
             div()
@@ -490,17 +535,23 @@ fn font_size_stepper(
                 .text_sm()
                 .child(format!("{value:.0}")),
         )
-        .child(step(FONT_SIZE_STEP, 1, Lucide::Plus, value >= *range.end()))
+        .child(step(
+            FONT_SIZE_STEP,
+            1,
+            Lucide::Plus,
+            at_max,
+            &increase_hover,
+        ))
         .when(value != default, |el| {
             let set = set.clone();
             el.child(
                 Button::new((id, 2usize))
                     .cursor_pointer()
-                    .ghost()
                     .small()
                     .icon(Lucide::RotateCcw)
                     .tooltip("Reset to default")
-                    .on_click(move |_, _, cx| set(default, cx)),
+                    .on_click(move |_, _, cx| set(default, cx))
+                    .smooth_hover(ButtonLook::Ghost, &reset_hover, cx),
             )
         })
 }

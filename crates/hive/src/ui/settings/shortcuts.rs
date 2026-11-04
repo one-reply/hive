@@ -2,7 +2,7 @@
 //! keys for one.
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -10,6 +10,7 @@ use gpui_kit::*;
 
 use super::{setting_row, setting_title};
 use crate::app::AppState;
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::ui::keymap::{self, Assignment, Category, Rejection, SHORTCUTS};
 
 /// Whether a row is waiting for keys.
@@ -95,13 +96,18 @@ impl ShortcutsPage {
     }
 
     /// A category header above its shortcuts, in registry order.
-    fn render_category(&self, category: Category, cx: &mut Context<Self>) -> Div {
+    fn render_category(
+        &self,
+        category: Category,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let muted = cx.theme().muted_foreground;
         let rows = SHORTCUTS
             .iter()
             .enumerate()
             .filter(|(_, shortcut)| shortcut.category == category)
-            .map(|(ix, _)| self.render_row(ix, cx))
+            .map(|(ix, _)| self.render_row(ix, window, cx))
             .collect::<Vec<_>>();
         v_flex()
             .child(
@@ -115,7 +121,9 @@ impl ShortcutsPage {
             .children(rows)
     }
 
-    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> Div {
+    fn render_row(&self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let edit_hover = Hover::new(("edit-shortcut", ix), window, cx);
+        let reset_hover = Hover::new(("reset-shortcut", ix), window, cx);
         let shortcut = &SHORTCUTS[ix];
         let theme = cx.theme();
         let (muted, danger) = (theme.muted_foreground, theme.danger);
@@ -156,7 +164,6 @@ impl ShortcutsPage {
         };
         let edit = Button::new(("edit-shortcut", ix))
             .cursor_pointer()
-            .ghost()
             .small()
             .label(if is_listening { "Cancel" } else { "Edit" })
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -165,7 +172,8 @@ impl ShortcutsPage {
                 } else {
                     this.start(ix, window, cx);
                 }
-            }));
+            }))
+            .smooth_hover(ButtonLook::Ghost, &edit_hover, cx);
         let controls = h_flex()
             .gap_2()
             .items_center()
@@ -175,7 +183,6 @@ impl ShortcutsPage {
                 el.child(
                     Button::new(("reset-shortcut", ix))
                         .cursor_pointer()
-                        .ghost()
                         .small()
                         .icon(Lucide::RotateCcw)
                         .tooltip("Reset to default")
@@ -184,7 +191,8 @@ impl ShortcutsPage {
                                 .store
                                 .clone()
                                 .update(cx, |store, cx| store.reset_keybinding(shortcut.name(), cx))
-                        }),
+                        })
+                        .smooth_hover(ButtonLook::Ghost, &reset_hover, cx),
                 )
             });
         setting_row(title, controls, cx)
@@ -192,9 +200,9 @@ impl ShortcutsPage {
 }
 
 impl Render for ShortcutsPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_6()
-            .children(Category::ALL.map(|category| self.render_category(category, cx)))
+            .children(Category::ALL.map(|category| self.render_category(category, window, cx)))
     }
 }

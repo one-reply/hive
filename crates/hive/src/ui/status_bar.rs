@@ -1,6 +1,6 @@
 //! Bottom bar: usage limits per provider + refresh, and the settings gear.
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
 use gpui_kit::*;
@@ -8,6 +8,7 @@ use hive_core::usage;
 
 use crate::app::AppState;
 use crate::state::usage::Usage;
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::ui::settings;
 
 pub struct StatusBarView {
@@ -34,7 +35,10 @@ fn logo_svg(provider: &str) -> &'static [u8] {
 }
 
 impl Render for StatusBarView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let loading = self.usage.read(cx).loading;
+        let refresh_hover = Hover::new("refresh-usage", window, cx).enabled(!loading);
+        let settings_hover = Hover::new("settings", window, cx);
         let state = self.usage.read(cx);
         let providers = state.providers.iter().map(|p| {
             let row = h_flex()
@@ -61,21 +65,21 @@ impl Render for StatusBarView {
                     .child(
                         Button::new("refresh-usage")
                             .cursor_pointer()
-                            .ghost()
                             .xsmall()
                             .icon(IconName::RefreshCw)
-                            .loading(state.loading)
+                            .loading(loading)
                             .tooltip("Refresh limits")
-                            .on_click(move |_, _, cx| usage.update(cx, |u, cx| u.refresh(cx))),
+                            .on_click(move |_, _, cx| usage.update(cx, |u, cx| u.refresh(cx)))
+                            .smooth_hover(ButtonLook::Ghost, &refresh_hover, cx),
                     )
                     .child(
                         Button::new("settings")
                             .cursor_pointer()
-                            .ghost()
                             .xsmall()
                             .icon(IconName::Settings)
                             .tooltip("Settings")
-                            .on_click(|_, _, cx| settings::open(cx)),
+                            .on_click(|_, _, cx| settings::open(cx))
+                            .smooth_hover(ButtonLook::Ghost, &settings_hover, cx),
                     ),
             )
     }

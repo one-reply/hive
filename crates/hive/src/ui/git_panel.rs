@@ -1,5 +1,6 @@
 //! Git section of the right sidebar. Renders snapshots and dispatches worktree-scoped intents.
 use super::git_controls;
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
 use crate::ui::text_field::TextField;
 use crate::{
     app::AppState,
@@ -103,7 +104,13 @@ impl GitPanel {
         cx.notify();
     }
 
-    fn error(&self, error: SharedString, cx: &mut Context<Self>) -> impl IntoElement {
+    fn error(
+        &self,
+        error: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let terminal_hover = Hover::new("error-terminal", window, cx);
         v_flex()
             .px_3()
             .pb_2()
@@ -125,13 +132,15 @@ impl GitPanel {
                 h_flex().justify_end().child(
                     Button::new("error-terminal")
                         .cursor_pointer()
-                        .outline()
                         .xsmall()
                         .icon(Lucide::SquareTerminal)
                         .label("Open terminal")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.git.update(cx, |g, cx| g.terminal(cx))
-                        })),
+                        .on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.git.update(cx, |g, cx| g.terminal(cx))
+                            }),
+                        )
+                        .smooth_hover(ButtonLook::Outline, &terminal_hover, cx),
                 ),
             )
     }
@@ -193,8 +202,8 @@ impl Render for GitPanel {
             ));
         };
         panel
-            .child(self.header(&target, cx))
-            .when_some(error, |p, error| p.child(self.error(error, cx)))
+            .child(self.header(&target, window, cx))
+            .when_some(error, |p, error| p.child(self.error(error, window, cx)))
             .child(div().px_2().child(self.tabs(section, changes)))
             .when(has_files, |p| {
                 p.child(

@@ -3,6 +3,7 @@
 pub(crate) mod diff_panel;
 mod git_controls;
 pub(crate) mod git_panel;
+pub(crate) mod hover;
 pub mod keymap;
 pub(crate) mod project_badge;
 pub mod settings;

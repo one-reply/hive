@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, DockArea, Panel, PanelEvent, TabGroup};
 use gpui_kit::component::resizable::{h_resizable, v_resizable};
 use gpui_kit::component::{IconName, h_flex};
@@ -17,6 +17,7 @@ use gpui_kit::*;
 use super::pane_tree::PaneTree;
 use super::view::{TerminalView, TerminalViewEvent};
 use crate::app::AppState;
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::ui::keymap;
 use crate::ui::workspace::{NewTerminal, right_sidebar_toggle};
 
@@ -229,7 +230,8 @@ impl Panel for TerminalPanel {
         (!self.alone).then(|| self.active.read(cx).title(cx).into())
     }
 
-    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let close_hover = Hover::new("terminal-close", window, cx);
         let view = self.active.read(cx);
         let title = view.title(cx);
         h_flex()
@@ -243,9 +245,9 @@ impl Panel for TerminalPanel {
                         .cursor_pointer()
                         .icon(IconName::Close)
                         .xsmall()
-                        .ghost()
                         .tooltip("Close terminal")
-                        .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.close(window, cx)))
+                        .smooth_hover(ButtonLook::Ghost, &close_hover, cx),
                 )
             })
     }

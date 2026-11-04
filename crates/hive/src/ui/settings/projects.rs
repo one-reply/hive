@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -11,8 +11,10 @@ use gpui_kit::*;
 use super::{SettingsWindow, setting_row};
 use crate::app::AppState;
 use crate::state::store::Store;
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 
-pub(super) fn render(cx: &mut Context<SettingsWindow>) -> impl IntoElement {
+pub(super) fn render(window: &mut Window, cx: &mut Context<SettingsWindow>) -> impl IntoElement {
+    let add_hover = Hover::new("settings-add-project", window, cx);
     let store = AppState::get(cx).store.clone();
     let paths: Vec<PathBuf> = store
         .read(cx)
@@ -24,6 +26,7 @@ pub(super) fn render(cx: &mut Context<SettingsWindow>) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
 
     let rows = paths.into_iter().enumerate().map(|(ix, path)| {
+        let remove_hover = Hover::new(("remove-project", ix), window, cx);
         let store = store.clone();
         let open = path.clone();
         let label = div()
@@ -39,13 +42,11 @@ pub(super) fn render(cx: &mut Context<SettingsWindow>) -> impl IntoElement {
             );
         let remove = Button::new(("remove-project", ix))
             .cursor_pointer()
-            .ghost()
             .small()
             .icon(IconName::Delete)
             .tooltip("Remove from Hive")
-            .on_click(move |_, _, cx| {
-                store.update(cx, |store, cx| store.remove_project(&path, cx))
-            });
+            .on_click(move |_, _, cx| store.update(cx, |store, cx| store.remove_project(&path, cx)))
+            .smooth_hover(ButtonLook::Ghost, &remove_hover, cx);
         setting_row(label, remove, cx)
     });
 
@@ -65,13 +66,13 @@ pub(super) fn render(cx: &mut Context<SettingsWindow>) -> impl IntoElement {
             h_flex().pt_4().gap_3().items_center().child(
                 Button::new("settings-add-project")
                     .cursor_pointer()
-                    .outline()
                     .small()
                     .icon(Lucide::FolderPlus)
                     .label("Add project")
                     .on_click(move |_, _, cx| {
                         Store::prompt_add_projects(AppState::get(cx).store.clone(), cx)
-                    }),
+                    })
+                    .smooth_hover(ButtonLook::Outline, &add_hover, cx),
             ),
         )
 }

@@ -27,19 +27,22 @@ impl GitPanel {
         count: usize,
         open: bool,
         bulk: Option<(&'static str, Action)>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         let busy = self.git.read(cx).is_busy();
-        let group: SharedString = format!("group-{label}").into();
+        let header_id: SharedString = format!("group-{label}").into();
+        let stage_id: SharedString = format!("stage-group-{label}").into();
+        let header_hover = Hover::new(header_id.clone(), window, cx);
+        let stage_hover = Hover::new(stage_id.clone(), window, cx).enabled(!busy);
         let chevron = if open {
             Lucide::ChevronDown
         } else {
             Lucide::ChevronRight
         };
         h_flex()
-            .id(SharedString::from(format!("group-{label}")))
-            .group(group.clone())
+            .id(header_id)
             .h(GROUP_HEIGHT)
             .flex_none()
             .mt_1()
@@ -49,7 +52,11 @@ impl GitPanel {
             .items_center()
             .rounded_md()
             .cursor_pointer()
-            .hover(|s| s.bg(cx.theme().foreground.opacity(0.04)))
+            .hover_bg(
+                &header_hover,
+                cx.theme().foreground.opacity(0.),
+                cx.theme().foreground.opacity(0.04),
+            )
             .child(Icon::new(chevron).size_3().text_color(muted))
             .child(
                 div()
@@ -62,22 +69,19 @@ impl GitPanel {
             .child(div().flex_1())
             .when_some(bulk, |row, (text, action)| {
                 row.child(
-                    div()
-                        .opacity(0.)
-                        .group_hover(group, |s| s.opacity(1.))
-                        .child(
-                            Button::new(SharedString::from(format!("stage-group-{label}")))
-                                .cursor_pointer()
-                                .ghost()
-                                .xsmall()
-                                .label(text)
-                                .disabled(busy)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    // The header behind would otherwise fold the group.
-                                    cx.stop_propagation();
-                                    this.git.update(cx, |g, cx| g.perform(action.clone(), cx))
-                                })),
-                        ),
+                    div().opacity(header_hover.progress()).child(
+                        Button::new(stage_id)
+                            .cursor_pointer()
+                            .xsmall()
+                            .label(text)
+                            .disabled(busy)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                // The header behind would otherwise fold the group.
+                                cx.stop_propagation();
+                                this.git.update(cx, |g, cx| g.perform(action.clone(), cx))
+                            }))
+                            .smooth_hover(ButtonLook::Ghost, &stage_hover, cx),
+                    ),
                 )
             })
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_group(label, cx)))
@@ -130,7 +134,7 @@ impl GitPanel {
                 }
             });
             let open = !self.collapsed.contains(label);
-            let header = self.group_header(label, group_files.len(), open, bulk, cx);
+            let header = self.group_header(label, group_files.len(), open, bulk, window, cx);
             let rows = if open {
                 group_files
                     .into_iter()
