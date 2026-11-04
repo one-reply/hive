@@ -56,9 +56,9 @@ coordinate with collaborators, use an explicit force-with-lease, and have existi
 clones re-clone or rebase without merging the old history back.
 
 A force push does not purge GitHub's cached commits. Before changing visibility,
-verify that removed material cannot still be retrieved by its old commit IDs.
-Use GitHub Support's cleanup process or publish the cleaned history in a fresh
-repository while keeping the original private. See
+check whether removed material can still be retrieved by its old commit IDs.
+If that material must remain private, use GitHub Support's cleanup process or
+publish the cleaned history in a fresh repository while keeping the original private. See
 [GitHub's removal guidance](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository).
 
 ## Draft release and installation checks
