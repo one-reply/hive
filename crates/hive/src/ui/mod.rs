@@ -1,5 +1,6 @@
 //! GPUI views. Each view observes only the state entity it renders.
 
+pub mod app_menu;
 pub(crate) mod diff_panel;
 mod git_controls;
 pub(crate) mod git_panel;

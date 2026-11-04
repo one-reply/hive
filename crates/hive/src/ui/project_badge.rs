@@ -5,23 +5,13 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::Icon;
 use gpui_kit::*;
 use hive_core::identity::{Badge, ProjectIcon, ProjectIdentity};
-
-/// Project colors (Orca's palette). A project without a custom color takes one by position.
-pub(crate) const PALETTE: [u32; 8] = [
-    0x737373, 0xef4444, 0xf97316, 0xeab308, 0x22c55e, 0x14b8a6, 0x8b5cf6, 0xec4899,
-];
-/// The first project defaults to orange, as in Orca; later ones walk the palette from there.
-const FIRST_DEFAULT: usize = 2;
 /// Initial letter relative to the badge size.
 const AVATAR_TEXT_SCALE: f32 = 0.62;
 const AVATAR_TEXT_COLOR: u32 = 0xffffff;
 
 /// The project's custom color, else a palette color by its position `ix`.
 pub(crate) fn color(identity: &ProjectIdentity, ix: usize) -> Hsla {
-    rgb(identity
-        .color()
-        .unwrap_or(PALETTE[(ix + FIRST_DEFAULT) % PALETTE.len()]))
-    .into()
+    rgb(identity.color_or_default(ix)).into()
 }
 
 /// `0xRRGGBB` of a picked color, as stored in [`ProjectIdentity`].
@@ -106,8 +96,9 @@ pub(crate) fn avatar(name: &str, color: Hsla, size: Pixels) -> Div {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: the `gpui_kit::*` glob brings in GPUI's own `test` macro.
-    use super::{PALETTE, to_rgb_hex};
+    use super::to_rgb_hex;
     use gpui_kit::rgb;
+    use hive_core::identity::PALETTE;
 
     #[test]
     fn hex_round_trips() {

@@ -22,6 +22,33 @@ pub(crate) struct SaveError(pub(crate) String);
 impl EventEmitter<SaveError> for Store {}
 
 impl Store {
+    pub(crate) fn set_commit_generator(
+        &mut self,
+        generator: Option<hive_core::commit_message::Generator>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), hive_core::commit_message::Error> {
+        let recipe = &mut self.state.settings.commit_message;
+        if recipe.generator() == generator.as_ref() {
+            return Ok(());
+        }
+        recipe.set_generator(generator)?;
+        self.commit(cx);
+        Ok(())
+    }
+
+    pub(crate) fn set_commit_prompt(
+        &mut self,
+        prompt: String,
+        cx: &mut Context<Self>,
+    ) -> Result<(), hive_core::commit_message::Error> {
+        let recipe = &mut self.state.settings.commit_message;
+        if recipe.prompt() == prompt {
+            return Ok(());
+        }
+        recipe.set_prompt(prompt)?;
+        self.commit(cx);
+        Ok(())
+    }
     pub(crate) fn set_git_panel_width(&mut self, width: f32, cx: &mut Context<Self>) {
         self.state.settings.set_git_panel_width(width);
         self.commit(cx);
@@ -116,14 +143,7 @@ impl Store {
     }
 
     pub fn add_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let project = ProjectRef::new(path, Host::Local);
-        if !self
-            .state
-            .projects
-            .iter()
-            .any(|p| p.is_same_folder(&project))
-        {
-            self.state.projects.push(project);
+        if self.state.add_project(ProjectRef::new(path, Host::Local)) {
             self.commit(cx);
         }
     }

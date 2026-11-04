@@ -3,6 +3,7 @@
 
 use gpui_kit::*;
 
+use crate::state::agents::Agents;
 use crate::state::ai_providers::AiProviders;
 use crate::state::git::Git;
 use crate::state::terminals::Terminals;
@@ -16,6 +17,7 @@ pub struct AppState {
     pub projects: Entity<Projects>,
     pub usage: Entity<Usage>,
     pub(crate) ai_providers: Entity<AiProviders>,
+    pub(crate) agents: Entity<Agents>,
     pub(crate) git: Entity<Git>,
     pub(crate) terminals: Arc<Terminals>,
     _quit: Subscription,
@@ -29,12 +31,14 @@ impl AppState {
         let projects = cx.new(|cx| Projects::new(&store, cx));
         let usage = cx.new(Usage::new);
         let ai_providers = cx.new(AiProviders::new);
+        let agents = cx.new(Agents::new);
         let git = cx.new(|cx| Git::new(projects.clone(), cx));
         let quit = cx.on_app_quit(|cx| {
             let deadline = Instant::now() + Duration::from_secs(3);
             let app = Self::get(cx);
             let store = app.store.clone();
             let terminals = app.terminals.clone();
+            app.git.read(cx).stop_generations();
             store.update(cx, |store, _| store.stop());
             terminals.stop();
             // GPUI allows its returned quit futures only 200 ms and stops foreground tasks.
@@ -51,6 +55,7 @@ impl AppState {
             projects,
             usage,
             ai_providers,
+            agents,
             git,
             terminals: Arc::default(),
             _quit: quit,

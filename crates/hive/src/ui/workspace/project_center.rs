@@ -96,6 +96,26 @@ impl ProjectCenter {
         true
     }
 
+    /// Shows the tab and pane running terminal `session`. `false` when this center has none.
+    pub(super) fn reveal_session(
+        &mut self,
+        session: EntityId,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        self.prune(cx);
+        let found = self.terminals.iter().find_map(|panel| {
+            let pane = panel.read(cx).pane_of(session, cx)?;
+            Some((panel.clone(), pane))
+        });
+        let Some((panel, pane)) = found else {
+            return false;
+        };
+        self.select(&panel, window, cx);
+        panel.update(cx, |panel, cx| panel.focus_pane(pane, window, cx));
+        true
+    }
+
     /// Opens a shell in `cwd` (`None` = the user's home directory) as a new tab.
     pub(super) fn open_terminal(
         &mut self,

@@ -3,7 +3,6 @@
 
 use std::cell::Cell;
 use std::collections::HashSet;
-use std::f32::consts::FRAC_PI_2;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -26,6 +25,9 @@ use hive_core::projects::{Project, Worktree};
 use hive_core::state::WorktreeFilter;
 use hive_core::worktree::{Removal, WorktreeError};
 
+mod agents;
+use agents::{AgentsSection, CardTarget};
+
 use crate::app::AppState;
 use crate::state::projects::Projects;
 use crate::state::store::Store;
@@ -47,7 +49,8 @@ const PROJECT_BADGE: Pixels = px(14.);
 const CREATE_DIALOG_WIDTH: Pixels = px(420.);
 /// Rows under a project header have fixed heights, so the collapse animation knows the
 /// height of the list without measuring it.
-const CARD_HEIGHT: Pixels = px(58.);
+const CARD_HEIGHT: Pixels = px(34.);
+const CARD_HEIGHT_WITH_META: Pixels = px(58.);
 const CREATING_HEIGHT: Pixels = px(28.);
 const ROW_GAP: Pixels = px(2.);
 const COLLAPSE_DURATION: Duration = Duration::from_millis(200);
@@ -55,8 +58,6 @@ const SELECTION_DURATION: Duration = Duration::from_millis(200);
 const SELECTED_BACKGROUND_OPACITY: f32 = 0.09;
 const SELECTED_BORDER_OPACITY: f32 = 0.14;
 const HOVER_BACKGROUND_OPACITY: f32 = 0.05;
-/// Chevron rotation of a folded project: pointing right instead of down.
-const CHEVRON_FOLDED: f32 = -FRAC_PI_2;
 
 pub struct Sidebar {
     projects: Entity<Projects>,
@@ -66,22 +67,28 @@ pub struct Sidebar {
     /// Projects folded or unfolded since launch: they animate, so the tree doesn't play
     /// its animations on startup.
     toggled: HashSet<PathBuf>,
-    _observer: Subscription,
+    /// Cards whose agents strip is unfolded into one row per session.
+    agents_open: HashSet<PathBuf>,
+    _observers: [Subscription; 2],
 }
 
 impl Sidebar {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let (projects, store) = {
+        let (projects, store, agents) = {
             let app = AppState::get(cx);
-            (app.projects.clone(), app.store.clone())
+            (app.projects.clone(), app.store.clone(), app.agents.clone())
         };
-        let observer = cx.observe(&projects, |_, _, cx| cx.notify());
+        let observers = [
+            cx.observe(&projects, |_, _, cx| cx.notify()),
+            cx.observe(&agents, |_, _, cx| cx.notify()),
+        ];
         Self {
             projects,
             store,
             collapsed: HashSet::new(),
             toggled: HashSet::new(),
-            _observer: observer,
+            agents_open: HashSet::new(),
+            _observers: observers,
         }
     }
 
@@ -108,7 +115,7 @@ impl Sidebar {
         let open = !self.collapsed.contains(&project.path);
         let animate = self.toggled.contains(&project.path);
         let header = self
-            .render_header(ix, project, open, animate, window, cx)
+            .render_header(ix, project, window, cx)
             .into_any_element();
         if !open && !animate {
             return v_flex().child(header).into_any_element();
@@ -142,28 +149,35 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> Vec<(AnyElement, Pixels)> {
         let mut rows = vec![];
-        let projects = self.projects.read(cx);
         let host = host_label(&project.host);
         if project.worktrees.is_empty() {
+            let target = CardTarget {
+                project: &project.path,
+                worktree: None,
+                path: &project.path,
+            };
+            let agents = self.agents_section(target, window, cx);
+            let projects = self.projects.read(cx);
             let folder = WorktreeCard {
                 path: project.path.clone(),
                 title: project.name.clone().into(),
-                meta: Meta::Path(project.path.display().to_string().into()),
+                meta: Some(Meta::Path(project.path.display().to_string().into())),
                 is_primary: false,
                 is_active: projects.is_active(&project.path),
                 is_selected: projects.is_selected(&project.path, None),
+                agents,
             };
-            rows.push((
-                self.render_card(project, None, folder, &host, window, cx),
-                CARD_HEIGHT,
-            ));
+            rows.push(self.render_card(project, None, folder, host.as_ref(), window, cx));
         }
         for (_, worktree) in project.visible_worktrees() {
-            let card = WorktreeCard::new(project, worktree, self.projects.read(cx));
-            rows.push((
-                self.render_card(project, Some(worktree), card, &host, window, cx),
-                CARD_HEIGHT,
-            ));
+            let target = CardTarget {
+                project: &project.path,
+                worktree: Some(&worktree.path),
+                path: &worktree.path,
+            };
+            let agents = self.agents_section(target, window, cx);
+            let card = WorktreeCard::new(project, worktree, self.projects.read(cx), agents);
+            rows.push(self.render_card(project, Some(worktree), card, host.as_ref(), window, cx));
         }
         for _ in 0..self.projects.read(cx).creating_count(&project.path) {
             rows.push((render_creating(cx).into_any_element(), CREATING_HEIGHT));
@@ -175,36 +189,24 @@ impl Sidebar {
         &self,
         ix: usize,
         project: &Project,
-        open: bool,
-        animate: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let header_hover = Hover::new(("project", ix), window, cx);
         let new_worktree_hover = Hover::new(("new-worktree", ix), window, cx);
+        let menu_open = window.use_keyed_state(
+            SharedString::from(format!("project-menu-open:{}", project.path.display())),
+            cx,
+            |_, _| false,
+        );
+        let is_menu_open = *menu_open.read(cx);
         let path = project.path.clone();
-        let chevron = Icon::new(IconName::ChevronDown)
-            .size_3p5()
-            .text_color(cx.theme().muted_foreground);
-        let chevron = if animate {
-            chevron
-                .with_animation(
-                    animation_id("project-chevron", &project.path, open),
-                    collapse_animation(),
-                    move |icon, t| icon.rotate(radians(CHEVRON_FOLDED * (1. - openness(open, t)))),
-                )
-                .into_any_element()
-        } else {
-            let angle = if open { 0. } else { CHEVRON_FOLDED };
-            chevron.rotate(radians(angle)).into_any_element()
-        };
-        // Collapsed to zero width until hovered, so the chevron sits at the row's edge (Orca).
         // The gap before the buttons lives inside, so it collapses with them.
         let buttons = h_flex()
             .flex_none()
             .pl_1()
             .gap_0p5()
-            .child(self.project_menu(ix, project))
+            .child(self.project_menu(ix, project, menu_open))
             .when(!project.worktrees.is_empty(), |s| {
                 let (projects, project) = (self.projects.clone(), project.clone());
                 s.child(
@@ -220,10 +222,16 @@ impl Sidebar {
                 )
             });
         let actions = h_flex()
+            .flex_none()
             .w_0()
             .overflow_hidden()
-            .when(header_hover.is_hovered(cx), |s| s.w_auto())
-            .opacity(header_hover.progress())
+            // The popup needs its trigger to stay visible while the pointer crosses the gap.
+            .when(header_hover.is_hovered(cx) || is_menu_open, |s| s.w_auto())
+            .opacity(if is_menu_open {
+                1.
+            } else {
+                header_hover.progress()
+            })
             .child(buttons);
         h_flex()
             .id(("project", ix))
@@ -250,12 +258,17 @@ impl Sidebar {
                     .truncate()
                     .child(project.name.clone()),
             )
-            .child(h_flex().flex_none().child(chevron).child(actions))
+            .child(actions)
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_collapsed(&path, cx)))
     }
 
     /// The "…" menu of a project header.
-    fn project_menu(&self, ix: usize, project: &Project) -> impl IntoElement {
+    fn project_menu(
+        &self,
+        ix: usize,
+        project: &Project,
+        menu_open: Entity<bool>,
+    ) -> impl IntoElement {
         let store = self.store.clone();
         let path = project.path.clone();
         let hidden = project.hidden_worktree_count();
@@ -293,6 +306,12 @@ impl Sidebar {
                     }),
                 )
             })
+            .on_open_change(move |open, _, cx| {
+                menu_open.update(cx, |state, cx| {
+                    *state = *open;
+                    cx.notify();
+                });
+            })
     }
 
     fn render_card(
@@ -300,10 +319,10 @@ impl Sidebar {
         project: &Project,
         worktree: Option<&Worktree>,
         card: WorktreeCard,
-        host: &SharedString,
+        host: Option<&SharedString>,
         window: &mut Window,
         cx: &mut App,
-    ) -> AnyElement {
+    ) -> (AnyElement, Pixels) {
         let theme = cx.theme();
         let (fg, muted_fg) = (theme.sidebar_foreground, theme.muted_foreground);
         let dot = if card.is_active {
@@ -322,14 +341,24 @@ impl Sidebar {
                     .child(card.title.clone()),
             )
             .when(card.is_primary, |s| s.child(primary_badge(fg)));
-        let meta_row = h_flex()
-            .gap_1p5()
-            // Under the title, past the status dot and its gap.
-            .pl(STATUS_DOT + px(8.))
-            .text_size(META_TEXT)
-            .text_color(muted_fg)
-            .child(host_badge(host.clone(), fg, muted_fg))
-            .child(card.meta.render());
+        let meta_row = (host.is_some() || card.meta.is_some()).then(|| {
+            h_flex()
+                .gap_1p5()
+                // Under the title, past the status dot and its gap.
+                .pl(STATUS_DOT + px(8.))
+                .text_size(META_TEXT)
+                .text_color(muted_fg)
+                .when_some(host, |row, host| {
+                    row.child(host_badge(host.clone(), fg, muted_fg))
+                })
+                .children(card.meta.map(Meta::render))
+        });
+        let header_height = if meta_row.is_some() {
+            CARD_HEIGHT_WITH_META
+        } else {
+            CARD_HEIGHT
+        };
+        let height = header_height + card.agents.height;
 
         let projects = self.projects.clone();
         let project_path = project.path.clone();
@@ -355,10 +384,8 @@ impl Sidebar {
             .id(card_id)
             .role(Role::Button)
             .aria_label(format!("Open {}: {}", project.name, card.title))
-            .h(CARD_HEIGHT)
+            .h(height)
             .flex_none()
-            .justify_center()
-            .gap_1p5()
             .mt(ROW_GAP)
             .ml_1()
             .pl_2()
@@ -372,22 +399,34 @@ impl Sidebar {
             )
             .border_color(fg.opacity(SELECTED_BORDER_OPACITY * selection))
             .cursor_pointer()
-            .child(title_row)
-            .child(meta_row)
+            .child(
+                v_flex()
+                    // The card's own border takes a pixel at the top and the bottom.
+                    .h(header_height - px(2.))
+                    .flex_none()
+                    .justify_center()
+                    .gap_1p5()
+                    .child(title_row)
+                    .children(meta_row),
+            )
+            .children(card.agents.element)
             .on_click(move |_, _, cx| {
                 projects.update(cx, |p, cx| {
                     p.select(&project_path, worktree_path.as_deref(), cx)
                 })
             });
         let Some((project, worktree)) = menu_target else {
-            return element.into_any_element();
+            return (element.into_any_element(), height);
         };
         let projects = self.projects.clone();
-        element
-            .context_menu(move |menu, _, _| {
-                worktree_menu(menu, projects.clone(), &project, &worktree)
-            })
-            .into_any_element()
+        (
+            element
+                .context_menu(move |menu, _, _| {
+                    worktree_menu(menu, projects.clone(), &project, &worktree)
+                })
+                .into_any_element(),
+            height,
+        )
     }
 }
 
@@ -449,28 +488,30 @@ impl Render for Sidebar {
 struct WorktreeCard {
     path: PathBuf,
     title: SharedString,
-    meta: Meta,
+    meta: Option<Meta>,
     is_primary: bool,
     is_active: bool,
     is_selected: bool,
+    agents: AgentsSection,
 }
 
-/// The text after the host badge.
+/// Details that are not already shown in the title.
 enum Meta {
-    Branch(SharedString),
     Detached,
     /// A folder that is not a git repository.
     Path(SharedString),
 }
 
 impl WorktreeCard {
-    fn new(project: &Project, worktree: &Worktree, projects: &Projects) -> Self {
+    fn new(
+        project: &Project,
+        worktree: &Worktree,
+        projects: &Projects,
+        agents: AgentsSection,
+    ) -> Self {
         let (title, meta) = match worktree.branch() {
-            Some(branch) => (
-                SharedString::from(branch.to_string()),
-                Meta::Branch(branch.to_string().into()),
-            ),
-            None => (worktree.name().into(), Meta::Detached),
+            Some(branch) => (SharedString::from(branch.to_string()), None),
+            None => (worktree.name().into(), Some(Meta::Detached)),
         };
         Self {
             path: worktree.path.clone(),
@@ -479,6 +520,7 @@ impl WorktreeCard {
             is_primary: project.is_primary(worktree),
             is_active: projects.is_active(&worktree.path),
             is_selected: projects.is_selected(&project.path, Some(&worktree.path)),
+            agents,
         }
     }
 }
@@ -486,7 +528,6 @@ impl WorktreeCard {
 impl Meta {
     fn render(self) -> AnyElement {
         match self {
-            Meta::Branch(branch) => div().min_w_0().truncate().child(branch).into_any_element(),
             Meta::Path(path) => div()
                 .min_w_0()
                 .truncate()
@@ -514,10 +555,10 @@ impl Meta {
     }
 }
 
-fn host_label(host: &Host) -> SharedString {
+fn host_label(host: &Host) -> Option<SharedString> {
     match host {
-        Host::Local => "Local Mac".into(),
-        Host::Ssh { target } => target.clone().into(),
+        Host::Local => None,
+        Host::Ssh { target } => Some(target.clone().into()),
     }
 }
 

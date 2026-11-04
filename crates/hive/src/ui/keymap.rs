@@ -10,6 +10,7 @@ use hive_core::settings::Settings;
 use crate::app::AppState;
 use crate::terminal::panel::{ClosePane, SplitDown, SplitRight};
 use crate::terminal::view::Paste;
+use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
 use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
 use crate::ui::workspace::{NewTerminal, ToggleGitPanel, ToggleSidebar};
@@ -74,7 +75,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 9] = [
+pub(crate) static SHORTCUTS: [Shortcut; 12] = [
     Shortcut {
         label: "New terminal",
         default: "cmd-t",
@@ -102,6 +103,28 @@ pub(crate) static SHORTCUTS: [Shortcut; 9] = [
         category: Category::Workspace,
         context: CONTEXT,
         action: || Box::new(OpenSettings),
+    },
+    Shortcut {
+        label: "Add project",
+        default: "cmd-o",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(AddProject),
+    },
+    Shortcut {
+        label: "Close window",
+        // Not cmd-w: a focused terminal closes its pane with it.
+        default: "cmd-shift-w",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(CloseWindow),
+    },
+    Shortcut {
+        label: "Toggle full screen",
+        default: "ctrl-cmd-f",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(ToggleFullScreen),
     },
     Shortcut {
         label: "Split terminal right",
@@ -178,6 +201,7 @@ fn install(cx: &mut App) {
         .collect();
     cx.clear_key_bindings();
     cx.bind_keys(others.into_iter().chain(bindings));
+    app_menu::install(cx);
 }
 
 /// The user's keystrokes for `shortcut`; a string `state.json` can't parse falls back to the default.

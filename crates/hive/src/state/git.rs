@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod generation;
 mod mutations;
 mod review;
 
@@ -70,6 +71,7 @@ pub(crate) struct Git {
     failures: HashMap<Target, String>,
     operations: HashMap<Target, Task<()>>,
     busy: std::collections::HashSet<Target>,
+    generations: HashMap<Target, std::sync::Arc<hive_core::commit_message::cli::Cancellation>>,
     visible_diffs: HashMap<EntityId, Target>,
     projects: Entity<Projects>,
     query_generation: u64,
@@ -122,6 +124,7 @@ impl Git {
             failures: HashMap::new(),
             operations: HashMap::new(),
             busy: Default::default(),
+            generations: HashMap::new(),
             visible_diffs: Default::default(),
             projects,
             query_generation: 0,
@@ -169,7 +172,15 @@ impl Git {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.target.as_ref().is_some_and(|t| self.busy.contains(t))
+        self.target.as_ref().is_some_and(|t| self.is_busy_at(t))
+    }
+    pub(crate) fn is_busy_at(&self, target: &Target) -> bool {
+        self.busy.contains(target)
+    }
+    pub(crate) fn is_generating(&self) -> bool {
+        self.target
+            .as_ref()
+            .is_some_and(|t| self.generations.contains_key(t))
     }
     pub fn draft(&self, target: &Target) -> &str {
         self.drafts
@@ -178,6 +189,9 @@ impl Git {
             .unwrap_or_default()
     }
     pub fn set_draft(&mut self, target: Target, message: String, cx: &mut Context<Self>) {
+        if self.generations.contains_key(&target) {
+            return;
+        }
         if self.draft(&target) != message {
             self.drafts.insert(target, message);
             cx.notify();

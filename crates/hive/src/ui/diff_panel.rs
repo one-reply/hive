@@ -197,7 +197,7 @@ impl Render for DiffPanel {
         let partial = mutable
             && !request.whole_file_only
             && patch.as_ref().is_some_and(|p| p.can_stage_hunks());
-        let busy = self.git.read(cx).is_busy();
+        let busy = self.git.read(cx).is_busy_at(&request.target);
         let mut annotations = Vec::new();
         if partial && let Some(patch) = &patch {
             for (index, hunk) in patch.hunks().iter().enumerate() {

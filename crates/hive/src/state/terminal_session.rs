@@ -38,6 +38,7 @@ impl EventEmitter<SessionEvent> for TerminalSession {}
 impl TerminalSession {
     pub(crate) fn new(cwd: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         let starting = AppState::get(cx).terminals.begin();
+        let worktree = cwd.clone();
         let start = cx.background_executor().spawn(async move {
             let Some(starting) = starting else {
                 return Err("Hive is shutting down".to_owned());
@@ -58,6 +59,12 @@ impl TerminalSession {
                 this.status = match result {
                     Ok(mut terminal) => {
                         terminal.set_focused(this.focused);
+                        if let Some(worktree) = &worktree {
+                            let session = cx.entity();
+                            AppState::get(cx).agents.clone().update(cx, |agents, _| {
+                                agents.watch(&session, worktree, &terminal)
+                            });
+                        }
                         if let Some(events) = terminal.events() {
                             this._events = Some(cx.spawn(async move |this, cx| {
                                 while let Ok(mut update) = events.recv().await {

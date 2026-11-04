@@ -55,6 +55,8 @@ pub const TERMINAL_FONT_SIZE_DEFAULT: f32 = 13.;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Settings {
+    /// Global recipe for generating a staged commit message; never contains API keys.
+    pub commit_message: crate::commit_message::Recipe,
     pub theme: ThemeChoice,
     sidebar_width: f32,
     git_panel_width: f32,
@@ -73,6 +75,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            commit_message: Default::default(),
             theme: ThemeChoice::default(),
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             git_panel_width: GIT_PANEL_WIDTH_DEFAULT,

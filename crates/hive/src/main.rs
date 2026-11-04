@@ -9,8 +9,6 @@ use gpui_kit::*;
 use app::AppState;
 use ui::workspace::Workspace;
 
-actions!(hive, [Quit]);
-
 fn init_logging() {
     use tracing_subscriber::EnvFilter;
     let dir = hive_core::state::hive_dir().join("logs");
@@ -46,9 +44,7 @@ fn main() {
                     .await;
                 cx.update(|cx| {
                     AppState::init(loaded, cx);
-                    cx.on_action(|_: &Quit, cx| cx.quit());
-                    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-                    cx.set_menus([Menu::new("Hive").items([MenuItem::action("Quit Hive", Quit)])]);
+                    ui::app_menu::init(cx);
                     ui::theme::init(cx);
                     // After every layer has bound its keys: it rebuilds the keymap around them.
                     ui::keymap::init(cx);

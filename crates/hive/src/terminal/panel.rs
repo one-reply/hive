@@ -107,6 +107,25 @@ impl TerminalPanel {
         handle.focus(window, cx);
     }
 
+    /// The pane whose terminal session is `session`, if this tab holds it.
+    pub(crate) fn pane_of(&self, session: EntityId, cx: &App) -> Option<Entity<TerminalView>> {
+        self.panes
+            .find(&|view: &Entity<TerminalView>| view.read(cx).session().entity_id() == session)
+            .cloned()
+    }
+
+    /// Makes `view` the active pane and moves keyboard focus into it.
+    pub(crate) fn focus_pane(
+        &mut self,
+        view: Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.active = view;
+        self.focus_active(window, cx);
+        self.notify_group(cx);
+    }
+
     /// Split the active pane: a new shell in the same cwd lands after it along `axis`.
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.cwd(cx);

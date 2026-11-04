@@ -228,7 +228,7 @@ fn confirm_reset(
     });
 }
 
-fn logo(provider: Provider) -> &'static [u8] {
+pub(super) fn logo(provider: Provider) -> &'static [u8] {
     match provider {
         Provider::GoogleAi => include_bytes!("../../../assets/google-ai.svg"),
         Provider::OpenAi => include_bytes!("../../../assets/openai.svg"),

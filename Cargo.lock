@@ -2792,6 +2792,7 @@ dependencies = [
  "security-framework",
  "serde",
  "serde_json",
+ "shlex",
  "thiserror 2.0.21",
  "tracing",
  "ureq",

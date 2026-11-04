@@ -21,6 +21,7 @@ use gpui_kit::*;
 use hive_core::settings::clamp_sidebar_width;
 
 use crate::app::AppState;
+use crate::state::agents::AgentsEvent;
 use crate::state::projects::Projects;
 use crate::state::store::Store;
 use crate::terminal::TerminalPanel;
@@ -96,7 +97,8 @@ pub(super) const SIDEBAR_SLIDE_DURATION: Duration = Duration::from_millis(200);
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let app = AppState::get(cx);
-        let (store, projects) = (app.store.clone(), app.projects.clone());
+        let (store, projects, agents) =
+            (app.store.clone(), app.projects.clone(), app.agents.clone());
         let sidebar_width = px(store.read(cx).state.settings.sidebar_width());
         let git_width = px(store.read(cx).state.settings.git_panel_width());
         let git_open = store.read(cx).state.settings.git_panel_open;
@@ -116,6 +118,9 @@ impl Workspace {
             }),
             cx.observe_in(&projects, window, |this, _, window, cx| {
                 this.sync_selection(window, cx)
+            }),
+            cx.subscribe_in(&agents, window, |this, _, event, window, cx| match event {
+                AgentsEvent::Reveal(session) => this.reveal_session(*session, window, cx),
             }),
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::sync_system_appearance(window, cx)
@@ -187,6 +192,19 @@ impl Workspace {
             .show_terminal(&cwd, window, cx);
         self.sync_active_worktrees(cx);
         cx.notify();
+    }
+
+    /// Shows the project, tab and pane running terminal `session`, wherever it is.
+    fn reveal_session(&mut self, session: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let project = self.centers.iter_mut().find_map(|(project, center)| {
+            center
+                .reveal_session(session, window, cx)
+                .then(|| project.clone())
+        });
+        if let Some(project) = project {
+            self.shown = Some(project);
+            cx.notify();
+        }
     }
 
     /// A project removed from the sidebar takes its tabs (and their shells) with it.

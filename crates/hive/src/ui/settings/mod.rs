@@ -3,8 +3,8 @@
 
 mod ai;
 mod appearance;
+mod git;
 mod project;
-mod projects;
 mod shortcuts;
 mod terminal;
 
@@ -34,7 +34,6 @@ const WINDOW_HEIGHT: Pixels = px(600.);
 const WINDOW_MIN_WIDTH: Pixels = px(640.);
 const WINDOW_MIN_HEIGHT: Pixels = px(420.);
 const NAV_WIDTH: Pixels = px(220.);
-const NAV_PROJECT_INDENT: Pixels = px(20.);
 const NAV_BADGE: Pixels = px(14.);
 const NAV_HOVER_OPACITY: f32 = 0.05;
 const NAV_SELECTED_OPACITY: f32 = 0.09;
@@ -50,22 +49,30 @@ pub fn init(cx: &mut App) {
 
 /// Brings the settings window to the front, opening it if it isn't open yet.
 pub fn open(cx: &mut App) {
-    open_at(None, cx);
+    open_at(None, None, cx);
 }
 
 /// Opens the settings window on the page of the project at `path`.
 pub fn open_project(path: &Path, cx: &mut App) {
-    open_at(Some(path.to_path_buf()), cx);
+    open_at(Some(path.to_path_buf()), None, cx);
 }
 
-fn open_at(project: Option<PathBuf>, cx: &mut App) {
+pub(crate) fn open_git(cx: &mut App) {
+    open_at(None, Some(Page::Git), cx);
+}
+
+fn open_at(project: Option<PathBuf>, page: Option<Page>, cx: &mut App) {
     if let Some(root) = settings_window(cx) {
         let shown = root.update(cx, |root, window, cx| {
             window.activate_window();
-            let Some(project) = project else { return };
             if let Ok(settings) = root.view().clone().downcast::<SettingsWindow>() {
                 settings.update(cx, |settings, cx| {
-                    settings.show_project(project, window, cx)
+                    if let Some(project) = project {
+                        settings.show_project(project, window, cx);
+                    }
+                    if let Some(page) = page {
+                        settings.show_page(page, window, cx);
+                    }
                 });
             }
         });
@@ -93,6 +100,9 @@ fn open_at(project: Option<PathBuf>, cx: &mut App) {
             if let Some(project) = project {
                 settings.show_project(project, window, cx);
             }
+            if let Some(page) = page {
+                settings.show_page(page, window, cx);
+            }
             settings
         })
     }) {
@@ -115,25 +125,25 @@ fn settings_window(cx: &App) -> Option<WindowHandle<Root>> {
 enum Page {
     Appearance,
     Shortcuts,
-    Projects,
     Terminal,
     Ai,
+    Git,
 }
 
 impl Page {
     /// The navigation: section titles and their pages, in order.
     const SECTIONS: [(&'static str, &'static [Page]); 2] = [
         ("Interface", &[Page::Appearance, Page::Shortcuts]),
-        ("Workspace", &[Page::Projects, Page::Terminal, Page::Ai]),
+        ("Workspace", &[Page::Terminal, Page::Ai, Page::Git]),
     ];
 
     fn label(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance",
             Page::Shortcuts => "Shortcuts",
-            Page::Projects => "Projects",
             Page::Terminal => "Terminal",
             Page::Ai => "AI",
+            Page::Git => "Git",
         }
     }
 
@@ -143,8 +153,8 @@ impl Page {
             Page::Shortcuts => {
                 "Keyboard shortcuts of the main window. Click Edit and press new keys."
             }
-            Page::Projects => "Folders listed in the sidebar.",
             Page::Terminal => "How terminal tabs look.",
+            Page::Git => "Commit generation for every project and worktree.",
             Page::Ai => {
                 "Connect LLM providers. Keys are verified online and stored in macOS Keychain."
             }
@@ -155,9 +165,9 @@ impl Page {
         match self {
             Page::Appearance => Lucide::Palette,
             Page::Shortcuts => Lucide::Keyboard,
-            Page::Projects => Lucide::Folder,
             Page::Terminal => Lucide::SquareTerminal,
             Page::Ai => Lucide::Sparkles,
+            Page::Git => Lucide::GitBranch,
         }
     }
 }
@@ -172,6 +182,7 @@ pub struct SettingsWindow {
     view: View,
     shortcuts: Entity<ShortcutsPage>,
     ai: Entity<AiPage>,
+    git: Entity<git::GitPage>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -183,6 +194,7 @@ impl SettingsWindow {
             view: View::Page(Page::Appearance),
             shortcuts: cx.new(ShortcutsPage::new),
             ai: cx.new(|cx| AiPage::new(window, cx)),
+            git: cx.new(|cx| git::GitPage::new(window, cx)),
             _subscriptions: vec![
                 cx.observe(&store, |this, _, cx| {
                     this.leave_removed_project(cx);
@@ -197,6 +209,12 @@ impl SettingsWindow {
         if matches!(self.view, View::Page(shown) if shown == page) {
             return;
         }
+        self.git.update(cx, |git, cx| {
+            git.save(cx);
+            if page == Page::Git {
+                git.refresh(cx);
+            }
+        });
         self.ai.update(cx, |ai, cx| {
             ai.clear(window, cx);
             if page == Page::Ai {
@@ -211,6 +229,7 @@ impl SettingsWindow {
         if self.shown_project(cx).is_some_and(|shown| shown == path) {
             return;
         }
+        self.git.update(cx, |git, cx| git.save(cx));
         self.ai.update(cx, |ai, cx| ai.clear(window, cx));
         self.view = View::Project(cx.new(|cx| ProjectPage::new(path, window, cx)));
         cx.notify();
@@ -235,36 +254,25 @@ impl SettingsWindow {
             .iter()
             .any(|project| project.path == path)
         {
-            self.view = View::Page(Page::Projects);
+            self.view = View::Page(Page::Appearance);
         }
     }
 
     fn render_nav(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        let sections: Vec<Div> = Page::SECTIONS
+        let mut sections: Vec<Div> = Page::SECTIONS
             .iter()
             .map(|(title, pages)| {
-                v_flex()
-                    .flex_none()
-                    .gap_0p5()
-                    .child(
-                        div()
-                            .px_3()
-                            .pb_1()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(muted)
-                            .child(title.to_uppercase()),
-                    )
-                    .children(pages.iter().flat_map(|page| {
-                        let mut items = vec![self.render_nav_item(*page, window, cx)];
-                        if *page == Page::Projects {
-                            items.extend(self.render_nav_projects(window, cx));
-                        }
-                        items
-                    }))
+                nav_section(title, cx).children(
+                    pages
+                        .iter()
+                        .map(|page| self.render_nav_item(*page, window, cx)),
+                )
             })
             .collect();
+        let projects = self.render_nav_projects(window, cx);
+        if !projects.is_empty() {
+            sections.push(nav_section("Projects", cx).children(projects));
+        }
         let theme = cx.theme();
         v_flex()
             .id("settings-navigation")
@@ -321,7 +329,7 @@ impl SettingsWindow {
             }))
     }
 
-    /// One nav item per project, indented under "Projects".
+    /// One nav item per project, the Projects section of the navigation.
     fn render_nav_projects(
         &self,
         window: &mut Window,
@@ -359,8 +367,7 @@ impl SettingsWindow {
                 h_flex()
                     .id(("nav-project", ix))
                     .gap_2()
-                    .pl(NAV_PROJECT_INDENT)
-                    .pr_3()
+                    .px_3()
                     .py_1()
                     .rounded_lg()
                     .cursor_pointer()
@@ -388,9 +395,9 @@ impl SettingsWindow {
                 let body = match page {
                     Page::Appearance => appearance::render(window, cx).into_any_element(),
                     Page::Shortcuts => self.shortcuts.clone().into_any_element(),
-                    Page::Projects => projects::render(window, cx).into_any_element(),
                     Page::Terminal => terminal::render(window, cx).into_any_element(),
                     Page::Ai => self.ai.clone().into_any_element(),
+                    Page::Git => self.git.clone().into_any_element(),
                 };
                 (page.label().into(), page.description().into(), body)
             }
@@ -457,6 +464,19 @@ impl Render for SettingsWindow {
                     .child(self.render_page(window, cx)),
             )
     }
+}
+
+/// A titled group of navigation items.
+fn nav_section(title: &str, cx: &App) -> Div {
+    v_flex().flex_none().gap_0p5().child(
+        div()
+            .px_3()
+            .pb_1()
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(cx.theme().muted_foreground)
+            .child(title.to_uppercase()),
+    )
 }
 
 /// One setting: its title block on the left, its control on the right.

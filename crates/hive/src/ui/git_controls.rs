@@ -7,7 +7,9 @@ use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hive_core::git::{branches::Branch, changes::Action};
@@ -65,6 +67,9 @@ impl BranchPicker {
     }
 
     fn choose(&self, branch: &Branch, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.compare && self.git.read(cx).is_busy_at(&self.target) {
+            return;
+        }
         window.close_dialog(cx);
         if self.compare {
             if self.git.read(cx).target.as_ref() == Some(&self.target) {
@@ -131,6 +136,7 @@ impl Render for BranchPicker {
             list = list.child(section_title(title, cx)).children(rows);
         }
         let new_branch_hover = Hover::new("new-branch", window, cx);
+        let busy = self.git.read(cx).is_busy_at(&self.target);
         let error: Option<SharedString> = self.git.read(cx).error.clone().map(Into::into);
         v_flex()
             .gap_2()
@@ -155,6 +161,7 @@ impl Render for BranchPicker {
                             .cursor_pointer()
                             .icon(Lucide::Plus)
                             .label("Create branch…")
+                            .disabled(busy)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 window.close_dialog(cx);
                                 create_branch(
@@ -183,6 +190,7 @@ impl BranchPicker {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (fg, muted) = (cx.theme().foreground, cx.theme().muted_foreground);
+        let busy = self.git.read(cx).is_busy_at(&self.target);
         let deletable = !branch.remote && !current && branch.worktree.is_none();
         let row_id: SharedString = format!("branch-{group}-{ix}").into();
         let delete_id: SharedString = format!("delete-{group}-{ix}").into();
@@ -239,6 +247,7 @@ impl BranchPicker {
                             .xsmall()
                             .icon(Lucide::Trash)
                             .tooltip("Delete branch")
+                            .disabled(busy)
                             .on_click(move |_, window, cx| {
                                 // The row behind would otherwise switch to this branch.
                                 cx.stop_propagation();
@@ -293,6 +302,7 @@ fn create_branch(
     }
     window.open_dialog(cx, move |dialog, _, cx| {
         let (git, target, name, base) = (git.clone(), target.clone(), name.clone(), base.clone());
+        let busy = git.read(cx).is_busy_at(&target);
         let track = remote.is_some();
         dialog
             .title(if track {
@@ -301,6 +311,7 @@ fn create_branch(
                 "Create and switch branch"
             })
             .w(DIALOG_WIDTH)
+            .when(busy, |dialog| dialog.footer(busy_footer("Create branch")))
             .child(
                 v_flex()
                     .gap_2()
@@ -314,6 +325,9 @@ fn create_branch(
                     .ok_text("Create branch")
                     .show_cancel(true)
                     .on_ok(move |_, _, cx| {
+                        if git.read(cx).is_busy_at(&target) {
+                            return false;
+                        }
                         let action = Action::CreateBranch {
                             name: name.read(cx).value().trim().into(),
                             base: base.read(cx).value().trim().into(),
@@ -365,7 +379,7 @@ fn confirm_delete(git: Entity<Git>, name: String, window: &mut Window, cx: &mut 
                 name,
                 force: !merged,
             };
-            cx.update(|window, cx| confirm(git, action, confirmation, window, cx))
+            cx.update(|window, cx| confirm_at(git, target, action, confirmation, window, cx))
                 .ok();
         })
         .detach();
@@ -392,6 +406,17 @@ pub(super) fn confirm(
         tracing::warn!(?action, "confirmation skipped: no active worktree");
         return;
     };
+    confirm_at(git, target, action, confirmation, window, cx);
+}
+
+fn confirm_at(
+    git: Entity<Git>,
+    target: Target,
+    action: Action,
+    confirmation: Confirmation,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Confirmation {
         title,
         description,
@@ -400,21 +425,45 @@ pub(super) fn confirm(
     } = confirmation;
     let description: SharedString =
         format!("{description}\n\nWorktree: {}", target.path.display()).into();
-    window.open_alert_dialog(cx, move |alert, _, _| {
+    window.open_alert_dialog(cx, move |alert, _, cx| {
         let (git, target, action) = (git.clone(), target.clone(), action.clone());
+        let busy = git.read(cx).is_busy_at(&target);
         alert
             .confirm()
             .title(title)
             .description(description.clone())
             .ok_text(ok_text)
+            .when(busy, |alert| alert.footer(busy_footer(ok_text)))
             .ok_variant(if danger {
                 ButtonVariant::Danger
             } else {
                 ButtonVariant::Primary
             })
             .on_ok(move |_, _, cx| {
+                if git.read(cx).is_busy_at(&target) {
+                    return false;
+                }
                 git.update(cx, |g, cx| g.perform_at(target.clone(), action.clone(), cx));
                 true
             })
     });
+}
+
+fn busy_footer(label: &'static str) -> impl IntoElement {
+    h_flex()
+        .justify_end()
+        .gap_2()
+        .child(
+            Button::new("busy-git-cancel")
+                .cursor_pointer()
+                .label("Cancel")
+                .on_click(|_, window, cx| window.close_dialog(cx)),
+        )
+        .child(
+            Button::new("busy-git-confirm")
+                .cursor_pointer()
+                .label(label)
+                .disabled(true)
+                .tooltip("Wait for the current Git operation to finish"),
+        )
 }

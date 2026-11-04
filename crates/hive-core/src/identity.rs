@@ -3,6 +3,37 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Project colors as `0xRRGGBB` (Orca's palette), in the order the picker shows them.
+pub const PALETTE: [u32; 8] = [
+    0x737373, 0xef4444, 0xf97316, 0xeab308, 0x22c55e, 0x14b8a6, 0x8b5cf6, 0xec4899,
+];
+/// The first project defaults to orange, as in Orca; later ones walk the palette from there.
+const FIRST_DEFAULT: usize = 2;
+
+/// Palette colors in the order projects get them: from orange on, gray last.
+fn assignment_order() -> impl Iterator<Item = u32> {
+    PALETTE
+        .iter()
+        .cycle()
+        .skip(FIRST_DEFAULT)
+        .take(PALETTE.len())
+        .copied()
+}
+
+/// The palette color a project without a custom color shows at position `ix`.
+pub fn default_color(ix: usize) -> u32 {
+    PALETTE[(ix + FIRST_DEFAULT) % PALETTE.len()]
+}
+
+/// The palette color for a new project: the first one nobody uses, else the least used one,
+/// so a new project stands apart from the ones already listed.
+pub fn unused_color(used: &[u32]) -> u32 {
+    let uses = |rgb: u32| used.iter().filter(|&&taken| taken == rgb).count();
+    assignment_order()
+        .min_by_key(|&rgb| uses(rgb))
+        .expect("the palette is not empty")
+}
+
 /// User-chosen display details of one project. `Default` is what "Reset" restores.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
 #[serde(default)]
@@ -27,6 +58,11 @@ impl ProjectIdentity {
     /// The custom color as `0xRRGGBB`, if one is set.
     pub fn color(&self) -> Option<u32> {
         self.color
+    }
+
+    /// The custom color, else the palette color for position `ix`.
+    pub fn color_or_default(&self, ix: usize) -> u32 {
+        self.color.unwrap_or_else(|| default_color(ix))
     }
 
     /// Sets a custom color; bits above `0xRRGGBB` are dropped.
@@ -160,6 +196,21 @@ mod tests {
             let back: ProjectIdentity = serde_json::from_str(&json).expect("valid json");
             assert_eq!(back.badge(), &badge);
         }
+    }
+
+    #[test]
+    fn new_color_skips_taken_ones() {
+        assert_eq!(unused_color(&[]), 0xf97316);
+        assert_eq!(unused_color(&[0xf97316, 0xeab308]), 0x22c55e);
+        let all_but_red: Vec<u32> = PALETTE.into_iter().filter(|&c| c != 0xef4444).collect();
+        assert_eq!(unused_color(&all_but_red), 0xef4444);
+    }
+
+    #[test]
+    fn full_palette_reuses_the_least_used() {
+        let mut used = PALETTE.to_vec();
+        used.extend([0xf97316, 0xeab308]);
+        assert_eq!(unused_color(&used), 0x22c55e);
     }
 
     #[test]

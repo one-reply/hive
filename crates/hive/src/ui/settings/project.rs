@@ -11,11 +11,11 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use hive_core::identity::{Badge, ProjectIcon, ProjectIdentity};
+use hive_core::identity::{Badge, PALETTE, ProjectIcon, ProjectIdentity};
 
 use crate::app::AppState;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
-use crate::ui::project_badge::{self, PALETTE};
+use crate::ui::project_badge;
 
 const PREVIEW_TILE: Pixels = px(40.);
 const PREVIEW_BADGE: Pixels = px(20.);

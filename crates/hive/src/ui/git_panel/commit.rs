@@ -3,6 +3,31 @@ use super::*;
 use gpui_kit::component::kbd::Kbd;
 
 impl GitPanel {
+    fn generate_message(&self, cx: &mut Context<Self>) {
+        let git = self.git.read(cx);
+        if git.is_busy()
+            || git
+                .status
+                .as_ref()
+                .is_none_or(|s| s.has_conflicts() || staged_count(s) == 0)
+        {
+            return;
+        }
+        let recipe = AppState::get(cx)
+            .store
+            .read(cx)
+            .state
+            .settings
+            .commit_message
+            .clone();
+        if !recipe.is_configured() {
+            crate::ui::settings::open_git(cx);
+            return;
+        }
+        self.git
+            .update(cx, |git, cx| git.generate_message(recipe, cx));
+    }
+
     pub(super) fn commit(&self, cx: &mut Context<Self>) {
         let state = self.git.read(cx);
         let message = self.message.read(cx).value();
@@ -22,6 +47,7 @@ impl GitPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let staged = status.map(staged_count).unwrap_or(0);
+        let generating = self.git.read(cx).is_generating();
         let conflicts = status.is_some_and(Status::has_conflicts);
         let stage_paths: Vec<_> = status
             .into_iter()
@@ -61,17 +87,17 @@ impl GitPanel {
                 div()
                     .relative()
                     .child(TextField::textarea(
-                        Textarea::new(&self.message).pr_8(),
+                        Textarea::new(&self.message).pr_8().disabled(generating),
                         &self.message,
                         cx,
                     ))
                     .child(
                         div().absolute().top_1().right_1().child(
-                            // shortcut: UI only; attach generation when an AI runner is available.
                             Button::new("generate-commit-message")
                                 .cursor_pointer()
                                 .small()
                                 .icon(Lucide::Sparkles)
+                                .loading(generating)
                                 .accessibility_label("Generate commit message with AI")
                                 .disabled(busy || conflicts || staged == 0)
                                 .tooltip(if conflicts {
@@ -79,12 +105,21 @@ impl GitPanel {
                                 } else if staged == 0 {
                                     "Stage changes to enable AI generation"
                                 } else {
-                                    "Generate commit message with AI — coming soon"
+                                    "Generate a new commit message · configure in Git settings"
                                 })
+                                .on_click(cx.listener(|this, _, _, cx| this.generate_message(cx)))
                                 .smooth_hover(ButtonLook::Ghost, &generate_hover, cx),
                         ),
                     ),
             )
+            .when(generating, |col| {
+                col.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Generating…"),
+                )
+            })
             .child(
                 h_flex()
                     .gap_2()
@@ -100,7 +135,7 @@ impl GitPanel {
                                 Lucide::GitCommitHorizontal
                             })
                             .label(if staged == 0 { "Stage All" } else { "Commit" })
-                            .loading(busy)
+                            .loading(busy && !generating)
                             .disabled(busy || blocker.is_some())
                             .when_some(blocker, |b, reason| b.tooltip(reason))
                             .when(blocker.is_none() && staged == 0, |b| {

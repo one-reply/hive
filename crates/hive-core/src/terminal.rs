@@ -7,9 +7,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 
+mod activity;
 mod events;
 pub mod paste;
 mod pty;
+pub use activity::Activity;
 use events::Publisher;
 pub use events::TerminalUpdate;
 use pty::{Completion, ManagedPty};
@@ -82,6 +84,7 @@ impl Dimensions for TerminalSize {
 #[derive(Clone)]
 pub struct Listener {
     events: Publisher,
+    activity: Activity,
     /// Filled in once the event loop exists; requests before that are dropped.
     pty: Arc<std::sync::Mutex<Option<EventLoopSender>>>,
     size: Arc<std::sync::Mutex<WindowSize>>,
@@ -97,7 +100,13 @@ impl EventListener for Listener {
                 let size = *self.size.lock().unwrap_or_else(|e| e.into_inner());
                 self.write(format(size).into_bytes());
             }
-            event => self.events.send(event),
+            event => {
+                // The event loop wakes the UI after every PTY read.
+                if matches!(event, AlacEvent::Wakeup) {
+                    self.activity.record_output();
+                }
+                self.events.send(event)
+            }
         }
     }
 }
@@ -117,6 +126,8 @@ pub struct Terminal {
     events: Option<Receiver<TerminalUpdate>>,
     size: Arc<std::sync::Mutex<WindowSize>>,
     cwd: Option<PathBuf>,
+    shell_pid: u32,
+    activity: Activity,
     control: TerminalControl,
 }
 
@@ -130,8 +141,10 @@ impl Terminal {
         let (events, rx) = Publisher::new();
         let completion = Arc::new(Completion::default());
         let window_size = size.window_size();
+        let activity = Activity::default();
         let listener = Listener {
             events: events.clone(),
+            activity: activity.clone(),
             pty: Arc::new(std::sync::Mutex::new(None)),
             size: Arc::new(std::sync::Mutex::new(window_size)),
         };
@@ -150,6 +163,7 @@ impl Terminal {
             env,
         };
         let pty = tty::new(&options, window_size, 0).map_err(TerminalError::Pty)?;
+        let shell_pid = pty.child().id();
 
         let pty = ManagedPty::new(pty, completion.clone(), events);
         let event_loop = EventLoop::new(term.clone(), listener.clone(), pty, false, false)
@@ -169,6 +183,8 @@ impl Terminal {
             events: Some(rx),
             size: listener.size,
             cwd: cwd.map(Path::to_path_buf),
+            shell_pid,
+            activity,
             control,
         })
     }
@@ -192,8 +208,19 @@ impl Terminal {
         self.cwd.as_deref()
     }
 
+    /// Process id of the shell the PTY runs; its terminal's foreground job is what runs now.
+    pub fn shell_pid(&self) -> u32 {
+        self.shell_pid
+    }
+
+    /// Output/input timing, for telling a busy program from an idle one.
+    pub fn activity(&self) -> Activity {
+        self.activity.clone()
+    }
+
     /// Send bytes to the shell's stdin.
     pub fn write(&self, bytes: impl Into<Vec<u8>>) {
+        self.activity.record_input();
         self.pty.notify(bytes.into());
     }
 
@@ -208,6 +235,8 @@ impl Terminal {
             }
         }
         *self.size.lock().unwrap_or_else(|e| e.into_inner()) = window_size;
+        // The program redraws to the new size; that output is not work.
+        self.activity.record_input();
         self.term.lock().resize(size);
         Notifier(self.pty.0.clone()).on_resize(window_size);
     }

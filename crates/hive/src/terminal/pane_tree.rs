@@ -103,6 +103,14 @@ impl<T: Clone + PartialEq> PaneTree<T> {
             Self::Split { children, .. } => children.iter().any(|child| child.contains(target)),
         }
     }
+
+    /// The first pane, in reading order, that `matches`.
+    pub(crate) fn find(&self, matches: &impl Fn(&T) -> bool) -> Option<&T> {
+        match self {
+            Self::Leaf(leaf) => matches(leaf).then_some(leaf),
+            Self::Split { children, .. } => children.iter().find_map(|child| child.find(matches)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -130,6 +138,16 @@ mod tests {
         assert!(tree.split(&1, 2, Axis::Horizontal));
         assert!(tree.split(&1, 3, Axis::Horizontal));
         assert_eq!(shape(&tree), "H[1 3 2]");
+    }
+
+    #[test]
+    fn find_walks_nested_splits_in_order() {
+        let mut tree = PaneTree::Leaf(1);
+        tree.split(&1, 2, Axis::Horizontal);
+        tree.split(&2, 3, Axis::Vertical);
+        assert_eq!(tree.find(&|pane| *pane > 1), Some(&2));
+        assert_eq!(tree.find(&|pane| *pane == 3), Some(&3));
+        assert_eq!(tree.find(&|pane| *pane == 9), None);
     }
 
     #[test]

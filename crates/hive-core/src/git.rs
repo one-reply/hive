@@ -7,6 +7,7 @@ use std::process::Stdio;
 
 pub mod branches;
 pub mod changes;
+pub mod commit_context;
 pub mod diff;
 pub mod history;
 mod numstat;

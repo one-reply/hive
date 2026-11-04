@@ -1,0 +1,3 @@
+# macOS titles an unbundled app's menu after its executable file; see scripts/run-dev.sh.
+[target.'cfg(target_os = "macos")']
+runner = "scripts/run-dev.sh"

@@ -1,0 +1,294 @@
+//! The agents strip of a worktree card (Orca-style): an overall status, the agents' logos and a
+//! count of the rest. Clicking it unfolds one row per agent session; a row shows that agent's
+//! terminal pane. The strip grows in and out with the agents, so it never pops.
+use std::f32::consts::FRAC_PI_2;
+
+use hive_core::agent::{AgentKind, AgentStatus};
+
+use super::*;
+use crate::state::agents::AgentSession;
+
+const STRIP_HEIGHT: Pixels = px(24.);
+const SESSION_ROW_HEIGHT: Pixels = px(24.);
+/// Space above the strip (to the meta row) and below the section (to the card's border).
+const SECTION_TOP: Pixels = px(2.);
+const SECTION_BOTTOM: Pixels = px(8.);
+const LOGO_SIZE: Pixels = px(13.);
+/// Logos the strip shows before collapsing the rest into "+N".
+const STRIP_LOGOS: usize = 2;
+const AGENTS_DURATION: Duration = Duration::from_millis(200);
+/// Anthropic's Claude orange; Codex uses the foreground color like the status bar does.
+const CLAUDE_COLOR: u32 = 0xd97757;
+const STRIP_BACKGROUND_OPACITY: f32 = 0.03;
+const STRIP_HOVER_OPACITY: f32 = 0.07;
+const STRIP_BORDER_OPACITY: f32 = 0.06;
+const PILL_BACKGROUND_OPACITY: f32 = 0.06;
+
+/// The agents part of one card: its eased height (the card adds it to its own) and content.
+pub(super) struct AgentsSection {
+    pub(super) height: Pixels,
+    pub(super) element: Option<AnyElement>,
+}
+
+/// Where a card's agents live and where clicking one of them goes.
+pub(super) struct CardTarget<'a> {
+    pub(super) project: &'a Path,
+    pub(super) worktree: Option<&'a Path>,
+    /// The card's own path: the worktree, or the project folder for a non-git project.
+    pub(super) path: &'a Path,
+}
+
+impl Sidebar {
+    pub(super) fn agents_section(
+        &self,
+        target: CardTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AgentsSection {
+        let key = ElementId::from(SharedString::from(format!(
+            "agents:{}",
+            target.path.display()
+        )));
+        let live = AppState::get(cx)
+            .agents
+            .read(cx)
+            .sessions(target.path)
+            .to_vec();
+        // While the section shrinks away after the last agent quits, keep showing it.
+        let shown = window.use_keyed_state((key.clone(), "shown"), cx, |_, _| Vec::new());
+        if !live.is_empty() {
+            shown.update(cx, |shown, _| shown.clone_from(&live));
+        }
+        let sessions = shown.read(cx).clone();
+        let open = !live.is_empty() && self.agents_open.contains(target.path);
+        let full = SECTION_TOP + STRIP_HEIGHT + SECTION_BOTTOM;
+        let height = if live.is_empty() {
+            px(0.)
+        } else if open {
+            full + SESSION_ROW_HEIGHT * live.len() as f32
+        } else {
+            full
+        };
+        let height = px(eased((key.clone(), "height"), height.as_f32(), window, cx));
+        let unfolded = eased(
+            (key.clone(), "open"),
+            if open { 1. } else { 0. },
+            window,
+            cx,
+        );
+        if sessions.is_empty() || height < px(0.5) {
+            return AgentsSection {
+                height,
+                element: None,
+            };
+        }
+        let strip_hover = Hover::new((key.clone(), "strip"), window, cx);
+        // Keyed by session, so a row keeps its hover when another agent quits above it.
+        let row_hovers: Vec<Hover> = sessions
+            .iter()
+            .map(|session| {
+                let id = format!("agent-row:{}:{}", target.path.display(), session.session);
+                Hover::new(SharedString::from(id), window, cx)
+            })
+            .collect();
+        let element = v_flex()
+            .h(height)
+            .flex_none()
+            .overflow_hidden()
+            .opacity((height / full).min(1.))
+            .pt(SECTION_TOP)
+            .child(self.render_strip(&sessions, target.path, &strip_hover, unfolded, cx))
+            .child(
+                v_flex()
+                    // Clip rows before the bottom inset, even while the section animates.
+                    .h((height - full).max(px(0.)))
+                    .flex_none()
+                    .overflow_hidden()
+                    .children(
+                        sessions
+                            .iter()
+                            .zip(row_hovers)
+                            .map(|(session, hover)| render_session(session, &target, &hover, cx)),
+                    ),
+            )
+            .into_any_element();
+        AgentsSection {
+            height,
+            element: Some(element),
+        }
+    }
+
+    fn toggle_agents(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if !self.agents_open.remove(path) {
+            self.agents_open.insert(path.to_path_buf());
+        }
+        cx.notify();
+    }
+
+    fn render_strip(
+        &self,
+        sessions: &[AgentSession],
+        path: &Path,
+        hover: &Hover,
+        unfolded: f32,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let fg = cx.theme().sidebar_foreground;
+        let muted = cx.theme().muted_foreground;
+        let status = if sessions.iter().any(|s| s.status == AgentStatus::Working) {
+            AgentStatus::Working
+        } else {
+            AgentStatus::Idle
+        };
+        let hidden = sessions.len().saturating_sub(STRIP_LOGOS);
+        let pill = h_flex()
+            .h(STRIP_HEIGHT - px(6.))
+            .px_1()
+            .gap_1()
+            .items_center()
+            .rounded_md()
+            .bg(fg.opacity(PILL_BACKGROUND_OPACITY))
+            .child(status_icon(status))
+            .children(
+                sessions
+                    .iter()
+                    .take(STRIP_LOGOS)
+                    .map(|session| logo(session.kind, cx)),
+            )
+            .when(hidden > 0, |pill| {
+                pill.child(
+                    div()
+                        .text_size(BADGE_TEXT)
+                        .text_color(muted)
+                        .child(format!("+{hidden}")),
+                )
+            });
+        let path_buf = path.to_path_buf();
+        h_flex()
+            .id(SharedString::from(format!(
+                "agents-strip:{}",
+                path.display()
+            )))
+            .h(STRIP_HEIGHT)
+            .flex_none()
+            .mr_1p5()
+            .pl_0p5()
+            .pr_1()
+            .justify_between()
+            .items_center()
+            .rounded_md()
+            .border_1()
+            .border_color(fg.opacity(STRIP_BORDER_OPACITY))
+            .hover_bg(
+                hover,
+                fg.opacity(STRIP_BACKGROUND_OPACITY),
+                fg.opacity(STRIP_HOVER_OPACITY),
+            )
+            .cursor_pointer()
+            .child(pill)
+            .child(
+                Icon::new(Lucide::ChevronRight)
+                    .size_3p5()
+                    .text_color(muted)
+                    .rotate(radians(FRAC_PI_2 * unfolded)),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                // The card behind would otherwise select the worktree.
+                cx.stop_propagation();
+                this.toggle_agents(&path_buf, cx);
+            }))
+    }
+}
+
+/// One agent session: clicking it selects the card's worktree and shows the agent's pane.
+fn render_session(
+    session: &AgentSession,
+    target: &CardTarget,
+    hover: &Hover,
+    cx: &mut Context<Sidebar>,
+) -> Stateful<Div> {
+    let fg = cx.theme().sidebar_foreground;
+    let muted = cx.theme().muted_foreground;
+    let (projects, agents) = {
+        let app = AppState::get(cx);
+        (app.projects.clone(), app.agents.clone())
+    };
+    let (project, worktree) = (
+        target.project.to_path_buf(),
+        target.worktree.map(Path::to_path_buf),
+    );
+    let id = session.session;
+    h_flex()
+        .id(SharedString::from(format!("agent-session:{}", id.as_u64())))
+        .h(SESSION_ROW_HEIGHT)
+        .flex_none()
+        .mr_1p5()
+        .px_1()
+        .gap_1p5()
+        .items_center()
+        .rounded_md()
+        .hover_bg(hover, fg.opacity(0.), fg.opacity(STRIP_HOVER_OPACITY))
+        .cursor_pointer()
+        .text_size(META_TEXT)
+        .child(status_icon(session.status))
+        .child(logo(session.kind, cx))
+        .child(div().flex_none().child(session.kind.name()))
+        .when_some(session.title.clone(), |row, title| {
+            row.child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_color(muted)
+                    .child(title),
+            )
+        })
+        .on_click(move |_, _, cx| {
+            // The card behind would otherwise run its own selection on top.
+            cx.stop_propagation();
+            projects.update(cx, |p, cx| p.select(&project, worktree.as_deref(), cx));
+            agents.update(cx, |agents, cx| agents.reveal(id, cx));
+        })
+}
+
+fn status_icon(status: AgentStatus) -> AnyElement {
+    match status {
+        AgentStatus::Working => Spinner::new()
+            .icon(IconName::LoaderCircle)
+            .color(rgb(ACTIVE_COLOR).into())
+            .xsmall()
+            .into_any_element(),
+        AgentStatus::Idle => Icon::new(Lucide::CircleCheck)
+            .size_3()
+            .text_color(rgb(ACTIVE_COLOR))
+            .into_any_element(),
+    }
+}
+
+fn logo(kind: AgentKind, cx: &App) -> impl IntoElement {
+    let (svg, color): (&'static [u8], Hsla) = match kind {
+        AgentKind::ClaudeCode => (
+            include_bytes!("../../../assets/claude.svg"),
+            rgb(CLAUDE_COLOR).into(),
+        ),
+        AgentKind::Codex => (
+            include_bytes!("../../../assets/openai.svg"),
+            cx.theme().sidebar_foreground,
+        ),
+    };
+    Icon::default()
+        .data(svg)
+        .size(LOGO_SIZE)
+        .flex_none()
+        .text_color(color)
+}
+
+fn eased(id: (ElementId, &'static str), target: f32, window: &mut Window, cx: &mut App) -> f32 {
+    transition(
+        id,
+        target,
+        Transition::new(AGENTS_DURATION).ease(ease_in_out),
+        window,
+        cx,
+    )
+}

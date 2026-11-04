@@ -4,10 +4,20 @@ use std::{fmt, time::Duration};
 
 use crate::keychain;
 
+mod completion;
+mod models;
+mod request;
+pub use completion::generate;
+pub use models::{Model, list_models};
+pub use request::RequestError;
+
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Providers supported by Hive's AI settings, independently of CLI logins.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
 pub enum Provider {
     /// Google AI Studio / Gemini API.
     GoogleAi,
@@ -240,5 +250,7 @@ fn authentication(provider: Provider, key: &ApiKey) -> (&'static str, ureq::http
     (name, value)
 }
 
+#[cfg(test)]
+mod test_server;
 #[cfg(test)]
 mod tests;

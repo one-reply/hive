@@ -2,6 +2,8 @@
 //! `serde`-serializable, and runtime-agnostic (blocking fns the caller runs on a
 //! background executor). This is what a future backend will share as its proto.
 
+pub mod agent;
+pub mod commit_message;
 pub mod git;
 pub mod host;
 pub mod identity;

@@ -1,0 +1,282 @@
+//! Coding agents running interactively in a terminal: which agent holds a PTY's foreground job.
+//!
+//! The terminal's shell knows nothing about agents, and the agents print no marker we could
+//! rely on, so detection reads the process table: the shell's controlling terminal reports
+//! its foreground process group (`tpgid`), and the command lines in that group name the agent.
+//! One `ps` snapshot serves every open terminal.
+
+use serde::{Deserialize, Serialize};
+use std::time::Instant;
+
+use crate::host::Host;
+use crate::terminal::Activity;
+
+/// An agent CLI Hive recognizes in a terminal.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AgentKind {
+    ClaudeCode,
+    Codex,
+}
+
+impl AgentKind {
+    /// Display name, as the vendor spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+        }
+    }
+
+    fn from_executable(name: &str) -> Option<Self> {
+        match name {
+            "claude" => Some(Self::ClaudeCode),
+            "codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
+
+    /// The agent a command line runs, if any. `ps` joins argv with spaces, so a path with a
+    /// space spills into the next word; that word still ends in the executable name.
+    fn from_command(args: &str) -> Option<Self> {
+        let mut words = args.split_whitespace();
+        let first = words.next()?;
+        if let Some(kind) = Self::from_executable(basename(first)) {
+            return Some(kind);
+        }
+        let second = words.next()?;
+        let runs_script = SCRIPT_RUNNERS.contains(&basename(first));
+        let path_continues = first.starts_with('/') && second.contains('/');
+        if runs_script || path_continues {
+            return Self::from_executable(basename(second));
+        }
+        None
+    }
+}
+
+/// What an agent in a terminal is doing, judged from the terminal's output timing: agents
+/// redraw a spinner or stream text while they work and sit still at their prompt otherwise.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AgentStatus {
+    Working,
+    Idle,
+}
+
+impl AgentStatus {
+    /// The status `activity` shows at `now`.
+    pub fn of(activity: &Activity, now: Instant) -> Self {
+        if activity.is_streaming(now) {
+            Self::Working
+        } else {
+            Self::Idle
+        }
+    }
+}
+
+/// Interpreters an agent CLI may be launched through (`node …/bin/claude`).
+const SCRIPT_RUNNERS: [&str; 3] = ["node", "bun", "deno"];
+
+fn basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Failure to read the process table.
+#[derive(Debug, thiserror::Error)]
+pub enum AgentError {
+    #[error("failed to run ps: {0}")]
+    Spawn(#[source] std::io::Error),
+    #[error("ps exited with {status}: {stderr}")]
+    Failed { status: String, stderr: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Process {
+    pid: u32,
+    pgid: u32,
+    /// Foreground process group of the process's controlling terminal; 0 or -1 without one.
+    tpgid: i64,
+    args: String,
+}
+
+/// A point-in-time view of local processes, enough to resolve terminal foreground jobs.
+#[derive(Clone, Debug, Default)]
+pub struct ProcessTable {
+    processes: Vec<Process>,
+}
+
+impl ProcessTable {
+    /// Reads the local process table. Blocking: run it off the UI thread.
+    pub fn snapshot() -> Result<Self, AgentError> {
+        let output = Host::Local
+            .command("/bin/ps", &["-ax", "-o", "pid=,pgid=,tpgid=,args="], None)
+            .output()
+            .map_err(AgentError::Spawn)?;
+        if !output.status.success() {
+            return Err(AgentError::Failed {
+                status: output.status.to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            });
+        }
+        Ok(Self::parse(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    /// Parses `ps -o pid=,pgid=,tpgid=,args=` output; malformed lines are skipped.
+    pub fn parse(output: &str) -> Self {
+        let processes = output.lines().filter_map(parse_line).collect();
+        Self { processes }
+    }
+
+    /// The agent running as the foreground job of the terminal whose shell is `shell_pid`.
+    /// `None` while the shell itself is in the foreground or runs something else.
+    pub fn foreground_agent(&self, shell_pid: u32) -> Option<AgentKind> {
+        let shell = self.processes.iter().find(|p| p.pid == shell_pid)?;
+        let foreground = u32::try_from(shell.tpgid).ok().filter(|&group| group > 0)?;
+        if foreground == shell.pgid {
+            return None;
+        }
+        // A job may start in a wrapper (a subshell, `npx`) whose child is the agent.
+        self.processes
+            .iter()
+            .filter(|p| p.pgid == foreground)
+            .find_map(|p| AgentKind::from_command(&p.args))
+    }
+}
+
+fn parse_line(line: &str) -> Option<Process> {
+    let mut rest = line.trim_start();
+    let mut field = || {
+        let end = rest.find(char::is_whitespace)?;
+        let (value, tail) = rest.split_at(end);
+        rest = tail.trim_start();
+        Some(value)
+    };
+    let pid = field()?.parse().ok()?;
+    let pgid = field()?.parse().ok()?;
+    let tpgid = field()?.parse().ok()?;
+    Some(Process {
+        pid,
+        pgid,
+        tpgid,
+        args: rest.to_owned(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Captured on macOS with two Hive terminals (zsh 51000 running `claude`, zsh 52000 idle)
+    /// plus unrelated processes, trimmed.
+    const SAMPLE: &str = "\
+    1     1     0 /sbin/launchd
+18450 18450     0 /Users/me/.codex/packages/app-server-daemon/releases/0.166.0-aarch64-apple-darwin/bin/codex app-server --listen unix://
+51000 51000 98260 -zsh
+98260 98260 98260 claude
+98948 98260 98260 node /Users/me/.npm/_npx/705d23756ff7dacc/node_modules/.bin/mcp-remote http://10.22.16.119:3100/mcp
+52000 52000 52000 -zsh
+53000 53000 53500 -zsh
+53500 53500 53500 vim claude.md
+54000 54000 54100 -zsh
+54100 54100 54100 zsh
+54101 54100 54100 /opt/homebrew/bin/codex
+55000 55000 55100 -zsh
+55100 55100 55100 /Users/me/Library/Application Support/Claude/claude-code/2.1.317/claude --resume
+56000 56000 56100 -zsh
+56100 56100 56100 /Users/me/.nvm/versions/node/v24.14.0/bin/node /Users/me/.nvm/versions/node/v24.14.0/bin/claude
+garbage line
+";
+
+    #[test]
+    fn agent_in_the_foreground_is_found() {
+        let table = ProcessTable::parse(SAMPLE);
+        assert_eq!(table.foreground_agent(51000), Some(AgentKind::ClaudeCode));
+    }
+
+    #[test]
+    fn idle_shell_has_no_agent() {
+        let table = ProcessTable::parse(SAMPLE);
+        assert_eq!(table.foreground_agent(52000), None);
+    }
+
+    #[test]
+    fn other_programs_and_arguments_named_like_agents_do_not_count() {
+        let table = ProcessTable::parse(SAMPLE);
+        assert_eq!(table.foreground_agent(53000), None);
+    }
+
+    #[test]
+    fn agent_started_through_a_subshell_is_found() {
+        let table = ProcessTable::parse(SAMPLE);
+        assert_eq!(table.foreground_agent(54000), Some(AgentKind::Codex));
+    }
+
+    #[test]
+    fn executable_path_with_a_space_is_found() {
+        let table = ProcessTable::parse(SAMPLE);
+        assert_eq!(table.foreground_agent(55000), Some(AgentKind::ClaudeCode));
+    }
+
+    #[test]
+    fn script_run_through_node_is_found() {
+        let table = ProcessTable::parse(SAMPLE);
+        assert_eq!(table.foreground_agent(56000), Some(AgentKind::ClaudeCode));
+    }
+
+    #[test]
+    fn unknown_shell_and_daemons_without_a_terminal_are_ignored() {
+        let table = ProcessTable::parse(SAMPLE);
+        assert_eq!(table.foreground_agent(99999), None);
+        assert_eq!(table.foreground_agent(18450), None);
+    }
+
+    /// A real PTY: an executable named `codex` in the foreground is seen as Codex, and its
+    /// output timing gives the status (`yes` floods output, `sleep` prints nothing).
+    #[test]
+    fn agent_in_a_real_terminal_is_detected_with_its_status() {
+        use crate::terminal::{Terminal, TerminalSize};
+        use std::time::Duration;
+
+        let dir = std::env::temp_dir().join(format!("hive-agent-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let busy = dir.join("busy").join("codex");
+        let quiet = dir.join("quiet").join("codex");
+        for (link, target) in [(&busy, "/usr/bin/yes"), (&quiet, "/bin/sleep")] {
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            let _ = std::fs::remove_file(link);
+            std::os::unix::fs::symlink(target, link).unwrap();
+        }
+        let spawn = || Terminal::spawn(None, Some("/bin/sh"), TerminalSize::new(80, 24)).unwrap();
+        let (working, idle) = (spawn(), spawn());
+        working.write(format!("{} > /dev/tty\n", busy.display()));
+        idle.write(format!("{} 30\n", quiet.display()));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let table = ProcessTable::snapshot().unwrap();
+            let now = Instant::now();
+            let seen = (
+                table.foreground_agent(working.shell_pid()),
+                AgentStatus::of(&working.activity(), now),
+                table.foreground_agent(idle.shell_pid()),
+                AgentStatus::of(&idle.activity(), now),
+            );
+            let expected = (
+                Some(AgentKind::Codex),
+                AgentStatus::Working,
+                Some(AgentKind::Codex),
+                AgentStatus::Idle,
+            );
+            if seen == expected {
+                break;
+            }
+            assert!(Instant::now() < deadline, "last seen: {seen:?}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_snapshot_parses() {
+        let table = ProcessTable::snapshot().expect("ps runs on macOS");
+        assert!(table.processes.iter().any(|p| p.pid == 1));
+    }
+}
