@@ -1,4 +1,5 @@
-//! Discovery and bounded, non-interactive invocation of the two supported local CLIs.
+//! Discovery and bounded, non-interactive invocation of the supported local CLIs (Codex and
+//! Claude Code; the other `AgentKind`s are only recognized in terminals, not driven here).
 use super::Error;
 use crate::{agent::AgentKind, host::Host};
 use serde::Deserialize;
@@ -7,6 +8,10 @@ use std::{path::PathBuf, time::Duration};
 mod process;
 pub use process::Cancellation;
 
+/// Shown when a saved recipe names an agent that only terminal detection knows.
+pub const UNSUPPORTED_GENERATOR: &str =
+    "This agent cannot generate commit messages yet. Select Codex, Claude Code or an API provider.";
+
 /// Supported commit CLIs, in picker order.
 pub const AGENTS: [AgentKind; 2] = [AgentKind::Codex, AgentKind::ClaudeCode];
 
@@ -14,10 +19,7 @@ pub const AGENTS: [AgentKind; 2] = [AgentKind::Codex, AgentKind::ClaudeCode];
 /// Blocking metadata access: call off the foreground thread.
 pub fn executable(agent: AgentKind) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
-    let name = match agent {
-        AgentKind::Codex => "codex",
-        AgentKind::ClaudeCode => "claude",
-    };
+    let name = agent.executable();
     let mut directories: Vec<_> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
@@ -52,6 +54,7 @@ pub fn arguments(agent: AgentKind, value: &str) -> Result<Vec<String>, Error> {
             || match agent {
                 AgentKind::Codex => matches!(flag, "-c" | "--config"),
                 AgentKind::ClaudeCode => matches!(flag, "--effort" | "--max-budget-usd"),
+                _ => false,
             };
         if !allowed {
             return Err(Error::Invalid(
@@ -116,6 +119,7 @@ pub(super) fn generate(
             "--permission-mode",
             "dontAsk",
         ],
+        _ => return Err(Error::Invalid(UNSUPPORTED_GENERATOR)),
     };
     let directory = process::Directory::new().map_err(|source| Error::CliIo { agent, source })?;
     let mut argv = fixed;

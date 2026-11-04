@@ -16,23 +16,65 @@ use crate::terminal::Activity;
 pub enum AgentKind {
     ClaudeCode,
     Codex,
+    OpenCode,
+    GeminiCli,
+    CursorAgent,
+    CopilotCli,
+    QwenCode,
+    Amp,
+    Aider,
+    Droid,
 }
 
 impl AgentKind {
+    /// Every recognized agent, in display order.
+    pub const ALL: [Self; 10] = [
+        Self::ClaudeCode,
+        Self::Codex,
+        Self::OpenCode,
+        Self::GeminiCli,
+        Self::CursorAgent,
+        Self::CopilotCli,
+        Self::QwenCode,
+        Self::Amp,
+        Self::Aider,
+        Self::Droid,
+    ];
+
     /// Display name, as the vendor spells it.
     pub fn name(self) -> &'static str {
         match self {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
+            Self::OpenCode => "OpenCode",
+            Self::GeminiCli => "Gemini CLI",
+            Self::CursorAgent => "Cursor Agent",
+            Self::CopilotCli => "Copilot CLI",
+            Self::QwenCode => "Qwen Code",
+            Self::Amp => "Amp",
+            Self::Aider => "Aider",
+            Self::Droid => "Droid",
+        }
+    }
+
+    /// Name of the executable the vendor installs; what `ps` shows and what PATH lookup uses.
+    pub fn executable(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude",
+            Self::Codex => "codex",
+            Self::OpenCode => "opencode",
+            Self::GeminiCli => "gemini",
+            Self::CursorAgent => "cursor-agent",
+            Self::CopilotCli => "copilot",
+            Self::QwenCode => "qwen",
+            Self::Amp => "amp",
+            Self::Aider => "aider",
+            Self::Droid => "droid",
         }
     }
 
     fn from_executable(name: &str) -> Option<Self> {
-        match name {
-            "claude" => Some(Self::ClaudeCode),
-            "codex" => Some(Self::Codex),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|kind| kind.executable() == name)
     }
 
     /// The agent a command line runs, if any. `ps` joins argv with spaces, so a path with a
@@ -72,8 +114,8 @@ impl AgentStatus {
     }
 }
 
-/// Interpreters an agent CLI may be launched through (`node …/bin/claude`).
-const SCRIPT_RUNNERS: [&str; 3] = ["node", "bun", "deno"];
+/// Interpreters an agent CLI may be launched through (`node …/bin/claude`, `python3 …/bin/aider`).
+const SCRIPT_RUNNERS: [&str; 5] = ["node", "bun", "deno", "python", "python3"];
 
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
@@ -182,6 +224,13 @@ mod tests {
 55100 55100 55100 /Users/me/Library/Application Support/Claude/claude-code/2.1.317/claude --resume
 56000 56000 56100 -zsh
 56100 56100 56100 /Users/me/.nvm/versions/node/v24.14.0/bin/node /Users/me/.nvm/versions/node/v24.14.0/bin/claude
+69765 69765     0 /opt/homebrew/Cellar/opencode-v2/2.2.5/bin/opencode serve --service
+57000 57000 57100 -zsh
+57100 57100 57100 opencode
+58000 58000 58100 -zsh
+58100 58100 58100 /opt/homebrew/bin/python3 /Users/me/.local/bin/aider --model sonnet
+59000 59000 59100 -zsh
+59100 59100 59100 node /Users/me/.nvm/versions/node/v24.14.0/bin/gemini
 garbage line
 ";
 
@@ -219,6 +268,28 @@ garbage line
     fn script_run_through_node_is_found() {
         let table = ProcessTable::parse(SAMPLE);
         assert_eq!(table.foreground_agent(56000), Some(AgentKind::ClaudeCode));
+    }
+
+    #[test]
+    fn opencode_tui_is_found_but_its_background_service_is_not() {
+        let table = ProcessTable::parse(SAMPLE);
+        assert_eq!(table.foreground_agent(57000), Some(AgentKind::OpenCode));
+        assert_eq!(table.foreground_agent(69765), None);
+    }
+
+    #[test]
+    fn python_and_node_launched_agents_are_found() {
+        let table = ProcessTable::parse(SAMPLE);
+        assert_eq!(table.foreground_agent(58000), Some(AgentKind::Aider));
+        assert_eq!(table.foreground_agent(59000), Some(AgentKind::GeminiCli));
+    }
+
+    #[test]
+    fn every_agent_has_a_distinct_executable() {
+        let mut names: Vec<_> = AgentKind::ALL.iter().map(|k| k.executable()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), AgentKind::ALL.len());
     }
 
     #[test]

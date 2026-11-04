@@ -77,6 +77,14 @@ impl Workspace {
     pub(super) fn toggle_git(&mut self, cx: &mut Context<Self>) {
         self.git_open = !self.git_open;
         self.git_animate = true;
+        self.git_animation = Some(cx.spawn(async |this, cx| {
+            cx.background_executor().timer(SIDEBAR_SLIDE_DURATION).await;
+            let _ = this.update(cx, |this, cx| {
+                // A closed sidebar must leave the layout tree once its slide finishes.
+                this.git_animate = false;
+                cx.notify();
+            });
+        }));
         let app = AppState::get(cx);
         let (store, git) = (app.store.clone(), app.git.clone());
         store.update(cx, |s, cx| s.set_git_panel_open(self.git_open, cx));

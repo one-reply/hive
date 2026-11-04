@@ -68,6 +68,7 @@ pub struct Workspace {
     git_open: bool,
     /// Set by the first toggle, so the right sidebar doesn't slide in on launch.
     git_animate: bool,
+    git_animation: Option<Task<()>>,
     git_width: Pixels,
     resizing_git: bool,
     last_selection: Option<PathBuf>,
@@ -152,6 +153,7 @@ impl Workspace {
             git_panel: cx.new(|cx| GitPanel::new(window, cx)),
             git_open,
             git_animate: false,
+            git_animation: None,
             git_width,
             resizing_git: false,
             last_selection: None,

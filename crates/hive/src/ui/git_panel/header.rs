@@ -112,7 +112,8 @@ impl GitPanel {
                     .child(upstream.clone().unwrap_or_else(|| "No upstream".into())),
             );
 
-        let push_disabled = busy || !push_available;
+        let nothing_to_push = has_upstream && ahead == 0;
+        let push_disabled = busy || !push_available || nothing_to_push;
         let push_label: SharedString = match (has_upstream, ahead) {
             (false, _) => "Publish".into(),
             (true, 0) => "Push".into(),
@@ -167,6 +168,8 @@ impl GitPanel {
                 .when(!busy && push_disabled && status.is_some(), |b| {
                     b.tooltip(if detached {
                         "Create a branch before pushing detached HEAD"
+                    } else if nothing_to_push {
+                        "Nothing to push"
                     } else {
                         "No remote configured"
                     })

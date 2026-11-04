@@ -27,6 +27,8 @@ use hive_core::worktree::{Removal, WorktreeError};
 
 mod agents;
 use agents::{AgentsSection, CardTarget};
+mod reorder;
+use reorder::DraggedProject;
 
 use crate::app::AppState;
 use crate::state::projects::Projects;
@@ -117,8 +119,9 @@ impl Sidebar {
         let header = self
             .render_header(ix, project, window, cx)
             .into_any_element();
+        let group = self.project_drop_target(Some(project)).child(header);
         if !open && !animate {
-            return v_flex().child(header).into_any_element();
+            return group.into_any_element();
         }
         let rows = self.render_rows(project, window, cx);
         let height = rows
@@ -138,7 +141,7 @@ impl Sidebar {
         } else {
             list.into_any_element()
         };
-        v_flex().child(header).child(list).into_any_element()
+        group.child(list).into_any_element()
     }
 
     /// Cards under a project header with their heights.
@@ -243,6 +246,10 @@ impl Sidebar {
             .pr_1p5()
             .rounded_md()
             .cursor_pointer()
+            .on_drag(DraggedProject::new(project, ix), |drag, _, _, cx| {
+                cx.stop_propagation();
+                cx.new(|_| drag.clone())
+            })
             .child(project_badge::render(
                 &project.identity,
                 &project.name,
@@ -478,8 +485,12 @@ impl Render for Sidebar {
                     .min_h_0()
                     .overflow_y_scroll()
                     .px_2()
-                    .gap_0p5()
-                    .children(rows),
+                    .child(
+                        v_flex()
+                            .min_h_full()
+                            .children(rows)
+                            .child(self.project_drop_target(None).flex_1().min_h(HEADER_HEIGHT)),
+                    ),
             )
     }
 }

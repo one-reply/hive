@@ -10,11 +10,15 @@ use std::time::Instant;
 mod activity;
 mod events;
 pub mod paste;
+mod process;
 mod pty;
+mod scroll;
+mod selection;
 pub use activity::Activity;
 use events::Publisher;
 pub use events::TerminalUpdate;
 use pty::{Completion, ManagedPty};
+pub use scroll::ScrollModifiers;
 
 use alacritty_terminal::event::{
     Event as AlacEvent, EventListener, Notify as _, OnResize as _, WindowSize,
@@ -23,9 +27,9 @@ use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg, Notifier};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term};
-use alacritty_terminal::tty;
 
-pub use alacritty_terminal::index::{Column, Line, Point};
+pub use alacritty_terminal::index::{Column, Line, Point, Side};
+pub use alacritty_terminal::selection::SelectionType;
 pub use alacritty_terminal::term::cell::{Cell, Flags};
 pub use alacritty_terminal::term::{RenderableContent, TermMode, point_to_viewport};
 pub use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
@@ -152,20 +156,9 @@ impl Terminal {
         let term = Term::new(Config::default(), &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
-        let mut env = std::collections::HashMap::new();
-        env.insert("TERM".to_string(), "xterm-256color".to_string());
-        env.insert("COLORTERM".to_string(), "truecolor".to_string());
-        env.insert("TERM_PROGRAM".to_string(), "hive".to_string());
-        let options = tty::Options {
-            shell: shell.map(|s| tty::Shell::new(s.to_string(), vec![])),
-            working_directory: cwd.map(Path::to_path_buf),
-            drain_on_exit: false,
-            env,
-        };
-        let pty = tty::new(&options, window_size, 0).map_err(TerminalError::Pty)?;
-        let shell_pid = pty.child().id();
-
-        let pty = ManagedPty::new(pty, completion.clone(), events);
+        let (child, file) = process::spawn(cwd, shell, window_size).map_err(TerminalError::Pty)?;
+        let shell_pid = child.id();
+        let pty = ManagedPty::new(child, file, completion.clone(), events);
         let event_loop = EventLoop::new(term.clone(), listener.clone(), pty, false, false)
             .map_err(TerminalError::EventLoop)?;
         let sender = event_loop.channel();

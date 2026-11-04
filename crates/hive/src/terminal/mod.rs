@@ -4,6 +4,7 @@
 
 pub mod element;
 pub mod keys;
+mod mouse;
 pub mod pane_tree;
 pub mod panel;
 pub mod view;

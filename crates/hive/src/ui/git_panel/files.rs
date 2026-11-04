@@ -88,7 +88,7 @@ impl GitPanel {
             .into_any_element()
     }
 
-    pub(super) fn changes(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn changes(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let state = self.git.read(cx);
         let Some(status) = &state.status else {
             return if state.loading {
@@ -108,53 +108,74 @@ impl GitPanel {
         }
         let files = status.files.clone();
         let filter = self.filter.read(cx).value().to_lowercase();
-        let mut groups = Vec::new();
-        for (group_ix, (label, source)) in GROUPS.iter().enumerate() {
-            let group_files: Vec<_> = files.iter().filter(|f| in_group(f, label)).collect();
-            if group_files.is_empty() {
-                continue;
-            }
-            let bulk = (*label != "Conflicts").then(|| {
-                let paths = group_files
+        let mut rows = Vec::new();
+        let groups: Vec<Vec<usize>> = GROUPS
+            .iter()
+            .enumerate()
+            .map(|(group, (label, _))| {
+                let indices: Vec<_> = files
                     .iter()
-                    .flat_map(|f| {
-                        let mut paths = vec![f.path.clone()];
-                        if *label == "Staged"
-                            && let Some(old) = &f.old_path
-                        {
-                            paths.push(old.clone());
-                        }
-                        paths
-                    })
-                    .collect();
-                if *label == "Staged" {
-                    ("Unstage all", Action::Unstage(paths))
-                } else {
-                    ("Stage all", Action::Stage(paths))
-                }
-            });
-            let open = !self.collapsed.contains(label);
-            let header = self.group_header(label, group_files.len(), open, bulk, window, cx);
-            let rows = if open {
-                group_files
-                    .into_iter()
-                    .filter(|f| f.path.to_lowercase().contains(&filter))
                     .enumerate()
-                    .map(|(i, f)| {
-                        self.file_row(
-                            f,
-                            source.clone(),
-                            group_ix * (files.len() + 1) + i,
-                            window,
-                            cx,
-                        )
-                    })
-                    .collect()
-            } else {
-                vec![]
-            };
-            groups.push(v_flex().child(header).children(rows).into_any_element());
+                    .filter(|(_, file)| in_group(file, label))
+                    .map(|(index, _)| index)
+                    .collect();
+                if !indices.is_empty() {
+                    rows.push((group, None));
+                    if !self.collapsed.contains(label) {
+                        rows.extend(
+                            indices
+                                .iter()
+                                .copied()
+                                .filter(|index| files[*index].path.to_lowercase().contains(&filter))
+                                .map(|index| (group, Some(index))),
+                        );
+                    }
+                }
+                indices
+            })
+            .collect();
+        if self.change_rows != rows {
+            self.changes_list.reset(rows.len());
+            self.change_rows.clone_from(&rows);
         }
-        v_flex().children(groups).into_any_element()
+        let view = cx.entity().downgrade();
+        list(self.changes_list.clone(), move |index, window, cx| {
+            view.update(cx, |this, cx| {
+                let (group, file) = rows[index];
+                let (label, source) = &GROUPS[group];
+                if let Some(file) = file {
+                    return this.file_row(&files[file], source.clone(), index, window, cx);
+                }
+                let bulk = (*label != "Conflicts").then(|| {
+                    let paths = groups[group]
+                        .iter()
+                        .flat_map(|index| {
+                            let file = &files[*index];
+                            std::iter::once(file.path.clone()).chain(
+                                (*label == "Staged")
+                                    .then_some(file.old_path.clone())
+                                    .flatten(),
+                            )
+                        })
+                        .collect();
+                    if *label == "Staged" {
+                        ("Unstage all", Action::Unstage(paths))
+                    } else {
+                        ("Stage all", Action::Stage(paths))
+                    }
+                });
+                this.group_header(
+                    label,
+                    groups[group].len(),
+                    !this.collapsed.contains(label),
+                    bulk,
+                    window,
+                    cx,
+                )
+            })
+            .unwrap_or_else(|_| div().into_any_element())
+        })
+        .size_full()
+        .into_any_element()
     }
 }

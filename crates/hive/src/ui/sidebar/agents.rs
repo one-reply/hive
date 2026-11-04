@@ -7,6 +7,7 @@ use hive_core::agent::{AgentKind, AgentStatus};
 
 use super::*;
 use crate::state::agents::AgentSession;
+use crate::ui::agent_logo;
 
 const STRIP_HEIGHT: Pixels = px(24.);
 const SESSION_ROW_HEIGHT: Pixels = px(24.);
@@ -17,8 +18,6 @@ const LOGO_SIZE: Pixels = px(13.);
 /// Logos the strip shows before collapsing the rest into "+N".
 const STRIP_LOGOS: usize = 2;
 const AGENTS_DURATION: Duration = Duration::from_millis(200);
-/// Anthropic's Claude orange; Codex uses the foreground color like the status bar does.
-const CLAUDE_COLOR: u32 = 0xd97757;
 const STRIP_BACKGROUND_OPACITY: f32 = 0.03;
 const STRIP_HOVER_OPACITY: f32 = 0.07;
 const STRIP_BORDER_OPACITY: f32 = 0.06;
@@ -266,21 +265,11 @@ fn status_icon(status: AgentStatus) -> AnyElement {
 }
 
 fn logo(kind: AgentKind, cx: &App) -> impl IntoElement {
-    let (svg, color): (&'static [u8], Hsla) = match kind {
-        AgentKind::ClaudeCode => (
-            include_bytes!("../../../assets/claude.svg"),
-            rgb(CLAUDE_COLOR).into(),
-        ),
-        AgentKind::Codex => (
-            include_bytes!("../../../assets/openai.svg"),
-            cx.theme().sidebar_foreground,
-        ),
-    };
     Icon::default()
-        .data(svg)
+        .data(agent_logo::svg(kind))
         .size(LOGO_SIZE)
         .flex_none()
-        .text_color(color)
+        .text_color(agent_logo::color(kind, cx))
 }
 
 fn eased(id: (ElementId, &'static str), target: f32, window: &mut Window, cx: &mut App) -> f32 {

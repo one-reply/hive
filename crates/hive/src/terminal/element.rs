@@ -6,6 +6,7 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
 use hive_core::terminal::{Cell, Color, CursorShape, Flags, NamedColor, Point as GridPoint, Rgb};
 
+use super::mouse::GridGeometry;
 use super::view::TerminalView;
 
 /// Floor for the theme's mono size so a misconfigured theme cannot make the grid unreadable.
@@ -45,6 +46,7 @@ struct Palette {
     fg: Hsla,
     bg: Hsla,
     cursor: Hsla,
+    selection: Hsla,
     ansi: [Hsla; 16],
 }
 
@@ -69,6 +71,7 @@ impl Palette {
             fg: theme.foreground,
             bg: theme.background,
             cursor: theme.foreground,
+            selection: theme.selection,
             ansi: ansi.map(hex),
         }
     }
@@ -192,7 +195,17 @@ impl Element for TerminalElement {
         };
         let cols = (inner.size.width / cell_width).floor().max(2.) as u16;
         let rows = (inner.size.height / line_height).floor().max(1.) as u16;
-        self.view.update(cx, |view, cx| view.resize(cols, rows, cx));
+        self.view.update(cx, |view, cx| {
+            view.set_grid(
+                GridGeometry {
+                    bounds: inner,
+                    cell: size(cell_width, line_height),
+                    cols,
+                    rows,
+                },
+                cx,
+            )
+        });
 
         let mut rects = Vec::new();
         let mut glyphs = Vec::new();
@@ -249,6 +262,11 @@ impl Element for TerminalElement {
             }
             if flags.intersects(Flags::DIM) {
                 fg = fg.opacity(0.66);
+            }
+            if content.selection.is_some_and(|selection| {
+                selection.contains_cell(&indexed, content.cursor.point, cursor_shape)
+            }) {
+                bg = bg.blend(palette.selection);
             }
             if flags.contains(Flags::HIDDEN) {
                 fg = bg;

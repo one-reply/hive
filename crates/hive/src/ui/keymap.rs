@@ -9,7 +9,7 @@ use hive_core::settings::Settings;
 
 use crate::app::AppState;
 use crate::terminal::panel::{ClosePane, SplitDown, SplitRight};
-use crate::terminal::view::Paste;
+use crate::terminal::view::{Copy, Paste};
 use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
 use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
@@ -75,7 +75,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 12] = [
+pub(crate) static SHORTCUTS: [Shortcut; 13] = [
     Shortcut {
         label: "New terminal",
         default: "cmd-t",
@@ -148,6 +148,13 @@ pub(crate) static SHORTCUTS: [Shortcut; 12] = [
         action: || Box::new(ClosePane),
     },
     Shortcut {
+        label: "Copy from terminal",
+        default: "cmd-c",
+        category: Category::Terminal,
+        context: TERMINAL_VIEW_CONTEXT,
+        action: || Box::new(Copy),
+    },
+    Shortcut {
         label: "Paste into terminal",
         default: "cmd-v",
         category: Category::Terminal,
@@ -165,6 +172,7 @@ pub(crate) static SHORTCUTS: [Shortcut; 12] = [
 
 /// Installs the shortcuts now and again whenever the user reassigns one.
 pub fn init(cx: &mut App) {
+    cx.bind_keys(terminal_input_bindings());
     let store = AppState::get(cx).store.clone();
     let mut installed = store.read(cx).state.settings.keybindings().clone();
     install(cx);
@@ -176,6 +184,11 @@ pub fn init(cx: &mut App) {
         }
     })
     .detach();
+}
+
+fn terminal_input_bindings() -> [KeyBinding; 2] {
+    // Root's focus traversal runs before on_key_down; let a focused PTY receive these keys.
+    ["tab", "shift-tab"].map(|key| KeyBinding::new(key, NoAction, Some(TERMINAL_VIEW_CONTEXT)))
 }
 
 /// Replaces Hive's bindings in the keymap, leaving every other binding in its order.
@@ -326,6 +339,55 @@ mod tests {
                 shortcut.label
             );
         }
+    }
+
+    #[test]
+    fn terminal_tabs_reach_the_pty_without_disabling_ui_focus_navigation() {
+        use gpui_kit::{KeyBinding, KeyContext, Keymap};
+
+        let tabs = ["tab", "shift-tab"];
+        let mut keymap = Keymap::default();
+        // The action is immaterial: Root's focus traversal must not consume these keys.
+        keymap.add_bindings(tabs.map(|key| KeyBinding::new(key, super::NewTerminal, Some("Root"))));
+        keymap.add_bindings(super::terminal_input_bindings());
+        keymap.add_bindings([KeyBinding::new(
+            "cmd-d",
+            super::SplitRight,
+            Some(super::TERMINAL_CONTEXT),
+        )]);
+        let contexts = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| KeyContext::parse(name).expect("context"))
+                .collect::<Vec<_>>()
+        };
+        let terminal = contexts(&["Root", "Workspace", "TerminalPanel", "Terminal"]);
+        for key in tabs {
+            let (bindings, pending) = keymap.bindings_for_input(&[keystroke(key)], &terminal);
+            assert!(
+                bindings.is_empty() && !pending,
+                "{key} must reach on_key_down"
+            );
+            for path in [
+                &["Root", "Workspace", "Input"][..],
+                &["Root", "Settings", "Input"][..],
+            ] {
+                assert_eq!(
+                    keymap
+                        .bindings_for_input(&[keystroke(key)], &contexts(path))
+                        .0
+                        .len(),
+                    1
+                );
+            }
+        }
+        assert_eq!(
+            keymap
+                .bindings_for_input(&[keystroke("cmd-d")], &terminal)
+                .0
+                .len(),
+            1
+        );
     }
 
     #[test]

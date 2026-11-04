@@ -55,6 +55,41 @@ fn missing_shell_returns_a_launch_error() {
 }
 
 #[test]
+fn spawning_a_pty_does_not_install_a_sigchld_handler() {
+    const ISOLATED: &str = "HIVE_TEST_SIGCHLD_ISOLATED";
+    if std::env::var_os(ISOLATED).is_none() {
+        let executable = std::env::current_exe().unwrap();
+        let output = crate::host::Host::Local
+            .command(
+                executable.to_str().unwrap(),
+                &["--exact", "terminal::tests::spawning_a_pty_does_not_install_a_sigchld_handler", "--nocapture"],
+                None,
+            )
+            .env(ISOLATED, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    let handler = || unsafe {
+        let mut action = std::mem::MaybeUninit::<libc::sigaction>::uninit();
+        assert_eq!(libc::sigaction(libc::SIGCHLD, std::ptr::null(), action.as_mut_ptr()), 0);
+        action.assume_init().sa_sigaction
+    };
+    let before = handler();
+    let terminal = shell();
+    assert_eq!(handler(), before, "PTY exit is watched by kqueue, not a global signal socket");
+    for _ in 0..128 {
+        assert!(crate::host::Host::Local.command("/usr/bin/true", &[], None).status().unwrap().success());
+    }
+    terminal.write(b"printf '\\033]2;after-child-exits\\007'\n".to_vec());
+    wait_for(|| terminal.events.as_ref().unwrap().try_recv().is_ok_and(|update| update.title() == Some("after-child-exits")));
+    let control = terminal.control();
+    drop(terminal);
+    assert!(control.wait_until(Instant::now() + Duration::from_secs(3)));
+}
+
+#[test]
 fn three_cycles_of_fifty_terminals_release_every_grid() {
     for _ in 0..3 {
         let terminals: Vec<_> = (0..50).map(|_| shell()).collect();

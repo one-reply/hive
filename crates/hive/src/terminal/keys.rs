@@ -171,6 +171,20 @@ mod tests {
     }
 
     #[test]
+    fn tui_shortcuts_preserve_their_terminal_sequences() {
+        for (key, bytes) in [
+            ("tab", b"\t".as_slice()),
+            ("shift-tab", b"\x1b[Z".as_slice()),
+            ("ctrl-p", b"\x10".as_slice()),
+            ("ctrl-x", b"\x18".as_slice()),
+            ("ctrl-t", b"\x14".as_slice()),
+        ] {
+            let key = Keystroke::parse(key).expect("valid shortcut");
+            assert_eq!(to_bytes(&key, TermMode::ALT_SCREEN).as_deref(), Some(bytes));
+        }
+    }
+
+    #[test]
     fn arrows_follow_cursor_mode() {
         assert_eq!(
             to_bytes(&ks("up", None, |_| {}), TermMode::default()),

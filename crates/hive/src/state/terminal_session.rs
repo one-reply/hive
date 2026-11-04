@@ -1,6 +1,6 @@
 //! A terminal's asynchronous startup, input and retained event subscription.
 use gpui_kit::*;
-use hive_core::terminal::{Terminal, TerminalSize};
+use hive_core::terminal::{Point, ScrollModifiers, SelectionType, Side, Terminal, TerminalSize};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -130,6 +130,52 @@ impl TerminalSession {
     pub(crate) fn resize(&mut self, cols: u16, rows: u16) {
         if let SessionStatus::Ready(terminal) = &mut self.status {
             terminal.resize(TerminalSize::new(cols, rows));
+        }
+    }
+
+    pub(crate) fn scroll_wheel(
+        &mut self,
+        lines: i32,
+        point: Point<usize>,
+        modifiers: ScrollModifiers,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(bytes) = self
+            .terminal()
+            .and_then(|terminal| terminal.scroll_wheel(lines, point, modifiers))
+        {
+            self.write_input(bytes, cx);
+        }
+    }
+
+    pub(crate) fn start_selection(
+        &mut self,
+        point: Point<usize>,
+        side: Side,
+        kind: SelectionType,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.terminal() {
+            terminal.start_selection(point, side, kind);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn update_selection(
+        &mut self,
+        point: Point<usize>,
+        side: Side,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.terminal() {
+            terminal.update_selection(point, side);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn copy(&self, cx: &mut Context<Self>) {
+        if let Some(text) = self.terminal().and_then(Terminal::selected_text) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
 }

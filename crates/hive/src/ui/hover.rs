@@ -179,6 +179,9 @@ impl SmoothButton for Button {
         div()
             .id(hover.id.clone())
             .flex()
+            // Flex siblings share the row evenly only when the automatic
+            // content-based minimum width is lifted.
+            .min_w_0()
             .on_hover(hover.listener())
             .child(styled_button(self, look, hover, cx))
     }

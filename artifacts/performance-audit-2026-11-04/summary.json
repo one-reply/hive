@@ -1,0 +1,642 @@
+{
+  "snapshot_head": "33702a7d35ea896dbac07c78b9ea27b200026415",
+  "machine": "Apple M3 Pro, 18 GiB, macOS 27.2 (26B123)",
+  "build": "release with temporary gpui-pre profiler feature and buffered timings",
+  "units": "timings ms; CPU percent per core; RSS MiB, not physical footprint",
+  "resource_limitations": "Two overlapping ps monitors; 1 malformed or invalid rows rejected; CPU/RSS are approximate, not leak evidence.",
+  "ui_repetitions": "Continuous scenario windows; not three independent runs. Git core benchmark has one warm-up plus three measured runs.",
+  "scenarios": {
+    "terminal-1": {
+      "start_epoch": 1793808360.2279701,
+      "end_epoch": 1793808385.2279701,
+      "milliseconds": {
+        "heartbeat_lateness": {
+          "n": 2325,
+          "p50": 0.856,
+          "p95": 9.302,
+          "max": 51.023,
+          "over_50ms": 1
+        },
+        "git_changes_render": {
+          "n": 930,
+          "p50": 0.003,
+          "p95": 0.007,
+          "max": 0.021,
+          "over_50ms": 0
+        },
+        "terminal_lock_wait": {
+          "n": 914,
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.443,
+          "over_50ms": 0
+        },
+        "terminal_lock_hold": {
+          "n": 914,
+          "p50": 1.673,
+          "p95": 2.434,
+          "max": 15.722,
+          "over_50ms": 0
+        },
+        "terminal_prepaint": {
+          "n": 914,
+          "p50": 1.7,
+          "p95": 2.467,
+          "max": 15.737,
+          "over_50ms": 0
+        },
+        "git_status_stats": {
+          "n": 14,
+          "p50": 21.342,
+          "p95": 33.172,
+          "max": 33.172,
+          "over_50ms": 0
+        },
+        "frame_draw": {
+          "n": 906,
+          "p50": 8.298,
+          "p95": 10.387,
+          "max": 25.264,
+          "over_50ms": 0
+        },
+        "dirty_to_present": {
+          "n": 905,
+          "p50": 12.5,
+          "p95": 17.776,
+          "max": 30.179,
+          "over_50ms": 0
+        },
+        "animation_interval": {
+          "n": 19,
+          "p50": 6.189,
+          "p95": 42.172,
+          "max": 42.172,
+          "over_50ms": 0
+        },
+        "input_to_frame": {
+          "n": 1,
+          "p50": 26.869,
+          "p95": 26.869,
+          "max": 26.869,
+          "over_50ms": 0
+        }
+      },
+      "cpu_percent_approx": 36.95,
+      "rss_mib_approx": 296.0546875
+    },
+    "terminal-4": {
+      "start_epoch": 1793809137.854954,
+      "end_epoch": 1793809177.854954,
+      "milliseconds": {
+        "heartbeat_lateness": {
+          "n": 4163,
+          "p50": 0.709,
+          "p95": 6.839,
+          "max": 12.005,
+          "over_50ms": 0
+        },
+        "git_changes_render": {
+          "n": 3538,
+          "p50": 0.002,
+          "p95": 0.004,
+          "max": 0.019,
+          "over_50ms": 0
+        },
+        "terminal_lock_wait": {
+          "n": 14116,
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.093,
+          "over_50ms": 0
+        },
+        "terminal_lock_hold": {
+          "n": 14116,
+          "p50": 0.217,
+          "p95": 0.861,
+          "max": 4.989,
+          "over_50ms": 0
+        },
+        "terminal_prepaint": {
+          "n": 14116,
+          "p50": 0.223,
+          "p95": 0.882,
+          "max": 5.012,
+          "over_50ms": 0
+        },
+        "git_status_stats": {
+          "n": 20,
+          "p50": 13.203,
+          "p95": 22.556,
+          "max": 22.556,
+          "over_50ms": 0
+        },
+        "frame_draw": {
+          "n": 3472,
+          "p50": 4.057,
+          "p95": 8.388,
+          "max": 13.311,
+          "over_50ms": 0
+        },
+        "dirty_to_present": {
+          "n": 3472,
+          "p50": 8.052,
+          "p95": 14.147,
+          "max": 21.348,
+          "over_50ms": 0
+        },
+        "animation_interval": {
+          "n": 33,
+          "p50": 8.171,
+          "p95": 9.912,
+          "max": 10.076,
+          "over_50ms": 0
+        },
+        "input_to_frame": {
+          "n": 1,
+          "p50": 5.791,
+          "p95": 5.791,
+          "max": 5.791,
+          "over_50ms": 0
+        }
+      },
+      "cpu_percent_approx": 49.6,
+      "rss_mib_approx": 299.03125
+    },
+    "terminal-8": {
+      "start_epoch": 1793809223.437786,
+      "end_epoch": 1793809245.437786,
+      "milliseconds": {
+        "heartbeat_lateness": {
+          "n": 2411,
+          "p50": 0.767,
+          "p95": 5.215,
+          "max": 8.276,
+          "over_50ms": 0
+        },
+        "git_changes_render": {
+          "n": 2357,
+          "p50": 0.023,
+          "p95": 0.04,
+          "max": 0.112,
+          "over_50ms": 0
+        },
+        "terminal_lock_wait": {
+          "n": 18712,
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.049,
+          "over_50ms": 0
+        },
+        "terminal_lock_hold": {
+          "n": 18712,
+          "p50": 0.024,
+          "p95": 0.486,
+          "max": 2.761,
+          "over_50ms": 0
+        },
+        "terminal_prepaint": {
+          "n": 18712,
+          "p50": 0.025,
+          "p95": 0.496,
+          "max": 2.77,
+          "over_50ms": 0
+        },
+        "frame_draw": {
+          "n": 2357,
+          "p50": 4.386,
+          "p95": 5.038,
+          "max": 9.969,
+          "over_50ms": 0
+        },
+        "dirty_to_present": {
+          "n": 2357,
+          "p50": 8.138,
+          "p95": 9.166,
+          "max": 18.481,
+          "over_50ms": 0
+        },
+        "git_status_stats": {
+          "n": 11,
+          "p50": 15.738,
+          "p95": 32.8,
+          "max": 32.8,
+          "over_50ms": 0
+        },
+        "animation_interval": {
+          "n": 68,
+          "p50": 8.265,
+          "p95": 10.428,
+          "max": 10.567,
+          "over_50ms": 0
+        }
+      },
+      "cpu_percent_approx": 56.400000000000006,
+      "rss_mib_approx": 269.2734375
+    },
+    "git-1000-visible": {
+      "start_epoch": 1793809306.4649222,
+      "end_epoch": 1793809346.4649222,
+      "milliseconds": {
+        "git_changes_render": {
+          "n": 472,
+          "p50": 11.109,
+          "p95": 12.1,
+          "max": 17.111,
+          "over_50ms": 0
+        },
+        "heartbeat_lateness": {
+          "n": 530,
+          "p50": 74.88,
+          "p95": 80.731,
+          "max": 94.217,
+          "over_50ms": 471
+        },
+        "terminal_lock_wait": {
+          "n": 249,
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0,
+          "over_50ms": 0
+        },
+        "terminal_lock_hold": {
+          "n": 249,
+          "p50": 0.767,
+          "p95": 0.888,
+          "max": 1.255,
+          "over_50ms": 0
+        },
+        "terminal_prepaint": {
+          "n": 249,
+          "p50": 0.785,
+          "p95": 0.92,
+          "max": 1.272,
+          "over_50ms": 0
+        },
+        "frame_draw": {
+          "n": 464,
+          "p50": 80.281,
+          "p95": 85.196,
+          "max": 99.09,
+          "over_50ms": 464
+        },
+        "dirty_to_present": {
+          "n": 464,
+          "p50": 80.576,
+          "p95": 86.114,
+          "max": 99.352,
+          "over_50ms": 464
+        },
+        "animation_interval": {
+          "n": 427,
+          "p50": 83.165,
+          "p95": 88.473,
+          "max": 103.219,
+          "over_50ms": 427
+        },
+        "git_status_stats": {
+          "n": 3,
+          "p50": 12591.306,
+          "p95": 13032.051,
+          "max": 13032.051,
+          "over_50ms": 3
+        }
+      },
+      "cpu_percent_approx": 106.75,
+      "rss_mib_approx": 305.4765625
+    },
+    "git-1000-hidden": {
+      "start_epoch": 1793809372.9787421,
+      "end_epoch": 1793809412.9787421,
+      "milliseconds": {
+        "heartbeat_lateness": {
+          "n": 1216,
+          "p50": 1.026,
+          "p95": 82.733,
+          "max": 134.637,
+          "over_50ms": 380
+        },
+        "git_changes_render": {
+          "n": 381,
+          "p50": 10.642,
+          "p95": 11.51,
+          "max": 26.472,
+          "over_50ms": 0
+        },
+        "terminal_lock_wait": {
+          "n": 377,
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0,
+          "over_50ms": 0
+        },
+        "terminal_lock_hold": {
+          "n": 377,
+          "p50": 1.459,
+          "p95": 1.64,
+          "max": 3.148,
+          "over_50ms": 0
+        },
+        "terminal_prepaint": {
+          "n": 377,
+          "p50": 1.474,
+          "p95": 1.658,
+          "max": 3.166,
+          "over_50ms": 0
+        },
+        "frame_draw": {
+          "n": 376,
+          "p50": 79.626,
+          "p95": 83.755,
+          "max": 132.71,
+          "over_50ms": 376
+        },
+        "dirty_to_present": {
+          "n": 376,
+          "p50": 81.657,
+          "p95": 90.308,
+          "max": 141.426,
+          "over_50ms": 376
+        },
+        "animation_interval": {
+          "n": 4,
+          "p50": 82.379,
+          "p95": 83.558,
+          "max": 83.558,
+          "over_50ms": 4
+        }
+      },
+      "cpu_percent_approx": 83.1,
+      "rss_mib_approx": 425.8125
+    },
+    "small-list-control": {
+      "start_epoch": 1793809439.136631,
+      "end_epoch": 1793809462.136631,
+      "milliseconds": {
+        "heartbeat_lateness": {
+          "n": 2307,
+          "p50": 0.603,
+          "p95": 9.031,
+          "max": 13.655,
+          "over_50ms": 0
+        },
+        "git_changes_render": {
+          "n": 668,
+          "p50": 0.063,
+          "p95": 0.118,
+          "max": 0.168,
+          "over_50ms": 0
+        },
+        "terminal_lock_wait": {
+          "n": 633,
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.005,
+          "over_50ms": 0
+        },
+        "terminal_lock_hold": {
+          "n": 633,
+          "p50": 1.747,
+          "p95": 2.566,
+          "max": 3.207,
+          "over_50ms": 0
+        },
+        "terminal_prepaint": {
+          "n": 633,
+          "p50": 1.769,
+          "p95": 2.599,
+          "max": 3.232,
+          "over_50ms": 0
+        },
+        "frame_draw": {
+          "n": 628,
+          "p50": 9.039,
+          "p95": 12.132,
+          "max": 15.327,
+          "over_50ms": 0
+        },
+        "dirty_to_present": {
+          "n": 627,
+          "p50": 12.017,
+          "p95": 18.497,
+          "max": 21.594,
+          "over_50ms": 0
+        },
+        "input_to_frame": {
+          "n": 3,
+          "p50": 11.763,
+          "p95": 12.509,
+          "max": 12.509,
+          "over_50ms": 0
+        },
+        "git_status_stats": {
+          "n": 9,
+          "p50": 31.058,
+          "p95": 42.846,
+          "max": 42.846,
+          "over_50ms": 0
+        },
+        "animation_interval": {
+          "n": 68,
+          "p50": 8.312,
+          "p95": 10.272,
+          "max": 12.525,
+          "over_50ms": 0
+        }
+      },
+      "cpu_percent_approx": 36.5,
+      "rss_mib_approx": 434.78125
+    },
+    "large-diff": {
+      "start_epoch": 1793809475.640005,
+      "end_epoch": 1793809502.789215,
+      "milliseconds": {
+        "git_changes_render": {
+          "n": 246,
+          "p50": 0.039,
+          "p95": 0.107,
+          "max": 0.191,
+          "over_50ms": 0
+        },
+        "heartbeat_lateness": {
+          "n": 3101,
+          "p50": 0.375,
+          "p95": 1.148,
+          "max": 21.669,
+          "over_50ms": 0
+        },
+        "git_status_stats": {
+          "n": 14,
+          "p50": 53.06,
+          "p95": 61.259,
+          "max": 61.259,
+          "over_50ms": 10
+        },
+        "diff_read_parse": {
+          "n": 14,
+          "p50": 18.514,
+          "p95": 25.675,
+          "max": 25.675,
+          "over_50ms": 0
+        },
+        "frame_draw": {
+          "n": 262,
+          "p50": 4.564,
+          "p95": 8.478,
+          "max": 21.217,
+          "over_50ms": 0
+        },
+        "dirty_to_present": {
+          "n": 262,
+          "p50": 4.843,
+          "p95": 13.885,
+          "max": 26.738,
+          "over_50ms": 0
+        },
+        "animation_interval": {
+          "n": 218,
+          "p50": 8.208,
+          "p95": 12.025,
+          "max": 14.467,
+          "over_50ms": 0
+        },
+        "input_to_frame": {
+          "n": 8,
+          "p50": 18.718,
+          "p95": 26.804,
+          "max": 26.804,
+          "over_50ms": 0
+        }
+      },
+      "cpu_percent_approx": 2.8,
+      "rss_mib_approx": 246.171875
+    },
+    "idle-clean": {
+      "start_epoch": 1793808282.636839,
+      "end_epoch": 1793808352.2279701,
+      "milliseconds": {
+        "heartbeat_lateness": {
+          "n": 8288,
+          "p50": 0.335,
+          "p95": 0.986,
+          "max": 10.388,
+          "over_50ms": 0
+        },
+        "git_changes_render": {
+          "n": 6,
+          "p50": 0.006,
+          "p95": 0.023,
+          "max": 0.023,
+          "over_50ms": 0
+        },
+        "frame_draw": {
+          "n": 6,
+          "p50": 4.583,
+          "p95": 7.487,
+          "max": 7.487,
+          "over_50ms": 0
+        },
+        "dirty_to_present": {
+          "n": 6,
+          "p50": 4.712,
+          "p95": 9.928,
+          "max": 9.928,
+          "over_50ms": 0
+        },
+        "input_to_frame": {
+          "n": 1,
+          "p50": 13.967,
+          "p95": 13.967,
+          "max": 13.967,
+          "over_50ms": 0
+        }
+      },
+      "cpu_percent_approx": 2.9,
+      "rss_mib_approx": 60.6875
+    },
+    "lifecycle": {
+      "start_epoch": 1793809505.789215,
+      "end_epoch": 1793809591.9,
+      "milliseconds": {
+        "heartbeat_lateness": {
+          "n": 9882,
+          "p50": 0.361,
+          "p95": 1.152,
+          "max": 27.18,
+          "over_50ms": 0
+        },
+        "git_status_stats": {
+          "n": 43,
+          "p50": 47.109,
+          "p95": 60.364,
+          "max": 60.669,
+          "over_50ms": 20
+        },
+        "diff_read_parse": {
+          "n": 65,
+          "p50": 19.761,
+          "p95": 50.515,
+          "max": 53.703,
+          "over_50ms": 4
+        },
+        "git_changes_render": {
+          "n": 1377,
+          "p50": 0.036,
+          "p95": 0.078,
+          "max": 10.754,
+          "over_50ms": 0
+        },
+        "terminal_lock_wait": {
+          "n": 70,
+          "p50": 0.0,
+          "p95": 0.017,
+          "max": 0.021,
+          "over_50ms": 0
+        },
+        "terminal_lock_hold": {
+          "n": 70,
+          "p50": 0.283,
+          "p95": 3.408,
+          "max": 4.562,
+          "over_50ms": 0
+        },
+        "terminal_prepaint": {
+          "n": 70,
+          "p50": 1.107,
+          "p95": 3.451,
+          "max": 4.583,
+          "over_50ms": 0
+        },
+        "frame_draw": {
+          "n": 1375,
+          "p50": 3.741,
+          "p95": 7.393,
+          "max": 22.872,
+          "over_50ms": 0
+        },
+        "dirty_to_present": {
+          "n": 1361,
+          "p50": 3.889,
+          "p95": 11.55,
+          "max": 28.36,
+          "over_50ms": 0
+        },
+        "input_to_frame": {
+          "n": 57,
+          "p50": 17.416,
+          "p95": 28.95,
+          "max": 33.751,
+          "over_50ms": 0
+        },
+        "animation_interval": {
+          "n": 1232,
+          "p50": 8.312,
+          "p95": 9.682,
+          "max": 15.065,
+          "over_50ms": 0
+        }
+      },
+      "cpu_percent_approx": 2.7,
+      "rss_mib_approx": 246.640625
+    }
+  }
+}

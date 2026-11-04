@@ -86,6 +86,41 @@ impl State {
         self.projects.push(project);
         true
     }
+
+    /// Moves `project` before another project, or to the end when `before` is `None`.
+    /// Matches folders by path and host, preserves their colors, and returns whether order changed.
+    /// Missing folders and drops that leave the order unchanged are ignored.
+    pub fn move_project(&mut self, project: &ProjectRef, before: Option<&ProjectRef>) -> bool {
+        let Some(source) = self.projects.iter().position(|p| p.is_same_folder(project)) else {
+            return false;
+        };
+        let target = match before {
+            Some(before) => {
+                let Some(target) = self.projects.iter().position(|p| p.is_same_folder(before))
+                else {
+                    return false;
+                };
+                target
+            }
+            None => self.projects.len(),
+        };
+        let destination = if source < target { target - 1 } else { target };
+        if source == destination {
+            return false;
+        }
+        // Pin position-based colors before moving the affected folders.
+        let start = source.min(destination);
+        for (offset, project) in self.projects[start..=source.max(destination)]
+            .iter_mut()
+            .enumerate()
+        {
+            let color = project.identity.color_or_default(start + offset);
+            project.identity.set_color(color);
+        }
+        let project = self.projects.remove(source);
+        self.projects.insert(destination, project);
+        true
+    }
 }
 
 pub fn hive_dir() -> PathBuf {
@@ -119,5 +154,82 @@ mod tests {
         assert!(state.add_project(project("/a")));
         assert!(!state.add_project(project("/a")));
         assert_eq!(state.projects.len(), 1);
+    }
+
+    #[test]
+    fn moves_projects_in_both_directions_and_to_the_end() {
+        let mut state = State {
+            projects: vec![project("/a"), project("/b"), project("/c"), project("/d")],
+            ..State::default()
+        };
+        for (source, before, expected) in [
+            ("/d", Some("/a"), ["/d", "/a", "/b", "/c"]),
+            ("/a", Some("/c"), ["/d", "/b", "/a", "/c"]),
+            ("/d", None, ["/b", "/a", "/c", "/d"]),
+        ] {
+            assert!(state.move_project(&project(source), before.map(project).as_ref()));
+            assert_eq!(
+                state
+                    .projects
+                    .iter()
+                    .map(|p| p.path.as_path())
+                    .collect::<Vec<_>>(),
+                expected.map(std::path::Path::new)
+            );
+        }
+    }
+
+    #[test]
+    fn moving_projects_preserves_identity_filter_host_and_serialized_order() {
+        let local = project("/a");
+        let mut remote = ProjectRef::new(
+            "/a".into(),
+            Host::Ssh {
+                target: "server".into(),
+            },
+        );
+        remote.identity.set_name("Remote");
+        remote.identity.set_color(0x123456);
+        remote.identity.set_emoji("🐝");
+        remote.worktrees = WorktreeFilter::All;
+        let mut state = State {
+            projects: vec![local.clone(), remote.clone(), project("/c")],
+            ..State::default()
+        };
+        let colors: Vec<_> = state
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(ix, p)| p.identity.color_or_default(ix))
+            .collect();
+        assert!(state.move_project(&remote, Some(&local)));
+        assert_eq!(state.projects[0], remote);
+        assert_eq!(state.projects[1].host, Host::Local);
+        assert_eq!(state.projects[0].identity.color_or_default(0), colors[1]);
+        assert_eq!(state.projects[1].identity.color_or_default(1), colors[0]);
+        assert_eq!(state.projects[2].identity.color_or_default(2), colors[2]);
+        let restored: State =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(restored.projects, state.projects);
+    }
+
+    #[test]
+    fn missing_projects_and_unchanged_drops_do_not_mutate_state() {
+        let mut state = State {
+            projects: vec![project("/a"), project("/b")],
+            ..State::default()
+        };
+        let original = state.projects.clone();
+        for (source, before) in [
+            ("/a", Some("/a")),
+            ("/a", Some("/b")),
+            ("/b", None),
+            ("/missing", Some("/a")),
+            ("/a", Some("/missing")),
+        ] {
+            assert!(!state.move_project(&project(source), before.map(project).as_ref()));
+            assert_eq!(state.projects, original);
+        }
+        assert!(!State::default().move_project(&project("/a"), None));
     }
 }

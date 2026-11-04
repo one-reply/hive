@@ -156,6 +156,17 @@ impl Store {
         }
     }
 
+    pub(crate) fn move_project(
+        &mut self,
+        project: &ProjectRef,
+        before: Option<&ProjectRef>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.move_project(project, before) {
+            self.commit(cx);
+        }
+    }
+
     /// Switches a project between listing only Hive's worktrees and listing all of them.
     pub fn toggle_worktree_filter(&mut self, path: &Path, cx: &mut Context<Self>) {
         if let Some(project) = self.state.projects.iter_mut().find(|p| p.path == path) {

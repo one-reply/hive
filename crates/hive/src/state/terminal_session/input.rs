@@ -24,6 +24,12 @@ impl TerminalSession {
         if self.exited || self.terminal().is_none() {
             return;
         }
+        if self
+            .terminal()
+            .is_some_and(|terminal| terminal.clear_selection())
+        {
+            cx.notify();
+        }
         self.pending_input.push_back(input);
         self.flush_input(cx);
     }

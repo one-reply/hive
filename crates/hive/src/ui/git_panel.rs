@@ -49,6 +49,8 @@ pub(crate) struct GitPanel {
     draft_target: Option<Target>,
     /// File groups the user folded; everything else is expanded.
     collapsed: HashSet<&'static str>,
+    changes_list: ListState,
+    change_rows: Vec<(usize, Option<usize>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -93,6 +95,8 @@ impl GitPanel {
             message,
             draft_target: None,
             collapsed: HashSet::new(),
+            changes_list: ListState::new(0, ListAlignment::Top, ROW_HEIGHT),
+            change_rows: Vec::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -221,7 +225,7 @@ impl Render for GitPanel {
                     .id("git-files")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .when(section != Section::Changes, |el| el.overflow_y_scroll())
                     .px_2()
                     .pb_2()
                     .child(match section {

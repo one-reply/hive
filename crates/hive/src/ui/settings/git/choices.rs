@@ -1,10 +1,10 @@
 use crate::state::ai_providers::{AiProviders, KeyStatus};
+use crate::ui::agent_logo;
 use gpui_kit::{
     component::{ActiveTheme as _, Icon, h_flex, searchable_list::SearchableListItem},
     *,
 };
 use hive_core::{
-    agent::AgentKind,
     commit_message::{Generator, cli},
     llm::Provider,
 };
@@ -33,14 +33,7 @@ impl SourceItem {
 
     fn logo(&self) -> &'static [u8] {
         match self.value {
-            Generator::Cli {
-                agent: AgentKind::ClaudeCode,
-                ..
-            } => include_bytes!("../../../../assets/claude.svg"),
-            Generator::Cli {
-                agent: AgentKind::Codex,
-                ..
-            } => super::super::ai::logo(Provider::OpenAi),
+            Generator::Cli { agent, .. } => agent_logo::svg(agent),
             Generator::Api { provider, .. } => super::super::ai::logo(provider),
         }
     }

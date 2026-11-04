@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use crate::state::terminal_session::{SessionEvent, SessionStatus, TerminalSession};
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, notification::Notification};
 use gpui_kit::*;
-use hive_core::terminal::TermMode;
+use hive_core::terminal::{ScrollModifiers, SelectionType};
 
 use super::element::TerminalElement;
 use super::keys;
+use super::mouse::GridGeometry;
 use crate::ui::keymap;
 
 pub enum TerminalViewEvent {
@@ -22,6 +23,8 @@ pub struct TerminalView {
     cwd: Option<PathBuf>,
     /// Fractional scroll-wheel lines not yet applied.
     scroll_remainder: f32,
+    grid: Option<GridGeometry>,
+    selecting: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -38,6 +41,7 @@ impl TerminalView {
                 cx.notify();
             }),
             cx.on_blur(&focus_handle, window, |this, _, cx| {
+                this.selecting = false;
                 this.session
                     .update(cx, |session, _| session.set_focused(false));
                 cx.notify();
@@ -57,6 +61,8 @@ impl TerminalView {
             focus_handle,
             cwd: cwd.map(Path::to_path_buf),
             scroll_remainder: 0.,
+            grid: None,
+            selecting: false,
             _subscriptions: subscriptions,
         }
     }
@@ -98,9 +104,53 @@ impl TerminalView {
     }
 
     /// Called by the element once it knows how many cells fit.
-    pub fn resize(&mut self, cols: u16, rows: u16, cx: &mut Context<Self>) {
+    pub(super) fn set_grid(&mut self, grid: GridGeometry, cx: &mut Context<Self>) {
+        self.grid = Some(grid);
         self.session
-            .update(cx, |session, _| session.resize(cols, rows));
+            .update(cx, |session, _| session.resize(grid.cols, grid.rows));
+    }
+
+    fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
+        let Some(grid) = self.grid else { return };
+        let (point, side) = grid.cell_at(event.position);
+        let kind = match event.click_count {
+            2 => SelectionType::Semantic,
+            3.. => SelectionType::Lines,
+            _ => SelectionType::Simple,
+        };
+        self.selecting = true;
+        self.session.update(cx, |session, cx| {
+            session.start_selection(point, side, kind, cx)
+        });
+        cx.stop_propagation();
+    }
+
+    fn extend_selection(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if !self.selecting {
+            return;
+        }
+        let Some(grid) = self.grid else { return };
+        let (point, side) = grid.cell_at(position);
+        self.session
+            .update(cx, |session, cx| session.update_selection(point, side, cx));
+    }
+
+    fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.dragging() {
+            self.extend_selection(event.position, cx);
+        } else {
+            self.selecting = false;
+        }
+    }
+
+    fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.extend_selection(event.position, cx);
+        self.selecting = false;
+    }
+
+    fn copy(&self, cx: &mut Context<Self>) {
+        self.session.update(cx, |session, cx| session.copy(cx));
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -123,32 +173,26 @@ impl TerminalView {
         self.session.update(cx, |session, cx| session.paste(cx));
     }
 
-    fn scroll_wheel(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let line_height = window.line_height();
+    fn scroll_wheel(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(grid) = self.grid else { return };
+        let line_height = grid.cell.height;
         let delta = event.delta.pixel_delta(line_height).y / line_height;
+        cx.stop_propagation();
         self.scroll_remainder += delta;
         let lines = self.scroll_remainder.trunc() as i32;
         if lines == 0 {
             return;
         }
         self.scroll_remainder -= lines as f32;
+        let (point, _) = grid.cell_at(event.position);
+        let modifiers = ScrollModifiers {
+            shift: event.modifiers.shift,
+            alt: event.modifiers.alt,
+            control: event.modifiers.control,
+        };
         self.session.update(cx, |session, cx| {
-            let Some(terminal) = session.terminal() else {
-                return;
-            };
-            let mode = terminal.mode();
-            if mode.contains(TermMode::ALT_SCREEN) {
-                // Alternate screen (less, vim…): translate the wheel into arrow keys.
-                if mode.contains(TermMode::ALTERNATE_SCROLL) {
-                    let key: &[u8] = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
-                    let bytes = key.repeat(lines.unsigned_abs() as usize);
-                    session.write_input(bytes, cx);
-                }
-            } else {
-                terminal.scroll(lines);
-            }
+            session.scroll_wheel(lines, point, modifiers, cx);
         });
-        cx.notify();
     }
 }
 
@@ -171,11 +215,13 @@ impl Render for TerminalView {
             .cursor(CursorStyle::IBeam)
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
+            .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
+            .on_action(cx.listener(|this, _: &component::input::Copy, _, cx| this.copy(cx)))
             .on_scroll(cx.listener(Self::scroll_wheel))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.focus_handle.focus(window, cx)),
-            )
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+            .on_mouse_move(cx.listener(Self::mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
             .child(match &self.session.read(cx).status {
                 SessionStatus::Starting => {
                     div().p_4().child("Starting terminal…").into_any_element()
@@ -205,7 +251,7 @@ fn shorten_title(title: &str, max_chars: usize) -> String {
     format!("…{tail}")
 }
 
-actions!(terminal, [Paste]);
+actions!(terminal, [Copy, Paste]);
 
 #[cfg(test)]
 mod tests {

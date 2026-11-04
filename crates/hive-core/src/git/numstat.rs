@@ -3,6 +3,8 @@ use super::status::{Change, LineStats, Status};
 use super::{GitError, READ_LIMIT, bytes, diff, text};
 use crate::host::Host;
 use std::collections::HashMap;
+use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 pub(super) fn read(
@@ -58,10 +60,16 @@ pub(super) fn fill_status(host: &Host, cwd: &Path, status: &mut Status) {
             }
         }
     }
-    // shortcut: one Git process per untracked file; batch if large untracked trees become a bottleneck.
+    let attributes = untracked_attributes(host, cwd, status);
     for file in &mut status.files {
         if file.unstaged != Some(Change::Untracked) {
             continue;
+        }
+        if let Some(attribute) = attributes.as_ref().and_then(|a| a.get(&file.path)) {
+            match local_untracked_counts(cwd, &file.path, attribute) {
+                Ok(counts) => { file.unstaged_stats = counts; continue; }
+                Err(error) => tracing::debug!(%error, path = %file.path, "using Git fallback for untracked counts"),
+            }
         }
         let counts = diff::validate_path(&file.path).and_then(|()| {
             read(
@@ -78,6 +86,67 @@ pub(super) fn fill_status(host: &Host, cwd: &Path, status: &mut Status) {
             }
         }
     }
+}
+
+fn untracked_attributes(host: &Host, cwd: &Path, status: &Status) -> Option<HashMap<String, String>> {
+    if !host.is_local() { return None; }
+    let mut paths = Vec::new();
+    for file in &status.files {
+        if file.unstaged == Some(Change::Untracked) {
+            paths.extend_from_slice(file.path.as_bytes());
+            paths.push(0);
+        }
+    }
+    if paths.is_empty() { return None; }
+    let result = bytes(host, cwd, &["check-attr", "-z", "--stdin", "diff"], Some(&paths), READ_LIMIT, false)
+        .and_then(|raw| {
+            let fields: Vec<_> = raw.strip_suffix(b"\0").ok_or_else(malformed)?.split(|b| *b == 0).collect();
+            if fields.len() % 3 != 0 { return Err(malformed()); }
+            fields.chunks_exact(3).map(|fields| {
+                if fields[1] != b"diff" { return Err(malformed()); }
+                Ok((text(fields[0])?.to_owned(), text(fields[2])?.to_owned()))
+            }).collect::<Result<HashMap<_, _>, GitError>>()
+        });
+    match result {
+        Ok(attributes) => Some(attributes),
+        Err(error) => { tracing::warn!(%error, "could not batch untracked attributes; using Git fallback"); None }
+    }
+}
+
+fn local_untracked_counts(cwd: &Path, path: &str, attribute: &str) -> std::io::Result<Option<LineStats>> {
+    diff::validate_path(path).map_err(std::io::Error::other)?;
+    if !matches!(attribute, "unspecified" | "set" | "unset") {
+        return Err(std::io::Error::other("custom diff driver requires Git"));
+    }
+    let path = cwd.join(path);
+    let metadata = std::fs::symlink_metadata(&path)?;
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(path)?;
+        return count_added_lines(target.as_os_str().as_bytes(), false);
+    }
+    if attribute == "unset" { return Ok(None); }
+    // O_NONBLOCK also makes a concurrent replacement with a FIFO safe to open.
+    let fd = rustix::fs::open(&path, rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC, rustix::fs::Mode::empty())?;
+    let file = std::fs::File::from(fd);
+    if !file.metadata()?.is_file() { return Err(std::io::Error::other("not a regular file")); }
+    count_added_lines(file, attribute != "set")
+}
+
+fn count_added_lines(mut input: impl Read, detect_binary: bool) -> std::io::Result<Option<LineStats>> {
+    // Git's automatic binary detection checks the first 8000 bytes.
+    const BINARY_PREFIX: usize = 8000;
+    let mut buffer = [0; 8192];
+    let (mut bytes, mut lines, mut last) = (0usize, 0usize, None);
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 { break; }
+        let prefix = count.min(BINARY_PREFIX.saturating_sub(bytes));
+        if detect_binary && buffer[..prefix].contains(&0) { return Ok(None); }
+        bytes += count;
+        lines += buffer[..count].iter().filter(|&&byte| byte == b'\n').count();
+        last = Some(buffer[count-1]);
+    }
+    Ok(Some(LineStats { added: lines + usize::from(last.is_some_and(|byte| byte != b'\n')), removed: 0 }))
 }
 
 fn parse(raw: &[u8]) -> Result<HashMap<String, LineStats>, GitError> {

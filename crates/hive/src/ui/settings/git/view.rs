@@ -12,6 +12,7 @@ impl GitPage {
                     hive_core::agent::AgentKind::ClaudeCode => {
                         "Optional: --model …, --effort low, --max-budget-usd …. Uses Claude's default model when empty."
                     }
+                    _ => hive_core::commit_message::cli::UNSUPPORTED_GENERATOR,
                 };
                 v_flex()
                     .gap_2()

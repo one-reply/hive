@@ -1,7 +1,7 @@
 //! macOS PTY teardown. Keep the shell unreaped until all session signals are sent.
 use super::events::Publisher;
 use alacritty_terminal::event::{OnResize, WindowSize};
-use alacritty_terminal::tty::{self, ChildEvent, EventedPty, EventedReadWrite};
+use alacritty_terminal::tty::{ChildEvent, EventedPty, EventedReadWrite};
 use polling::os::kqueue::{PollerKqueueExt, Process, ProcessOps};
 use polling::{Event, PollMode, Poller};
 use rustix::process::{self, Pid, Signal, WaitId, WaitIdOptions};
@@ -46,31 +46,34 @@ impl Completion {
 }
 
 pub(super) struct ManagedPty {
-    pty: Option<tty::Pty>,
+    child: std::process::Child,
+    file: File,
     completion: Arc<Completion>,
     events: Publisher,
 }
 
 impl ManagedPty {
-    pub(super) fn new(pty: tty::Pty, completion: Arc<Completion>, events: Publisher) -> Self {
+    pub(super) fn new(
+        child: std::process::Child,
+        file: File,
+        completion: Arc<Completion>,
+        events: Publisher,
+    ) -> Self {
         Self {
-            pty: Some(pty),
+            child,
+            file,
             completion,
             events,
         }
     }
 
-    fn inner(&self) -> &tty::Pty {
-        self.pty.as_ref().expect("PTY exists until teardown")
-    }
-
     fn pid(&self) -> Pid {
-        Pid::from_child(self.inner().child())
+        Pid::from_child(&self.child)
     }
 
     fn process_filter(&self) -> Process<'_> {
         // EventLoop deregisters before dropping the PTY; we never reap the child here.
-        unsafe { Process::new(self.inner().child(), ProcessOps::Exit) }
+        unsafe { Process::new(&self.child, ProcessOps::Exit) }
     }
 
     fn has_exited(&self) -> io::Result<bool> {
@@ -121,14 +124,14 @@ impl EventedReadWrite for ManagedPty {
         event.key = PTY_READ_WRITE_TOKEN;
         // The file remains alive through EventLoop's deregistration.
         unsafe {
-            poll.add_with_mode(self.inner().file(), event, mode)?;
+            poll.add_with_mode(&self.file, event, mode)?;
         }
         if let Err(error) = poll.add_filter(
             self.process_filter(),
             PTY_CHILD_EVENT_TOKEN,
             PollMode::Oneshot,
         ) {
-            let _ = poll.delete(self.inner().file());
+            let _ = poll.delete(&self.file);
             return Err(error);
         }
         Ok(())
@@ -141,26 +144,20 @@ impl EventedReadWrite for ManagedPty {
         mode: PollMode,
     ) -> io::Result<()> {
         event.key = PTY_READ_WRITE_TOKEN;
-        poll.modify_with_mode(self.inner().file(), event, mode)
+        poll.modify_with_mode(&self.file, event, mode)
     }
 
     fn deregister(&mut self, poll: &Arc<Poller>) -> io::Result<()> {
-        let file_result = poll.delete(self.inner().file());
+        let file_result = poll.delete(&self.file);
         let process_result = poll.delete_filter(self.process_filter());
         file_result.and(process_result)
     }
 
     fn reader(&mut self) -> &mut File {
-        self.pty
-            .as_mut()
-            .expect("PTY exists until teardown")
-            .reader()
+        &mut self.file
     }
     fn writer(&mut self) -> &mut File {
-        self.pty
-            .as_mut()
-            .expect("PTY exists until teardown")
-            .writer()
+        &mut self.file
     }
 }
 
@@ -179,10 +176,10 @@ impl EventedPty for ManagedPty {
 
 impl OnResize for ManagedPty {
     fn on_resize(&mut self, size: WindowSize) {
-        self.pty
-            .as_mut()
-            .expect("PTY exists until teardown")
-            .on_resize(size);
+        if let Err(error) = rustix::termios::tcsetwinsize(&self.file, super::process::winsize(size))
+        {
+            tracing::warn!(%error, "failed to resize PTY");
+        }
     }
 }
 
@@ -191,12 +188,14 @@ impl Drop for ManagedPty {
         self.terminate_session();
         // Darwin can keep a killed child in tty drain after the reader stops consuming output.
         if let Err(error) =
-            rustix::termios::tcflush(self.inner().file(), rustix::termios::QueueSelector::IOFlush)
+            rustix::termios::tcflush(&self.file, rustix::termios::QueueSelector::IOFlush)
         {
             tracing::warn!(%error, "failed to flush closing PTY");
         }
-        // Upstream sends HUP and waits here. The owned PID cannot be reused until this wait.
-        drop(self.pty.take());
+        // Keep the PID owned until every session signal has been sent.
+        if let Err(error) = self.child.wait() {
+            tracing::error!(%error, "failed to reap PTY child");
+        }
         self.events.close();
         self.completion.finish();
     }
