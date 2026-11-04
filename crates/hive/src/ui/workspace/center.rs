@@ -45,8 +45,22 @@ impl Workspace {
             Some(shown) => center.child(div().size_full().child(shown.dock().clone())),
             None => center
                 .child(self.render_welcome(muted, window, cx))
+                .child(self.render_welcome_band(cx))
                 .when(!self.git_open, |el| el.child(self.render_welcome_toggle())),
         }
+    }
+
+    /// The welcome screen's top band, ruled off like the title bar so its bottom line runs
+    /// across the window instead of stopping at the title bar's edge.
+    fn render_welcome_band(&self, cx: &App) -> impl IntoElement {
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(TAB_BAR_HEIGHT)
+            .border_b_1()
+            .border_color(cx.theme().title_bar_border)
     }
 
     /// The right-sidebar toggle in the welcome screen's top-right corner. Stops mouse-down so
