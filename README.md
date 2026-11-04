@@ -13,9 +13,9 @@ Keep your projects, Git worktrees, agent terminals, and code reviews in one plac
 Hive is written in Rust, with a GPU-rendered interface built on GPUI through
 `gpui-kit`.
 
-![Hive reviewing changes in a demo repository](docs/images/hive-demo.png)
+![Hive reviewing a Rust change in its own source](docs/images/hive-demo.png)
 
-*Demo data in an isolated QA profile; no real project or account information is shown.*
+*Hive reviewing its own Rust source in an isolated local worktree.*
 
 > **Early development · macOS / Apple Silicon**
 >
