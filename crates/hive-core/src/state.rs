@@ -3,6 +3,7 @@
 //! we need queries over history.
 
 use crate::host::Host;
+use crate::identity::ProjectIdentity;
 use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -14,6 +15,8 @@ pub struct ProjectRef {
     pub host: Host,
     #[serde(default)]
     pub worktrees: WorktreeFilter,
+    #[serde(default)]
+    pub identity: ProjectIdentity,
 }
 
 impl ProjectRef {
@@ -23,6 +26,7 @@ impl ProjectRef {
             path,
             host,
             worktrees: WorktreeFilter::default(),
+            identity: ProjectIdentity::default(),
         }
     }
 

@@ -7,10 +7,7 @@ use std::path::{Path, PathBuf};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::dock::{
-    BasePanel, DockArea, DockPlacement, InsertTarget, Panel, PanelControl, PanelEvent, PanelId,
-    TabGroup, panel_handle,
-};
+use gpui_kit::component::dock::{BasePanel, DockArea, Panel, PanelControl, PanelEvent, TabGroup};
 use gpui_kit::component::resizable::{h_resizable, v_resizable};
 use gpui_kit::component::{IconName, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -85,6 +82,7 @@ impl TerminalPanel {
             cx.on_focus(&focus_handle, window, move |this, _, cx| {
                 if let Some(view) = weak_view.upgrade() {
                     this.active = view;
+                    this.select_workspace(cx);
                     this.notify_group(cx);
                 }
             }),
@@ -170,32 +168,17 @@ impl TerminalPanel {
         }
     }
 
-    /// Open another terminal in the active pane's cwd as a new tab of this group.
+    fn select_workspace(&self, cx: &mut Context<Self>) {
+        let Some(path) = self.cwd(cx) else {
+            return;
+        };
+        let git = crate::app::AppState::get(cx).git.clone();
+        cx.defer(move |cx| git.update(cx, |g, cx| g.activate_path(&path, cx)));
+    }
+
+    /// Let Workspace own new tabs so close tracking includes every terminal.
     fn open_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(area) = self.area.upgrade() else {
-            return;
-        };
-        let cwd = self.cwd(cx);
-        let Some(panel) = Self::open(cwd.as_deref(), self.area.clone(), window, cx) else {
-            return;
-        };
-        let id: PanelId = panel.entity_id().into();
-        let node = self
-            .group
-            .as_ref()
-            .and_then(|g| g.upgrade())
-            .map(|g| g.read(cx).node());
-        area.update(cx, |area, cx| {
-            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
-            if let Some(node) = node {
-                let target = InsertTarget::Tabs {
-                    node,
-                    ix: None,
-                    activate: true,
-                };
-                area.move_panel(id, target, window, cx);
-            }
-        });
+        window.dispatch_action(Box::new(crate::ui::workspace::NewTerminal), cx);
     }
 }
 
@@ -247,6 +230,7 @@ impl BasePanel for TerminalPanel {
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if active {
+            self.select_workspace(cx);
             self.focus_active(window, cx);
         }
     }

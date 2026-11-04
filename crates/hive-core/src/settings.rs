@@ -28,6 +28,12 @@ pub const SIDEBAR_WIDTH_MIN: f32 = 180.;
 pub const SIDEBAR_WIDTH_MAX: f32 = 600.;
 const SIDEBAR_WIDTH_DEFAULT: f32 = 260.;
 
+/// Minimum width of the source control sidebar.
+pub const GIT_PANEL_WIDTH_MIN: f32 = 280.;
+/// Maximum width of the source control sidebar.
+pub const GIT_PANEL_WIDTH_MAX: f32 = 600.;
+const GIT_PANEL_WIDTH_DEFAULT: f32 = 360.;
+
 /// Smallest UI font size (the rem every UI size scales from), in logical pixels.
 pub const UI_FONT_SIZE_MIN: f32 = 12.;
 /// Largest UI font size, in logical pixels.
@@ -51,6 +57,11 @@ pub const TERMINAL_FONT_SIZE_DEFAULT: f32 = 13.;
 pub struct Settings {
     pub theme: ThemeChoice,
     sidebar_width: f32,
+    git_panel_width: f32,
+    /// Whether source control is visible on launch.
+    pub git_panel_open: bool,
+    /// Side-by-side diff instead of the default unified presentation.
+    pub diff_split: bool,
     ui_font_size: f32,
     terminal_font_size: f32,
     /// Shortcuts the user reassigned: action name (`"workspace::NewTerminal"`) → keystrokes
@@ -64,6 +75,9 @@ impl Default for Settings {
         Self {
             theme: ThemeChoice::default(),
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
+            git_panel_width: GIT_PANEL_WIDTH_DEFAULT,
+            git_panel_open: true,
+            diff_split: false,
             ui_font_size: UI_FONT_SIZE_DEFAULT,
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             keybindings: BTreeMap::new(),
@@ -72,6 +86,15 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Source control width, clamped even for hand-edited state files.
+    pub fn git_panel_width(&self) -> f32 {
+        clamp_git_panel_width(self.git_panel_width)
+    }
+
+    /// Store a finite source control width within its supported range.
+    pub fn set_git_panel_width(&mut self, width: f32) {
+        self.git_panel_width = clamp_git_panel_width(width);
+    }
     /// Sidebar width in logical pixels, always within the allowed range.
     pub fn sidebar_width(&self) -> f32 {
         clamp_sidebar_width(self.sidebar_width)
@@ -136,6 +159,16 @@ pub fn clamp_sidebar_width(width: f32) -> f32 {
     )
 }
 
+/// Clamp the right sidebar width, falling back for non-finite values.
+pub fn clamp_git_panel_width(width: f32) -> f32 {
+    clamp_or_default(
+        width,
+        GIT_PANEL_WIDTH_MIN,
+        GIT_PANEL_WIDTH_MAX,
+        GIT_PANEL_WIDTH_DEFAULT,
+    )
+}
+
 fn clamp_ui_font_size(size: f32) -> f32 {
     clamp_or_default(
         size,
@@ -172,6 +205,26 @@ mod tests {
         assert_eq!(settings.ui_font_size(), UI_FONT_SIZE_DEFAULT);
         assert_eq!(settings.terminal_font_size(), TERMINAL_FONT_SIZE_DEFAULT);
         assert!(settings.keybindings().is_empty());
+        assert_eq!(settings.git_panel_width(), 360.);
+        assert!(settings.git_panel_open);
+        assert!(!settings.diff_split);
+    }
+
+    #[test]
+    fn git_preferences_round_trip_and_clamp() {
+        let mut settings: Settings = serde_json::from_str(
+            r#"{"git_panel_width":9000,"git_panel_open":false,"diff_split":true}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.git_panel_width(), 600.);
+        settings.set_git_panel_width(1.);
+        assert_eq!(settings.git_panel_width(), 280.);
+        settings.set_git_panel_width(f32::NAN);
+        let loaded: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(loaded.git_panel_width(), 360.);
+        assert!(!loaded.git_panel_open);
+        assert!(loaded.diff_split);
     }
 
     #[test]

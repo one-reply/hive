@@ -1,4 +1,4 @@
-//! Projects page: the folders listed in the sidebar.
+//! Projects page: the folders listed in the sidebar. A row opens that project's page.
 
 use std::path::PathBuf;
 
@@ -8,11 +8,11 @@ use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_fl
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::setting_row;
+use super::{SettingsWindow, setting_row};
 use crate::app::AppState;
 use crate::state::store::Store;
 
-pub(super) fn render(cx: &App) -> impl IntoElement {
+pub(super) fn render(cx: &mut Context<SettingsWindow>) -> impl IntoElement {
     let store = AppState::get(cx).store.clone();
     let paths: Vec<PathBuf> = store
         .read(cx)
@@ -25,11 +25,18 @@ pub(super) fn render(cx: &App) -> impl IntoElement {
 
     let rows = paths.into_iter().enumerate().map(|(ix, path)| {
         let store = store.clone();
+        let open = path.clone();
         let label = div()
+            .id(("open-project", ix))
             .min_w_0()
             .text_sm()
             .truncate()
-            .child(path.display().to_string());
+            .cursor_pointer()
+            .hover(|style| style.underline())
+            .child(path.display().to_string())
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.show_project(open.clone(), window, cx)),
+            );
         let remove = Button::new(("remove-project", ix))
             .cursor_pointer()
             .ghost()

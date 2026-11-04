@@ -31,7 +31,14 @@ pub struct Projects {
 
 impl Projects {
     pub fn new(store: &Entity<Store>, cx: &mut Context<Self>) -> Self {
-        let observer = cx.observe(store, |this, _, cx| this.rescan(cx).detach());
+        let mut previous = store.read(cx).state.projects.clone();
+        let observer = cx.observe(store, move |this, store, cx| {
+            let current = &store.read(cx).state.projects;
+            if *current != previous {
+                previous = current.clone();
+                this.rescan(cx).detach();
+            }
+        });
         let mut this = Self {
             items: vec![],
             selected: None,
@@ -45,6 +52,9 @@ impl Projects {
     }
 
     pub fn select(&mut self, project: &Path, worktree: Option<&Path>, cx: &mut Context<Self>) {
+        if self.is_selected(project, worktree) {
+            return;
+        }
         self.selected = Some(Selection {
             project: project.to_path_buf(),
             worktree: worktree.map(Path::to_path_buf),
@@ -152,11 +162,11 @@ impl Projects {
         })
     }
 
-    fn project(&self, path: &Path) -> Option<&Project> {
+    pub(crate) fn project(&self, path: &Path) -> Option<&Project> {
         self.items.iter().find(|p| p.path == path)
     }
 
-    fn rescan(&mut self, cx: &mut Context<Self>) -> Task<()> {
+    pub(crate) fn rescan(&mut self, cx: &mut Context<Self>) -> Task<()> {
         let refs = self.store.read(cx).state.projects.clone();
         cx.spawn(async move |this, cx| {
             let items = cx

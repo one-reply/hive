@@ -26,12 +26,8 @@ use hive_core::worktree::{Removal, WorktreeError};
 use crate::app::AppState;
 use crate::state::projects::Projects;
 use crate::state::store::Store;
-use crate::ui::settings;
+use crate::ui::{project_badge, settings};
 
-/// Folder colors, cycled by project position (Orca tints each project).
-const FOLDER_COLORS: [u32; 8] = [
-    0xf97316, 0xeab308, 0x737373, 0x22c55e, 0xec4899, 0x14b8a6, 0x8b5cf6, 0xef4444,
-];
 /// Status dot of a worktree with an open terminal (Tailwind emerald-500, as in Orca).
 const ACTIVE_COLOR: u32 = 0x10b981;
 /// Detached-HEAD badge (Tailwind amber-500, git's "modified" decoration).
@@ -43,6 +39,7 @@ const META_TEXT: Pixels = px(11.);
 const BADGE_TEXT: Pixels = px(10.);
 const BADGE_HEIGHT: Pixels = px(16.);
 const STATUS_DOT: Pixels = px(8.);
+const PROJECT_BADGE: Pixels = px(14.);
 const CREATE_DIALOG_WIDTH: Pixels = px(420.);
 /// Rows under a project header have fixed heights, so the collapse animation knows the
 /// height of the list without measuring it.
@@ -217,11 +214,12 @@ impl Sidebar {
             .pr_1p5()
             .rounded_md()
             .cursor_pointer()
-            .child(
-                Icon::new(IconName::Folder)
-                    .size_4()
-                    .text_color(rgb(FOLDER_COLORS[ix % FOLDER_COLORS.len()])),
-            )
+            .child(project_badge::render(
+                &project.identity,
+                &project.name,
+                project_badge::color(&project.identity, ix),
+                PROJECT_BADGE,
+            ))
             .child(
                 div()
                     .flex_1()
@@ -263,6 +261,10 @@ impl Sidebar {
                         }),
                 )
                 .item(copy_item("Copy Path", path.display().to_string()))
+                .item(PopupMenuItem::new("Project Settings").on_click({
+                    let path = path.clone();
+                    move |_, _, cx| settings::open_project(&path, cx)
+                }))
                 .separator()
                 .item(
                     PopupMenuItem::new("Remove Project").on_click(move |_, _, cx| {

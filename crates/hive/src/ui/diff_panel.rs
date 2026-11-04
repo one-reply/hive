@@ -1,0 +1,299 @@
+//! Dockable readonly diff with explicit index actions for complete text hunks.
+use crate::{
+    app::AppState,
+    state::{
+        git::{DiffRequest, Git},
+        git_diff::GitDiff,
+        store::Store,
+    },
+};
+use gpui_kit::base::Disableable as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::diff::{Diff, DiffAnnotation, DiffLinePosition, DiffSide};
+use gpui_kit::component::dock::{BasePanel, DockArea, Panel, PanelEvent, TabGroup};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::*;
+use hive_core::git::diff::DiffSource;
+
+pub(crate) struct DiffPanel {
+    pub review: Entity<GitDiff>,
+    git: Entity<Git>,
+    store: Entity<Store>,
+    area: WeakEntity<DockArea>,
+    group: Option<WeakEntity<TabGroup>>,
+    alone: bool,
+    current_hunk: usize,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl DiffPanel {
+    pub fn new(request: DiffRequest, area: WeakEntity<DockArea>, cx: &mut Context<Self>) -> Self {
+        let app = AppState::get(cx);
+        let (git, store) = (app.git.clone(), app.store.clone());
+        let review = cx.new(|cx| GitDiff::new(request, git.clone(), store.clone(), cx));
+        let subscriptions = vec![
+            cx.observe(&review, |_, _, cx| cx.notify()),
+            cx.observe(&git, |_, _, cx| cx.notify()),
+            cx.observe(&store, |_, _, cx| cx.notify()),
+        ];
+        Self {
+            review,
+            git,
+            store,
+            area,
+            group: None,
+            alone: false,
+            current_hunk: 0,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    pub fn set_alone(&mut self, alone: bool, cx: &mut Context<Self>) {
+        if self.alone != alone {
+            self.alone = alone;
+            if let Some(group) = self.group.as_ref().and_then(|g| g.upgrade()) {
+                group.update(cx, |_, cx| cx.notify());
+            }
+            cx.notify();
+        }
+    }
+
+    fn close(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(area) = self.area.upgrade() else {
+            return;
+        };
+        let panel = cx.entity();
+        window.defer(cx, move |window, cx| {
+            area.update(cx, |area, cx| area.remove_panel(panel, window, cx))
+        });
+    }
+
+    fn navigate(&mut self, next: bool, cx: &mut Context<Self>) {
+        let review = self.review.read(cx);
+        let Some(patch) = &review.patch else {
+            return;
+        };
+        let count = patch.hunks().len();
+        if count == 0 {
+            return;
+        }
+        self.current_hunk = if next {
+            (self.current_hunk + 1) % count
+        } else {
+            (self.current_hunk + count - 1) % count
+        };
+        let hunk = &patch.hunks()[self.current_hunk];
+        let (side, line) = if hunk.new_line == 0 {
+            (DiffSide::Original, hunk.old_line)
+        } else {
+            (DiffSide::Modified, hunk.new_line)
+        };
+        let position = DiffLinePosition::new(review.request.path.clone(), side, line.max(1));
+        let display = review.display.clone();
+        display.update(cx, |d, cx| d.scroll_to_line(position, cx));
+    }
+}
+
+impl EventEmitter<PanelEvent> for DiffPanel {}
+impl Focusable for DiffPanel {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.review.read(cx).display.read(cx).focus_handle(cx)
+    }
+}
+impl BasePanel for DiffPanel {
+    fn panel_name(&self) -> &'static str {
+        "GitDiffPanel"
+    }
+    fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.review.read(cx).request.target.clone();
+        self.review.update(cx, |r, cx| {
+            r.active = active;
+            if active {
+                r.refresh(cx);
+            }
+        });
+        let git = self.git.clone();
+        let id = cx.entity_id();
+        cx.defer(move |cx| {
+            git.update(cx, |g, cx| {
+                g.set_diff_visible(id, active.then(|| target.clone()));
+                if active {
+                    g.activate(target, cx);
+                }
+            })
+        });
+        if active {
+            self.focus_handle(cx).focus(window, cx);
+        }
+    }
+    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, _: &mut Context<Self>) {
+        self.group = Some(group);
+    }
+    fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let id = cx.entity_id();
+        self.git.update(cx, |g, _| g.set_diff_visible(id, None));
+        self.review.update(cx, |r, _| r.active = false);
+    }
+}
+impl Panel for DiffPanel {
+    fn tab_name(&self, cx: &App) -> Option<SharedString> {
+        (!self.alone).then(|| format!("{} · diff", self.review.read(cx).request.path).into())
+    }
+    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_2()
+            .child(format!("{} · diff", self.review.read(cx).request.path))
+            .child(
+                Button::new("diff-close")
+                    .cursor_pointer()
+                    .ghost()
+                    .small()
+                    .label("×")
+                    .tooltip("Close diff")
+                    .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
+            )
+    }
+    fn inner_padding(&self, _: &App) -> bool {
+        false
+    }
+}
+impl Render for DiffPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let review = self.review.read(cx);
+        let request = review.request.clone();
+        let patch = review.patch.clone();
+        let error = review.error.clone();
+        let display = review.display.clone();
+        let source = match &request.source {
+            DiffSource::WorkingTree => "Unstaged".into(),
+            DiffSource::Staged => "Staged".into(),
+            DiffSource::Untracked => "Untracked".into(),
+            DiffSource::Commit(oid) => {
+                format!("Commit {} · first parent", &oid[..oid.len().min(7)])
+            }
+            DiffSource::Compare(base) => format!("{base} … HEAD · committed"),
+        };
+        let split = self.store.read(cx).state.settings.diff_split;
+        let mutable = matches!(request.source, DiffSource::WorkingTree | DiffSource::Staged);
+        let partial = mutable
+            && !request.whole_file_only
+            && patch.as_ref().is_some_and(|p| p.can_stage_hunks());
+        let busy = self.git.read(cx).is_busy();
+        let mut annotations = Vec::new();
+        if partial && let Some(patch) = &patch {
+            for (index, hunk) in patch.hunks().iter().enumerate() {
+                let (side, line) = if hunk.new_line == 0 {
+                    (DiffSide::Original, hunk.old_line)
+                } else {
+                    (DiffSide::Modified, hunk.new_line)
+                };
+                annotations.push(DiffAnnotation::line(
+                    ("hunk", index),
+                    DiffLinePosition::new(request.path.clone(), side, line.max(1)),
+                ));
+            }
+        }
+        let ids = annotations
+            .iter()
+            .map(|a| a.id().clone())
+            .collect::<Vec<_>>();
+        let git = self.git.clone();
+        let request_action = request.clone();
+        let patch_action = patch.clone();
+        let diff = Diff::new(&display)
+            .flex_1()
+            .min_h_0()
+            .annotations(annotations)
+            .render_annotation(move |annotation, _, _| {
+                let index = ids.iter().position(|id| id == annotation.id());
+                let (git, request, patch) =
+                    (git.clone(), request_action.clone(), patch_action.clone());
+                h_flex().justify_end().child(
+                    Button::new(annotation.id().clone())
+                        .cursor_pointer()
+                        .small()
+                        .outline()
+                        .label(if request.source == DiffSource::Staged {
+                            "Unstage hunk"
+                        } else {
+                            "Stage hunk"
+                        })
+                        .disabled(busy)
+                        .on_click(move |_, _, cx| {
+                            if let (Some(index), Some(patch)) = (index, patch.as_ref()) {
+                                git.update(cx, |g, cx| {
+                                    g.apply_hunk(request.clone(), patch.clone(), index, cx)
+                                });
+                            }
+                        }),
+                )
+            });
+        let mut content = v_flex().size_full().min_w_0().min_h_0().child(
+            h_flex()
+                .p_2()
+                .gap_2()
+                .items_center()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(div().flex_1().min_w_0().truncate().text_sm().child(source))
+                .child(
+                    Button::new("diff-prev")
+                        .cursor_pointer()
+                        .ghost()
+                        .small()
+                        .label("↑")
+                        .tooltip("Previous hunk")
+                        .on_click(cx.listener(|this, _, _, cx| this.navigate(false, cx))),
+                )
+                .child(
+                    Button::new("diff-next")
+                        .cursor_pointer()
+                        .ghost()
+                        .small()
+                        .label("↓")
+                        .tooltip("Next hunk")
+                        .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx))),
+                )
+                .child(
+                    Button::new("diff-mode")
+                        .cursor_pointer()
+                        .ghost()
+                        .small()
+                        .label(if split { "Split" } else { "Unified" })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let split = this.store.read(cx).state.settings.diff_split;
+                            this.store.update(cx, |s, cx| s.set_diff_split(!split, cx));
+                        })),
+                )
+                .child(
+                    Button::new("diff-refresh")
+                        .cursor_pointer()
+                        .ghost()
+                        .small()
+                        .label("↻")
+                        .tooltip("Refresh diff")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.review.update(cx, |r, cx| r.refresh(cx))
+                        })),
+                ),
+        );
+        if let Some(error) = error {
+            content = content.child(div().p_3().text_color(cx.theme().danger).child(error));
+        } else if patch.as_ref().is_some_and(|p| p.patch().is_empty()) {
+            content = content.child(div().p_3().child("No changes in this view."));
+        } else {
+            if mutable && !partial {
+                content = content.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Use the sidebar to stage this change as a whole file."),
+                );
+            }
+            content = content.child(diff);
+        }
+        content
+    }
+}

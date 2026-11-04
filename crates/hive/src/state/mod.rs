@@ -1,6 +1,8 @@
 //! GPUI entities that own application state. Blocking work goes to the background
 //! executor inside these; views never touch `hive_core` IO directly.
 
+pub(crate) mod git;
+pub(crate) mod git_diff;
 pub mod projects;
 pub mod store;
 pub mod usage;

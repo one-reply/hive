@@ -8,11 +8,14 @@ use gpui_kit::*;
 use hive_core::settings::Settings;
 
 use crate::app::AppState;
+use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
-use crate::ui::workspace::{NewTerminal, ToggleSidebar};
+use crate::ui::workspace::{NewTerminal, ToggleGitPanel, ToggleSidebar};
 
 /// Key context every Hive shortcut is bound in: the main window's root.
 pub(crate) const CONTEXT: &str = "Workspace";
+// Match the input dispatch node too, where Textarea binds its own Cmd-Enter.
+pub(crate) const COMMIT_CONTEXT: &str = "(SourceControl > Input) || SourceControl";
 
 /// An action the user can reassign.
 pub(crate) struct Shortcut {
@@ -37,7 +40,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 3] = [
+pub(crate) static SHORTCUTS: [Shortcut; 5] = [
     Shortcut {
         label: "New terminal",
         default: "cmd-t",
@@ -52,6 +55,16 @@ pub(crate) static SHORTCUTS: [Shortcut; 3] = [
         label: "Open settings",
         default: "cmd-,",
         action: || Box::new(OpenSettings),
+    },
+    Shortcut {
+        label: "Toggle source control",
+        default: "cmd-shift-g",
+        action: || Box::new(ToggleGitPanel),
+    },
+    Shortcut {
+        label: "Commit staged changes",
+        default: "cmd-enter",
+        action: || Box::new(CommitChanges),
     },
 ];
 
@@ -87,7 +100,16 @@ fn install(cx: &mut App) {
     let settings = &AppState::get(cx).store.read(cx).state.settings;
     let bindings: Vec<KeyBinding> = SHORTCUTS
         .iter()
-        .filter_map(|shortcut| load(shortcut, settings, context.clone(), cx))
+        .filter_map(|shortcut| {
+            let context = if shortcut.name() == CommitChanges.name() {
+                KeyBindingContextPredicate::parse(COMMIT_CONTEXT)
+                    .ok()
+                    .map(Rc::new)
+            } else {
+                context.clone()
+            };
+            load(shortcut, settings, context, cx)
+        })
         .collect();
     cx.clear_key_bindings();
     cx.bind_keys(others.into_iter().chain(bindings));
@@ -178,6 +200,23 @@ mod tests {
     use gpui_kit::{Keystroke, OperatingSystem};
 
     const MAC: OperatingSystem = OperatingSystem::Mac;
+
+    #[test]
+    fn commit_binding_matches_only_source_control_and_its_inputs() {
+        use gpui_kit::{KeyBindingContextPredicate, KeyContext};
+        let predicate =
+            KeyBindingContextPredicate::parse(super::COMMIT_CONTEXT).expect("commit context");
+        let contexts = |names: &[&str]| {
+            names
+                .iter()
+                .map(|n| KeyContext::parse(n).expect("context"))
+                .collect::<Vec<_>>()
+        };
+        assert!(predicate.eval(&contexts(&["Workspace", "SourceControl", "Input"])));
+        assert!(predicate.eval(&contexts(&["Workspace", "SourceControl"])));
+        assert!(!predicate.eval(&contexts(&["Workspace", "TerminalPanel"])));
+        assert!(!predicate.eval(&contexts(&["Workspace", "Settings", "Input"])));
+    }
 
     fn keystroke(source: &'static str) -> Keystroke {
         Keystroke::parse(source).expect("valid keystroke")

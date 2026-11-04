@@ -53,7 +53,7 @@ impl Render for StatusBarView {
         let usage = self.usage.clone();
         StatusBar::new()
             .bg(cx.theme().background)
-            .left(h_flex().gap_6().child("Used").children(providers))
+            .left(h_flex().gap_6().children(providers))
             .right(
                 Button::new("refresh-usage")
                     .cursor_pointer()

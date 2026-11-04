@@ -1,8 +1,9 @@
-//! Main window layout: TitleBar | Sidebar + center dock | StatusBar.
-//! The center is a `DockArea` of terminal tabs, one group per selected project/worktree.
+//! Main window layout: TitleBar | Sidebar + center | StatusBar.
+//! The center shows the selected project's own `DockArea` of terminal and diff tabs
+//! (`ProjectCenter`); every project keeps its tabs while another one is shown.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -26,10 +27,17 @@ use crate::state::store::Store;
 use crate::terminal::TerminalPanel;
 use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
+use crate::ui::{diff_panel::DiffPanel, git_panel::GitPanel};
 use crate::ui::{keymap, theme};
 
+mod center;
+mod git;
+mod project_center;
+
+use project_center::ProjectCenter;
+
 // Bound in `ui::keymap`, where the user can reassign them.
-actions!(workspace, [NewTerminal, ToggleSidebar]);
+actions!(workspace, [NewTerminal, ToggleSidebar, ToggleGitPanel]);
 
 pub struct Workspace {
     sidebar: Entity<Sidebar>,
@@ -46,10 +54,15 @@ pub struct Workspace {
     fullscreen_animate: bool,
     status_bar: Entity<StatusBarView>,
     projects: Entity<Projects>,
-    dock: Entity<DockArea>,
-    _skin: Rc<DockSkin>,
-    /// Terminal tabs we opened; pruned when the dock no longer holds them.
-    terminals: Vec<Entity<TerminalPanel>>,
+    /// One center per project path, created on first use and dropped with the project.
+    centers: HashMap<PathBuf, ProjectCenter>,
+    /// The project whose center fills the window; `None` shows the welcome screen.
+    shown: Option<PathBuf>,
+    git_panel: Entity<GitPanel>,
+    git_open: bool,
+    git_width: Pixels,
+    resizing_git: bool,
+    last_selection: Option<PathBuf>,
     _observers: Vec<Subscription>,
     /// Left button went down on the tab-bar band; the next mouse move drags the window.
     should_move: bool,
@@ -72,27 +85,12 @@ impl Workspace {
         let app = AppState::get(cx);
         let (store, projects) = (app.store.clone(), app.projects.clone());
         let sidebar_width = px(store.read(cx).state.settings.sidebar_width());
-
-        let (dock, skin) = DockSkin::dock_area("center", None, window, cx);
-        skin.set_panel_style(PanelStyle::TabBar, cx);
-        skin.set_close_button_visible(true, cx);
-        skin.set_toggle_button_visible(false, cx);
+        let git_width = px(store.read(cx).state.settings.git_panel_width());
+        let git_open = store.read(cx).state.settings.git_panel_open;
 
         let observers = vec![
             cx.observe_in(&projects, window, |this, _, window, cx| {
                 this.sync_selection(window, cx)
-            }),
-            // Tabs closed from the dock (× button, exited shell) must drop out of `terminals`
-            // so the empty state with its "+" strip comes back.
-            cx.observe(&dock, |this, dock, cx| {
-                this.terminals.retain(|panel| {
-                    dock.read(cx)
-                        .panel(PanelId::from(panel.entity_id()))
-                        .is_some()
-                });
-                this.sync_alone(cx);
-                this.sync_active_worktrees(cx);
-                cx.notify();
             }),
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::sync_system_appearance(window, cx)
@@ -118,94 +116,97 @@ impl Workspace {
             fullscreen_animate: false,
             status_bar: cx.new(StatusBarView::new),
             projects,
-            dock,
-            _skin: skin,
-            terminals: Vec::new(),
+            centers: HashMap::new(),
+            shown: None,
+            git_panel: cx.new(|cx| GitPanel::new(window, cx)),
+            git_open,
+            git_width,
+            resizing_git: false,
+            last_selection: None,
             _observers: observers,
             should_move: false,
         };
+        this.watch_git(window, cx);
         this.sync_selection(window, cx);
         this
     }
 
-    fn selected_path(&self, cx: &App) -> Option<PathBuf> {
+    /// The selected project and the folder terminals open in: its selected worktree, or the
+    /// project folder itself when it is not a git repository.
+    fn selected_target(&self, cx: &App) -> Option<(PathBuf, PathBuf)> {
         let (project, worktree) = self.projects.read(cx).selection()?;
-        Some(
-            worktree
-                .map(|w| w.path.clone())
-                .unwrap_or_else(|| project.path.clone()),
-        )
+        let cwd = worktree
+            .map(|w| w.path.clone())
+            .unwrap_or_else(|| project.path.clone());
+        Some((project.path.clone(), cwd))
     }
 
-    /// Show a terminal for the selected worktree: focus an existing tab for that path, or open one.
+    /// Show the selected project's center with a terminal for its selected worktree: focus an
+    /// existing tab for that path, or open one.
     fn sync_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.selected_path(cx) else {
+        self.drop_removed_centers(cx);
+        let Some((project, cwd)) = self.selected_target(cx) else {
+            self.last_selection = None;
+            self.shown = None;
             cx.notify();
             return;
         };
-        let dock = self.dock.clone();
-        self.terminals.retain(|panel| {
-            dock.read(cx)
-                .panel(PanelId::from(panel.entity_id()))
-                .is_some()
-        });
-
-        let existing = self
-            .terminals
-            .iter()
-            .find(|panel| panel.read(cx).cwd(cx).as_deref() == Some(path.as_path()))
-            .cloned();
-        match existing {
-            Some(panel) => dock.update(cx, |dock, cx| {
-                dock.select_panel(PanelId::from(panel.entity_id()), window, cx)
-            }),
-            None => self.open_terminal(Some(path), window, cx),
+        if self.last_selection.as_ref() == Some(&cwd) && self.shown.as_ref() == Some(&project) {
+            return;
         }
+        self.last_selection = Some(cwd.clone());
+        self.shown = Some(project.clone());
+        self.center(&project, window, cx)
+            .show_terminal(&cwd, window, cx);
+        self.sync_active_worktrees(cx);
         cx.notify();
     }
 
-    /// Open a new terminal tab in the center dock (`None` = the user's home directory).
-    fn open_terminal(&mut self, cwd: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        let dock = self.dock.clone();
-        if let Some(panel) = TerminalPanel::open(cwd.as_deref(), dock.downgrade(), window, cx) {
-            dock.update(cx, |dock, cx| {
-                dock.add_panel_view(
-                    panel_handle(panel.clone()),
-                    DockPlacement::Center,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-            self.terminals.push(panel);
-            self.sync_alone(cx);
-            self.sync_active_worktrees(cx);
-            cx.notify();
-        }
+    /// A project removed from the sidebar takes its tabs (and their shells) with it.
+    fn drop_removed_centers(&mut self, cx: &App) {
+        let projects = self.projects.read(cx);
+        self.centers
+            .retain(|path, _| projects.project(path).is_some());
     }
 
-    /// Tell every terminal whether it is the only one, so the last tab can draw its own close button.
-    fn sync_alone(&self, cx: &mut Context<Self>) {
-        let alone = self.terminals.len() == 1;
-        for panel in &self.terminals {
-            panel.update(cx, |panel, cx| panel.set_alone(alone, cx));
-        }
+    /// The project's center, created on first use.
+    fn center(
+        &mut self,
+        project: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> &mut ProjectCenter {
+        self.centers
+            .entry(project.to_path_buf())
+            .or_insert_with(|| ProjectCenter::new(project, window, cx))
     }
 
-    /// Worktrees with an open terminal get a lit status dot in the sidebar.
+    fn shown_center(&self) -> Option<&ProjectCenter> {
+        self.shown.as_ref().and_then(|path| self.centers.get(path))
+    }
+
+    /// Worktrees with an open terminal in any project get a lit status dot in the sidebar.
     fn sync_active_worktrees(&self, cx: &mut Context<Self>) {
         let paths: HashSet<PathBuf> = self
-            .terminals
-            .iter()
-            .filter_map(|panel| panel.read(cx).cwd(cx))
+            .centers
+            .values()
+            .flat_map(|center| center.terminal_paths(cx))
             .collect();
         self.projects
             .update(cx, |projects, cx| projects.set_active(paths, cx));
     }
 
+    /// Opens another terminal tab in the selected worktree. Terminals belong to a project,
+    /// so this does nothing while no project is selected.
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
-        let cwd = self.selected_path(cx);
-        self.open_terminal(cwd, window, cx);
+        let Some((project, cwd)) = self.selected_target(cx) else {
+            return;
+        };
+        self.shown = Some(project.clone());
+        self.center(&project, window, cx)
+            .open_terminal(Some(&cwd), window, cx);
+        self.sync_active_worktrees(cx);
+        cx.notify();
     }
 
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
@@ -288,116 +289,6 @@ impl Workspace {
                 }),
             )
     }
-
-    fn render_center(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        // The center column starts at the window's top edge, so its top band is where the
-        // macOS title bar would be: let it drag and double-click-zoom the window like `TitleBar`
-        // does. Tabs stop mouse-down propagation, so dragging a tab still reorders it.
-        let center = v_flex()
-            .id("center")
-            .flex_1()
-            .h_full()
-            .min_w_0()
-            .min_h_0()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, _| {
-                    this.should_move = event.position.y < TAB_BAR_HEIGHT
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| this.should_move = false),
-            )
-            .on_mouse_move(cx.listener(|this, _, window, _| {
-                if this.should_move {
-                    this.should_move = false;
-                    window.start_window_move();
-                }
-            }))
-            .on_double_click(|event, window, _| {
-                if event.position().y < TAB_BAR_HEIGHT {
-                    window.titlebar_double_click();
-                }
-            });
-        if self.terminals.is_empty() {
-            return center.child(self.render_welcome(muted, window, cx));
-        }
-        center.child(div().size_full().child(self.dock.clone()))
-    }
-
-    /// Shown while the dock has no tabs (the dock itself draws nothing then).
-    fn render_welcome(
-        &self,
-        muted: Hsla,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let hint = if self.projects.read(cx).selection().is_some() {
-            "Open a terminal in the selected worktree to begin."
-        } else {
-            "Select a project from the sidebar to begin."
-        };
-        let shortcut = |label: &'static str, action: &dyn Action| {
-            h_flex()
-                .w(px(320.))
-                .justify_between()
-                .items_center()
-                .text_sm()
-                .text_color(muted)
-                .child(label)
-                .children(Kbd::binding_for_action(
-                    action,
-                    Some(keymap::CONTEXT),
-                    window,
-                ))
-        };
-        v_flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .gap_3()
-            .child(
-                Icon::default()
-                    .data(HIVE_MARK)
-                    .size(WELCOME_LOGO_SIZE)
-                    .text_color(cx.theme().foreground),
-            )
-            .child(div().text_3xl().font_weight(FontWeight::BOLD).child("HIVE"))
-            .child(div().text_sm().text_color(muted).child(hint))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .mt_2()
-                    .child(
-                        Button::new("welcome-add-project")
-                            .cursor_pointer()
-                            .outline()
-                            .icon(IconName::FolderOpen)
-                            .label("Add project")
-                            .on_click(|_, _, cx| {
-                                Store::prompt_add_projects(AppState::get(cx).store.clone(), cx)
-                            }),
-                    )
-                    .child(
-                        Button::new("welcome-new-terminal")
-                            .cursor_pointer()
-                            .outline()
-                            .icon(Lucide::SquareTerminal)
-                            .label("New terminal")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_terminal(&NewTerminal, window, cx)
-                            })),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .mt_6()
-                    .child(shortcut("New terminal", &NewTerminal)),
-            )
-    }
 }
 
 impl Render for Workspace {
@@ -477,6 +368,7 @@ impl Render for Workspace {
             .min_h_0()
             .child(left_el)
             .child(center_el)
+            .when(self.git_open, |el| el.child(self.render_git_column()))
             .child(
                 div()
                     .absolute()
@@ -491,12 +383,28 @@ impl Render for Workspace {
                     })
                     .child(title_bar),
             )
-            .when(open, |el| el.child(self.render_sidebar_resize_handle(cx)));
+            .when(open, |el| el.child(self.render_sidebar_resize_handle(cx)))
+            .when(self.git_open, |el| {
+                el.child(self.render_git_resize_handle(cx))
+            })
+            .when(!self.git_open, |el| {
+                el.child(
+                    div().absolute().right_2().bottom_2().child(
+                        Button::new("show-git")
+                            .cursor_pointer()
+                            .small()
+                            .label("⑂ Git")
+                            .tooltip("Source control (⌘⇧G)")
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_git(cx))),
+                    ),
+                )
+            });
         v_flex()
             .size_full()
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(|this, _: &ToggleGitPanel, _, cx| this.toggle_git(cx)))
             .bg(bg)
             .text_color(cx.theme().foreground)
             .child(body)

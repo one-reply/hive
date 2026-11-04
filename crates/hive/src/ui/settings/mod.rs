@@ -3,11 +3,13 @@
 //! every window at once, so the effect is visible while the window is open.
 
 mod appearance;
+mod project;
 mod projects;
 mod shortcuts;
 mod terminal;
 
 use std::ops::RangeInclusive;
+use std::path::{Path, PathBuf};
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::Root;
@@ -19,6 +21,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::AppState;
+use crate::ui::project_badge;
+use project::ProjectPage;
 use shortcuts::ShortcutsPage;
 
 actions!(hive, [OpenSettings]);
@@ -28,6 +32,8 @@ const WINDOW_HEIGHT: Pixels = px(600.);
 const WINDOW_MIN_WIDTH: Pixels = px(640.);
 const WINDOW_MIN_HEIGHT: Pixels = px(420.);
 const NAV_WIDTH: Pixels = px(220.);
+const NAV_PROJECT_INDENT: Pixels = px(20.);
+const NAV_BADGE: Pixels = px(14.);
 const PAGE_MAX_WIDTH: Pixels = px(680.);
 const STEPPER_VALUE_WIDTH: Pixels = px(32.);
 /// Font sizes change by whole pixels.
@@ -40,8 +46,26 @@ pub fn init(cx: &mut App) {
 
 /// Brings the settings window to the front, opening it if it isn't open yet.
 pub fn open(cx: &mut App) {
+    open_at(None, cx);
+}
+
+/// Opens the settings window on the page of the project at `path`.
+pub fn open_project(path: &Path, cx: &mut App) {
+    open_at(Some(path.to_path_buf()), cx);
+}
+
+fn open_at(project: Option<PathBuf>, cx: &mut App) {
     if let Some(root) = settings_window(cx) {
-        if let Err(err) = root.update(cx, |_, window, _| window.activate_window()) {
+        let shown = root.update(cx, |root, window, cx| {
+            window.activate_window();
+            let Some(project) = project else { return };
+            if let Ok(settings) = root.view().clone().downcast::<SettingsWindow>() {
+                settings.update(cx, |settings, cx| {
+                    settings.show_project(project, window, cx)
+                });
+            }
+        });
+        if let Err(err) = shown {
             tracing::warn!(%err, "failed to activate the settings window");
         }
         return;
@@ -60,7 +84,13 @@ pub fn open(cx: &mut App) {
         ..TitleBar::window_options()
     };
     if let Err(err) = gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| SettingsWindow::new(window, cx))
+        cx.new(|cx| {
+            let mut settings = SettingsWindow::new(window, cx);
+            if let Some(project) = project {
+                settings.show_project(project, window, cx);
+            }
+            settings
+        })
     }) {
         tracing::error!(%err, "failed to open the settings window");
     }
@@ -122,19 +152,68 @@ impl Page {
     }
 }
 
+/// What the right side shows: a fixed page or one project's page.
+enum View {
+    Page(Page),
+    Project(Entity<ProjectPage>),
+}
+
 pub struct SettingsWindow {
-    page: Page,
+    view: View,
     shortcuts: Entity<ShortcutsPage>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl SettingsWindow {
     fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
-        let store = AppState::get(cx).store.clone();
+        let state = AppState::get(cx);
+        let (store, projects) = (state.store.clone(), state.projects.clone());
         Self {
-            page: Page::Appearance,
+            view: View::Page(Page::Appearance),
             shortcuts: cx.new(ShortcutsPage::new),
-            _subscriptions: vec![cx.observe(&store, |_, _, cx| cx.notify())],
+            _subscriptions: vec![
+                cx.observe(&store, |this, _, cx| {
+                    this.leave_removed_project(cx);
+                    cx.notify();
+                }),
+                cx.observe(&projects, |_, _, cx| cx.notify()),
+            ],
+        }
+    }
+
+    fn show_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        self.view = View::Page(page);
+        cx.notify();
+    }
+
+    fn show_project(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shown_project(cx).is_some_and(|shown| shown == path) {
+            return;
+        }
+        self.view = View::Project(cx.new(|cx| ProjectPage::new(path, window, cx)));
+        cx.notify();
+    }
+
+    fn shown_project(&self, cx: &App) -> Option<PathBuf> {
+        match &self.view {
+            View::Project(page) => Some(page.read(cx).path().to_path_buf()),
+            View::Page(_) => None,
+        }
+    }
+
+    /// A project removed (here or from the sidebar) takes its page with it.
+    fn leave_removed_project(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.shown_project(cx) else {
+            return;
+        };
+        let store = AppState::get(cx).store.read(cx);
+        if !store
+            .state
+            .projects
+            .iter()
+            .any(|project| project.path == path)
+        {
+            self.view = View::Page(Page::Projects);
         }
     }
 
@@ -154,7 +233,13 @@ impl SettingsWindow {
                             .text_color(muted)
                             .child(title.to_uppercase()),
                     )
-                    .children(pages.iter().map(|page| self.render_nav_item(*page, cx)))
+                    .children(pages.iter().flat_map(|page| {
+                        let mut items = vec![self.render_nav_item(*page, cx)];
+                        if *page == Page::Projects {
+                            items.extend(self.render_nav_projects(cx));
+                        }
+                        items
+                    }))
             })
             .collect();
         let theme = cx.theme();
@@ -174,7 +259,7 @@ impl SettingsWindow {
     fn render_nav_item(&self, page: Page, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
         let (fg, muted) = (theme.sidebar_foreground, theme.muted_foreground);
-        let selected = self.page == page;
+        let selected = matches!(self.view, View::Page(shown) if shown == page);
         h_flex()
             .id(page.label())
             .gap_2()
@@ -188,19 +273,84 @@ impl SettingsWindow {
             .when(selected, |el| el.bg(fg.opacity(0.09)))
             .child(Icon::new(page.icon()).size_4())
             .child(page.label())
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.page = page;
-                cx.notify();
-            }))
+            .on_click(cx.listener(move |this, _, _, cx| this.show_page(page, cx)))
+    }
+
+    /// One nav item per project, indented under "Projects".
+    fn render_nav_projects(&self, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
+        let shown = self.shown_project(cx);
+        let theme = cx.theme();
+        let (fg, muted) = (theme.sidebar_foreground, theme.muted_foreground);
+        let projects = AppState::get(cx).projects.read(cx);
+        let items: Vec<_> = projects
+            .items
+            .iter()
+            .enumerate()
+            .map(|(ix, project)| {
+                let selected = shown.as_deref() == Some(project.path.as_path());
+                let badge = project_badge::render(
+                    &project.identity,
+                    &project.name,
+                    project_badge::color(&project.identity, ix),
+                    NAV_BADGE,
+                );
+                (
+                    ix,
+                    project.path.clone(),
+                    project.name.clone(),
+                    badge,
+                    selected,
+                )
+            })
+            .collect();
+        items
+            .into_iter()
+            .map(|(ix, path, name, badge, selected)| {
+                h_flex()
+                    .id(("nav-project", ix))
+                    .gap_2()
+                    .pl(NAV_PROJECT_INDENT)
+                    .pr_3()
+                    .py_1()
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(if selected { fg } else { muted })
+                    .hover(|style| style.bg(fg.opacity(0.05)))
+                    .when(selected, |el| el.bg(fg.opacity(0.09)))
+                    .child(badge)
+                    .child(div().min_w_0().truncate().child(name))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.show_project(path.clone(), window, cx)
+                    }))
+            })
+            .collect()
     }
 
     fn render_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let body = match self.page {
-            Page::Appearance => appearance::render(cx).into_any_element(),
-            Page::Shortcuts => self.shortcuts.clone().into_any_element(),
-            Page::Projects => projects::render(cx).into_any_element(),
-            Page::Terminal => terminal::render(cx).into_any_element(),
+        let (title, description, body): (SharedString, SharedString, AnyElement) = match &self.view
+        {
+            View::Page(page) => {
+                let body = match page {
+                    Page::Appearance => appearance::render(cx).into_any_element(),
+                    Page::Shortcuts => self.shortcuts.clone().into_any_element(),
+                    Page::Projects => projects::render(cx).into_any_element(),
+                    Page::Terminal => terminal::render(cx).into_any_element(),
+                };
+                (page.label().into(), page.description().into(), body)
+            }
+            View::Project(project) => {
+                let path = project.read(cx).path();
+                let name = AppState::get(cx)
+                    .projects
+                    .read(cx)
+                    .project(path)
+                    .map(|project| project.name.clone())
+                    .unwrap_or_default();
+                let path = path.display().to_string();
+                (name.into(), path.into(), project.clone().into_any_element())
+            }
         };
         div()
             .id("settings-page")
@@ -222,14 +372,9 @@ impl SettingsWindow {
                                 div()
                                     .text_xl()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(self.page.label()),
+                                    .child(title),
                             )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(muted)
-                                    .child(self.page.description()),
-                            ),
+                            .child(div().text_sm().text_color(muted).child(description)),
                     )
                     .child(body),
             )

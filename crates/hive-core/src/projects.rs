@@ -2,6 +2,7 @@
 
 use crate::git;
 use crate::host::Host;
+use crate::identity::ProjectIdentity;
 use crate::state::{ProjectRef, WorktreeFilter};
 use std::path::{Path, PathBuf};
 
@@ -11,10 +12,12 @@ const WORKTREES_DIR_SUFFIX: &str = "-worktrees";
 /// A project folder and its git worktrees.
 #[derive(Clone, Debug)]
 pub struct Project {
+    /// The display name: the custom one from [`ProjectIdentity`], else the folder name.
     pub name: String,
     pub path: PathBuf,
     pub host: Host,
     pub filter: WorktreeFilter,
+    pub identity: ProjectIdentity,
     /// git worktrees, the main one first. Empty when the folder is not a git repo.
     pub worktrees: Vec<Worktree>,
 }
@@ -97,10 +100,14 @@ pub fn scan(project: &ProjectRef) -> Project {
         .map(|out| parse_worktrees(&out))
         .unwrap_or_default();
     Project {
-        name: file_name(path),
+        name: project
+            .identity
+            .name()
+            .map_or_else(|| file_name(path), str::to_owned),
         path: path.clone(),
         host: project.host.clone(),
         filter: project.worktrees,
+        identity: project.identity.clone(),
         worktrees,
     }
 }
@@ -162,6 +169,7 @@ branch refs/heads/lavender
             path: PathBuf::from("/Users/me/projects/app"),
             host: Host::Local,
             filter,
+            identity: ProjectIdentity::default(),
             worktrees: parse_worktrees(PORCELAIN),
         }
     }

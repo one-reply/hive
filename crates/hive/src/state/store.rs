@@ -1,5 +1,6 @@
 use gpui_kit::*;
 use hive_core::host::Host;
+use hive_core::identity::ProjectIdentity;
 use hive_core::settings::ThemeChoice;
 use hive_core::state::{ProjectRef, State};
 use std::path::{Path, PathBuf};
@@ -10,6 +11,20 @@ pub struct Store {
 }
 
 impl Store {
+    pub(crate) fn set_git_panel_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        self.state.settings.set_git_panel_width(width);
+        self.commit(cx);
+    }
+
+    pub(crate) fn set_git_panel_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.state.settings.git_panel_open = open;
+        self.commit(cx);
+    }
+
+    pub(crate) fn set_diff_split(&mut self, split: bool, cx: &mut Context<Self>) {
+        self.state.settings.diff_split = split;
+        self.commit(cx);
+    }
     pub fn load() -> Self {
         Self {
             state: State::load(),
@@ -74,6 +89,23 @@ impl Store {
     pub fn toggle_worktree_filter(&mut self, path: &Path, cx: &mut Context<Self>) {
         if let Some(project) = self.state.projects.iter_mut().find(|p| p.path == path) {
             project.worktrees = project.worktrees.toggled();
+            self.commit(cx);
+        }
+    }
+
+    /// Edits how a project presents itself; saves only when something changed.
+    pub(crate) fn update_identity(
+        &mut self,
+        path: &Path,
+        edit: impl FnOnce(&mut ProjectIdentity),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = self.state.projects.iter_mut().find(|p| p.path == path) else {
+            return;
+        };
+        let before = project.identity.clone();
+        edit(&mut project.identity);
+        if project.identity != before {
             self.commit(cx);
         }
     }
