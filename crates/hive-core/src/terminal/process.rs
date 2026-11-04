@@ -31,6 +31,7 @@ pub(super) fn spawn(
         .env("TERM_PROGRAM", "hive")
         .env_remove("XDG_ACTIVATION_TOKEN")
         .env_remove("DESKTOP_STARTUP_ID");
+    remove_inherited_agent_env(&mut command);
     let mut slave = Some(pty.user);
     // Only async-signal-safe syscalls run between fork and exec. login_tty creates
     // the session, attaches its controlling terminal and installs all three stdio fds.
@@ -54,6 +55,19 @@ pub(super) fn spawn(
     }
     let child = command.spawn()?;
     Ok((child, File::from(pty.controller)))
+}
+
+/// A Hive terminal is a fresh host, not a child of whichever agent launched Hive. Claude Code
+/// marks its subprocesses with `CLAUDE*` variables (`CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`,
+/// session ids, sockets); a `claude` started in the pane would inherit them and run as a nested
+/// session with transcript saving off.
+fn remove_inherited_agent_env(command: &mut Command) {
+    let inherited = std::env::vars_os()
+        .map(|(key, _)| key)
+        .filter(|key| key.to_string_lossy().starts_with("CLAUDE"));
+    for key in inherited {
+        command.env_remove(key);
+    }
 }
 
 pub(super) fn winsize(size: WindowSize) -> Winsize {
@@ -139,5 +153,31 @@ fn shell_user() -> io::Result<(String, String, String)> {
             value("HOME", entry.pw_dir)?,
             value("SHELL", entry.pw_shell)?,
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_inherited_agent_env;
+    use std::process::Command;
+
+    #[test]
+    fn child_shell_does_not_inherit_claude_code_markers() {
+        let mut command = Command::new("env");
+        command
+            .env("CLAUDE_CODE_CHILD_SESSION", "1")
+            .env("CLAUDECODE", "1")
+            .env("HIVE_KEEP", "1");
+        // The filter reads the process environment, so the markers must be set there too.
+        unsafe {
+            std::env::set_var("CLAUDE_CODE_CHILD_SESSION", "1");
+            std::env::set_var("CLAUDECODE", "1");
+        }
+        remove_inherited_agent_env(&mut command);
+        let output = command.output().expect("env is always available");
+        let env = String::from_utf8_lossy(&output.stdout);
+        assert!(!env.contains("CLAUDE_CODE_CHILD_SESSION="), "{env}");
+        assert!(!env.contains("CLAUDECODE="), "{env}");
+        assert!(env.contains("HIVE_KEEP=1"), "{env}");
     }
 }

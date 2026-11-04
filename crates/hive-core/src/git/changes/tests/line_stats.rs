@@ -103,3 +103,53 @@ fn counts_handle_unborn_renames_deletions_and_binary_changes() {
     assert_eq!(file(&files, "deleted.txt").staged_stats, counts(0, 3));
     assert_eq!(file(&files, "binary.bin").staged_stats, None);
 }
+
+#[test]
+fn batched_untracked_counts_match_git_for_attributes_and_literal_paths() {
+    let repo = Repo::new();
+    repo.write("tracked", "base\n");
+    repo.commit();
+    repo.write(
+        ".gitattributes",
+        "*.text diff\n*.binary -diff\n*.custom diff=fixture\n",
+    );
+    repo.git(&["config", "diff.fixture.binary", "true"]);
+    for (path, contents) in [
+        ("empty", ""),
+        ("crlf", "one\r\ntwo\r\n"),
+        ("-literal\tфайл\n.txt", "one\ntwo"),
+        ("auto", "one\0two\n"),
+        ("forced.text", "one\0two\n"),
+        ("forced.binary", "one\ntwo\n"),
+        ("driver.custom", "one\ntwo\n"),
+    ] {
+        repo.write(path, contents);
+    }
+    repo.write("late-nul", &format!("{}\0last", "x".repeat(8000)));
+    repo.write("early-nul", &format!("{}\0last", "x".repeat(7999)));
+    repo.write("long-line", &format!("{}\nlast", "x".repeat(18000)));
+    for path in ["link", "link.binary", "link.custom"] {
+        std::os::unix::fs::symlink("missing\ntarget", repo.0.join(path)).unwrap();
+    }
+
+    for threshold in ["512m", "10"] {
+        repo.git(&["config", "core.bigFileThreshold", threshold]);
+        let status = status::read_with_stats(&Host::Local, &repo.0).unwrap();
+        assert_eq!(status.files.len(), 14);
+        for file in status.files {
+            let expected = crate::git::numstat::read(
+                &Host::Local,
+                &repo.0,
+                &["diff", "--no-index"],
+                &["/dev/null", &file.path],
+            )
+            .unwrap();
+            assert_eq!(
+                file.unstaged_stats,
+                expected.get(&file.path).copied(),
+                "{} (threshold {threshold})",
+                file.path
+            );
+        }
+    }
+}
