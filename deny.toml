@@ -3,6 +3,13 @@ targets = ["aarch64-apple-darwin"]
 
 [advisories]
 version = 2
+# Upstream maintenance notices, not reported vulnerabilities. Revisit on gpui-kit updates.
+ignore = [
+    { id = "RUSTSEC-2024-0384", reason = "instant is used by gpui's backoff dependency; no fixed version, migrate with upstream." },
+    { id = "RUSTSEC-2024-0436", reason = "paste is a transitive compile-time macro; replace when GPUI and its dependencies migrate." },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is used by GPUI's usvg renderer; no drop-in fixed version, revisit with GPUI's harfrust migration." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is used by GPUI and usvg; no fixed version, revisit with upstream fontations migration." },
+]
 
 [licenses]
 confidence-threshold = 0.95

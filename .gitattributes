@@ -1,0 +1,2 @@
+# Upstream legal texts are preserved byte-for-byte and checked against their hashes.
+licenses/** -whitespace

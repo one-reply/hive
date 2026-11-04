@@ -9,3 +9,6 @@
 *.key
 *.pem
 *.mobileprovision
+/AGENTS.md
+/CLAUDE.md
+/wiki/

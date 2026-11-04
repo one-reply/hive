@@ -5,6 +5,6 @@ useDefault = true
 description = "Verified SHA-256 source-file hashes in the November 2026 performance snapshots, not API keys."
 targetRules = ["generic-api-key"]
 condition = "AND"
-paths = ['''^artifacts/performance-audit-2026-11-04/(fixed-)?manifest\.json$''']
+paths = ['''(^|/)artifacts/performance-audit-2026-11-04/(fixed-)?manifest\.json$''']
 regexTarget = "line"
 regexes = ['''^\s*"crates/(hive/src/(terminal/keys|ui/keymap)|hive-core/src/keychain)\.rs": "(ba4516cf0522a401f7da5c9ff5abd1aa1eb8f5abe0993a80f33b8c35415091e6|1aa14bd1ceecad34d7911992b76355c210fdcddfa95490e373cf84ee332a03f3|c6b8c8d7cd1394580ebf724ab2e1dd2501d7247cf7b654843d57532cfdde442f)",?\s*$''']

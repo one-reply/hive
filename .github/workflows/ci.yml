@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 8 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  security:
+    name: Security and licenses
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install verified audit tools
+        run: |
+          python3 scripts/install-release-tools.py "$RUNNER_TEMP/hive-tools"
+          echo "$RUNNER_TEMP/hive-tools" >> "$GITHUB_PATH"
+      - name: Scan history and current files
+        run: |
+          gitleaks git --log-opts='--all' --redact=100 --max-archive-depth=3 --max-decode-depth=2
+          gitleaks dir . --redact=100 --max-archive-depth=3 --max-decode-depth=2
+      - name: Check dependencies
+        run: cargo deny --locked check licenses advisories sources
+
+  build:
+    name: macOS checks and bundle
+    if: github.event_name != 'schedule'
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked --workspace
+      - name: Core must not depend on GPUI
+        run: |
+          cargo tree --locked -p hive-core > "$RUNNER_TEMP/core-tree.txt"
+          if grep -i gpui "$RUNNER_TEMP/core-tree.txt"; then
+            echo 'hive-core must not depend on GPUI' >&2
+            exit 1
+          fi
+      - name: Verify release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "hive"))')"
+          test "$RELEASE_TAG" = "v$version"
+      - name: Install verified release tools
+        run: |
+          python3 scripts/install-release-tools.py "$RUNNER_TEMP/hive-tools"
+          echo "$RUNNER_TEMP/hive-tools" >> "$GITHUB_PATH"
+      - name: Build and validate ARM64 app and archive
+        run: bash scripts/bundle-macos.sh release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: hive-macos-arm64
+          path: |
+            target/release/bundle/Hive-*-macos-arm64.zip
+            target/release/bundle/Hive-*-macos-arm64.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Draft prerelease
+    if: startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'
+    needs: [security, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: hive-macos-arm64
+          path: release
+      - name: Create draft for manual installation checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" release/* --verify-tag --draft --prerelease \
+            --title "Hive $RELEASE_TAG — early preview" --generate-notes

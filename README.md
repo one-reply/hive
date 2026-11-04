@@ -13,11 +13,35 @@ Keep your projects, Git worktrees, agent terminals, and code reviews in one plac
 Hive is written in Rust, with a GPU-rendered interface built on GPUI through
 `gpui-kit`.
 
+![Hive reviewing changes in a demo repository](docs/images/hive-demo.png)
+
+*Demo data in an isolated QA profile; no real project or account information is shown.*
+
 > **Early development · macOS / Apple Silicon**
 >
-> Hive is being prepared for its first public release. Build from source for now;
-> features and interfaces are still evolving. Intel Macs are unsupported.
+> Hive is early software; features and interfaces are still evolving.
+> Intel Macs are unsupported.
 > Linux and Windows are planned.
+
+## Download
+
+Get the Apple Silicon ZIP and its `.sha256` file from
+[GitHub Releases](https://github.com/vitaliits-stack/hive/releases).
+While the first release is being verified, you can build from source below.
+
+1. Download both files into the same folder and verify the archive:
+   `shasum -a 256 -c Hive-0.1.0-macos-arm64.zip.sha256`.
+2. Extract the ZIP and drag **Hive.app** to **Applications**.
+3. Open Hive from Finder. This preview is **ad-hoc signed, without Developer ID
+   or Apple notarization**. macOS may block it. After attempting to open it, use
+   **System Settings → Privacy & Security → Open Anyway** only if you trust the
+   download. See [Apple's instructions](https://support.apple.com/en-gb/102445).
+
+Keep Gatekeeper enabled. Checksums detect corruption; they do not authenticate the
+publisher. Managed Macs may prohibit opening an unnotarized app.
+
+The release notes list the macOS versions actually tested. The deployment target
+inside the executable is not a claim that every older macOS version is supported.
 
 ## What you can do today
 
@@ -45,7 +69,7 @@ sessions and approval controls are on the roadmap.
 You need:
 
 - A Mac with **Apple Silicon** and a native ARM64 Rust toolchain.
-- A current **stable Rust** toolchain with Cargo.
+- **rustup** and Cargo; `rust-toolchain.toml` pins the tested Rust toolchain.
 - **Xcode Command Line Tools** (or full Xcode) for the macOS SDK and native compiler.
 - **Git** on your `PATH`.
 
@@ -89,17 +113,20 @@ CLI or API provider.
 
 ### Build a macOS app bundle
 
-Packaging additionally requires **Xcode 26 or newer** for the app icon compiler
-and **Python 3** for the bundle checks.
+Packaging additionally requires **Xcode 26 or newer** for the app icon compiler,
+**Python 3**, and **cargo-about** for third-party notices. Install the pinned release
+tools into a local build directory:
 
 ```sh
-bash scripts/bundle-macos.sh release
+python3 scripts/install-release-tools.py target/release-tools
+PATH="$PWD/target/release-tools:$PATH" bash scripts/bundle-macos.sh release
 open target/release/bundle/Hive.app
 ```
 
 This is the default output path; a custom Cargo target directory changes it.
 The script creates an ARM64-only, locally ad-hoc-signed app. It does not produce a
-notarized distribution release. See [macOS packaging](wiki/modules/app-icons.md).
+notarized distribution release. Release mode also writes a ZIP and SHA-256 file.
+See [Releasing](docs/RELEASING.md).
 
 ## Keyboard shortcuts
 
@@ -126,8 +153,9 @@ Shortcuts can be changed in **Settings → Interface → Shortcuts**.
   endpoint. They refresh every five minutes or on demand. These integrations rely
   on undocumented endpoints and may stop working when providers change them.
 - Logs are written to `~/.hive/logs/hive.log`. For troubleshooting, run
-  `RUST_LOG=hive_core=debug cargo run --locked -p hive`. Debug logs include raw usage
-  responses; review and redact logs before sharing them.
+  `RUST_LOG=hive_core=debug cargo run --locked -p hive`. Usage diagnostics include
+  HTTP status and response size, not response bodies or credentials. Other logs can
+  include local paths and Git errors; review and redact them before sharing.
 
 ## Roadmap
 
@@ -137,8 +165,7 @@ Shortcuts can be changed in **Settings → Interface → Shortcuts**.
 - SSH host configuration in the app.
 - Linux and Windows support.
 
-See the [detailed roadmap](wiki/roadmap.md) for implementation notes. These are
-planned capabilities, not features available in the current build.
+These are planned capabilities, not features available in the current build.
 
 ## Contributing
 
@@ -153,24 +180,23 @@ The workspace has two crates:
 | [`hive-core`](crates/hive-core) | Domain logic, Git and CLI adapters, HTTP clients, persistence, and the terminal model. No GPUI dependency. |
 | [`hive`](crates/hive) | The GPUI app, state entities, views, and terminal rendering. |
 
-Read [AGENTS.md](AGENTS.md) for engineering conventions and the
-[wiki index](wiki/index.md) for architecture and design decisions. The internal
-wiki is currently written in Ukrainian and uses Obsidian wikilinks.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for engineering conventions and
+[SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 Before submitting a change:
 
 ```sh
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo tree -p hive-core | grep gpui
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo tree --locked -p hive-core | grep gpui
 ```
 
 The last command must print nothing (`grep` exits with status 1 when there are no
-matches). Verify UI changes in the running app and update the relevant wiki pages
+matches). Verify UI changes in the running app and update the relevant documentation
 when behavior or architecture changes.
 
 ## License
 
-This repository does not yet include an open-source license. A `LICENSE` file will
-be added before the public open-source release.
+Hive is licensed under [Apache-2.0](LICENSE). Third-party dependencies and artwork
+retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md).

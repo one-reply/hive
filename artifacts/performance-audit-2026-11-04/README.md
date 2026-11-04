@@ -1,12 +1,14 @@
 # Hive performance audit, 2026-11-04
 
-Interpretation and limitations: `wiki/performance-audit-2026-11-04.md`.
+Historical measurements from a disposable, instrumented release build on an Apple M3 Pro
+with 18 GiB RAM, macOS 27.2. These are diagnostic results, not a performance guarantee.
+The investigation identified a blocked SIGCHLD notification socket, repeated Git work
+per changed file, and an unvirtualized Changes list. The fixes removed the global
+signal handler, consolidated Git reads, and virtualized the Changes list.
 
-- `manifest.json`, `summary.json`, `git.csv`, compressed timing/resources and process samples:
+- `manifest.json`, `summary.json`, `git.csv`, compressed timing/resources:
   original release QA baseline. The manifest identifies the dirty source snapshot.
 - `git-fixed.csv`: one warm-up and three runs on the same 100/1000-file fixtures.
-- `signal-before.txt`: isolated regression test fails on the original SIGCHLD integration.
-- `tests-fixed.txt`, `clippy-fixed.txt`, `core-tree-fixed.txt`, `release-bundle.txt`: verification.
 - `fixed-manifest.json`: source hashes of the instrumented native QA snapshot.
 - `fixed-summary.json`, `fixed-timing-primary.csv.gz`: valid 30-second visible/hidden phases.
 - `fixed-ui-checks.csv.gz`: final native scroll/collapse/expand checks, all passed.
@@ -47,3 +49,8 @@ exclude two seconds at each phase boundary, since GPUI histograms flush once a s
 The final diagnostic script uses shorter phases to check list transitions; its frame
 percentiles are not substituted for the primary 30-second measurements. A follow-up
 which stopped producing frames after hide was excluded from timed layout assertions.
+
+Raw process dumps and redundant build/test logs were removed before publication.
+Source hashes and aggregate/numeric measurements remain for reproducibility. Historical
+commit IDs describe the original private history; author-email cleanup changed those IDs.
+Use the recorded source hashes when comparing snapshots.
