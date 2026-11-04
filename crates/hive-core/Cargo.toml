@@ -14,7 +14,11 @@ base64.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 alacritty_terminal.workspace = true
+image.workspace = true
 async-channel.workspace = true
 polling.workspace = true
 rustix.workspace = true
 tracing.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true

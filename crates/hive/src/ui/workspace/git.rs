@@ -97,7 +97,9 @@ impl Workspace {
         let border = cx.theme().border;
         let open = self.git_open;
         let width = self.git_width;
+        // The header sits where the macOS title bar would be, so it drags the window too.
         let header = h_flex()
+            .id("right-sidebar-header")
             .h(TAB_BAR_HEIGHT)
             .flex_none()
             .px_2()
@@ -112,6 +114,7 @@ impl Workspace {
                 cx,
             )))
             .child(right_sidebar_toggle().small().ghost());
+        let header = self.window_drag_band(header, |_| true, cx);
         let content = v_flex()
             .h_full()
             .w(width)

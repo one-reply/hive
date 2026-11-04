@@ -1,0 +1,146 @@
+//! Hive-owned generic passwords; never touches Claude Code or Codex credentials.
+
+use crate::llm::{ApiKey, Error, Provider};
+
+const SERVICE: &str = "hive.llm";
+
+pub(crate) fn has_key(provider: Provider) -> Result<bool, Error> {
+    native::has_key(SERVICE, provider)
+}
+
+pub(crate) fn load_key(provider: Provider) -> Result<Option<ApiKey>, Error> {
+    native::load_key(SERVICE, provider)
+}
+
+pub(crate) fn save_key(provider: Provider, key: &ApiKey) -> Result<(), Error> {
+    native::save_key(SERVICE, provider, key)
+}
+
+pub(crate) fn delete_key(provider: Provider) -> Result<(), Error> {
+    native::delete_key(SERVICE, provider)
+}
+
+#[cfg(target_os = "macos")]
+mod native {
+    use super::*;
+    use security_framework::{
+        item::{ItemClass, ItemSearchOptions, Limit},
+        passwords::{self, PasswordOptions},
+    };
+
+    // Apple's errSecItemNotFound. Other OSStatus codes must remain visible failures.
+    const ITEM_NOT_FOUND: i32 = -25300;
+
+    fn failure(
+        provider: Provider,
+        operation: &'static str,
+        error: security_framework::base::Error,
+    ) -> Error {
+        Error::Keychain {
+            provider,
+            operation,
+            code: error.code(),
+        }
+    }
+
+    pub(super) fn has_key(service: &str, provider: Provider) -> Result<bool, Error> {
+        let result = ItemSearchOptions::new()
+            .class(ItemClass::generic_password())
+            .service(service)
+            .account(provider.account())
+            .load_attributes(true)
+            .limit(Limit::Max(1))
+            .search();
+        match result {
+            Ok(items) => Ok(!items.is_empty()),
+            Err(error) if error.code() == ITEM_NOT_FOUND => Ok(false),
+            Err(error) => Err(failure(provider, "check", error)),
+        }
+    }
+
+    pub(super) fn load_key(service: &str, provider: Provider) -> Result<Option<ApiKey>, Error> {
+        let options = PasswordOptions::new_generic_password(service, provider.account());
+        let bytes = match passwords::generic_password(options) {
+            Ok(bytes) => bytes,
+            Err(error) if error.code() == ITEM_NOT_FOUND => return Ok(None),
+            Err(error) => return Err(failure(provider, "read", error)),
+        };
+        let value = String::from_utf8(bytes).map_err(|_| Error::InvalidStoredKey { provider })?;
+        ApiKey::try_from(value)
+            .map(Some)
+            .map_err(|_| Error::InvalidStoredKey { provider })
+    }
+
+    pub(super) fn save_key(service: &str, provider: Provider, key: &ApiKey) -> Result<(), Error> {
+        passwords::set_generic_password(service, provider.account(), key.as_str().as_bytes())
+            .map_err(|error| failure(provider, "save", error))
+    }
+
+    pub(super) fn delete_key(service: &str, provider: Provider) -> Result<(), Error> {
+        match passwords::delete_generic_password(service, provider.account()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == ITEM_NOT_FOUND => Ok(()),
+            Err(error) => Err(failure(provider, "delete", error)),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        #[ignore = "requires an unlocked macOS Keychain; uses only a unique test service"]
+        fn keychain_round_trip() {
+            let service = format!(
+                "hive.llm.test.{}.{:?}",
+                std::process::id(),
+                std::time::SystemTime::now()
+            );
+            let provider = Provider::OpenAi;
+            struct Cleanup(String);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    let _ = native::delete_key(&self.0, Provider::OpenAi);
+                }
+            }
+            let _cleanup = Cleanup(service.clone());
+            assert!(!has_key(&service, provider).unwrap());
+            assert!(load_key(&service, provider).unwrap().is_none());
+            for value in ["hive-test-first", "hive-test-replacement"] {
+                let key = ApiKey::try_from(value.to_owned()).unwrap();
+                save_key(&service, provider, &key).unwrap();
+                assert!(has_key(&service, provider).unwrap());
+                assert_eq!(
+                    load_key(&service, provider).unwrap().unwrap().as_str(),
+                    value
+                );
+                assert!(!has_key(&service, Provider::Anthropic).unwrap());
+            }
+            delete_key(&service, provider).unwrap();
+            delete_key(&service, provider).unwrap();
+            assert!(!has_key(&service, provider).unwrap());
+            assert!(load_key(&service, provider).unwrap().is_none());
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod native {
+    use super::*;
+
+    pub(super) fn has_key(_: &str, provider: Provider) -> Result<bool, Error> {
+        Err(Error::UnsupportedPlatform { provider })
+    }
+
+    pub(super) fn load_key(_: &str, provider: Provider) -> Result<Option<ApiKey>, Error> {
+        Err(Error::UnsupportedPlatform { provider })
+    }
+
+    pub(super) fn save_key(_: &str, provider: Provider, _: &ApiKey) -> Result<(), Error> {
+        Err(Error::UnsupportedPlatform { provider })
+    }
+
+    pub(super) fn delete_key(_: &str, provider: Provider) -> Result<(), Error> {
+        Err(Error::UnsupportedPlatform { provider })
+    }
+}

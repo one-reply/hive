@@ -1,0 +1,138 @@
+use super::{SessionEvent, TerminalSession};
+use gpui_kit::{ClipboardEntry, ClipboardItem, Context};
+use hive_core::terminal::paste;
+use std::collections::VecDeque;
+
+pub(super) enum Input {
+    Bytes(Vec<u8>),
+    Text(String),
+    Image(Vec<u8>),
+}
+
+impl TerminalSession {
+    pub(crate) fn write_input(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        self.enqueue_input(Input::Bytes(bytes), cx);
+    }
+
+    pub(crate) fn paste(&mut self, cx: &mut Context<Self>) {
+        if let Some(input) = cx.read_from_clipboard().and_then(clipboard_input) {
+            self.enqueue_input(input, cx);
+        }
+    }
+
+    fn enqueue_input(&mut self, input: Input, cx: &mut Context<Self>) {
+        if self.exited || self.terminal().is_none() {
+            return;
+        }
+        self.pending_input.push_back(input);
+        self.flush_input(cx);
+    }
+
+    fn flush_input(&mut self, cx: &mut Context<Self>) {
+        if self.paste_task.is_some() {
+            return;
+        }
+        while let Some(input) = self.pending_input.pop_front() {
+            let Some(terminal) = self.terminal().filter(|_| !self.exited) else {
+                self.pending_input.clear();
+                return;
+            };
+            let bytes = match input {
+                Input::Bytes(bytes) => bytes,
+                Input::Text(text) => paste::text_bytes(&text, terminal.mode()),
+                Input::Image(bytes) => {
+                    self.start_image_paste(bytes, cx);
+                    return;
+                }
+            };
+            terminal.scroll_to_bottom();
+            terminal.write(bytes);
+        }
+    }
+
+    fn start_image_paste(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        let save = cx.background_executor().spawn(async move {
+            let result = paste::save_image(&bytes).and_then(|path| paste::quoted_path(&path));
+            if let Err(error) = &result {
+                tracing::error!(%error, "could not paste clipboard image");
+            }
+            result
+        });
+        self.paste_task = Some(cx.spawn(async move |this, cx| {
+            let result = save.await;
+            // The weak entity keeps a late image from reaching a closed or different pane.
+            let _ = this.update(cx, |this, cx| {
+                this.paste_task = None;
+                if this.exited || this.terminal().is_none() {
+                    this.pending_input.clear();
+                    return;
+                }
+                match result {
+                    Ok(path) => this.pending_input.push_front(Input::Text(path)),
+                    Err(error) => {
+                        discard_submissions(&mut this.pending_input);
+                        cx.emit(SessionEvent::PasteFailed(format!(
+                            "{error}. Paste the image again before pressing Enter."
+                        )));
+                    }
+                }
+                this.flush_input(cx);
+            });
+        }));
+    }
+}
+
+fn clipboard_input(item: ClipboardItem) -> Option<Input> {
+    if item
+        .entries()
+        .iter()
+        .any(|entry| matches!(entry, ClipboardEntry::Image(_)))
+    {
+        item.into_entries().find_map(|entry| match entry {
+            ClipboardEntry::Image(image) => Some(Input::Image(image.bytes)),
+            _ => None,
+        })
+    } else {
+        item.text().map(Input::Text)
+    }
+}
+
+fn discard_submissions(pending: &mut VecDeque<Input>) {
+    // Enter, Ctrl+J and Alt+Enter must not submit a prompt whose image failed to save.
+    pending.retain(|input| !matches!(input, Input::Bytes(bytes) if matches!(bytes.as_slice(), b"\r" | b"\n" | b"\x1b\r")));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::{Image, ImageFormat};
+
+    #[test]
+    fn snapshots_image_bytes_and_preserves_text_clipboards() {
+        let item = ClipboardItem::new_image(&Image::from_bytes(ImageFormat::Png, vec![1, 2, 3]));
+        assert!(matches!(clipboard_input(item), Some(Input::Image(bytes)) if bytes == [1, 2, 3]));
+        assert!(matches!(
+            clipboard_input(ClipboardItem::new_string("one\ntwo".into())),
+            Some(Input::Text(text)) if text == "one\ntwo"
+        ));
+    }
+
+    #[test]
+    fn failed_image_keeps_typing_and_other_pastes_but_removes_queued_submit_keys() {
+        let mut pending = VecDeque::from([
+            Input::Bytes(b"a".to_vec()),
+            Input::Bytes(b"\r".to_vec()),
+            Input::Text("pasted text".into()),
+            Input::Image(vec![2]),
+            Input::Bytes(b"\x1b[D".to_vec()),
+            Input::Bytes(b"\x1b\r".to_vec()),
+            Input::Bytes(b"\n".to_vec()),
+        ]);
+        discard_submissions(&mut pending);
+        assert_eq!(pending.len(), 4);
+        assert!(matches!(pending.pop_front(), Some(Input::Bytes(bytes)) if bytes == b"a"));
+        assert!(matches!(pending.pop_front(), Some(Input::Text(text)) if text == "pasted text"));
+        assert!(matches!(pending.pop_front(), Some(Input::Image(bytes)) if bytes == [2]));
+        assert!(matches!(pending.pop_front(), Some(Input::Bytes(bytes)) if bytes == b"\x1b[D"));
+    }
+}

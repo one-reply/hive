@@ -1,10 +1,14 @@
 //! A terminal's asynchronous startup, input and retained event subscription.
 use gpui_kit::*;
 use hive_core::terminal::{Terminal, TerminalSize};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::app::AppState;
+
+mod input;
+use input::Input;
 
 pub(crate) enum SessionStatus {
     Starting,
@@ -15,6 +19,7 @@ pub(crate) enum SessionStatus {
 pub(crate) enum SessionEvent {
     TitleChanged,
     Exited,
+    PasteFailed(String),
 }
 
 pub(crate) struct TerminalSession {
@@ -24,6 +29,8 @@ pub(crate) struct TerminalSession {
     focused: bool,
     _start: Task<()>,
     _events: Option<Task<()>>,
+    pending_input: VecDeque<Input>,
+    paste_task: Option<Task<()>>,
 }
 
 impl EventEmitter<SessionEvent> for TerminalSession {}
@@ -67,6 +74,8 @@ impl TerminalSession {
                                         }
                                         if update.exited() && !this.exited {
                                             this.exited = true;
+                                            this.pending_input.clear();
+                                            this.paste_task = None;
                                             cx.emit(SessionEvent::Exited);
                                         }
                                         cx.notify();
@@ -92,6 +101,8 @@ impl TerminalSession {
             focused: false,
             _start: start,
             _events: None,
+            pending_input: VecDeque::new(),
+            paste_task: None,
         }
     }
 

@@ -1,5 +1,6 @@
-//! Credentials the Claude Code and Codex CLIs store on this machine. We never log in
-//! ourselves; the "login" button in the UI just tells the user which CLI to run.
+//! CLI credentials and native storage for Hive's own LLM API keys.
+
+pub(crate) mod llm;
 
 use crate::state::hive_dir;
 use base64::Engine as _;

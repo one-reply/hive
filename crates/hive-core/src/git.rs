@@ -9,6 +9,7 @@ pub mod branches;
 pub mod changes;
 pub mod diff;
 pub mod history;
+mod numstat;
 pub mod status;
 
 /// A `git` invocation that could not run or exited non-zero.

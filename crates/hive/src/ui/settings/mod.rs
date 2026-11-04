@@ -2,6 +2,7 @@
 //! Controls write straight to the `Store`; the theme and keymap observers apply each change to
 //! every window at once, so the effect is visible while the window is open.
 
+mod ai;
 mod appearance;
 mod project;
 mod projects;
@@ -22,6 +23,7 @@ use gpui_kit::*;
 
 use crate::app::AppState;
 use crate::ui::project_badge;
+use ai::AiPage;
 use project::ProjectPage;
 use shortcuts::ShortcutsPage;
 
@@ -113,13 +115,14 @@ enum Page {
     Shortcuts,
     Projects,
     Terminal,
+    Ai,
 }
 
 impl Page {
     /// The navigation: section titles and their pages, in order.
     const SECTIONS: [(&'static str, &'static [Page]); 2] = [
         ("Interface", &[Page::Appearance, Page::Shortcuts]),
-        ("Workspace", &[Page::Projects, Page::Terminal]),
+        ("Workspace", &[Page::Projects, Page::Terminal, Page::Ai]),
     ];
 
     fn label(self) -> &'static str {
@@ -128,6 +131,7 @@ impl Page {
             Page::Shortcuts => "Shortcuts",
             Page::Projects => "Projects",
             Page::Terminal => "Terminal",
+            Page::Ai => "AI",
         }
     }
 
@@ -139,6 +143,9 @@ impl Page {
             }
             Page::Projects => "Folders listed in the sidebar.",
             Page::Terminal => "How terminal tabs look.",
+            Page::Ai => {
+                "Connect LLM providers. Keys are verified online and stored in macOS Keychain."
+            }
         }
     }
 
@@ -148,6 +155,7 @@ impl Page {
             Page::Shortcuts => Lucide::Keyboard,
             Page::Projects => Lucide::Folder,
             Page::Terminal => Lucide::SquareTerminal,
+            Page::Ai => Lucide::Sparkles,
         }
     }
 }
@@ -161,16 +169,18 @@ enum View {
 pub struct SettingsWindow {
     view: View,
     shortcuts: Entity<ShortcutsPage>,
+    ai: Entity<AiPage>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl SettingsWindow {
-    fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppState::get(cx);
         let (store, projects) = (state.store.clone(), state.projects.clone());
         Self {
             view: View::Page(Page::Appearance),
             shortcuts: cx.new(ShortcutsPage::new),
+            ai: cx.new(|cx| AiPage::new(window, cx)),
             _subscriptions: vec![
                 cx.observe(&store, |this, _, cx| {
                     this.leave_removed_project(cx);
@@ -181,7 +191,16 @@ impl SettingsWindow {
         }
     }
 
-    fn show_page(&mut self, page: Page, cx: &mut Context<Self>) {
+    fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.view, View::Page(shown) if shown == page) {
+            return;
+        }
+        self.ai.update(cx, |ai, cx| {
+            ai.clear(window, cx);
+            if page == Page::Ai {
+                ai.refresh(cx);
+            }
+        });
         self.view = View::Page(page);
         cx.notify();
     }
@@ -190,6 +209,7 @@ impl SettingsWindow {
         if self.shown_project(cx).is_some_and(|shown| shown == path) {
             return;
         }
+        self.ai.update(cx, |ai, cx| ai.clear(window, cx));
         self.view = View::Project(cx.new(|cx| ProjectPage::new(path, window, cx)));
         cx.notify();
     }
@@ -273,7 +293,7 @@ impl SettingsWindow {
             .when(selected, |el| el.bg(fg.opacity(0.09)))
             .child(Icon::new(page.icon()).size_4())
             .child(page.label())
-            .on_click(cx.listener(move |this, _, _, cx| this.show_page(page, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.show_page(page, window, cx)))
     }
 
     /// One nav item per project, indented under "Projects".
@@ -337,6 +357,7 @@ impl SettingsWindow {
                     Page::Shortcuts => self.shortcuts.clone().into_any_element(),
                     Page::Projects => projects::render(cx).into_any_element(),
                     Page::Terminal => terminal::render(cx).into_any_element(),
+                    Page::Ai => self.ai.clone().into_any_element(),
                 };
                 (page.label().into(), page.description().into(), body)
             }

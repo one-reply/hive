@@ -10,7 +10,6 @@ use gpui_kit::base::Disableable as _;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -26,6 +25,8 @@ use hive_core::git::{
 };
 use std::collections::HashSet;
 
+mod commit;
+mod file_row;
 mod files;
 mod header;
 mod review;
@@ -95,18 +96,6 @@ impl GitPanel {
         }
     }
 
-    fn commit(&self, cx: &mut Context<Self>) {
-        let state = self.git.read(cx);
-        if state.is_busy() || state.status.as_ref().is_none_or(|s| staged_count(s) == 0) {
-            return;
-        }
-        let message = self.message.read(cx).value().to_string();
-        if !message.trim().is_empty() {
-            self.git
-                .update(cx, |g, cx| g.perform(Action::Commit(message), cx));
-        }
-    }
-
     fn toggle_group(&mut self, group: &'static str, cx: &mut Context<Self>) {
         if !self.collapsed.remove(group) {
             self.collapsed.insert(group);
@@ -173,69 +162,6 @@ impl GitPanel {
                 git.update(cx, |g, cx| g.set_section(section, cx));
             })
     }
-
-    fn footer(
-        &self,
-        status: Option<&Status>,
-        busy: bool,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let staged = status.map(staged_count).unwrap_or(0);
-        let conflicts = status.is_some_and(|s| s.has_conflicts());
-        let empty_message = self.message.read(cx).value().trim().is_empty();
-        let blocker = if conflicts {
-            Some("Resolve conflicts first")
-        } else if staged == 0 {
-            Some("Stage changes first")
-        } else if empty_message {
-            Some("Write a commit message")
-        } else {
-            None
-        };
-        let label: SharedString = match staged {
-            0 => "Commit".into(),
-            1 => "Commit 1 file".into(),
-            n => format!("Commit {n} files").into(),
-        };
-        let shortcut = Kbd::binding_for_action(&CommitChanges, Some("SourceControl"), window);
-        v_flex()
-            .p_3()
-            .gap_2()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(TextField::textarea(
-                Textarea::new(&self.message),
-                &self.message,
-                cx,
-            ))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Button::new("commit-staged")
-                            .cursor_pointer()
-                            .primary()
-                            .small()
-                            .flex_1()
-                            .icon(Lucide::GitCommitHorizontal)
-                            .label(label)
-                            .loading(busy)
-                            .disabled(busy || blocker.is_some())
-                            .when_some(blocker, |b, reason| b.tooltip(reason))
-                            .when(blocker.is_none(), |b| {
-                                b.tooltip_with_action(
-                                    "Commit staged changes",
-                                    &CommitChanges,
-                                    Some("SourceControl"),
-                                )
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| this.commit(cx))),
-                    )
-                    .when_some(shortcut, |row, kbd| row.child(kbd.outline())),
-            )
-    }
 }
 
 impl Render for GitPanel {
@@ -291,22 +217,15 @@ impl Render for GitPanel {
                     .px_2()
                     .pb_2()
                     .child(match section {
-                        Section::Changes => self.changes(cx),
-                        Section::Compare => self.compare(cx),
-                        Section::History => self.history(cx),
+                        Section::Changes => self.changes(window, cx),
+                        Section::Compare => self.compare(window, cx),
+                        Section::History => self.history(window, cx),
                     }),
             )
             .when(section == Section::Changes, |p| {
                 p.child(self.footer(status.as_ref(), busy, window, cx))
             })
     }
-}
-
-fn staged_count(status: &Status) -> usize {
-    if status.has_conflicts() {
-        return 0;
-    }
-    status.files.iter().filter(|f| f.staged.is_some()).count()
 }
 
 fn count_tag(count: usize) -> impl IntoElement {

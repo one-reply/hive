@@ -8,6 +8,7 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 mod events;
+pub mod paste;
 mod pty;
 use events::Publisher;
 pub use events::TerminalUpdate;

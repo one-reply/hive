@@ -256,7 +256,7 @@ impl Git {
                 .background_executor()
                 .spawn(async move {
                     let t = &query_target;
-                    let status = git::status::read(&t.host, &t.path)?;
+                    let status = git::status::read_with_stats(&t.host, &t.path)?;
                     let metadata = if force
                         || old_head
                             != Some((

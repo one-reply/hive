@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::state::terminal_session::{SessionEvent, SessionStatus, TerminalSession};
-use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::{ActiveTheme as _, WindowExt as _, notification::Notification};
 use gpui_kit::*;
 use hive_core::terminal::TermMode;
 
@@ -43,11 +43,13 @@ impl TerminalView {
                 cx.notify();
             }),
             cx.observe(&session, |_, _, cx| cx.notify()),
-            cx.subscribe(&session, |_, _, event, cx| {
-                cx.emit(match event {
-                    SessionEvent::TitleChanged => TerminalViewEvent::TitleChanged,
-                    SessionEvent::Exited => TerminalViewEvent::Exited,
-                });
+            cx.subscribe_in(&session, window, |_, _, event, window, cx| match event {
+                SessionEvent::TitleChanged => cx.emit(TerminalViewEvent::TitleChanged),
+                SessionEvent::Exited => cx.emit(TerminalViewEvent::Exited),
+                SessionEvent::PasteFailed(error) => window.push_notification(
+                    Notification::error(error.clone()).title("Could not paste image"),
+                    cx,
+                ),
             }),
         ];
         Self {
@@ -102,13 +104,12 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let handled = self.session.update(cx, |session, _| {
+        let handled = self.session.update(cx, |session, cx| {
             let Some(terminal) = session.terminal().filter(|_| !session.exited) else {
                 return false;
             };
             if let Some(bytes) = keys::to_bytes(&event.keystroke, terminal.mode()) {
-                terminal.scroll_to_bottom();
-                terminal.write(bytes);
+                session.write_input(bytes, cx);
                 return true;
             }
             false
@@ -119,24 +120,7 @@ impl TerminalView {
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
-        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-            return;
-        };
-        self.session.update(cx, |session, _| {
-            let Some(terminal) = session.terminal().filter(|_| !session.exited) else {
-                return;
-            };
-            let mut bytes = Vec::with_capacity(text.len() + 12);
-            if terminal.mode().contains(TermMode::BRACKETED_PASTE) {
-                bytes.extend_from_slice(b"\x1b[200~");
-                bytes.extend_from_slice(text.as_bytes());
-                bytes.extend_from_slice(b"\x1b[201~");
-            } else {
-                bytes.extend_from_slice(text.replace("\r\n", "\r").replace('\n', "\r").as_bytes());
-            }
-            terminal.scroll_to_bottom();
-            terminal.write(bytes);
-        });
+        self.session.update(cx, |session, cx| session.paste(cx));
     }
 
     fn scroll_wheel(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -148,7 +132,7 @@ impl TerminalView {
             return;
         }
         self.scroll_remainder -= lines as f32;
-        self.session.update(cx, |session, _| {
+        self.session.update(cx, |session, cx| {
             let Some(terminal) = session.terminal() else {
                 return;
             };
@@ -158,7 +142,7 @@ impl TerminalView {
                 if mode.contains(TermMode::ALTERNATE_SCROLL) {
                     let key: &[u8] = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
                     let bytes = key.repeat(lines.unsigned_abs() as usize);
-                    terminal.write(bytes);
+                    session.write_input(bytes, cx);
                 }
             } else {
                 terminal.scroll(lines);

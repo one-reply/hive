@@ -1,4 +1,4 @@
-//! Changed-file groups and the file rows shared with commit review.
+//! Changed-file groups and their bulk actions.
 use super::*;
 
 /// Groups of the Changes section, in display order.
@@ -20,171 +20,7 @@ fn in_group(file: &FileChange, group: &str) -> bool {
     }
 }
 
-/// Letter and color of a change, as Git's own short status.
-fn status_badge(change: Option<Change>, cx: &App) -> impl IntoElement {
-    let theme = cx.theme();
-    let (code, color) = match change {
-        Some(Change::Added | Change::Untracked) => ("A", theme.green),
-        Some(Change::Deleted) => ("D", theme.red),
-        Some(Change::Renamed) => ("R", theme.blue),
-        Some(Change::Copied) => ("C", theme.blue),
-        Some(Change::TypeChanged) => ("T", theme.muted_foreground),
-        Some(Change::Conflicted) => ("!", theme.danger),
-        _ => ("M", theme.yellow),
-    };
-    div()
-        .size(BADGE_SIZE)
-        .flex_none()
-        .rounded_sm()
-        .bg(color.opacity(0.15))
-        .text_color(color)
-        .text_size(META_TEXT)
-        .font_weight(FontWeight::SEMIBOLD)
-        .font_family(theme.mono_font_family.clone())
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(code)
-}
-
-/// Directory in muted text, file name in full color.
-fn path_label(path: &str, cx: &App) -> impl IntoElement {
-    let (dir, name) = match path.rsplit_once('/') {
-        Some((dir, name)) => (Some(format!("{dir}/")), name.to_string()),
-        None => (None, path.to_string()),
-    };
-    h_flex()
-        .min_w_0()
-        .flex_1()
-        .text_size(META_TEXT + px(1.))
-        .when_some(dir, |row, dir| {
-            row.child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(dir),
-            )
-        })
-        .child(div().flex_none().child(name))
-}
-
 impl GitPanel {
-    pub(super) fn file_row(
-        &self,
-        file: &FileChange,
-        source: DiffSource,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let staged = source == DiffSource::Staged;
-        let mutable = matches!(
-            source,
-            DiffSource::WorkingTree | DiffSource::Staged | DiffSource::Untracked
-        );
-        let change = if staged || !mutable {
-            file.staged
-        } else {
-            file.unstaged
-        };
-        let conflicted = change == Some(Change::Conflicted);
-        let busy = self.git.read(cx).is_busy();
-        let fg = cx.theme().foreground;
-        let group: SharedString = format!("file-row-{index}").into();
-        let tooltip: SharedString = file
-            .old_path
-            .as_ref()
-            .map(|old| format!("{old} → {}", file.path))
-            .unwrap_or_else(|| file.path.clone())
-            .into();
-
-        let mut actions = h_flex().flex_none().gap_0p5();
-        if mutable && !conflicted {
-            let mut paths = vec![file.path.clone()];
-            if staged && let Some(old) = &file.old_path {
-                paths.push(old.clone());
-            }
-            let action = if staged {
-                Action::Unstage(paths)
-            } else {
-                Action::Stage(paths)
-            };
-            actions = actions.child(
-                Button::new(("file-stage", index))
-                    .cursor_pointer()
-                    .ghost()
-                    .xsmall()
-                    .icon(if staged { Lucide::Minus } else { Lucide::Plus })
-                    .tooltip(if staged { "Unstage file" } else { "Stage file" })
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        // The row behind would otherwise open the diff too.
-                        cx.stop_propagation();
-                        this.git.update(cx, |g, cx| g.perform(action.clone(), cx))
-                    })),
-            );
-        }
-        if source == DiffSource::WorkingTree && !conflicted && !file.submodule {
-            let path = file.path.clone();
-            actions = actions.child(
-                Button::new(("file-discard", index))
-                    .cursor_pointer()
-                    .ghost()
-                    .xsmall()
-                    .icon(Lucide::Undo2)
-                    .tooltip("Discard unstaged changes")
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        git_controls::confirm(
-                            this.git.clone(),
-                            Action::Discard(path.clone()),
-                            git_controls::Confirmation {
-                                title: "Discard Changes",
-                                description: format!(
-                                    "{path} will be restored from its staged version. Unstaged edits are lost and cannot be recovered."
-                                ),
-                                ok_text: "Discard",
-                                danger: true,
-                            },
-                            window,
-                            cx,
-                        )
-                    })),
-            );
-        }
-        // Hidden until the row is hovered, as the project header buttons in the sidebar.
-        let actions = h_flex()
-            .w_0()
-            .overflow_hidden()
-            .opacity(0.)
-            .group_hover(group.clone(), |s| s.w_auto().opacity(1.))
-            .child(actions);
-
-        let (selected, open_source) = (file.clone(), source);
-        h_flex()
-            .id(("file-open", index))
-            .group(group)
-            .h(ROW_HEIGHT)
-            .flex_none()
-            .gap_2()
-            .items_center()
-            .pl_2()
-            .pr_1()
-            .rounded_md()
-            .cursor_pointer()
-            .hover(|s| s.bg(fg.opacity(0.05)))
-            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-            .child(status_badge(change, cx))
-            .child(path_label(&file.path, cx))
-            .child(actions)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.git
-                    .update(cx, |g, cx| g.open_diff(&selected, open_source.clone(), cx))
-            }))
-            .into_any_element()
-    }
-
     fn group_header(
         &self,
         label: &'static str,
@@ -248,7 +84,7 @@ impl GitPanel {
             .into_any_element()
     }
 
-    pub(super) fn changes(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn changes(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let state = self.git.read(cx);
         let Some(status) = &state.status else {
             return if state.loading {
@@ -301,7 +137,13 @@ impl GitPanel {
                     .filter(|f| f.path.to_lowercase().contains(&filter))
                     .enumerate()
                     .map(|(i, f)| {
-                        self.file_row(f, source.clone(), group_ix * (files.len() + 1) + i, cx)
+                        self.file_row(
+                            f,
+                            source.clone(),
+                            group_ix * (files.len() + 1) + i,
+                            window,
+                            cx,
+                        )
                     })
                     .collect()
             } else {

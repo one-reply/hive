@@ -48,7 +48,7 @@ impl Host {
 }
 
 /// POSIX single-quote escaping.
-fn quote(s: &str) -> String {
+pub(crate) fn quote(s: &str) -> String {
     if !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || "-_./=:@".contains(c))

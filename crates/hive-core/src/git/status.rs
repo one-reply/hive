@@ -1,5 +1,5 @@
 //! Machine-readable worktree status, including independent index and working tree changes.
-use super::{GitError, READ_LIMIT, bytes, text};
+use super::{GitError, READ_LIMIT, bytes, numstat, text};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -17,6 +17,15 @@ pub enum Change {
     Conflicted,
 }
 
+/// Added and removed text lines on one side of a file change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineStats {
+    /// Number of added lines.
+    pub added: usize,
+    /// Number of removed lines.
+    pub removed: usize,
+}
+
 /// One literal repository-relative path returned by Git.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileChange {
@@ -30,6 +39,12 @@ pub struct FileChange {
     pub unstaged: Option<Change>,
     /// Submodule changes cannot be staged by text hunk.
     pub submodule: bool,
+    /// HEAD-to-index or immutable review line counts; None when binary or unavailable.
+    #[serde(default)]
+    pub staged_stats: Option<LineStats>,
+    /// Index-to-worktree line counts (all lines for an untracked file).
+    #[serde(default)]
+    pub unstaged_stats: Option<LineStats>,
 }
 
 /// Snapshot of HEAD, upstream and the working tree.
@@ -79,6 +94,14 @@ pub fn read(host: &Host, cwd: &Path) -> Result<Status, GitError> {
         READ_LIMIT,
         false,
     )?)
+}
+
+/// Blocking: read status with line counts for display, leaving mutation guards inexpensive.
+/// Unavailable counts are logged and omitted without hiding the file list.
+pub fn read_with_stats(host: &Host, cwd: &Path) -> Result<Status, GitError> {
+    let mut status = read(host, cwd)?;
+    numstat::fill_status(host, cwd, &mut status);
+    Ok(status)
 }
 
 fn change(code: u8) -> Result<Option<Change>, GitError> {
@@ -140,6 +163,8 @@ fn parse(raw: &[u8]) -> Result<Status, GitError> {
                 staged: None,
                 unstaged: Some(Change::Untracked),
                 submodule: false,
+                staged_stats: None,
+                unstaged_stats: None,
             });
             continue;
         }
@@ -173,6 +198,8 @@ fn parse(raw: &[u8]) -> Result<Status, GitError> {
                 change(xy[1])?
             },
             submodule: fields[2].starts_with('S'),
+            staged_stats: None,
+            unstaged_stats: None,
         });
     }
     Ok(result)

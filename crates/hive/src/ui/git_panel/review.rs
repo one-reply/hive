@@ -9,7 +9,7 @@ fn short(oid: &str) -> &str {
 }
 
 impl GitPanel {
-    pub(super) fn compare(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn compare(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let state = self.git.read(cx);
         let base = state.base.clone();
         let loading = state.review_loading;
@@ -43,7 +43,8 @@ impl GitPanel {
                 ),
         );
         if let Some(base) = base.clone() {
-            content = content.children(self.review_files(&files, DiffSource::Compare(base), cx));
+            content =
+                content.children(self.review_files(&files, DiffSource::Compare(base), window, cx));
         }
         if loading {
             content = content.child(loading_row("Comparing…", cx));
@@ -67,7 +68,7 @@ impl GitPanel {
         content.into_any_element()
     }
 
-    pub(super) fn history(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn history(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let state = self.git.read(cx);
         let loading = state.review_loading;
         let files = state.files.clone();
@@ -112,7 +113,7 @@ impl GitPanel {
                                 .child(format!("{} · against first parent", short(&oid))),
                         ),
                 )
-                .children(self.review_files(&files, DiffSource::Commit(oid), cx));
+                .children(self.review_files(&files, DiffSource::Commit(oid), window, cx));
             if loading {
                 content = content.child(loading_row("Loading files…", cx));
             }
@@ -177,6 +178,7 @@ impl GitPanel {
         &self,
         files: &[FileChange],
         source: DiffSource,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let filter = self.filter.read(cx).value().to_lowercase();
@@ -184,7 +186,7 @@ impl GitPanel {
             .iter()
             .filter(|f| f.path.to_lowercase().contains(&filter))
             .enumerate()
-            .map(|(i, f)| self.file_row(f, source.clone(), i, cx))
+            .map(|(i, f)| self.file_row(f, source.clone(), i, window, cx))
             .collect()
     }
 }

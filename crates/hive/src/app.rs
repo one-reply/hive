@@ -3,6 +3,7 @@
 
 use gpui_kit::*;
 
+use crate::state::ai_providers::AiProviders;
 use crate::state::git::Git;
 use crate::state::terminals::Terminals;
 use crate::state::{projects::Projects, store::Store, usage::Usage};
@@ -14,6 +15,7 @@ pub struct AppState {
     pub store: Entity<Store>,
     pub projects: Entity<Projects>,
     pub usage: Entity<Usage>,
+    pub(crate) ai_providers: Entity<AiProviders>,
     pub(crate) git: Entity<Git>,
     pub(crate) terminals: Arc<Terminals>,
     _quit: Subscription,
@@ -26,6 +28,7 @@ impl AppState {
         let store = cx.new(|cx| Store::new(loaded, cx));
         let projects = cx.new(|cx| Projects::new(&store, cx));
         let usage = cx.new(Usage::new);
+        let ai_providers = cx.new(AiProviders::new);
         let git = cx.new(|cx| Git::new(projects.clone(), cx));
         let quit = cx.on_app_quit(|cx| {
             let deadline = Instant::now() + Duration::from_secs(3);
@@ -47,6 +50,7 @@ impl AppState {
             store,
             projects,
             usage,
+            ai_providers,
             git,
             terminals: Arc::default(),
             _quit: quit,

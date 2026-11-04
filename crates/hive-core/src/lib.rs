@@ -6,6 +6,7 @@ pub mod git;
 pub mod host;
 pub mod identity;
 pub mod keychain;
+pub mod llm;
 pub mod projects;
 pub mod settings;
 pub mod state;

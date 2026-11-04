@@ -207,6 +207,39 @@ impl Workspace {
             .or_insert_with(|| ProjectCenter::new(project, window, cx))
     }
 
+    /// Lets `band` drag and double-click-zoom the window the way `TitleBar` does, for the
+    /// part of it where `in_band` holds: mouse-down only arms the move, the first mouse-move
+    /// starts it, so clicks on buttons inside the band still work. Elements that must not drag
+    /// the window (tabs) stop mouse-down propagation themselves.
+    fn window_drag_band(
+        &self,
+        band: Stateful<Div>,
+        in_band: impl Fn(Point<Pixels>) -> bool + Copy + 'static,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        band.on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                this.should_move = in_band(event.position)
+            }),
+        )
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _, _, _| this.should_move = false),
+        )
+        .on_mouse_move(cx.listener(|this, _, window, _| {
+            if this.should_move {
+                this.should_move = false;
+                window.start_window_move();
+            }
+        }))
+        .on_double_click(move |event, window, _| {
+            if in_band(event.position()) {
+                window.titlebar_double_click();
+            }
+        })
+    }
+
     fn shown_center(&self) -> Option<&ProjectCenter> {
         self.shown.as_ref().and_then(|path| self.centers.get(path))
     }

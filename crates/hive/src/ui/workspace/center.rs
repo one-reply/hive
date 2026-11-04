@@ -17,28 +17,8 @@ impl Workspace {
             .flex_1()
             .h_full()
             .min_w_0()
-            .min_h_0()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, _| {
-                    this.should_move = event.position.y < TAB_BAR_HEIGHT
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| this.should_move = false),
-            )
-            .on_mouse_move(cx.listener(|this, _, window, _| {
-                if this.should_move {
-                    this.should_move = false;
-                    window.start_window_move();
-                }
-            }))
-            .on_double_click(|event, window, _| {
-                if event.position().y < TAB_BAR_HEIGHT {
-                    window.titlebar_double_click();
-                }
-            });
+            .min_h_0();
+        let center = self.window_drag_band(center, |position| position.y < TAB_BAR_HEIGHT, cx);
         // With tabs open the dock's tab bar carries the right-sidebar toggle (see
         // `TerminalPanel::toolbar_buttons`); the welcome screen has no tab bar, so draw it here.
         match self.shown_center().filter(|center| !center.is_empty()) {

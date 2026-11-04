@@ -1,6 +1,6 @@
 //! Commit history and changed-file lists for immutable review targets.
 use super::status::{Change, FileChange};
-use super::{GitError, READ_LIMIT, branches, bytes, run, text};
+use super::{GitError, READ_LIMIT, branches, bytes, numstat, run, text};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -94,6 +94,16 @@ pub fn commit_files(host: &Host, cwd: &Path, commit: &str) -> Result<Vec<FileCha
 }
 
 fn files(host: &Host, cwd: &Path, mut args: Vec<String>) -> Result<Vec<FileChange>, GitError> {
+    let counts = numstat::read(
+        host,
+        cwd,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        &[],
+    )
+    .unwrap_or_else(|error| {
+        tracing::warn!(%error, path = %cwd.display(), "Review line counts unavailable");
+        Default::default()
+    });
     args.extend(
         [
             "--name-status",
@@ -143,6 +153,8 @@ fn files(host: &Host, cwd: &Path, mut args: Vec<String>) -> Result<Vec<FileChang
             None
         };
         result.push(FileChange {
+            staged_stats: counts.get(&path).copied(),
+            unstaged_stats: None,
             path,
             old_path,
             staged: Some(change),
