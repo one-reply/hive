@@ -126,14 +126,15 @@ tools into a local build directory:
 
 ```sh
 python3 scripts/install-release-tools.py target/release-tools
+python3 scripts/install-sparkle.py target/sparkle
 PATH="$PWD/target/release-tools:$PATH" bash scripts/bundle-macos.sh release
 open target/release/bundle/Hive.app
 ```
 
 This is the default output path; a custom Cargo target directory changes it.
-The script creates an ARM64-only, locally ad-hoc-signed app. It does not produce a
-notarized distribution release. Release mode also writes a ZIP and SHA-256 file.
-See [Releasing](docs/RELEASING.md).
+By default, the script creates an ARM64-only, locally ad-hoc-signed preview, plus a
+ZIP and SHA-256 file in release mode. Developer ID signing and Apple notarization
+require the credentials described in [Releasing](docs/RELEASING.md#developer-id-and-notarization).
 
 ## Keyboard shortcuts
 

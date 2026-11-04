@@ -6,6 +6,7 @@ __pycache__/
 !.env.example
 *.log
 *.p12
+*.p8
 *.pfx
 *.key
 *.pem

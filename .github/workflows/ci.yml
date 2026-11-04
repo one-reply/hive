@@ -95,6 +95,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'
     needs: [security, build]
     runs-on: macos-26
+    timeout-minutes: 45
     permissions:
       contents: write
     steps:
@@ -105,6 +106,55 @@ jobs:
         with:
           name: hive-macos-arm64
           path: release
+      - name: Sign with Developer ID and notarize with Apple
+        env:
+          HIVE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          NOTARY_API_KEY_BASE64: ${{ secrets.NOTARY_API_KEY_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          : "${HIVE_SIGNING_IDENTITY:?Configure APPLE_SIGNING_IDENTITY before creating a release tag}"
+          : "${DEVELOPER_ID_CERTIFICATE_BASE64:?Missing Developer ID certificate}"
+          : "${DEVELOPER_ID_CERTIFICATE_PASSWORD:?Missing certificate password}"
+          : "${NOTARY_API_KEY_BASE64:?Missing Notary API key}"
+          : "${NOTARY_KEY_ID:?Missing Notary key ID}"
+          : "${NOTARY_ISSUER_ID:?Missing Notary issuer ID}"
+          signing_dir="$(mktemp -d "$RUNNER_TEMP/hive-signing.XXXXXX")"
+          keychain="$signing_dir/signing.keychain-db"
+          cleanup() {
+            if [[ -f "$keychain" ]]; then
+              security delete-keychain "$keychain" || echo '::warning::Could not delete temporary signing keychain'
+            fi
+            rm -f "$signing_dir/certificate.p12" "$signing_dir/notary.p8"
+          }
+          trap cleanup EXIT
+          umask 077
+          printf '%s' "$DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$signing_dir/certificate.p12"
+          printf '%s' "$NOTARY_API_KEY_BASE64" | base64 --decode > "$signing_dir/notary.p8"
+          keychain_password="$(openssl rand -base64 32)"
+          echo "::add-mask::$keychain_password"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$signing_dir/certificate.p12" -P "$DEVELOPER_ID_CERTIFICATE_PASSWORD" \
+            -k "$keychain" -t cert -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          xcrun notarytool store-credentials hive-notary --key "$signing_dir/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --keychain "$keychain"
+          export HIVE_SIGNING_KEYCHAIN="$keychain" HIVE_NOTARY_PROFILE=hive-notary
+          archive="Hive-${RELEASE_TAG#v}-macos-arm64.zip"
+          (cd release && shasum -a 256 -c "$archive.sha256")
+          ditto -x -k "release/$archive" "$signing_dir/app"
+          python3 scripts/sign_macos.py "$signing_dir/app/Hive.app"
+          ditto -c -k --sequesterRsrc --keepParent "$signing_dir/app/Hive.app" "$signing_dir/$archive"
+          unzip -tq "$signing_dir/$archive"
+          mv "$signing_dir/$archive" "release/$archive"
+          (cd release && shasum -a 256 "$archive" > "$archive.sha256" && shasum -a 256 -c "$archive.sha256")
       - name: Install verified Sparkle tools
         run: python3 scripts/install-sparkle.py target/sparkle
       - name: Sign update archive and feed
