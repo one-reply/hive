@@ -1,5 +1,7 @@
 //! Where a project lives. Remote v1 is simply "the same command, run through `ssh`".
 
+pub mod environment;
+
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
@@ -15,11 +17,16 @@ pub enum Host {
 
 impl Host {
     /// Build a command to run `program args` on this host, optionally inside `cwd`.
+    /// A local command runs in the user's login-shell environment once
+    /// [`environment::load`] has captured it, so hooks and CLIs resolve as in a terminal.
     pub fn command(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> Command {
         match self {
             Host::Local => {
                 let mut cmd = Command::new(program);
                 cmd.args(args);
+                if let Some(login) = environment::login() {
+                    cmd.envs(login.iter());
+                }
                 if let Some(dir) = cwd {
                     cmd.current_dir(dir);
                 }
@@ -61,6 +68,21 @@ pub(crate) fn quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_command_runs_in_the_login_environment() {
+        let login = environment::parse(
+            b"__HIVE_ENVIRONMENT_BEGIN__HIVE_LOGIN_SHELL_TEST=1\0__HIVE_ENVIRONMENT_END__",
+        )
+        .expect("markers are present");
+        environment::install(login);
+        let cmd = Host::Local.command("git", &["status"], None);
+        let value = cmd
+            .get_envs()
+            .find(|(key, _)| *key == "HIVE_LOGIN_SHELL_TEST")
+            .and_then(|(_, value)| value);
+        assert_eq!(value, Some(std::ffi::OsStr::new("1")));
+    }
 
     #[test]
     fn ssh_command_is_quoted() {
