@@ -1,19 +1,21 @@
-//! Loads review data off-thread and owns the presentation model consumed by a diff tab.
-use super::{
-    git::{DiffRequest, Git, GitEvent},
-    store::Store,
-};
-use gpui_kit::component::diff::{DiffFile, DiffMode, DiffState};
+//! Loads review data off-thread and holds what a diff tab shows: the raw patch and its
+//! parsed files. The widget that displays them belongs to the panel.
+use super::git::{DiffRequest, Git, GitEvent};
+use gpui_kit::component::diff::DiffFile;
 use gpui_kit::*;
 use hive_core::git::diff::{self, FileDiff};
+use std::sync::Arc;
 
 pub(crate) struct GitDiff {
     pub request: DiffRequest,
-    pub display: Entity<DiffState>,
-    pub patch: Option<std::sync::Arc<FileDiff>>,
+    pub patch: Option<Arc<FileDiff>>,
+    /// The patch as parsed for display; `files_generation` changes with it.
+    files: Vec<DiffFile>,
+    files_generation: u64,
     pub error: Option<String>,
     pub loading: bool,
-    pub active: bool,
+    /// Whether a panel shows this diff; only an active diff follows Git refreshes.
+    active: bool,
     /// A refresh requested while one was loading; served when the load completes.
     pending: bool,
     _task: Option<Task<()>>,
@@ -21,43 +23,21 @@ pub(crate) struct GitDiff {
 }
 
 impl GitDiff {
-    pub fn new(
-        request: DiffRequest,
-        git: Entity<Git>,
-        store: Entity<Store>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let split = store.read(cx).state.settings.diff_split;
-        let display = cx.new(|cx| {
-            DiffState::new([], cx).with_mode(if split {
-                DiffMode::Split
-            } else {
-                DiffMode::Unified
-            })
-        });
-        let subscriptions = vec![
-            cx.subscribe(&git, |this, git, event, cx| {
-                if let GitEvent::Refreshed(target) = event
-                    && this.active
-                    && git.read(cx).window_active
-                    && target == &this.request.target
-                {
-                    this.refresh(cx);
-                }
-            }),
-            cx.observe(&store, |this, store, cx| {
-                let mode = if store.read(cx).state.settings.diff_split {
-                    DiffMode::Split
-                } else {
-                    DiffMode::Unified
-                };
-                this.display.update(cx, |d, cx| d.set_mode(mode, cx));
-            }),
-        ];
+    pub fn new(request: DiffRequest, git: Entity<Git>, cx: &mut Context<Self>) -> Self {
+        let subscriptions = vec![cx.subscribe(&git, |this, git, event, cx| {
+            if let GitEvent::Refreshed(target) = event
+                && this.active
+                && git.read(cx).window_active
+                && target == &this.request.target
+            {
+                this.refresh(cx);
+            }
+        })];
         let mut this = Self {
             request,
-            display,
             patch: None,
+            files: Vec::new(),
+            files_generation: 0,
             error: None,
             loading: false,
             active: false,
@@ -67,6 +47,20 @@ impl GitDiff {
         };
         this.refresh(cx);
         this
+    }
+
+    /// The parsed patch the panel should display.
+    pub fn files(&self) -> &[DiffFile] {
+        &self.files
+    }
+
+    /// Changes whenever [`GitDiff::files`] does, so a panel can skip reloading its widget.
+    pub fn files_generation(&self) -> u64 {
+        self.files_generation
+    }
+
+    pub fn set_active(&mut self, active: bool) {
+        self.active = active;
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -101,8 +95,9 @@ impl GitDiff {
                         let changed = this.patch.as_deref() != Some(&patch) || this.error.is_some();
                         this.error = None;
                         if changed {
-                            this.patch = Some(std::sync::Arc::new(patch));
-                            this.display.update(cx, |d, cx| d.set_files(files, cx));
+                            this.patch = Some(Arc::new(patch));
+                            this.files = files;
+                            this.files_generation += 1;
                             cx.notify();
                         }
                     }
