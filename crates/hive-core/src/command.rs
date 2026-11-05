@@ -205,11 +205,11 @@ pub fn run(
     }
 }
 
-/// Blocking: find a CLI on PATH or standard desktop installation paths.
+/// Blocking: find a CLI on the login shell's PATH or standard desktop installation paths.
 pub fn executable(name: &str) -> Option<std::path::PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
-    let mut directories: Vec<_> = std::env::var_os("PATH")
+    let mut directories: Vec<_> = crate::host::environment::path()
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
     directories.extend([

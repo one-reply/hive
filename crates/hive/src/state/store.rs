@@ -7,6 +7,7 @@ use hive_core::state::{LoadedState, ProjectRef, State, StateError};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+mod recovery;
 mod writer;
 use writer::Writer;
 
@@ -15,6 +16,8 @@ pub struct Store {
     pub state: State,
     pub(crate) notice: Option<String>,
     writer: Option<Writer>,
+    recovery: recovery::RecoveryWriter,
+    _recovery_errors: Task<()>,
     stopping: bool,
     _errors: Option<Task<()>>,
 }
@@ -105,7 +108,19 @@ impl Store {
         self.state.settings.diff_split = split;
         self.commit(cx);
     }
+    pub(crate) fn set_files_selected(&mut self, files: bool, cx: &mut Context<Self>) {
+        self.state.settings.files_selected = files;
+        self.commit(cx);
+    }
     pub(crate) fn new(loaded: Result<LoadedState, StateError>, cx: &mut Context<Self>) -> Self {
+        let (recovery, recovery_errors) = recovery::RecoveryWriter::new(cx.background_executor());
+        let recovery_errors = cx.spawn(async move |this, cx| {
+            while let Ok(error) = recovery_errors.recv().await {
+                if this.update(cx, |_, cx| cx.emit(SaveError(error))).is_err() {
+                    break;
+                }
+            }
+        });
         let (state, notice) = match loaded {
             Ok(loaded) => (loaded.state, loaded.recovered_from.map(|path| format!(
                 "State was damaged. The original was preserved at {}. Default settings are in use.", path.display()
@@ -116,6 +131,8 @@ impl Store {
                     state: State::default(),
                     notice: Some(format!("{error}. Saving is disabled to protect the original state. Restart Hive after fixing the file.")),
                     writer: None,
+                    recovery,
+                    _recovery_errors: recovery_errors,
                     stopping: false,
                     _errors: None,
                 };
@@ -133,6 +150,8 @@ impl Store {
             state,
             notice,
             writer: Some(writer),
+            recovery,
+            _recovery_errors: recovery_errors,
             stopping: false,
             _errors: Some(errors),
         }
@@ -140,15 +159,26 @@ impl Store {
 
     pub(crate) fn stop(&mut self) {
         self.stopping = true;
+        self.recovery.close();
         if let Some(writer) = &self.writer {
             writer.close();
         }
     }
 
     pub(crate) fn wait_until(&self, deadline: Instant) -> bool {
-        self.writer
+        let saved = self
+            .writer
             .as_ref()
-            .is_none_or(|writer| writer.wait_until(deadline))
+            .is_none_or(|writer| writer.wait_until(deadline));
+        self.recovery.wait_until(deadline) && saved
+    }
+
+    pub(crate) fn save_recovery(
+        &self,
+        key: String,
+        draft: Option<hive_core::files::recovery::Draft>,
+    ) {
+        self.recovery.submit(key, draft);
     }
 
     pub fn set_theme(&mut self, theme: ThemeChoice, cx: &mut Context<Self>) {

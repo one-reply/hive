@@ -11,6 +11,7 @@ use crate::app::AppState;
 use crate::terminal::panel::{ClosePane, SplitDown, SplitRight};
 use crate::terminal::view::{Copy, Paste};
 use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
+use crate::ui::editor_panel::{CloseFile, OpenFileSearch, SaveFile};
 use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
 use crate::ui::workspace::{NewTerminal, QuickSwitch, ToggleGitPanel, ToggleSidebar};
@@ -75,7 +76,28 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 14] = [
+pub(crate) static SHORTCUTS: [Shortcut; 17] = [
+    Shortcut {
+        label: "Open file",
+        default: "cmd-p",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(OpenFileSearch),
+    },
+    Shortcut {
+        label: "Save file",
+        default: "cmd-s",
+        category: Category::Workspace,
+        context: "EditorPanel",
+        action: || Box::new(SaveFile),
+    },
+    Shortcut {
+        label: "Close file",
+        default: "cmd-w",
+        category: Category::Workspace,
+        context: "EditorPanel",
+        action: || Box::new(CloseFile),
+    },
     Shortcut {
         label: "New terminal",
         default: "cmd-t",
@@ -291,7 +313,14 @@ pub(crate) fn assign(
         let current = keybindings
             .get(shortcut.name())
             .map_or(shortcut.default, String::as_str);
-        *other != ix && normalize(current) == keys
+        let editor_terminal = (shortcut.context == "EditorPanel"
+            && matches!(
+                SHORTCUTS[ix].context,
+                TERMINAL_CONTEXT | TERMINAL_VIEW_CONTEXT
+            ))
+            || (SHORTCUTS[ix].context == "EditorPanel"
+                && matches!(shortcut.context, TERMINAL_CONTEXT | TERMINAL_VIEW_CONTEXT));
+        *other != ix && !editor_terminal && normalize(current) == keys
     });
     if let Some((_, shortcut)) = taken {
         return Err(Rejection::TakenBy(shortcut.label));
@@ -442,11 +471,45 @@ mod tests {
         assert!(assign(0, &keystroke("f5"), &none, MAC).is_ok());
     }
 
+    fn shortcut(label: &str) -> usize {
+        SHORTCUTS
+            .iter()
+            .position(|s| s.label == label)
+            .expect("registered shortcut")
+    }
+
+    #[test]
+    fn editor_and_terminal_can_share_close_keys() {
+        assert_eq!(
+            assign(
+                shortcut("Close file"),
+                &keystroke("cmd-w"),
+                &BTreeMap::new(),
+                MAC
+            ),
+            Ok(Assignment::Default)
+        );
+        assert!(
+            assign(
+                shortcut("Close file"),
+                &keystroke("cmd-p"),
+                &BTreeMap::new(),
+                MAC
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn keys_of_another_action_are_rejected() {
         let none = BTreeMap::new();
         assert_eq!(
-            assign(0, &keystroke("cmd-shift-\\"), &none, MAC),
+            assign(
+                shortcut("New terminal"),
+                &keystroke("cmd-shift-\\"),
+                &none,
+                MAC
+            ),
             Err(Rejection::TakenBy("Toggle left sidebar"))
         );
     }
@@ -454,13 +517,26 @@ mod tests {
     #[test]
     fn reassigned_keys_free_the_default() {
         let mut keybindings = BTreeMap::new();
-        keybindings.insert(SHORTCUTS[1].name().to_owned(), "cmd-b".to_owned());
+        keybindings.insert(
+            SHORTCUTS[shortcut("Toggle left sidebar")].name().to_owned(),
+            "cmd-b".to_owned(),
+        );
         assert_eq!(
-            assign(0, &keystroke("cmd-shift-\\"), &keybindings, MAC),
+            assign(
+                shortcut("New terminal"),
+                &keystroke("cmd-shift-\\"),
+                &keybindings,
+                MAC
+            ),
             Ok(Assignment::Custom("cmd-shift-\\".to_owned()))
         );
         assert_eq!(
-            assign(0, &keystroke("cmd-b"), &keybindings, MAC),
+            assign(
+                shortcut("New terminal"),
+                &keystroke("cmd-b"),
+                &keybindings,
+                MAC
+            ),
             Err(Rejection::TakenBy("Toggle left sidebar"))
         );
     }
@@ -468,7 +544,12 @@ mod tests {
     #[test]
     fn default_keys_reset_the_assignment() {
         assert_eq!(
-            assign(0, &keystroke("cmd-t"), &BTreeMap::new(), MAC),
+            assign(
+                shortcut("New terminal"),
+                &keystroke("cmd-t"),
+                &BTreeMap::new(),
+                MAC
+            ),
             Ok(Assignment::Default)
         );
     }

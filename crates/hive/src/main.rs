@@ -1,4 +1,5 @@
 mod app;
+mod quit;
 mod state;
 mod terminal;
 mod ui;
@@ -30,6 +31,27 @@ fn init_logging() {
     }
 }
 
+/// Launched from Finder, Hive inherits launchd's minimal `PATH`; git hooks and CLIs need the
+/// terminal's. The lookup runs a login shell, so it stays off the UI thread, and commands that
+/// start before it answers keep the process environment.
+fn load_login_environment(cx: &mut App) {
+    cx.background_executor()
+        .spawn(async {
+            match hive_core::host::environment::load() {
+                Ok(environment) => {
+                    tracing::info!(
+                        variables = environment.len(),
+                        "login shell environment loaded"
+                    )
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "keeping the process environment for local commands")
+                }
+            }
+        })
+        .detach();
+}
+
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
     if args.get(1).is_some_and(|a| a == "--agent-hook") {
@@ -54,13 +76,21 @@ fn main() {
         .with_assets(gpui_kit::assets::AllAssets)
         .run(|cx| {
             gpui_kit::init(cx);
+            load_login_environment(cx);
             cx.spawn(async move |cx| {
-                let loaded = cx
+                let (loaded, recovery) = cx
                     .background_executor()
-                    .spawn(async { hive_core::state::State::load() })
+                    .spawn(async {
+                        let loaded = hive_core::state::State::load();
+                        // Recovery must be available before any restored buffer becomes editable.
+                        let recovery = hive_core::files::recovery::load(
+                            &hive_core::state::hive_dir().join("editor-recovery"),
+                        );
+                        (loaded, recovery)
+                    })
                     .await;
                 cx.update(|cx| {
-                    AppState::init(loaded, cx);
+                    AppState::init(loaded, recovery, cx);
                     ui::app_menu::init(cx);
                     ui::theme::init(cx);
                     ui::syntax::init();

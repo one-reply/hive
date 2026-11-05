@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod command;
 pub mod commit_message;
+pub mod files;
 pub mod git;
 pub mod host;
 pub mod identity;

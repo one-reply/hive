@@ -65,6 +65,8 @@ pub struct Settings {
     git_panel_width: f32,
     /// Whether source control is visible on launch.
     pub git_panel_open: bool,
+    /// Files is selected in the shared right sidebar; older snapshots default to Git.
+    pub files_selected: bool,
     /// Side-by-side diff instead of the default unified presentation.
     pub diff_split: bool,
     ui_font_size: f32,
@@ -84,6 +86,7 @@ impl Default for Settings {
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             git_panel_width: GIT_PANEL_WIDTH_DEFAULT,
             git_panel_open: true,
+            files_selected: false,
             diff_split: false,
             ui_font_size: UI_FONT_SIZE_DEFAULT,
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,

@@ -244,6 +244,28 @@ impl CenterTabs {
             .then(|| group.drag_panel(ix, cx))
             .flatten();
 
+        let label = if let Ok(editor) = panel
+            .view()
+            .downcast::<crate::ui::editor_panel::EditorPanel>()
+        {
+            let document = editor.read(cx).document.read(cx);
+            let tooltip = format!(
+                "{} · {}",
+                document.path.display(),
+                document.target.path.display()
+            );
+            div()
+                .id(("editor-tab-label", ix))
+                .child(label)
+                .when(!document.pinned, |label| label.italic())
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                })
+                .into_any_element()
+        } else {
+            label
+        };
+
         Tab::new()
             .aria_label(accessible_name)
             .child(label)
@@ -256,8 +278,20 @@ impl CenterTabs {
             .on_click({
                 let group = group.clone();
                 let last_active_ix = self.last_active_ix.clone();
-                move |_, window, cx| {
+                move |event, window, cx| {
                     last_active_ix.set(Some(ix));
+                    if event.click_count() >= 2
+                        && let Some(editor) = group.panels().get(ix).and_then(|p| {
+                            p.view()
+                                .downcast::<crate::ui::editor_panel::EditorPanel>()
+                                .ok()
+                        })
+                    {
+                        editor.read(cx).document.clone().update(cx, |d, cx| {
+                            d.pinned = true;
+                            cx.notify();
+                        });
+                    }
                     group.select_tab(ix, window, cx);
                 }
             })
@@ -330,6 +364,20 @@ fn render_close_button(
             move |_, window, cx| {
                 // Close by id without also selecting the tab underneath.
                 cx.stop_propagation();
+                if let Some(panel) = group
+                    .panels()
+                    .iter()
+                    .find(|panel| panel.panel_id(cx) == panel_id)
+                    .and_then(|panel| {
+                        panel
+                            .view()
+                            .downcast::<crate::ui::editor_panel::EditorPanel>()
+                            .ok()
+                    })
+                {
+                    panel.update(cx, |panel, cx| panel.request_close(window, cx));
+                    return;
+                }
                 group.close(panel_id, window, cx);
             }
         })
