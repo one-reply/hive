@@ -128,41 +128,53 @@ impl GitPanel {
         }
         let commits = state.commits.clone();
         let more = state.history_more;
-        let fg = cx.theme().foreground;
         content = content.children(commits.into_iter().zip(commit_hovers).enumerate().map(
             |(i, (commit, hover))| {
                 let oid = commit.oid.clone();
-                v_flex()
-                    .id(("commit", i))
+                Button::new(("commit", i))
+                    .accessibility_label(format!(
+                        "Open commit {}: {}",
+                        short(&commit.oid),
+                        commit.subject
+                    ))
+                    .w_full()
+                    .h_auto()
+                    .justify_start()
                     .px_2()
                     .py_1()
                     .gap_0p5()
                     .rounded_md()
                     .cursor_pointer()
-                    .hover_bg(&hover, fg.opacity(0.), fg.opacity(0.05))
                     .child(
-                        div()
-                            .text_size(META_TEXT + px(1.))
-                            .truncate()
-                            .child(commit.subject.clone()),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_1p5()
-                            .text_size(META_TEXT)
-                            .text_color(muted)
+                        v_flex()
+                            .w_full()
+                            .min_w_0()
+                            .items_start()
                             .child(
                                 div()
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .child(short(&commit.oid).to_string()),
+                                    .text_size(META_TEXT + px(1.))
+                                    .truncate()
+                                    .child(commit.subject.clone()),
                             )
-                            .child(div().min_w_0().truncate().child(commit.author.clone()))
-                            .child(div().flex_none().child(relative_date(&commit.date))),
+                            .child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .text_size(META_TEXT)
+                                    .text_color(muted)
+                                    .child(
+                                        div()
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .child(short(&commit.oid).to_string()),
+                                    )
+                                    .child(div().min_w_0().truncate().child(commit.author.clone()))
+                                    .child(div().flex_none().child(relative_date(&commit.date))),
+                            ),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.git
                             .update(cx, |g, cx| g.select_commit(oid.clone(), cx))
                     }))
+                    .smooth_hover(ButtonLook::Ghost, &hover, cx)
             },
         ));
         if loading {

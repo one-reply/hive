@@ -118,6 +118,9 @@ impl GitPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let terminal_hover = Hover::new("error-terminal", window, cx);
+        let verify_hover = Hover::new("error-verified", window, cx);
+        let needs_verification = self.git.read(cx).needs_verification();
+        let inspected = self.git.read(cx).result_inspected();
         v_flex()
             .px_3()
             .pb_2()
@@ -136,19 +139,42 @@ impl GitPanel {
                     ),
             )
             .child(
-                h_flex().justify_end().child(
-                    Button::new("error-terminal")
-                        .cursor_pointer()
-                        .xsmall()
-                        .icon(Lucide::SquareTerminal)
-                        .label("Open terminal")
-                        .on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.git.update(cx, |g, cx| g.terminal(cx))
-                            }),
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .when(needs_verification, |row| {
+                        row.child(
+                            Button::new("error-verified")
+                                .cursor_pointer()
+                                .xsmall()
+                                .label(if inspected {
+                                    "I reviewed this result"
+                                } else {
+                                    "Verify actual result"
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.git.update(cx, |g, cx| {
+                                        if inspected {
+                                            g.acknowledge_outcome(cx)
+                                        } else {
+                                            g.verify_result(cx)
+                                        }
+                                    })
+                                }))
+                                .smooth_hover(ButtonLook::Outline, &verify_hover, cx),
                         )
-                        .smooth_hover(ButtonLook::Outline, &terminal_hover, cx),
-                ),
+                    })
+                    .child(
+                        Button::new("error-terminal")
+                            .cursor_pointer()
+                            .xsmall()
+                            .icon(Lucide::SquareTerminal)
+                            .label("Open terminal")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.git.update(cx, |g, cx| g.terminal(cx))
+                            }))
+                            .smooth_hover(ButtonLook::Outline, &terminal_hover, cx),
+                    ),
             )
     }
 
@@ -191,7 +217,7 @@ impl Render for GitPanel {
         let has_files = match section {
             Section::Changes => status.as_ref().is_some_and(|s| !s.files.is_empty()),
             Section::Compare => !state.files.is_empty(),
-            Section::History => !state.commits.is_empty() || !state.files.is_empty(),
+            Section::History => state.selected_commit.is_some() && !state.files.is_empty(),
         };
         let changes = status.as_ref().map(|s| s.files.len()).unwrap_or(0);
         let panel = v_flex()

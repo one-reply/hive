@@ -6,6 +6,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::app::AppState;
+use hive_core::agent::{
+    hooks,
+    launch::{Launch, ResumeSession},
+};
 
 mod input;
 use input::Input;
@@ -28,6 +32,8 @@ pub(crate) struct TerminalSession {
     pub(crate) title: Option<String>,
     pub(crate) exited: bool,
     pub(crate) directory: Option<PathBuf>,
+    pub(crate) resume: Option<ResumeSession>,
+    pub(crate) resume_available: bool,
     focused: bool,
     _start: Task<()>,
     _events: Option<Task<()>>,
@@ -42,15 +48,36 @@ impl TerminalSession {
     pub(crate) fn new(
         cwd: Option<PathBuf>,
         worktree: Option<PathBuf>,
+        launch: Option<Launch>,
         cx: &mut Context<Self>,
     ) -> Self {
         let starting = AppState::get(cx).terminals.begin();
         let directory = cwd.clone();
+        let endpoint = AppState::get(cx).agents.read(cx).endpoint();
+        let terminal_id = cx.entity_id().as_u64();
         let start = cx.background_executor().spawn(async move {
             let Some(starting) = starting else {
                 return Err("Hive is shutting down".to_owned());
             };
-            let result = Terminal::spawn(cwd.as_deref(), None, TerminalSize::new(80, 24));
+            let result = if let Some(launch) = launch {
+                let settings = endpoint
+                    .map(|endpoint| {
+                        std::env::current_exe()
+                            .map(|executable| hooks::settings(&executable, &endpoint, terminal_id))
+                    })
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
+                let command = launch
+                    .command(
+                        cwd.as_deref()
+                            .ok_or("Choose a worktree before starting an agent")?,
+                        settings.as_deref(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                Terminal::spawn_command(command, cwd.as_deref(), TerminalSize::new(80, 24))
+            } else {
+                Terminal::spawn(cwd.as_deref(), None, TerminalSize::new(80, 24))
+            };
             if let Ok(terminal) = &result {
                 starting.register(terminal);
             }
@@ -114,12 +141,31 @@ impl TerminalSession {
             title: None,
             exited: false,
             directory,
+            resume: None,
+            resume_available: false,
             focused: false,
             _start: start,
             _events: None,
             _directory: None,
             pending_input: VecDeque::new(),
             paste_task: None,
+        }
+    }
+
+    pub(crate) fn set_resume(&mut self, resume: ResumeSession, cx: &mut Context<Self>) {
+        if self.resume.as_ref() != Some(&resume) {
+            self.resume = Some(resume);
+            cx.emit(SessionEvent::DirectoryChanged);
+        }
+    }
+
+    pub(crate) fn request_resume(&mut self, worktree: PathBuf, cx: &mut Context<Self>) {
+        if let Some(resume) = self.resume.clone() {
+            AppState::get(cx).agents.clone().update(cx, |agents, cx| {
+                agents.start(worktree, Some(Launch::Resume(resume)), cx)
+            });
+            self.resume_available = false;
+            cx.notify();
         }
     }
 

@@ -10,21 +10,13 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command};
 
-pub(super) fn spawn(
-    cwd: Option<&Path>,
-    shell: Option<&str>,
-    size: WindowSize,
-) -> io::Result<(Child, File)> {
+pub(super) fn spawn(mut command: Command, size: WindowSize) -> io::Result<(Child, File)> {
     let pty = rustix_openpty::openpty(None, Some(&winsize(size)))?;
     let mut modes = rustix::termios::tcgetattr(&pty.controller)?;
     modes.input_modes.insert(InputModes::IUTF8);
     rustix::termios::tcsetattr(&pty.controller, OptionalActions::Now, &modes)?;
     let flags = fcntl_getfl(&pty.controller)?;
     fcntl_setfl(&pty.controller, flags | OFlags::NONBLOCK)?;
-    let mut command = match shell {
-        Some(shell) => Host::Local.command(shell, &[], cwd),
-        None => login_command(cwd)?,
-    };
     command
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
@@ -55,6 +47,13 @@ pub(super) fn spawn(
     }
     let child = command.spawn()?;
     Ok((child, File::from(pty.controller)))
+}
+
+pub(super) fn command(cwd: Option<&Path>, shell: Option<&str>) -> io::Result<Command> {
+    match shell {
+        Some(shell) => Ok(Host::Local.command(shell, &[], cwd)),
+        None => login_command(cwd),
+    }
 }
 
 /// A Hive terminal is a fresh host, not a child of whichever agent launched Hive. Claude Code

@@ -134,11 +134,16 @@ impl Sidebar {
     ) -> Stateful<Div> {
         let fg = cx.theme().sidebar_foreground;
         let muted = cx.theme().muted_foreground;
-        let status = if sessions.iter().any(|s| s.status == AgentStatus::Working) {
-            AgentStatus::Working
-        } else {
-            AgentStatus::Idle
-        };
+        let status = [
+            AgentStatus::Failed,
+            AgentStatus::WaitingApproval,
+            AgentStatus::WaitingInput,
+            AgentStatus::Working,
+            AgentStatus::Done,
+        ]
+        .into_iter()
+        .find(|status| sessions.iter().any(|s| s.status == *status))
+        .unwrap_or(AgentStatus::Idle);
         let hidden = sessions.len().saturating_sub(STRIP_LOGOS);
         let pill = h_flex()
             .h(STRIP_HEIGHT - px(6.))
@@ -147,7 +152,7 @@ impl Sidebar {
             .items_center()
             .rounded_md()
             .bg(fg.opacity(PILL_BACKGROUND_OPACITY))
-            .child(status_icon(status))
+            .child(status_icon(status, cx))
             .children(
                 sessions
                     .iter()
@@ -229,9 +234,14 @@ fn render_session(
         .hover_bg(hover, fg.opacity(0.), fg.opacity(STRIP_HOVER_OPACITY))
         .cursor_pointer()
         .text_size(META_TEXT)
-        .child(status_icon(session.status))
+        .child(status_icon(session.status, cx))
         .child(logo(session.kind, cx))
         .child(div().flex_none().child(session.kind.name()))
+        .child(div().text_color(muted).child(if session.reported {
+            session.status.label().to_owned()
+        } else {
+            format!("{} · estimated", session.status.label())
+        }))
         .when_some(session.title.clone(), |row, title| {
             row.child(
                 div()
@@ -250,16 +260,28 @@ fn render_session(
         })
 }
 
-fn status_icon(status: AgentStatus) -> AnyElement {
+fn status_icon(status: AgentStatus, cx: &App) -> AnyElement {
     match status {
         AgentStatus::Working => Spinner::new()
             .icon(IconName::LoaderCircle)
             .color(rgb(ACTIVE_COLOR).into())
             .xsmall()
             .into_any_element(),
-        AgentStatus::Idle => Icon::new(Lucide::CircleCheck)
+        AgentStatus::WaitingInput | AgentStatus::WaitingApproval => Icon::new(Lucide::CircleAlert)
             .size_3()
-            .text_color(rgb(ACTIVE_COLOR))
+            .text_color(cx.theme().warning)
+            .into_any_element(),
+        AgentStatus::Done => Icon::new(Lucide::CircleCheck)
+            .size_3()
+            .text_color(cx.theme().success)
+            .into_any_element(),
+        AgentStatus::Failed => Icon::new(Lucide::CircleX)
+            .size_3()
+            .text_color(cx.theme().danger)
+            .into_any_element(),
+        AgentStatus::Idle => Icon::new(Lucide::Circle)
+            .size_3()
+            .text_color(cx.theme().muted_foreground)
             .into_any_element(),
     }
 }

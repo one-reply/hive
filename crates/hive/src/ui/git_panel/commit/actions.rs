@@ -100,7 +100,7 @@ impl GitPanel {
                 Some(_) => None,
             },
         };
-        let loading = busy && !self.git.read(cx).is_generating();
+        let loading = self.git.read(cx).is_running();
         let active = mode == Mode::for_status(status) && !busy;
         let hover = Hover::new(mode.id(), window, cx).enabled(active && blocker.is_none());
         let (icon, label, tooltip, look) = match mode {

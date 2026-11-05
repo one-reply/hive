@@ -13,7 +13,7 @@ use crate::terminal::view::{Copy, Paste};
 use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
 use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
-use crate::ui::workspace::{NewTerminal, ToggleGitPanel, ToggleSidebar};
+use crate::ui::workspace::{NewTerminal, QuickSwitch, ToggleGitPanel, ToggleSidebar};
 
 /// Key context of window-wide shortcuts: the main window's root.
 pub(crate) const CONTEXT: &str = "Workspace";
@@ -75,7 +75,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 13] = [
+pub(crate) static SHORTCUTS: [Shortcut; 14] = [
     Shortcut {
         label: "New terminal",
         default: "cmd-t",
@@ -125,6 +125,13 @@ pub(crate) static SHORTCUTS: [Shortcut; 13] = [
         category: Category::Workspace,
         context: CONTEXT,
         action: || Box::new(ToggleFullScreen),
+    },
+    Shortcut {
+        label: "Go to workspace or agent",
+        default: "cmd-k",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(QuickSwitch),
     },
     Shortcut {
         label: "Split terminal right",

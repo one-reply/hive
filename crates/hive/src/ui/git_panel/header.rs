@@ -50,7 +50,7 @@ impl GitPanel {
         let busy = state.is_busy();
         let operation = state.remote_operation();
         // A remote operation spins its own button, so the refresh icon stays still meanwhile.
-        let spinning = state.loading || (busy && operation.is_none());
+        let spinning = state.loading || (state.is_running() && operation.is_none());
         let synced: Option<SharedString> = state.synced().map(|s| s.to_string().into());
         let has_remote = state.remote.is_some();
         let [

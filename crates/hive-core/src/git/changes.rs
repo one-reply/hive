@@ -1,5 +1,5 @@
 //! Explicit index, commit and remote operations. No force, implicit staging or automatic stash.
-use super::{GitError, READ_LIMIT, branches, bytes, diff, run, status};
+use super::{GitError, READ_LIMIT, branches, bytes_mutation, diff, run, run_mutation, status};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -136,7 +136,7 @@ fn paths(host: &Host, cwd: &Path, args: &[&str], paths: &[String]) -> Result<(),
         .iter()
         .flat_map(|p| p.bytes().chain(std::iter::once(0)))
         .collect();
-    bytes(host, cwd, &command, Some(&input), READ_LIMIT, false).map(drop)
+    bytes_mutation(host, cwd, &command, Some(&input), READ_LIMIT, false).map(drop)
 }
 
 /// Execute one mutation synchronously. Call only on a background executor.
@@ -178,7 +178,7 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<Option<Synced
                 diff::validate_path(path)?;
                 // `clean` has no --pathspec-from-file; status lists untracked files one by one,
                 // so a single literal file path never needs `-d`.
-                run(
+                run_mutation(
                     host,
                     cwd,
                     &["--literal-pathspecs", "clean", "-f", "-q", "--", path],
@@ -219,7 +219,7 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<Option<Synced
 
 fn fetch(host: &Host, cwd: &Path, remote: &str) -> Result<Synced, GitError> {
     remote_exists(host, cwd, remote)?;
-    run(
+    run_mutation(
         host,
         cwd,
         &["-c", "credential.interactive=false", "fetch", remote],
@@ -243,7 +243,7 @@ fn pull(host: &Host, cwd: &Path) -> Result<Synced, GitError> {
             "Publish this branch or configure an upstream before pulling.".into(),
         ));
     }
-    run(
+    run_mutation(
         host,
         cwd,
         &[
@@ -296,7 +296,7 @@ fn commit(host: &Host, cwd: &Path, message: &str) -> Result<(), GitError> {
             "Resolve conflicts in the terminal before committing.".into(),
         ));
     }
-    bytes(
+    bytes_mutation(
         host,
         cwd,
         &["commit", "--file=-"],
@@ -307,7 +307,7 @@ fn commit(host: &Host, cwd: &Path, message: &str) -> Result<(), GitError> {
     .map(drop)
 }
 
-fn push_destination(
+pub(super) fn push_destination(
     host: &Host,
     cwd: &Path,
     remote: &str,
@@ -345,7 +345,7 @@ fn push(
         args.push("--set-upstream");
     }
     args.extend([remote, &refspec]);
-    run(host, cwd, &args).map(drop)
+    run_mutation(host, cwd, &args).map(drop)
 }
 
 #[cfg(test)]

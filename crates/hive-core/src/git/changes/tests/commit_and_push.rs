@@ -131,3 +131,30 @@ fn invalid_destination_is_rejected_before_creating_a_commit() {
     assert_eq!(repo.git(&["rev-parse", "HEAD"]), head);
     assert!(!repo.git(&["diff", "--cached"]).is_empty());
 }
+
+#[test]
+fn verification_reads_actual_remote_without_pushing_or_losing_staged_work() {
+    let repo = Repo::new();
+    let remote = remote_for(&repo);
+    repo.write("a", "base");
+    repo.commit();
+    let action = Action::Push {
+        remote: "origin".into(),
+        publish: true,
+    };
+    let inspect =
+        || crate::git::verification::inspect(&Host::Local, &repo.0, Some(&action)).unwrap();
+    assert!(inspect().contains("branch does not exist"));
+    repo.action(action.clone()).unwrap();
+    let published = remote.git(&["rev-parse", "main"]);
+    assert!(inspect().contains("matches current HEAD"));
+    repo.write("a", "ahead");
+    repo.commit();
+    repo.write("a", "staged");
+    repo.git(&["add", "a"]);
+    let report = inspect();
+    assert!(report.contains("different from HEAD"));
+    assert!(report.contains("1 staged files"));
+    assert_eq!(remote.git(&["rev-parse", "main"]), published);
+    assert!(report.contains("has not retried"));
+}

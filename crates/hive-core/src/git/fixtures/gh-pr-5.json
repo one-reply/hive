@@ -1,0 +1,37 @@
+{
+  "number": 5,
+  "state": "MERGED",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-04T22:09:42Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/vitaliits-stack/hive/actions/runs/41921240660/job/126898852879",
+      "name": "Security and licenses",
+      "startedAt": "2026-11-04T22:09:07Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-04T22:05:38Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/vitaliits-stack/hive/actions/runs/41921240660/job/126898856704",
+      "name": "macOS checks and bundle",
+      "startedAt": "2026-11-04T22:00:47Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-04T22:09:43Z",
+      "conclusion": "SKIPPED",
+      "detailsUrl": "https://github.com/vitaliits-stack/hive/actions/runs/41921240660/job/126899208765",
+      "name": "Draft prerelease",
+      "startedAt": "2026-11-04T22:09:43Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    }
+  ],
+  "url": "https://github.com/vitaliits-stack/hive/pull/5"
+}

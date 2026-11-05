@@ -17,6 +17,8 @@ use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 use hive_core::git::diff::DiffSource;
 
+mod comments;
+
 pub(crate) struct DiffPanel {
     pub review: Entity<GitDiff>,
     git: Entity<Git>,
@@ -71,7 +73,7 @@ impl DiffPanel {
         }
     }
 
-    fn label(&self, cx: &App) -> SharedString {
+    pub(crate) fn label(&self, cx: &App) -> SharedString {
         let request = &self.review.read(cx).request;
         let source = match &request.source {
             DiffSource::WorkingTree => "Unstaged".into(),
@@ -189,8 +191,10 @@ impl Render for DiffPanel {
         let [prev_hover, next_hover, mode_hover, refresh_hover] =
             ["diff-prev", "diff-next", "diff-mode", "diff-refresh"]
                 .map(|id| Hover::new(id, window, cx));
+        let notes_hover = Hover::new("review-notes", window, cx);
         let review = self.review.read(cx);
         let request = review.request.clone();
+        let note_count = self.git.read(cx).notes(&request.target).len();
         let patch = review.patch.clone();
         let error = review.error.clone();
         let display = review.display.clone();
@@ -230,7 +234,11 @@ impl Render for DiffPanel {
         let git = self.git.clone();
         let request_action = request.clone();
         let patch_action = patch.clone();
+        let panel = cx.entity().downgrade();
         let diff = Diff::new(&display)
+            .on_add_annotation(move |range, window, cx| {
+                let _ = panel.update(cx, |panel, cx| panel.add_note(range.clone(), window, cx));
+            })
             .flex_1()
             .min_h_0()
             .annotations(annotations)
@@ -267,6 +275,15 @@ impl Render for DiffPanel {
                 .border_b_1()
                 .border_color(cx.theme().border)
                 .child(div().flex_1().min_w_0().truncate().text_sm().child(source))
+                .child(
+                    Button::new("review-notes")
+                        .cursor_pointer()
+                        .small()
+                        .label(format!("Review notes · {note_count}"))
+                        .disabled(note_count == 0)
+                        .on_click(cx.listener(|this, _, window, cx| this.review_prompt(window, cx)))
+                        .smooth_hover(ButtonLook::Outline, &notes_hover, cx),
+                )
                 .child(
                     Button::new("diff-prev")
                         .cursor_pointer()

@@ -3,6 +3,7 @@
 //! background executor). This is what a future backend will share as its proto.
 
 pub mod agent;
+pub mod command;
 pub mod commit_message;
 pub mod git;
 pub mod host;

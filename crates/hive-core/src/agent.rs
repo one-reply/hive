@@ -5,6 +5,9 @@
 //! its foreground process group (`tpgid`), and the command lines in that group name the agent.
 //! One `ps` snapshot serves every open terminal.
 
+pub mod hooks;
+pub mod launch;
+
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -101,9 +104,36 @@ impl AgentKind {
 pub enum AgentStatus {
     Working,
     Idle,
+    /// The agent explicitly requested user input.
+    WaitingInput,
+    /// The agent explicitly requested a permission decision.
+    WaitingApproval,
+    /// The agent finished a response; this does not certify its code or tests.
+    Done,
+    /// The agent reported a failed turn.
+    Failed,
 }
 
 impl AgentStatus {
+    /// A status deserving attention, independent of terminal output timing.
+    pub fn needs_attention(self) -> bool {
+        matches!(
+            self,
+            Self::WaitingInput | Self::WaitingApproval | Self::Done | Self::Failed
+        )
+    }
+    /// User-facing status for an explicit event.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Working => "Working",
+            Self::Idle => "No active output",
+            Self::WaitingInput => "Needs input",
+            Self::WaitingApproval => "Needs approval",
+            Self::Done => "Response finished",
+            Self::Failed => "Turn failed",
+        }
+    }
+
     /// The status `activity` shows at `now`.
     pub fn of(activity: &Activity, now: Instant) -> Self {
         if activity.is_streaming(now) {
@@ -173,7 +203,7 @@ impl ProcessTable {
         let shell = self.processes.iter().find(|p| p.pid == shell_pid)?;
         let foreground = u32::try_from(shell.tpgid).ok().filter(|&group| group > 0)?;
         if foreground == shell.pgid {
-            return None;
+            return AgentKind::from_command(&shell.args);
         }
         // A job may start in a wrapper (a subshell, `npx`) whose child is the agent.
         self.processes

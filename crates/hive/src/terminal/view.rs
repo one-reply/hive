@@ -3,8 +3,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::state::terminal_session::{SessionEvent, SessionStatus, TerminalSession};
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, notification::Notification};
+use gpui_kit::component::{Sizable as _, button::Button, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use hive_core::agent::launch::{Launch, ResumeSession};
 use hive_core::terminal::{ScrollModifiers, SelectionType};
 
 use super::element::TerminalElement;
@@ -42,12 +46,28 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::with_launch(cwd, directory, None, None, window, cx)
+    }
+
+    pub(crate) fn with_launch(
+        cwd: Option<&Path>,
+        directory: Option<&Path>,
+        launch: Option<Launch>,
+        resume: Option<ResumeSession>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let session = cx.new(|cx| {
             TerminalSession::new(
                 directory.map(Path::to_path_buf),
                 cwd.map(Path::to_path_buf),
+                launch,
                 cx,
             )
+        });
+        session.update(cx, |session, _| {
+            session.resume_available = resume.is_some();
+            session.resume = resume;
         });
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
@@ -232,34 +252,61 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
         let bg = cx.theme().background;
-        div()
-            .id("terminal")
-            .track_focus(&self.focus_handle)
-            .key_context(keymap::TERMINAL_VIEW_CONTEXT)
+        let resume = self
+            .session
+            .read(cx)
+            .resume
+            .clone()
+            .filter(|_| self.session.read(cx).resume_available);
+        let resume_hover = Hover::new("resume-agent", window, cx);
+        v_flex()
             .size_full()
-            .bg(bg)
-            .cursor(CursorStyle::IBeam)
-            .on_key_down(cx.listener(Self::key_down))
-            .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
-            .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
-            .on_action(cx.listener(|this, _: &component::input::Copy, _, cx| this.copy(cx)))
-            .on_scroll(cx.listener(Self::scroll_wheel))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
-            .on_mouse_move(cx.listener(Self::mouse_move))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
-            .child(match &self.session.read(cx).status {
-                SessionStatus::Starting => {
-                    div().p_4().child("Starting terminal…").into_any_element()
-                }
-                SessionStatus::Failed(error) => div()
-                    .p_4()
-                    .child(format!("Could not start terminal: {error}"))
-                    .into_any_element(),
-                SessionStatus::Ready(_) => {
-                    TerminalElement::new(cx.entity(), focused).into_any_element()
-                }
+            .when_some(resume, |view, resume| {
+                view.child(
+                    Button::new("resume-agent")
+                        .cursor_pointer()
+                        .small()
+                        .label(format!("Resume {} session", resume.agent().name()))
+                        .tooltip("Continue the saved conversation in a new terminal")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(path) = this.cwd.clone() {
+                                this.session
+                                    .update(cx, |session, cx| session.request_resume(path, cx));
+                            }
+                        }))
+                        .smooth_hover(ButtonLook::Outline, &resume_hover, cx),
+                )
             })
+            .child(
+                div()
+                    .id("terminal")
+                    .track_focus(&self.focus_handle)
+                    .key_context(keymap::TERMINAL_VIEW_CONTEXT)
+                    .size_full()
+                    .bg(bg)
+                    .cursor(CursorStyle::IBeam)
+                    .on_key_down(cx.listener(Self::key_down))
+                    .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
+                    .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
+                    .on_action(cx.listener(|this, _: &component::input::Copy, _, cx| this.copy(cx)))
+                    .on_scroll(cx.listener(Self::scroll_wheel))
+                    .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+                    .on_mouse_move(cx.listener(Self::mouse_move))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+                    .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
+                    .child(match &self.session.read(cx).status {
+                        SessionStatus::Starting => {
+                            div().p_4().child("Starting terminal…").into_any_element()
+                        }
+                        SessionStatus::Failed(error) => div()
+                            .p_4()
+                            .child(format!("Could not start terminal: {error}"))
+                            .into_any_element(),
+                        SessionStatus::Ready(_) => {
+                            TerminalElement::new(cx.entity(), focused).into_any_element()
+                        }
+                    }),
+            )
     }
 }
 

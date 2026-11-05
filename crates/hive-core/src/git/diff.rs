@@ -210,7 +210,7 @@ pub fn apply_hunk(
         args.push("--reverse");
     }
     args.push("-");
-    bytes(
+    super::bytes_mutation(
         host,
         cwd,
         &args,

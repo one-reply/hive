@@ -5,10 +5,14 @@
 //! their output timing tells whether it is working. The sidebar observes this entity.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::*;
-use hive_core::agent::{AgentKind, AgentStatus, ProcessTable};
+use hive_core::agent::{
+    AgentKind, AgentStatus, ProcessTable, hooks,
+    launch::{Launch, ResumeSession},
+};
 use hive_core::terminal::{Activity, Terminal};
 
 use crate::state::terminal_session::TerminalSession;
@@ -24,6 +28,8 @@ pub(crate) struct AgentSession {
     pub(crate) session: EntityId,
     pub(crate) kind: AgentKind,
     pub(crate) status: AgentStatus,
+    pub(crate) reported: bool,
+    pub(crate) unread: bool,
     /// The title the agent gave its terminal, usually its current task.
     pub(crate) title: Option<SharedString>,
 }
@@ -31,6 +37,8 @@ pub(crate) struct AgentSession {
 pub(crate) enum AgentsEvent {
     /// Show and focus the pane of this session.
     Reveal(EntityId),
+    Attention(EntityId, AgentStatus),
+    Launch(PathBuf, Option<Launch>),
 }
 
 pub(crate) struct Agents {
@@ -38,6 +46,7 @@ pub(crate) struct Agents {
     by_worktree: HashMap<PathBuf, Vec<AgentSession>>,
     /// The last poll failure, logged once instead of on every tick.
     last_error: Option<String>,
+    endpoint: Option<PathBuf>,
     _poll: Task<()>,
 }
 
@@ -45,6 +54,8 @@ struct Watched {
     session: WeakEntity<TerminalSession>,
     id: EntityId,
     probe: Probe,
+    reported: Option<AgentStatus>,
+    unread: bool,
 }
 
 /// What the background poll needs to know about one terminal.
@@ -68,20 +79,53 @@ impl EventEmitter<AgentsEvent> for Agents {}
 impl Agents {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let poll = cx.spawn(async move |this, cx| {
+            let server = cx
+                .background_executor()
+                .spawn(async { hooks::Server::bind().map(Arc::new) })
+                .await;
+            let server = match server {
+                Ok(server) => {
+                    let path = server.path().to_owned();
+                    if this
+                        .update(cx, |this, _| this.endpoint = Some(path))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    Some(server)
+                }
+                Err(error) => {
+                    tracing::error!(%error, "agent hooks unavailable; using estimated status");
+                    None
+                }
+            };
             loop {
                 cx.background_executor().timer(POLL_INTERVAL).await;
                 let Ok(probes) = this.update(cx, |this, cx| this.probes(cx)) else {
                     return;
                 };
-                let sightings = if probes.is_empty() {
-                    Ok(Vec::new())
-                } else {
-                    cx.background_executor()
-                        .spawn(async move { look(&probes) })
-                        .await
-                };
+                let server = server.clone();
+                let (sightings, reports) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let reports = server.map(|server| server.drain()).transpose();
+                        let sightings = if probes.is_empty() {
+                            Ok(Vec::new())
+                        } else {
+                            look(&probes)
+                        };
+                        (sightings, reports)
+                    })
+                    .await;
                 if this
-                    .update(cx, |this, cx| this.apply(sightings, cx))
+                    .update(cx, |this, cx| {
+                        match reports {
+                            Ok(Some(reports)) => this.apply_reports(reports, cx),
+                            Err(error) => tracing::warn!(%error, "could not read agent hooks"),
+                            _ => {}
+                        }
+                        this.apply(sightings, cx)
+                    })
                     .is_err()
                 {
                     return;
@@ -92,6 +136,7 @@ impl Agents {
             watched: Vec::new(),
             by_worktree: HashMap::new(),
             last_error: None,
+            endpoint: None,
             _poll: poll,
         }
     }
@@ -103,7 +148,11 @@ impl Agents {
         worktree: &Path,
         terminal: &Terminal,
     ) {
+        self.watched
+            .retain(|watched| watched.id != session.entity_id());
         self.watched.push(Watched {
+            reported: None,
+            unread: false,
             session: session.downgrade(),
             id: session.entity_id(),
             probe: Probe {
@@ -121,7 +170,68 @@ impl Agents {
 
     /// Asks the workspace to show the pane running `session`.
     pub(crate) fn reveal(&mut self, session: EntityId, cx: &mut Context<Self>) {
+        for watched in &mut self.watched {
+            if watched.id == session {
+                watched.unread = false;
+            }
+        }
+        for sessions in self.by_worktree.values_mut() {
+            for agent in sessions {
+                if agent.session == session {
+                    agent.unread = false;
+                }
+            }
+        }
+        cx.notify();
         cx.emit(AgentsEvent::Reveal(session));
+    }
+
+    pub(crate) fn start(
+        &mut self,
+        worktree: PathBuf,
+        launch: Option<Launch>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(AgentsEvent::Launch(worktree, launch));
+    }
+
+    pub(crate) fn endpoint(&self) -> Option<PathBuf> {
+        self.endpoint.clone()
+    }
+
+    pub(crate) fn all(&self) -> impl Iterator<Item = (&PathBuf, &AgentSession)> {
+        self.by_worktree
+            .iter()
+            .flat_map(|(path, sessions)| sessions.iter().map(move |session| (path, session)))
+    }
+
+    fn apply_reports(&mut self, reports: Vec<hooks::Report>, cx: &mut Context<Self>) {
+        for report in reports {
+            let Some(watched) = self
+                .watched
+                .iter_mut()
+                .find(|w| w.id.as_u64() == report.terminal)
+            else {
+                continue;
+            };
+            let Some(session) = watched.session.upgrade() else {
+                continue;
+            };
+            if session.read(cx).exited {
+                continue;
+            }
+            if let Some(id) = report
+                .session
+                .and_then(|id| ResumeSession::new(AgentKind::ClaudeCode, &id))
+            {
+                session.update(cx, |session, cx| session.set_resume(id, cx));
+            }
+            if let Some(status) = report.status
+                && update_status(&mut watched.reported, &mut watched.unread, status)
+            {
+                cx.emit(AgentsEvent::Attention(watched.id, status));
+            }
+        }
     }
 
     /// Forgets closed terminals and returns what the poll needs for the rest.
@@ -161,13 +271,19 @@ impl Agents {
                 .and_then(|watched| watched.session.upgrade())
                 .and_then(|session| session.read(cx).title.clone())
                 .map(SharedString::from);
+            let watched = self.watched.iter().find(|w| w.id == sighting.id);
+            let reported = watched
+                .and_then(|w| w.reported)
+                .filter(|_| sighting.kind == AgentKind::ClaudeCode);
             by_worktree
                 .entry(sighting.worktree)
                 .or_default()
                 .push(AgentSession {
                     session: sighting.id,
                     kind: sighting.kind,
-                    status: sighting.status,
+                    status: reported.unwrap_or(sighting.status),
+                    reported: reported.is_some(),
+                    unread: reported.is_some() && watched.is_some_and(|w| w.unread),
                     title,
                 });
         }
@@ -194,4 +310,56 @@ fn look(probes: &[(EntityId, Probe)]) -> Result<Vec<Sighting>, String> {
             })
         })
         .collect())
+}
+
+fn update_status(
+    current: &mut Option<AgentStatus>,
+    unread: &mut bool,
+    status: AgentStatus,
+) -> bool {
+    if *current == Some(status) {
+        return false;
+    }
+    *current = Some(status);
+    *unread = status.needs_attention();
+    *unread
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentStatus, update_status};
+    #[test]
+    fn repeated_reports_do_not_recreate_dismissed_attention() {
+        let mut status = None;
+        let mut unread = false;
+        assert!(!update_status(
+            &mut status,
+            &mut unread,
+            AgentStatus::Working
+        ));
+        assert!(update_status(
+            &mut status,
+            &mut unread,
+            AgentStatus::WaitingApproval
+        ));
+        assert!(!update_status(
+            &mut status,
+            &mut unread,
+            AgentStatus::WaitingApproval
+        ));
+        unread = false;
+        assert!(!update_status(
+            &mut status,
+            &mut unread,
+            AgentStatus::WaitingApproval
+        ));
+        assert!(!unread);
+        assert!(!update_status(
+            &mut status,
+            &mut unread,
+            AgentStatus::Working
+        ));
+        assert!(update_status(&mut status, &mut unread, AgentStatus::Done));
+        assert!(unread);
+    }
 }

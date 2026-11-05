@@ -95,6 +95,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'
     needs: [security, build]
     runs-on: macos-26
+    timeout-minutes: 45
     permissions:
       contents: write
     steps:
@@ -105,6 +106,32 @@ jobs:
         with:
           name: hive-macos-arm64
           path: release
+      - name: Sign with Developer ID and notarize with Apple
+        env:
+          HIVE_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          HIVE_APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          HIVE_APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          : "${HIVE_APPLE_TEAM_ID:?Configure APPLE_TEAM_ID before creating a release tag}"
+          : "${APPLE_API_KEY_BASE64:?Missing App Store Connect API key}"
+          : "${HIVE_APPLE_API_KEY_ID:?Missing API key ID}"
+          : "${HIVE_APPLE_API_ISSUER_ID:?Missing API issuer ID}"
+          umask 077
+          signing_dir="$(mktemp -d "$RUNNER_TEMP/hive-signing.XXXXXX")"
+          export HIVE_APPLE_API_KEY="$signing_dir/AuthKey.p8"
+          trap 'rm -f "$HIVE_APPLE_API_KEY"' EXIT
+          printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$HIVE_APPLE_API_KEY"
+          archive="Hive-${RELEASE_TAG#v}-macos-arm64.zip"
+          (cd release && shasum -a 256 -c "$archive.sha256")
+          ditto -x -k "release/$archive" "$signing_dir/app"
+          python3 scripts/sign_macos.py "$signing_dir/app/Hive.app"
+          ditto -c -k --sequesterRsrc --keepParent "$signing_dir/app/Hive.app" "$signing_dir/$archive"
+          unzip -tq "$signing_dir/$archive"
+          mv "$signing_dir/$archive" "release/$archive"
+          (cd release && shasum -a 256 "$archive" > "$archive.sha256" && shasum -a 256 -c "$archive.sha256")
       - name: Install verified Sparkle tools
         run: python3 scripts/install-sparkle.py target/sparkle
       - name: Sign update archive and feed

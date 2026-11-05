@@ -1,7 +1,6 @@
 //! Project tree (Orca-style): colored project headers → worktree cards. Sessions will hang
 //! under worktrees.
 
-use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -10,7 +9,6 @@ use crate::ui::text_field::TextField;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
-use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -26,6 +24,8 @@ use hive_core::state::WorktreeFilter;
 use hive_core::worktree::{Removal, WorktreeError};
 
 mod agents;
+mod create;
+mod pull_requests;
 use agents::{AgentsSection, CardTarget};
 mod reorder;
 use reorder::DraggedProject;
@@ -48,7 +48,6 @@ const BADGE_TEXT: Pixels = px(10.);
 const BADGE_HEIGHT: Pixels = px(16.);
 const STATUS_DOT: Pixels = px(8.);
 const PROJECT_BADGE: Pixels = px(14.);
-const CREATE_DIALOG_WIDTH: Pixels = px(420.);
 /// Rows under a project header have fixed heights, so the collapse animation knows the
 /// height of the list without measuring it.
 const CARD_HEIGHT: Pixels = px(34.);
@@ -71,7 +70,7 @@ pub struct Sidebar {
     toggled: HashSet<PathBuf>,
     /// Cards whose agents strip is unfolded into one row per session.
     agents_open: HashSet<PathBuf>,
-    _observers: [Subscription; 2],
+    _observers: [Subscription; 3],
 }
 
 impl Sidebar {
@@ -80,7 +79,9 @@ impl Sidebar {
             let app = AppState::get(cx);
             (app.projects.clone(), app.store.clone(), app.agents.clone())
         };
+        let pull_requests = AppState::get(cx).pull_requests.clone();
         let observers = [
+            cx.observe(&pull_requests, |_, _, cx| cx.notify()),
             cx.observe(&projects, |_, _, cx| cx.notify()),
             cx.observe(&agents, |_, _, cx| cx.notify()),
         ];
@@ -219,7 +220,7 @@ impl Sidebar {
                         .icon(IconName::Plus)
                         .tooltip(format!("New worktree in {}", project.name))
                         .on_click(move |_, window, cx| {
-                            open_create_dialog(projects.clone(), &project, window, cx)
+                            create::open(projects.clone(), &project, window, cx)
                         })
                         .smooth_hover(ButtonLook::Ghost, &new_worktree_hover, cx),
                 )
@@ -365,7 +366,14 @@ impl Sidebar {
         } else {
             CARD_HEIGHT
         };
-        let height = header_height + card.agents.height;
+        let pr = worktree.map(|worktree| self.pr_card(project, worktree, window, cx));
+        let height = header_height
+            + card.agents.height
+            + if pr.is_some() {
+                pull_requests::HEIGHT
+            } else {
+                px(0.)
+            };
 
         let projects = self.projects.clone();
         let project_path = project.path.clone();
@@ -416,6 +424,7 @@ impl Sidebar {
                     .child(title_row)
                     .children(meta_row),
             )
+            .children(pr)
             .children(card.agents.element)
             .on_click(move |_, _, cx| {
                 projects.update(cx, |p, cx| {
@@ -446,6 +455,13 @@ impl Render for Sidebar {
             .map(|(ix, project)| self.render_project(ix, project, window, cx))
             .collect();
         let add_hover = Hover::new("add-project", window, cx);
+        let attention_hover = Hover::new("needs-attention", window, cx);
+        let attention = AppState::get(cx)
+            .agents
+            .read(cx)
+            .all()
+            .filter(|(_, s)| s.unread)
+            .count();
         let theme = cx.theme();
         let (fg, muted_fg) = (theme.sidebar_foreground, theme.muted_foreground);
 
@@ -453,6 +469,16 @@ impl Render for Sidebar {
             .size_full()
             .bg(theme.sidebar)
             .text_color(fg)
+            .child(
+                Button::new("needs-attention")
+                    .cursor_pointer()
+                    .small()
+                    .label(format!("Needs attention · {attention}"))
+                    .on_click(|_, window, cx| {
+                        crate::ui::workspace::switcher::open(true, window, cx)
+                    })
+                    .smooth_hover(ButtonLook::Ghost, &attention_hover, cx),
+            )
             .child(
                 h_flex()
                     .justify_between()
@@ -668,54 +694,6 @@ fn worktree_menu(
         )
 }
 
-fn open_create_dialog(
-    projects: Entity<Projects>,
-    project: &Project,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let input = cx.new(|cx| InputState::new(window, cx).placeholder("Leave empty to generate one"));
-    let title: SharedString = format!("New worktree in {}", project.name).into();
-    let hint: SharedString = format!(
-        "A branch of the same name is created from the default branch in {}.",
-        project.worktrees_dir().display()
-    )
-    .into();
-    let project_path = project.path.clone();
-    // Focus once per opening; the builder runs again whenever the dialog layer rebuilds.
-    let initial_focus = Cell::new(true);
-    window.open_dialog(cx, move |dialog, window, cx| {
-        if initial_focus.replace(false) {
-            input.focus_handle(cx).focus(window, cx);
-        }
-        let muted_fg = cx.theme().muted_foreground;
-        let (projects, project_path, input_state) =
-            (projects.clone(), project_path.clone(), input.clone());
-        dialog
-            .title(title.clone())
-            .w(CREATE_DIALOG_WIDTH)
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(div().text_sm().child("Name"))
-                    .child(TextField::input(Input::new(&input), &input, cx))
-                    .child(div().text_xs().text_color(muted_fg).child(hint.clone())),
-            )
-            .button_props(
-                DialogButtonProps::default()
-                    .ok_text("Create")
-                    .show_cancel(true)
-                    .on_ok(move |_, window, cx| {
-                        let name = input_state.read(cx).value().to_string();
-                        let task =
-                            projects.update(cx, |p, cx| p.create_worktree(&project_path, name, cx));
-                        report_failure("Couldn't create worktree", task, window, cx);
-                        true
-                    }),
-            )
-    });
-}
-
 fn confirm_delete(
     projects: Entity<Projects>,
     project: &Path,
@@ -811,22 +789,6 @@ fn confirm_force_delete(
                 true
             })
     });
-}
-
-fn report_failure(
-    title: &'static str,
-    task: Task<Result<(), WorktreeError>>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    window
-        .spawn(cx, async move |cx| {
-            if let Err(err) = task.await {
-                cx.update(|window, cx| notify_error(title, &err, window, cx))
-                    .ok();
-            }
-        })
-        .detach();
 }
 
 fn notify_error(title: &'static str, err: &WorktreeError, window: &mut Window, cx: &mut App) {

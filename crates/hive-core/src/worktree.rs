@@ -85,6 +85,19 @@ pub enum Removal {
 /// Blocking: creates a worktree on a new branch off the default base branch. `name` becomes
 /// both the folder and the branch name; `None` or a blank name picks a free generated one.
 pub fn create(project: &Project, name: Option<&str>) -> Result<Worktree, WorktreeError> {
+    create_from(project, name, None)
+}
+
+/// Blocking: creates a worktree from an explicit commit/ref, or the default base.
+pub fn create_from(
+    project: &Project,
+    name: Option<&str>,
+    base: Option<&str>,
+) -> Result<Worktree, WorktreeError> {
+    let base = match base.map(str::trim).filter(|base| !base.is_empty()) {
+        Some(base) => git::branches::resolve(&project.host, &project.path, base)?,
+        None => default_base_ref(project),
+    };
     let name = match name.map(sanitize).filter(|name| !name.is_empty()) {
         Some(name) => name,
         None => generate_name(
@@ -93,9 +106,8 @@ pub fn create(project: &Project, name: Option<&str>) -> Result<Worktree, Worktre
         ),
     };
     let path = project.worktrees_dir().join(&name);
-    let base = default_base_ref(project);
     let path_arg = path.to_string_lossy();
-    git::run(
+    git::run_mutation(
         &project.host,
         &project.path,
         &[
@@ -133,7 +145,7 @@ pub fn remove(
         args.push("--force");
     }
     args.push(&path_arg);
-    git::run(&project.host, &project.path, &args).map_err(|err| {
+    git::run_mutation(&project.host, &project.path, &args).map_err(|err| {
         if needs_force(err.stderr()) {
             WorktreeError::HasChanges {
                 path: worktree.path.clone(),
@@ -144,7 +156,7 @@ pub fn remove(
     })?;
     tracing::info!(path = ?worktree.path, "removed worktree");
     if let Some(branch) = worktree.branch()
-        && let Err(err) = git::run(
+        && let Err(err) = git::run_mutation(
             &project.host,
             &project.path,
             &["branch", "-d", "--", branch],
@@ -308,6 +320,28 @@ mod tests {
         let generated = create(&project(), None).expect("created with a generated name");
         assert!(NAMES.contains(&generated.name().as_str()));
         assert_eq!(project().visible_worktrees().count(), 3);
+
+        let initial = git::run(&Host::Local, &repo, &["rev-parse", "HEAD"]).unwrap();
+        git_in(
+            &repo,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "later",
+            ],
+        );
+        let explicit = create_from(&project(), Some("from-initial"), Some(&initial)).unwrap();
+        assert_eq!(
+            git::run(&Host::Local, &explicit.path, &["rev-parse", "HEAD"]).unwrap(),
+            initial
+        );
+        assert!(create_from(&project(), Some("bad-base"), Some("--help")).is_err());
+        assert!(!project().worktrees_dir().join("bad-base").exists());
 
         std::fs::write(created.path.join("scratch.txt"), "wip").expect("write");
         assert!(matches!(

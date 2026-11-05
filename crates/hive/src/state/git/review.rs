@@ -97,3 +97,26 @@ impl Git {
         }));
     }
 }
+
+impl Git {
+    pub(crate) fn add_note(
+        &mut self,
+        target: Target,
+        note: git::review_notes::Note,
+        cx: &mut Context<Self>,
+    ) {
+        if !note.text.trim().is_empty() {
+            self.review_notes.entry(target).or_default().push(note);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn notes(&self, target: &Target) -> &[git::review_notes::Note] {
+        self.review_notes.get(target).map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn clear_notes(&mut self, target: &Target, cx: &mut Context<Self>) {
+        self.review_notes.remove(target);
+        cx.notify();
+    }
+}

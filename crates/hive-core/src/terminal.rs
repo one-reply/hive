@@ -153,6 +153,16 @@ impl Terminal {
         shell: Option<&str>,
         size: TerminalSize,
     ) -> Result<Terminal, TerminalError> {
+        let command = process::command(cwd, shell).map_err(TerminalError::Pty)?;
+        Self::spawn_command(command, cwd, size)
+    }
+
+    /// Spawn a prepared Host command as the foreground process of a fresh PTY.
+    pub fn spawn_command(
+        command: std::process::Command,
+        cwd: Option<&Path>,
+        size: TerminalSize,
+    ) -> Result<Terminal, TerminalError> {
         let (events, rx) = Publisher::new();
         let completion = Arc::new(Completion::default());
         let window_size = size.window_size();
@@ -167,7 +177,7 @@ impl Terminal {
         let term = Term::new(Config::default(), &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
-        let (child, file) = process::spawn(cwd, shell, window_size).map_err(TerminalError::Pty)?;
+        let (child, file) = process::spawn(command, window_size).map_err(TerminalError::Pty)?;
         let shell_pid = child.id();
         let pty = ManagedPty::new(child, file, completion.clone(), events);
         let event_loop = EventLoop::new(term.clone(), listener.clone(), pty, false, false)

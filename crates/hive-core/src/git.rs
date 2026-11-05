@@ -1,9 +1,9 @@
 //! Running `git` on a [`Host`] and turning its exit status into a typed error.
 
+use crate::command::{self, Cancellation};
 use crate::host::Host;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::time::Duration;
 
 pub mod branches;
 pub mod changes;
@@ -11,7 +11,10 @@ pub mod commit_context;
 pub mod diff;
 pub mod history;
 mod numstat;
+pub mod pull_request;
+pub mod review_notes;
 pub mod status;
+pub mod verification;
 
 /// A `git` invocation that could not run or exited non-zero.
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +36,23 @@ pub enum GitError {
         code: Option<i32>,
         stderr: String,
     },
+    /// A deadline or pipe failure interrupted Git; writes may already have taken effect.
+    #[error("`git {command}` interrupted on {host:?} in {cwd}: {source}. {guidance}")]
+    Interrupted {
+        /// Arguments identifying the interrupted operation.
+        command: String,
+        /// Host on which Git was started.
+        host: Host,
+        /// Worktree containing the operation.
+        cwd: PathBuf,
+        /// Why the process was interrupted.
+        #[source]
+        source: command::Error,
+        /// Whether the operation could have changed files, refs or a remote.
+        mutation: bool,
+        /// Recovery instructions appropriate to the operation.
+        guidance: &'static str,
+    },
     /// A malformed response or an operation that cannot safely proceed.
     #[error("{0}")]
     Invalid(String),
@@ -40,7 +60,9 @@ pub enum GitError {
     #[error("Git output exceeds the {0} byte preview limit. Open this change in the terminal.")]
     TooLarge(usize),
     /// The commit succeeded locally, but its subsequent push failed.
-    #[error("Commit created locally, but push failed. Use Push to retry.\n{source}")]
+    #[error(
+        "Commit created locally, but push did not finish normally. Inspect the remote before retrying Push.\n{source}"
+    )]
     PushAfterCommit {
         #[source]
         source: Box<GitError>,
@@ -48,10 +70,22 @@ pub enum GitError {
 }
 
 impl GitError {
+    /// Whether a command was interrupted after it could have changed the repository.
+    pub fn outcome_unknown(&self) -> bool {
+        match self {
+            Self::Interrupted { mutation, .. } => *mutation,
+            Self::PushAfterCommit { source } => source.outcome_unknown(),
+            _ => false,
+        }
+    }
+
     /// What `git` printed on failure, empty when it never ran.
     pub fn stderr(&self) -> &str {
         match self {
-            GitError::Spawn { .. } | GitError::Invalid(_) | GitError::TooLarge(_) => "",
+            GitError::Spawn { .. }
+            | GitError::Invalid(_)
+            | GitError::TooLarge(_)
+            | GitError::Interrupted { .. } => "",
             GitError::Failed { stderr, .. } => stderr,
             GitError::PushAfterCommit { source } => source.stderr(),
         }
@@ -69,23 +103,14 @@ pub fn run(host: &Host, cwd: &Path, args: &[&str]) -> Result<String, GitError> {
 
 const READ_LIMIT: usize = 16 * 1024 * 1024;
 
-fn read_bounded(mut reader: impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
-    let mut output = Vec::new();
-    let mut buffer = [0; 8192];
-    let mut oversized = false;
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        let keep = count.min(limit.saturating_sub(output.len()));
-        output.extend_from_slice(&buffer[..keep]);
-        oversized |= keep < count;
-    }
-    Ok((output, oversized))
+pub(crate) fn run_mutation(host: &Host, cwd: &Path, args: &[&str]) -> Result<String, GitError> {
+    Ok(
+        String::from_utf8_lossy(&bytes_mutation(host, cwd, args, None, READ_LIMIT, false)?)
+            .trim_end()
+            .to_owned(),
+    )
 }
 
-// Drain both pipes while writing stdin: hooks and large patches can fill either pipe.
 fn bytes(
     host: &Host,
     cwd: &Path,
@@ -94,11 +119,29 @@ fn bytes(
     limit: usize,
     allow_exit_one: bool,
 ) -> Result<Vec<u8>, GitError> {
-    let failure = |source| GitError::Spawn {
-        command: args.join(" "),
-        host: host.clone(),
-        source,
-    };
+    invoke(host, cwd, args, input, limit, allow_exit_one, false)
+}
+
+fn bytes_mutation(
+    host: &Host,
+    cwd: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    limit: usize,
+    allow_exit_one: bool,
+) -> Result<Vec<u8>, GitError> {
+    invoke(host, cwd, args, input, limit, allow_exit_one, true)
+}
+
+fn invoke(
+    host: &Host,
+    cwd: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    limit: usize,
+    allow_exit_one: bool,
+    mutation: bool,
+) -> Result<Vec<u8>, GitError> {
     let mut command = match host {
         Host::Local => host.command("git", args, Some(cwd)),
         Host::Ssh { .. } => {
@@ -107,53 +150,32 @@ fn bytes(
             host.command("env", &remote, Some(cwd))
         }
     };
-    command
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(failure)?;
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let stderr = child.stderr.take().expect("stderr was piped");
-    let stdin = child.stdin.take();
-    let (output, errors, written) = std::thread::scope(|scope| {
-        let out = scope.spawn(|| read_bounded(stdout, limit));
-        let err = scope.spawn(|| read_bounded(stderr, READ_LIMIT));
-        let written = match (stdin, input) {
-            (Some(mut stdin), Some(input)) => stdin.write_all(input),
-            _ => Ok(()),
-        };
-        (out.join(), err.join(), written)
-    });
-    let status = child.wait().map_err(failure)?;
-    let join_error = || GitError::Invalid("Git output reader stopped unexpectedly".into());
-    let (output, oversized) = output.map_err(|_| join_error())?.map_err(failure)?;
-    let (errors, _) = errors.map_err(|_| join_error())?.map_err(failure)?;
-    if !status.success() && !(allow_exit_one && status.code() == Some(1)) {
+    command.env("GIT_TERMINAL_PROMPT", "0").env("LC_ALL", "C");
+    let timeout = Duration::from_secs(if mutation { 120 } else { 15 });
+    let output = command::run(command, input.unwrap_or_default(), &Cancellation::default(), timeout, limit)
+        .map_err(|source| match source {
+            command::Error::TooLarge(limit) if !mutation => GitError::TooLarge(limit),
+            source => GitError::Interrupted {
+                command: args.join(" "), host: host.clone(), cwd: cwd.to_owned(), source, mutation,
+                guidance: if mutation { "Outcome unknown. Refresh and inspect the index, History and remote before retrying; no automatic retry was made." } else { "Refresh to retry." },
+            },
+        })?;
+    if output.code != Some(0) && !(allow_exit_one && output.code == Some(1)) {
         return Err(GitError::Failed {
             command: args.join(" "),
             host: host.clone(),
-            cwd: cwd.to_path_buf(),
-            code: status.code(),
+            cwd: cwd.to_owned(),
+            code: output.code,
             stderr: format!(
                 "{}\n{}",
-                String::from_utf8_lossy(&errors),
-                String::from_utf8_lossy(&output)
+                String::from_utf8_lossy(&output.stderr),
+                String::from_utf8_lossy(&output.stdout)
             )
             .trim()
             .into(),
         });
     }
-    written.map_err(failure)?;
-    if oversized {
-        return Err(GitError::TooLarge(limit));
-    }
-    Ok(output)
+    Ok(output.stdout)
 }
 
 fn text(bytes: &[u8]) -> Result<&str, GitError> {
