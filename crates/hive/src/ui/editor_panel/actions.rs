@@ -1,7 +1,6 @@
 use super::*;
 use crate::state::git::GitEvent;
-use crate::ui::text_field::TextField;
-use gpui_kit::component::input::{EditorState, Textarea, TextareaState};
+use gpui_kit::component::input::EditorState;
 use gpui_kit::component::{WindowExt as _, dialog::DialogButtonProps, notification::Notification};
 
 const DIALOG_WIDTH: Pixels = px(900.);
@@ -124,110 +123,5 @@ impl EditorPanel {
             });
         })
         .detach();
-    }
-
-    pub(super) fn ask_agent(&self, window: &mut Window, cx: &mut App) {
-        use gpui_kit::component::{
-            IndexPath,
-            searchable_list::SearchableVec,
-            select::{Select, SelectState},
-        };
-        let document = self.document.read(cx);
-        let editor = document.editor.read(cx);
-        let range = editor.selected_range();
-        let text = document.text(cx);
-        let Some(prompt) = hive_core::files::selection_prompt(
-            &document.target.path,
-            &document.path,
-            &text,
-            range,
-            document.dirty,
-        ) else {
-            return;
-        };
-        let target = document.target.clone();
-        let input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .rows(14)
-                .default_value(prompt)
-        });
-        let sessions = AppState::get(cx)
-            .agents
-            .read(cx)
-            .sessions(&target.path)
-            .to_vec();
-        let labels: Vec<_> = sessions
-            .iter()
-            .map(|s| format!("{} · {}", s.kind.name(), s.session))
-            .collect();
-        let select = cx.new(|cx| {
-            SelectState::new(
-                SearchableVec::new(labels.clone()),
-                (!labels.is_empty()).then_some(IndexPath::default()),
-                window,
-                cx,
-            )
-        });
-        window.open_alert_dialog(cx, move |dialog, window, cx| {
-            let (input, select, sessions, labels, target) = (
-                input.clone(),
-                select.clone(),
-                sessions.clone(),
-                labels.clone(),
-                target.clone(),
-            );
-            let copy = input.clone();
-            let hover = Hover::new("selection-copy", window, cx);
-            dialog
-                .title("Ask agent about selection")
-                .w(DIALOG_WIDTH)
-                .child(TextField::textarea(Textarea::new(&input), &input, cx))
-                .child(
-                    Select::new(&select)
-                        .placeholder("No running agent · use Copy")
-                        .w_full(),
-                )
-                .child(
-                    Button::new("selection-copy")
-                        .cursor_pointer()
-                        .label("Copy")
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                copy.read(cx).value().to_string(),
-                            ))
-                        })
-                        .smooth_hover(ButtonLook::Ghost, &hover, cx),
-                )
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Prepare in agent")
-                        .show_cancel(true)
-                        .on_ok(move |_, _, cx| {
-                            let selected = select.read(cx).selected_value();
-                            let Some(session) = selected
-                                .and_then(|value| labels.iter().position(|label| label == value))
-                                .and_then(|ix| sessions.get(ix))
-                            else {
-                                return false;
-                            };
-                            let prompt = input.read(cx).value().to_string();
-                            let agents = AppState::get(cx).agents.clone();
-                            let Some(terminal) =
-                                agents.read(cx).session_at(&target.path, session.session)
-                            else {
-                                cx.write_to_clipboard(ClipboardItem::new_string(prompt));
-                                return false;
-                            };
-                            terminal.update(cx, |terminal, cx| {
-                                terminal.prepare_agent_draft(session.kind, prompt, false, cx)
-                            });
-                            let id = session.session;
-                            cx.defer(move |cx| {
-                                agents.update(cx, |agents, cx| agents.reveal(id, cx))
-                            });
-                            true
-                        }),
-                )
-        });
     }
 }

@@ -10,6 +10,10 @@ use std::path::Path;
 /// slightly smaller inside a box of the full icon size to keep labels aligned.
 const FOLDER_ICON_SCALE: f32 = 0.85;
 
+/// Seti glyphs fill about 60% of their viewBox while Lucide's `File` fills about 85%, so the
+/// fallback for unsupported files is shrunk to match the height of the file-type icons.
+const FALLBACK_FILE_ICON_SCALE: f32 = 0.7;
+
 pub(super) fn render(
     path: &Path,
     folder: bool,
@@ -27,30 +31,39 @@ pub(super) fn render(
         } else {
             Lucide::Folder
         })
-        .size(rems(size.0 * FOLDER_ICON_SCALE))
         .text_color(cx.theme().muted_foreground);
-        return div()
-            .size(size)
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(icon)
-            .into_any_element();
+        return scaled(icon, FOLDER_ICON_SCALE, size);
     }
     let (data, color) = file_icon(path, cx);
-    let icon = if let Some(data) = data {
-        Icon::default().data(data)
+    let color = if mode == FileIcons::Colored {
+        color
     } else {
-        Icon::new(Lucide::File)
+        cx.theme().muted_foreground
     };
-    icon.size(size)
+    match data {
+        Some(data) => Icon::default()
+            .data(data)
+            .size(size)
+            .flex_none()
+            .text_color(color)
+            .into_any_element(),
+        None => scaled(
+            Icon::new(Lucide::File).text_color(color),
+            FALLBACK_FILE_ICON_SCALE,
+            size,
+        ),
+    }
+}
+
+/// Draws `icon` at `scale` of `size`, centered in a box of the full `size` so labels stay aligned.
+fn scaled(icon: Icon, scale: f32, size: Rems) -> AnyElement {
+    div()
+        .size(size)
         .flex_none()
-        .text_color(if mode == FileIcons::Colored {
-            color
-        } else {
-            cx.theme().muted_foreground
-        })
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(icon.size(rems(size.0 * scale)))
         .into_any_element()
 }
 

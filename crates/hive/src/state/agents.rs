@@ -193,19 +193,6 @@ impl Agents {
             .map(|(_, terminal)| terminal)
     }
 
-    pub(crate) fn session_at(
-        &self,
-        worktree: &Path,
-        id: EntityId,
-    ) -> Option<Entity<TerminalSession>> {
-        self.sessions(worktree).iter().find(|s| s.session == id)?;
-        self.watched
-            .iter()
-            .find(|watched| watched.id == id)?
-            .session
-            .upgrade()
-    }
-
     /// Asks the workspace to show the pane running `session`.
     pub(crate) fn reveal(&mut self, session: EntityId, cx: &mut Context<Self>) {
         for watched in &mut self.watched {
