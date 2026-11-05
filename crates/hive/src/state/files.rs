@@ -1,22 +1,29 @@
+//! The Files navigator's model: the listed worktree, what is open, what Git says about it.
+//! Holds no widget and no window: the panel projects `nodes()` into its own tree state.
 use super::{
     documents::{DocumentEvent, OpenFile},
     git::GitEvent,
     projects::Projects,
 };
 use crate::app::AppState;
-use hive_core::{files::decorations::Decoration, settings::FilesSettings};
+use hive_core::{
+    files::{decorations::Decoration, tree::Node},
+    settings::FilesSettings,
+};
 mod listing;
 mod mutations;
 mod tree;
 pub(crate) use mutations::FileOperation;
 
+/// A finished file operation. `warning` reports a secondary failure after success, such as
+/// editor recovery that could not follow a moved file.
 pub(crate) struct FilesEvent {
     pub target: Target,
     pub operation: FileOperation,
     pub result: Result<(), String>,
+    pub warning: Option<String>,
 }
 impl EventEmitter<FilesEvent> for Files {}
-use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState};
 use gpui_kit::*;
 use hive_core::files::{self, Entry, FileIndex};
 use hive_core::projects::Target;
@@ -26,13 +33,19 @@ use std::{
     time::Duration,
 };
 
+/// How often a visible navigator re-lists its open directories.
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
 pub(crate) struct Files {
     pub target: Option<Target>,
-    pub tree: Entity<TreeState>,
     pub error: Option<String>,
-    pub visible: bool,
+    visible: bool,
+    window_active: bool,
     entries: BTreeMap<PathBuf, Vec<Entry>>,
     expanded: HashSet<PathBuf>,
+    /// The tree as last built from the model; `tree_generation` changes with it.
+    nodes: Vec<Node>,
+    tree_generation: u64,
     pub loading: bool,
     pub busy: bool,
     pub settings: FilesSettings,
@@ -41,7 +54,7 @@ pub(crate) struct Files {
     pub dirty: HashSet<PathBuf>,
     pub missing: HashSet<PathBuf>,
     pub active: Option<PathBuf>,
-    pub destination_for: Option<PathBuf>,
+    destination_for: Option<PathBuf>,
     pending_reveal: Option<PathBuf>,
     pending_refresh: bool,
     generation: u64,
@@ -52,8 +65,13 @@ pub(crate) struct Files {
 }
 
 impl Files {
-    pub fn new(projects: Entity<Projects>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let tree = cx.new(|cx| TreeState::new(cx));
+    /// A navigator for the selected worktree, or, with `destination_for`, the folder picker
+    /// for moving that path.
+    pub fn new(
+        projects: Entity<Projects>,
+        destination_for: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let app = AppState::get(cx);
         let (store, git, documents) = (app.store.clone(), app.git.clone(), app.documents.clone());
         let settings = store.read(cx).state.settings.files.clone();
@@ -148,36 +166,19 @@ impl Files {
                     this.error = None;
                     this.entries.clear();
                     this.expanded.clear();
-                    this.tree
-                        .update(cx, |tree, cx| tree.set_items(Vec::new(), cx));
+                    this.rebuild(cx);
                     this.sync_documents(true, cx);
                     this.refresh(cx);
                     cx.notify();
                 }
             }),
-            cx.subscribe(&tree, |this, _, event, cx| {
-                match event {
-                    TreeEvent::Expanded(path) => {
-                        this.expanded.insert(PathBuf::from(path.as_ref()));
-                    }
-                    TreeEvent::Collapsed(path) => {
-                        this.expanded.remove(Path::new(path.as_ref()));
-                    }
-                }
-                this.refresh(cx);
-            }),
-            cx.observe_window_activation(window, |this, window, cx| {
-                if window.is_window_active() && this.visible {
-                    this.refresh_all(cx);
-                }
-            }),
         ];
-        let poll = cx.spawn_in(window, async |this, cx| {
+        let poll = cx.spawn(async |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_secs(2)).await;
+                cx.background_executor().timer(POLL_INTERVAL).await;
                 if this
-                    .update_in(cx, |this, window, cx| {
-                        if this.visible && window.is_window_active() {
+                    .update(cx, |this, cx| {
+                        if this.visible && this.window_active {
                             this.refresh(cx);
                         }
                     })
@@ -189,11 +190,13 @@ impl Files {
         });
         let mut this = Self {
             target: projects.read(cx).target(),
-            tree,
             error: None,
             visible: false,
+            window_active: true,
             entries: BTreeMap::new(),
             expanded: HashSet::new(),
+            nodes: Vec::new(),
+            tree_generation: 0,
             loading: false,
             busy: false,
             settings,
@@ -202,7 +205,7 @@ impl Files {
             dirty: HashSet::new(),
             missing: HashSet::new(),
             active: None,
-            destination_for: None,
+            destination_for,
             pending_reveal: None,
             pending_refresh: false,
             generation: 0,
@@ -213,6 +216,28 @@ impl Files {
         };
         this.refresh(cx);
         this
+    }
+
+    /// Whether the navigator is on screen; a visible one keeps its listing fresh.
+    pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.visible = visible;
+        if visible {
+            self.refresh(cx);
+        }
+    }
+
+    /// Tracks the window the navigator lives in, so a hidden window stops polling and a
+    /// returning one re-lists at once.
+    pub fn set_window_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        self.window_active = active;
+        if active && self.visible {
+            self.refresh_all(cx);
+        }
+    }
+
+    /// The path this instance picks a destination folder for, if it is that picker.
+    pub fn destination_for(&self) -> Option<&Path> {
+        self.destination_for.as_deref()
     }
 
     fn sync_documents(&mut self, reveal: bool, cx: &mut Context<Self>) {

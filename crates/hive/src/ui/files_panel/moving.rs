@@ -119,9 +119,7 @@ impl FilesPanel {
         self._drag_scroll = None;
         let Some(up) = direction else { return };
         let handle = self
-            .files
-            .read(cx)
-            .tree
+            .tree()
             .read(cx)
             .scroll_handle()
             .0
@@ -165,11 +163,7 @@ impl FilesPanel {
             return;
         };
         let projects = AppState::get(cx).projects.clone();
-        let destinations = cx.new(|cx| {
-            let mut files = Files::new(projects, window, cx);
-            files.destination_for = Some(source.clone());
-            files
-        });
+        let destinations = cx.new(|cx| Files::new(projects, Some(source.clone()), cx));
         let picker = cx
             .new(|cx| DestinationPicker::new(destinations, self.files.clone(), target, source, cx));
         window.open_dialog(cx, move |dialog, _, _| {
@@ -180,6 +174,9 @@ impl FilesPanel {
 
 struct DestinationPicker {
     destinations: Entity<Files>,
+    /// The picker's own rows and selection, rebuilt from `destinations`.
+    tree: Entity<TreeState>,
+    synced_generation: Option<u64>,
     files: Entity<Files>,
     target: Target,
     source: PathBuf,
@@ -194,8 +191,20 @@ impl DestinationPicker {
         source: PathBuf,
         cx: &mut Context<Self>,
     ) -> Self {
+        let tree = cx.new(|cx| TreeState::new(cx));
         let subscriptions = vec![
-            cx.observe(&destinations, |_, _, cx| cx.notify()),
+            cx.observe(&destinations, |this, _, cx| {
+                this.sync_tree(cx);
+                cx.notify()
+            }),
+            cx.subscribe(&tree, |this, _, event, cx| {
+                let (path, expanded) = match event {
+                    TreeEvent::Expanded(path) => (PathBuf::from(path.as_ref()), true),
+                    TreeEvent::Collapsed(path) => (PathBuf::from(path.as_ref()), false),
+                };
+                this.destinations
+                    .update(cx, |files, cx| files.set_expanded(path, expanded, cx));
+            }),
             cx.subscribe(&files, |this, _, event: &FilesEvent, cx| {
                 if event.target == this.target && event.operation.path() == this.source {
                     this.error = event.result.as_ref().err().cloned();
@@ -203,19 +212,53 @@ impl DestinationPicker {
                 }
             }),
         ];
-        Self {
+        let mut this = Self {
             destinations,
+            tree,
+            synced_generation: None,
             files,
             target,
             source,
             error: None,
             _subscriptions: subscriptions,
+        };
+        this.sync_tree(cx);
+        this
+    }
+
+    fn sync_tree(&mut self, cx: &mut Context<Self>) {
+        let destinations = self.destinations.read(cx);
+        if self.synced_generation == Some(destinations.tree_generation()) {
+            return;
         }
+        self.synced_generation = Some(destinations.tree_generation());
+        let items = tree::destination_items(destinations.nodes());
+        let selected = self
+            .tree
+            .read(cx)
+            .selected_item()
+            .map(|item| item.id.clone());
+        self.tree.update(cx, |tree, cx| {
+            tree.set_items(items, cx);
+            if let Some(id) = selected {
+                tree.set_selected_index(tree.index_of(&id), cx);
+            }
+        });
+    }
+
+    /// The chosen folder; the root row and placeholders count as the worktree root.
+    fn selected_directory(&self, cx: &App) -> PathBuf {
+        self.tree
+            .read(cx)
+            .selected_entry()
+            .filter(|e| !e.is_disabled())
+            .map(|e| PathBuf::from(e.item().id.as_ref()))
+            .unwrap_or_default()
     }
 }
 impl Render for DestinationPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tree = self.destinations.read(cx).tree.clone();
+        let tree = self.tree.clone();
         let stale = self.files.read(cx).target.as_ref() != Some(&self.target);
         let [cancel_hover, move_hover] =
             ["cancel-move", "confirm-move"].map(|id| Hover::new(id, window, cx));
@@ -275,8 +318,7 @@ impl Render for DestinationPicker {
                             .label("Move Here")
                             .disabled(stale || self.files.read(cx).busy)
                             .on_click(cx.listener(|this, _, window, cx| {
-                                let directory =
-                                    this.destinations.read(cx).selected(cx).unwrap_or_default();
+                                let directory = this.selected_directory(cx);
                                 let Some(name) = this.source.file_name() else {
                                     return;
                                 };
