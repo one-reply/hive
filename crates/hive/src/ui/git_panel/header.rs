@@ -92,13 +92,14 @@ impl GitPanel {
                     .icon(Lucide::GitBranch)
                     .label(branch.clone())
                     .dropdown_caret(true)
-                    .tooltip("Switch branch")
+                    .tooltip("Switch or create branch")
                     .disabled(status.is_none() || busy)
                     .on_click(cx.listener(|this, _, window, cx| {
                         git_controls::branches(this.git.clone(), false, window, cx)
                     }))
+                    // Outlined like a select, so the branch reads as a control, not a label.
                     .smooth_hover(
-                        ButtonLook::Ghost,
+                        ButtonLook::Outline,
                         &branch_hover.enabled(status.is_some() && !busy),
                         cx,
                     )
