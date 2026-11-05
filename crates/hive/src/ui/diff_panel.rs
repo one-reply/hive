@@ -180,7 +180,13 @@ impl Panel for DiffPanel {
     }
     /// The right-sidebar toggle keeps the window's top-right corner while that sidebar is closed.
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
-        (!self.git.read(cx).panel_visible).then(|| vec![right_sidebar_toggle()])
+        (!AppState::get(cx)
+            .store
+            .read(cx)
+            .state
+            .settings
+            .git_panel_open)
+            .then(|| vec![right_sidebar_toggle()])
     }
     fn inner_padding(&self, _: &App) -> bool {
         false
@@ -235,7 +241,30 @@ impl Render for DiffPanel {
         let request_action = request.clone();
         let patch_action = patch.clone();
         let panel = cx.entity().downgrade();
+        let file_request = request.clone();
         let diff = Diff::new(&display)
+            .on_line_click(move |position, event, _, cx| {
+                if event.click_count() >= 2
+                    && position.side() == DiffSide::Modified
+                    && matches!(
+                        file_request.source,
+                        DiffSource::WorkingTree | DiffSource::Untracked
+                    )
+                {
+                    let documents = AppState::get(cx).documents.clone();
+                    documents.update(cx, |documents, cx| {
+                        documents.request(
+                            crate::state::documents::OpenFile {
+                                target: file_request.target.clone(),
+                                path: file_request.path.clone().into(),
+                                line: Some(position.line()),
+                                preview: false,
+                            },
+                            cx,
+                        )
+                    });
+                }
+            })
             .on_add_annotation(move |range, window, cx| {
                 let _ = panel.update(cx, |panel, cx| panel.add_note(range.clone(), window, cx));
             })
@@ -275,6 +304,32 @@ impl Render for DiffPanel {
                 .border_b_1()
                 .border_color(cx.theme().border)
                 .child(div().flex_1().min_w_0().truncate().text_sm().child(source))
+                .child({
+                    let hover = Hover::new("diff-open-file", window, cx);
+                    let request = request.clone();
+                    Button::new("diff-open-file")
+                        .small()
+                        .cursor_pointer()
+                        .label("Open file")
+                        .tooltip("Open the current file on disk")
+                        .on_click(move |_, _, cx| {
+                            AppState::get(cx)
+                                .documents
+                                .clone()
+                                .update(cx, |documents, cx| {
+                                    documents.request(
+                                        crate::state::documents::OpenFile {
+                                            target: request.target.clone(),
+                                            path: request.path.clone().into(),
+                                            line: None,
+                                            preview: false,
+                                        },
+                                        cx,
+                                    )
+                                })
+                        })
+                        .smooth_hover(ButtonLook::Ghost, &hover, cx)
+                })
                 .child(
                     Button::new("review-notes")
                         .cursor_pointer()

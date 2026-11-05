@@ -1,4 +1,5 @@
 mod app;
+mod quit;
 mod state;
 mod terminal;
 mod ui;
@@ -55,12 +56,19 @@ fn main() {
         .run(|cx| {
             gpui_kit::init(cx);
             cx.spawn(async move |cx| {
-                let loaded = cx
+                let (loaded, recovery) = cx
                     .background_executor()
-                    .spawn(async { hive_core::state::State::load() })
+                    .spawn(async {
+                        let loaded = hive_core::state::State::load();
+                        // Recovery must be available before any restored buffer becomes editable.
+                        let recovery = hive_core::files::recovery::load(
+                            &hive_core::state::hive_dir().join("editor-recovery"),
+                        );
+                        (loaded, recovery)
+                    })
                     .await;
                 cx.update(|cx| {
-                    AppState::init(loaded, cx);
+                    AppState::init(loaded, recovery, cx);
                     ui::app_menu::init(cx);
                     ui::theme::init(cx);
                     ui::syntax::init();

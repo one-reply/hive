@@ -16,7 +16,10 @@ impl ProjectCenter {
             saved.layout = None;
             return;
         };
-        let ids: Vec<_> = tree.panels().collect();
+        let ids: Vec<_> = tree
+            .panels()
+            .filter(|id| self.snapshot_tab(*id, cx).is_some())
+            .collect();
         if let Some(focused) = ids.iter().find(|id| {
             dock.panel(**id)
                 .is_some_and(|p| p.focus_handle(cx).contains_focused(window, cx))
@@ -36,36 +39,71 @@ impl ProjectCenter {
                 axis,
                 children,
                 sizes,
-            } => Some(Layout::Split {
-                axis: match axis {
-                    Axis::Horizontal => SplitAxis::Horizontal,
-                    Axis::Vertical => SplitAxis::Vertical,
-                },
-                sizes: sizes
+            } => {
+                let (children, sizes): (Vec<_>, Vec<_>) = children
                     .iter()
-                    .map(|size| size.map(f32::from).unwrap_or(0.))
-                    .collect(),
-                children: children
-                    .iter()
-                    .filter_map(|child| self.snapshot_node(child, cx))
-                    .collect(),
-            }),
-            PaneRef::Tabs { panels, active_ix } => {
-                let items: Vec<_> = panels
-                    .iter()
-                    .filter_map(|id| self.snapshot_tab(*id, cx))
-                    .collect();
-                (!items.is_empty()).then_some(Layout::Leaf {
-                    value: Tabs {
-                        items,
-                        active: active_ix,
+                    .enumerate()
+                    .filter_map(|(index, child)| {
+                        self.snapshot_node(child, cx).map(|node| {
+                            (
+                                node,
+                                sizes
+                                    .get(index)
+                                    .copied()
+                                    .flatten()
+                                    .map(f32::from)
+                                    .unwrap_or(0.),
+                            )
+                        })
+                    })
+                    .unzip();
+                (!children.is_empty()).then_some(Layout::Split {
+                    axis: match axis {
+                        Axis::Horizontal => SplitAxis::Horizontal,
+                        Axis::Vertical => SplitAxis::Vertical,
                     },
+                    sizes,
+                    children,
+                })
+            }
+            PaneRef::Tabs { panels, active_ix } => {
+                let mut active = 0;
+                let mut items = Vec::new();
+                for (index, id) in panels.iter().enumerate() {
+                    if let Some(tab) = self.snapshot_tab(*id, cx) {
+                        if index <= active_ix {
+                            active = items.len();
+                        }
+                        items.push(tab);
+                    }
+                }
+                (!items.is_empty()).then_some(Layout::Leaf {
+                    value: Tabs { items, active },
                 })
             }
         }
     }
 
     fn snapshot_tab(&self, id: PanelId, cx: &App) -> Option<Tab> {
+        if let Some(panel) = self
+            .editors
+            .iter()
+            .find(|p| PanelId::from(p.entity_id()) == id)
+        {
+            let document = panel.read(cx).document.read(cx);
+            if !document.pinned {
+                return None;
+            }
+            let editor = document.editor.read(cx);
+            let cursor = editor.cursor_position();
+            let scroll = editor.scroll_offset();
+            return Some(Tab::File {
+                worktree: document.target.path.clone(),
+                path: document.path.clone(),
+                cursor: [cursor.line, cursor.character],
+                scroll: [scroll.x.into(), scroll.y.into()],
+            });
+        }
         if let Some(panel) = self
             .terminals
             .iter()
@@ -177,6 +215,39 @@ impl ProjectCenter {
         cx: &mut App,
     ) -> Option<Arc<dyn BasePanelView>> {
         match tab {
+            Tab::File {
+                worktree,
+                path,
+                cursor,
+                scroll,
+            } => {
+                let request = crate::state::documents::OpenFile {
+                    target: Target {
+                        project: saved.project.clone(),
+                        path: worktree.clone(),
+                        host: saved.host.clone(),
+                    },
+                    path: path.clone(),
+                    line: None,
+                    preview: false,
+                };
+                let panel = cx.new(|cx| {
+                    crate::ui::editor_panel::EditorPanel::new(
+                        request,
+                        self.dock.downgrade(),
+                        window,
+                        cx,
+                    )
+                });
+                panel.update(cx, |panel, _| panel.restoring = true);
+                panel
+                    .read(cx)
+                    .document
+                    .clone()
+                    .update(cx, |d, cx| d.restore_position(*cursor, *scroll, window, cx));
+                self.editors.push(panel.clone());
+                Some(panel_handle(panel))
+            }
             Tab::Terminal { panes, active } => {
                 let panel =
                     TerminalPanel::restore(panes, *active, self.dock.downgrade(), window, cx)?;

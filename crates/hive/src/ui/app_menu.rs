@@ -41,7 +41,17 @@ pub fn init(cx: &mut App) {
     });
     cx.on_action(|_: &ShowLogs, cx| cx.reveal_path(&hive_core::state::hive_dir().join("logs")));
     cx.on_action(|_: &ShowDataFolder, cx| cx.reveal_path(&hive_core::state::hive_dir()));
-    cx.on_action(|_: &CloseWindow, cx| with_active_window(cx, Window::remove_window));
+    cx.on_action(|_: &CloseWindow, cx| {
+        if let Some(handle) = cx.active_window() {
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, cx| {
+                    crate::ui::editor_panel::close::all(window, cx, |window, _| {
+                        window.remove_window()
+                    })
+                });
+            });
+        }
+    });
     cx.on_action(|_: &Minimize, cx| with_active_window(cx, |window| window.minimize_window()));
     cx.on_action(|_: &Zoom, cx| with_active_window(cx, |window| window.zoom_window()));
     cx.on_action(|_: &ToggleFullScreen, cx| {
@@ -79,6 +89,9 @@ pub(crate) fn install(cx: &mut App) {
             MenuItem::action("Quit Hive", Quit),
         ]),
         Menu::new("File").items([
+            MenuItem::action("Open File…", crate::ui::editor_panel::OpenFileSearch),
+            MenuItem::action("Save File", crate::ui::editor_panel::SaveFile),
+            MenuItem::action("Close File", crate::ui::editor_panel::CloseFile),
             MenuItem::action("Add Project…", AddProject),
             MenuItem::action("New Terminal", NewTerminal),
             MenuItem::separator(),

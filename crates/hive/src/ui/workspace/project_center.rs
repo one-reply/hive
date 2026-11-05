@@ -12,6 +12,7 @@ use super::*;
 use crate::state::git::DiffRequest;
 
 mod agent_draft;
+mod files;
 mod persistence;
 
 pub(super) struct ProjectCenter {
@@ -19,6 +20,7 @@ pub(super) struct ProjectCenter {
     /// Tabs we opened; pruned when the dock no longer holds them.
     terminals: Vec<Entity<TerminalPanel>>,
     diffs: Vec<Entity<DiffPanel>>,
+    editors: Vec<Entity<crate::ui::editor_panel::EditorPanel>>,
     /// Space the tab bar leaves free at its left end, shared with the dock's renderer.
     tab_inset: Rc<Cell<Pixels>>,
     _observer: Subscription,
@@ -52,6 +54,7 @@ impl ProjectCenter {
             dock,
             terminals: Vec::new(),
             diffs: Vec::new(),
+            editors: Vec::new(),
             tab_inset,
             _observer: observer,
             _layout: layout,
@@ -70,7 +73,7 @@ impl ProjectCenter {
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.terminals.is_empty() && self.diffs.is_empty()
+        self.terminals.is_empty() && self.diffs.is_empty() && self.editors.is_empty()
     }
 
     /// Forgets panels the dock has already removed.
@@ -79,6 +82,8 @@ impl ProjectCenter {
         self.terminals
             .retain(|panel| dock.panel(PanelId::from(panel.entity_id())).is_some());
         self.diffs
+            .retain(|panel| dock.panel(PanelId::from(panel.entity_id())).is_some());
+        self.editors
             .retain(|panel| dock.panel(PanelId::from(panel.entity_id())).is_some());
     }
 
@@ -190,7 +195,10 @@ impl ProjectCenter {
     /// Tells every tab whether it is the only one, so the last tab can draw its own close
     /// button (the tab bar hides it then).
     fn sync_alone(&self, cx: &mut App) {
-        let alone = self.terminals.len() + self.diffs.len() == 1;
+        let alone = self.terminals.len() + self.diffs.len() + self.editors.len() == 1;
+        for panel in &self.editors {
+            panel.update(cx, |panel, cx| panel.set_alone(alone, cx));
+        }
         for panel in &self.terminals {
             panel.update(cx, |panel, cx| panel.set_alone(alone, cx));
         }
