@@ -96,7 +96,7 @@ pub fn create_from(
 ) -> Result<Worktree, WorktreeError> {
     let base = match base.map(str::trim).filter(|base| !base.is_empty()) {
         Some(base) => git::branches::resolve(&project.host, &project.path, base)?,
-        None => default_base_ref(project),
+        None => default_base_ref(project)?,
     };
     let name = match name.map(sanitize).filter(|name| !name.is_empty()) {
         Some(name) => name,
@@ -173,29 +173,40 @@ fn needs_force(stderr: &str) -> bool {
 }
 
 /// The remote's default branch (`origin/HEAD`), else the first fallback that exists, else `HEAD`.
-fn default_base_ref(project: &Project) -> String {
-    let git = |args: &[&str]| git::run(&project.host, &project.path, args).ok();
-    if let Some(head) = git(&[
+/// Only a missing ref moves on to the next candidate: a Git that could not answer (ssh down,
+/// timeout) is an error, so a worktree is never silently based on the wrong commit.
+fn default_base_ref(project: &Project) -> Result<String, GitError> {
+    let lookup = |args: &[&str]| existing(git::run(&project.host, &project.path, args));
+    if let Some(head) = lookup(&[
         "symbolic-ref",
         "--quiet",
         "--short",
         "refs/remotes/origin/HEAD",
-    ]) {
-        return head;
+    ])? {
+        return Ok(head);
     }
-    BASE_REF_FALLBACKS
-        .into_iter()
-        .find(|candidate| {
-            git(&[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("{candidate}^{{commit}}"),
-            ])
-            .is_some()
-        })
-        .unwrap_or("HEAD")
-        .to_string()
+    for candidate in BASE_REF_FALLBACKS {
+        if lookup(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{candidate}^{{commit}}"),
+        ])?
+        .is_some()
+        {
+            return Ok(candidate.to_string());
+        }
+    }
+    Ok("HEAD".to_string())
+}
+
+/// `--quiet` ref lookups exit 1 when the ref does not exist; anything else is a real failure.
+fn existing(result: Result<String, GitError>) -> Result<Option<String>, GitError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(GitError::Failed { code: Some(1), .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Folder names of existing worktrees and local branch names: a new name must avoid both.
@@ -252,6 +263,41 @@ mod tests {
     use crate::projects::scan;
     use crate::state::ProjectRef;
     use std::path::Path;
+
+    fn failed(code: Option<i32>) -> GitError {
+        GitError::Failed {
+            command: "rev-parse".into(),
+            host: Host::Local,
+            cwd: PathBuf::from("/repo"),
+            code,
+            stderr: String::new(),
+        }
+    }
+
+    #[test]
+    fn only_a_missing_ref_falls_through_to_the_next_base() {
+        assert_eq!(existing(Ok("main".into())).unwrap(), Some("main".into()));
+        assert_eq!(existing(Err(failed(Some(1)))).unwrap(), None);
+        assert!(matches!(
+            existing(Err(failed(Some(128)))),
+            Err(GitError::Failed {
+                code: Some(128),
+                ..
+            })
+        ));
+        let interrupted = GitError::Interrupted {
+            command: "rev-parse".into(),
+            host: Host::Local,
+            cwd: PathBuf::from("/repo"),
+            source: crate::command::Error::TimedOut,
+            mutation: false,
+            guidance: "",
+        };
+        assert!(matches!(
+            existing(Err(interrupted)),
+            Err(GitError::Interrupted { .. })
+        ));
+    }
 
     #[test]
     fn sanitizes_names() {

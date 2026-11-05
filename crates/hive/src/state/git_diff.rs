@@ -14,6 +14,8 @@ pub(crate) struct GitDiff {
     pub error: Option<String>,
     pub loading: bool,
     pub active: bool,
+    /// A refresh requested while one was loading; served when the load completes.
+    pending: bool,
     _task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -59,6 +61,7 @@ impl GitDiff {
             error: None,
             loading: false,
             active: false,
+            pending: false,
             _task: None,
             _subscriptions: subscriptions,
         };
@@ -68,6 +71,7 @@ impl GitDiff {
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.loading {
+            self.pending = true;
             return;
         }
         self.loading = true;
@@ -110,6 +114,9 @@ impl GitDiff {
                             cx.notify();
                         }
                     }
+                }
+                if std::mem::take(&mut this.pending) {
+                    this.refresh(cx);
                 }
             });
         }));
