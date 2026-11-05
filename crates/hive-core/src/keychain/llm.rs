@@ -30,6 +30,8 @@ mod native {
 
     // Apple's errSecItemNotFound. Other OSStatus codes must remain visible failures.
     const ITEM_NOT_FOUND: i32 = -25300;
+    // Reported when `security` could not run or exited without an OSStatus.
+    const SECURITY_TOOL_UNAVAILABLE: i32 = -1;
 
     fn failure(
         provider: Provider,
@@ -71,9 +73,59 @@ mod native {
             .map_err(|_| Error::InvalidStoredKey { provider })
     }
 
+    /// Writes the item with an ACL that lets any application read it without a prompt.
+    ///
+    /// The default ACL trusts the writing app by its code identity, which for an ad-hoc signed
+    /// build is its `cdhash`: every build is a stranger and macOS asks for the login password
+    /// after each update. `security` is the only public API for that ACL (`-A`); the command
+    /// goes through stdin so the key never appears in process arguments, and `-X` hex data
+    /// needs no quoting. The item ends up in the login keychain like before.
     pub(super) fn save_key(service: &str, provider: Provider, key: &ApiKey) -> Result<(), Error> {
-        passwords::set_generic_password(service, provider.account(), key.as_str().as_bytes())
-            .map_err(|error| failure(provider, "save", error))
+        let hex: String = key.as_str().bytes().map(|b| format!("{b:02x}")).collect();
+        let command = format!(
+            "add-generic-password -A -U -s {service} -a {} -X {hex}\n",
+            provider.account()
+        );
+        let output = security_tool(&command).map_err(|_| Error::Keychain {
+            provider,
+            operation: "save",
+            code: SECURITY_TOOL_UNAVAILABLE,
+        })?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(Error::Keychain {
+            provider,
+            operation: "save",
+            code: returned_status(&stderr)
+                .or(output.status.code())
+                .unwrap_or(SECURITY_TOOL_UNAVAILABLE),
+        })
+    }
+
+    /// Runs one command in `security -i`, where the command line is read from stdin.
+    fn security_tool(command: &str) -> std::io::Result<std::process::Output> {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("security")
+            .arg("-i")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(command.as_bytes())?;
+        }
+        child.wait_with_output()
+    }
+
+    /// The OSStatus `security` reports as `<command>: returned <code>` on failure.
+    fn returned_status(stderr: &str) -> Option<i32> {
+        stderr
+            .lines()
+            .rev()
+            .find_map(|line| line.rsplit_once(": returned ")?.1.trim().parse().ok())
     }
 
     pub(super) fn delete_key(service: &str, provider: Provider) -> Result<(), Error> {
@@ -91,11 +143,11 @@ mod native {
         #[test]
         #[ignore = "requires an unlocked macOS Keychain; uses only a unique test service"]
         fn keychain_round_trip() {
-            let service = format!(
-                "hive.llm.test.{}.{:?}",
-                std::process::id(),
-                std::time::SystemTime::now()
-            );
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default();
+            let service = format!("hive.llm.test.{}.{nanos}", std::process::id());
             let provider = Provider::OpenAi;
             struct Cleanup(String);
             impl Drop for Cleanup {
@@ -116,10 +168,42 @@ mod native {
                 );
                 assert!(!has_key(&service, Provider::Anthropic).unwrap());
             }
+            assert!(
+                any_application_may_read(&service, provider),
+                "ACL must not depend on this build's code identity"
+            );
             delete_key(&service, provider).unwrap();
             delete_key(&service, provider).unwrap();
             assert!(!has_key(&service, provider).unwrap());
             assert!(load_key(&service, provider).unwrap().is_none());
+        }
+
+        #[test]
+        fn returned_status_parses_last_report() {
+            let stderr = "security: SecKeychainItemCreateFromContent (<default>): exists.\n\
+                          add-generic-password: returned -25299\n";
+            assert_eq!(returned_status(stderr), Some(-25299));
+            assert_eq!(returned_status("Usage: add-generic-password\n"), None);
+        }
+
+        /// The decrypt ACL entry of the item has no application list, which `security`
+        /// dumps as `applications: <null>`: any app reads it without a prompt.
+        fn any_application_may_read(service: &str, provider: Provider) -> bool {
+            let output = std::process::Command::new("security")
+                .args(["dump-keychain", "-a"])
+                .output()
+                .unwrap();
+            let dump = String::from_utf8_lossy(&output.stdout);
+            let needle = format!("\"svce\"<blob>=\"{service}\"");
+            let item = dump.split("keychain:").find(|item| {
+                item.contains(&needle)
+                    && item.contains(&format!("\"acct\"<blob>=\"{}\"", provider.account()))
+            });
+            item.is_some_and(|item| {
+                item.split("entry ").any(|entry| {
+                    entry.contains("decrypt") && entry.contains("applications: <null>")
+                })
+            })
         }
     }
 }
