@@ -16,6 +16,8 @@ use super::keys;
 use super::mouse::GridGeometry;
 use crate::ui::keymap;
 
+mod draft;
+
 pub enum TerminalViewEvent {
     TitleChanged,
     DirectoryChanged,
@@ -259,8 +261,10 @@ impl Render for TerminalView {
             .clone()
             .filter(|_| self.session.read(cx).resume_available);
         let resume_hover = Hover::new("resume-agent", window, cx);
+        let draft = self.render_agent_draft(window, cx);
         v_flex()
             .size_full()
+            .children(draft)
             .when_some(resume, |view, resume| {
                 view.child(
                     Button::new("resume-agent")
@@ -282,7 +286,9 @@ impl Render for TerminalView {
                     .id("terminal")
                     .track_focus(&self.focus_handle)
                     .key_context(keymap::TERMINAL_VIEW_CONTEXT)
-                    .size_full()
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
                     .bg(bg)
                     .cursor(CursorStyle::IBeam)
                     .on_key_down(cx.listener(Self::key_down))

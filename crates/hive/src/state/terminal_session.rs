@@ -11,7 +11,9 @@ use hive_core::agent::{
     launch::{Launch, ResumeSession},
 };
 
+mod draft;
 mod input;
+pub(crate) use draft::{AgentDraft, DraftStatus};
 use input::Input;
 
 pub(crate) enum SessionStatus {
@@ -35,6 +37,10 @@ pub(crate) struct TerminalSession {
     pub(crate) resume: Option<ResumeSession>,
     pub(crate) resume_available: bool,
     focused: bool,
+    pub(crate) last_focused: Option<std::time::Instant>,
+    pub(crate) launched_agent: Option<hive_core::agent::AgentKind>,
+    pub(crate) agent_draft: Option<AgentDraft>,
+    draft_task: Option<Task<()>>,
     _start: Task<()>,
     _events: Option<Task<()>>,
     _directory: Option<Task<()>>,
@@ -55,6 +61,7 @@ impl TerminalSession {
         let directory = cwd.clone();
         let endpoint = AppState::get(cx).agents.read(cx).endpoint();
         let terminal_id = cx.entity_id().as_u64();
+        let launched_agent = launch.as_ref().map(Launch::agent);
         let start = cx.background_executor().spawn(async move {
             let Some(starting) = starting else {
                 return Err("Hive is shutting down".to_owned());
@@ -81,10 +88,7 @@ impl TerminalSession {
             if let Ok(terminal) = &result {
                 starting.register(terminal);
             }
-            result.map_err(|error| {
-                tracing::error!(?cwd, %error, "failed to start terminal");
-                error.to_string()
-            })
+            result.map_err(|error| error.to_string())
         });
         let start = cx.spawn(async move |this, cx| {
             let result = start.await;
@@ -118,6 +122,7 @@ impl TerminalSession {
                                             this.exited = true;
                                             this.pending_input.clear();
                                             this.paste_task = None;
+                                            this.draft_task = None;
                                             cx.emit(SessionEvent::Exited);
                                         }
                                         cx.notify();
@@ -131,7 +136,10 @@ impl TerminalSession {
                         }
                         SessionStatus::Ready(terminal)
                     }
-                    Err(error) => SessionStatus::Failed(error),
+                    Err(error) => {
+                        tracing::error!(directory = ?this.directory, %error, "failed to start terminal");
+                        SessionStatus::Failed(error)
+                    },
                 };
                 cx.notify();
             });
@@ -144,6 +152,10 @@ impl TerminalSession {
             resume: None,
             resume_available: false,
             focused: false,
+            last_focused: None,
+            launched_agent,
+            agent_draft: None,
+            draft_task: None,
             _start: start,
             _events: None,
             _directory: None,
@@ -218,6 +230,9 @@ impl TerminalSession {
     }
 
     pub(crate) fn set_focused(&mut self, focused: bool) {
+        if focused && !self.focused {
+            self.last_focused = Some(std::time::Instant::now());
+        }
         self.focused = focused;
         if let Some(terminal) = self.terminal() {
             terminal.set_focused(focused);

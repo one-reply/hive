@@ -27,6 +27,17 @@ impl Workspace {
                     this.sync_active_worktrees(cx);
                     cx.notify();
                 }
+                GitEvent::AgentDraft(target, agent, prompt) => {
+                    if target.host != hive_core::host::Host::Local {
+                        window.push_notification(Notification::error("Sending drafts to SSH agents is not supported yet. Copy the error instead."), cx);
+                        return;
+                    }
+                    this.activate_target(target, cx);
+                    this.center(&target.project, window, cx).prepare_agent_draft(&target.path, *agent, prompt.clone(), window, cx);
+                    this.sync_active_worktrees(cx);
+                    this.save_center(&target.project, window, cx);
+                    cx.notify();
+                }
             },
         ));
         self._observers

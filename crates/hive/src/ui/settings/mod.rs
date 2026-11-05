@@ -163,7 +163,7 @@ impl Page {
             Page::Shortcuts => {
                 "Keyboard shortcuts of the main window. Click Edit and press new keys."
             }
-            Page::Terminal => "How terminal tabs look.",
+            Page::Terminal => "Terminal appearance and the default CLI agent.",
             Page::Git => "Commit generation for every project and worktree.",
             Page::Updates => "Your version of Hive and software updates.",
             Page::Ai => {

@@ -55,6 +55,9 @@ pub const TERMINAL_FONT_SIZE_DEFAULT: f32 = 13.;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Settings {
+    /// CLI used when preparing a Git error draft in an agent terminal.
+    #[serde(deserialize_with = "deserialize_default_cli_agent")]
+    default_cli_agent: crate::agent::AgentKind,
     /// Global recipe for generating a staged commit message; never contains API keys.
     pub commit_message: crate::commit_message::Recipe,
     pub theme: ThemeChoice,
@@ -75,6 +78,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            default_cli_agent: crate::agent::AgentKind::Codex,
             commit_message: Default::default(),
             theme: ThemeChoice::default(),
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
@@ -89,6 +93,22 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// The interactive CLI that receives Git error drafts.
+    pub fn default_cli_agent(&self) -> crate::agent::AgentKind {
+        self.default_cli_agent
+    }
+
+    /// Select a supported interactive CLI without changing its permissions or model.
+    pub fn set_default_cli_agent(
+        &mut self,
+        agent: crate::agent::AgentKind,
+    ) -> Result<(), crate::agent::launch::LaunchError> {
+        if !crate::agent::launch::AGENTS.contains(&agent) {
+            return Err(crate::agent::launch::LaunchError::Unsupported);
+        }
+        self.default_cli_agent = agent;
+        Ok(())
+    }
     /// Source control width, clamped even for hand-edited state files.
     pub fn git_panel_width(&self) -> f32 {
         clamp_git_panel_width(self.git_panel_width)
@@ -151,6 +171,19 @@ impl Settings {
     }
 }
 
+fn deserialize_default_cli_agent<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<crate::agent::AgentKind, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match serde_json::from_value(value) {
+        Ok(agent) if crate::agent::launch::AGENTS.contains(&agent) => Ok(agent),
+        _ => {
+            tracing::warn!("invalid default CLI agent; using Codex");
+            Ok(crate::agent::AgentKind::Codex)
+        }
+    }
+}
+
 /// Clamps `width` to `SIDEBAR_WIDTH_MIN..=SIDEBAR_WIDTH_MAX`; a non-finite value falls back
 /// to the default.
 pub fn clamp_sidebar_width(width: f32) -> f32 {
@@ -199,6 +232,29 @@ fn clamp_or_default(value: f32, min: f32, max: f32, default: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn default_cli_agent_survives_roundtrip_and_invalid_saved_choices() {
+        use crate::agent::AgentKind;
+        let mut settings: super::Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.default_cli_agent(), AgentKind::Codex);
+        for agent in crate::agent::launch::AGENTS {
+            settings.set_default_cli_agent(agent).unwrap();
+            let json = serde_json::to_string(&settings).unwrap();
+            assert_eq!(
+                serde_json::from_str::<super::Settings>(&json)
+                    .unwrap()
+                    .default_cli_agent(),
+                agent
+            );
+        }
+        for value in ["\"FutureAgent\"", "\"Aider\"", "null", "42"] {
+            let json = format!("{{\"default_cli_agent\":{value},\"git_panel_open\":false}}");
+            let settings: super::Settings = serde_json::from_str(&json).unwrap();
+            assert_eq!(settings.default_cli_agent(), AgentKind::Codex);
+            assert!(!settings.git_panel_open);
+        }
+        assert!(settings.set_default_cli_agent(AgentKind::Aider).is_err());
+    }
     use super::*;
 
     #[test]

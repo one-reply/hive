@@ -20,7 +20,7 @@ impl TerminalSession {
         }
     }
 
-    fn enqueue_input(&mut self, input: Input, cx: &mut Context<Self>) {
+    pub(super) fn enqueue_input(&mut self, input: Input, cx: &mut Context<Self>) {
         if self.exited || self.terminal().is_none() {
             return;
         }

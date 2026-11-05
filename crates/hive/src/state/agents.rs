@@ -168,6 +168,31 @@ impl Agents {
         self.by_worktree.get(worktree).map_or(&[], Vec::as_slice)
     }
 
+    pub(crate) fn preferred_session(
+        &self,
+        worktree: &Path,
+        kind: AgentKind,
+        cx: &App,
+    ) -> Option<Entity<TerminalSession>> {
+        self.sessions(worktree)
+            .iter()
+            .enumerate()
+            .filter(|(_, session)| session.kind == kind)
+            .filter_map(|(index, session)| {
+                let terminal = self
+                    .watched
+                    .iter()
+                    .find(|watched| watched.id == session.session)?
+                    .session
+                    .upgrade()?;
+                (!terminal.read(cx).exited).then_some((index, terminal))
+            })
+            .max_by_key(|(index, terminal)| {
+                (terminal.read(cx).last_focused, std::cmp::Reverse(*index))
+            })
+            .map(|(_, terminal)| terminal)
+    }
+
     /// Asks the workspace to show the pane running `session`.
     pub(crate) fn reveal(&mut self, session: EntityId, cx: &mut Context<Self>) {
         for watched in &mut self.watched {

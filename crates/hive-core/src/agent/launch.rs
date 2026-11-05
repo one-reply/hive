@@ -7,6 +7,9 @@ use std::{
     process::Command,
 };
 
+/// Interactive CLIs Hive can launch explicitly.
+pub const AGENTS: [AgentKind; 3] = [AgentKind::Codex, AgentKind::ClaudeCode, AgentKind::OpenCode];
+
 /// A supported conversation the user can explicitly resume.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResumeSession {
@@ -77,7 +80,7 @@ impl Launch {
     /// Blocking: discover the binary before creating a worktree or starting a terminal.
     pub fn executable(&self) -> Result<PathBuf, LaunchError> {
         let agent = self.agent();
-        if !matches!(agent, AgentKind::ClaudeCode | AgentKind::Codex) {
+        if !AGENTS.contains(&agent) {
             return Err(LaunchError::Unsupported);
         }
         command::executable(agent.executable()).ok_or(LaunchError::Missing(agent.name()))
@@ -135,10 +138,10 @@ impl Launch {
 #[derive(Debug, thiserror::Error)]
 pub enum LaunchError {
     /// The selected CLI is not installed in a supported executable location.
-    #[error("{0} CLI not found. Install it and reopen this dialog.")]
+    #[error("{0} CLI not found. Install it, then try again.")]
     Missing(&'static str),
-    /// Only Claude and Codex are explicitly launched in this version.
-    #[error("Choose Claude Code, Codex, or a plain terminal.")]
+    /// This agent does not support explicit interactive launches.
+    #[error("Choose Claude Code, Codex, or OpenCode.")]
     Unsupported,
     /// An invalid saved session must never become CLI flags.
     #[error("The saved agent session id is invalid. Start a new session.")]
@@ -148,6 +151,18 @@ pub enum LaunchError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn new_agents_start_interactively_without_submitting_a_prompt() {
+        for agent in AGENTS {
+            assert!(Launch::New(agent).arguments(None).unwrap().is_empty());
+        }
+        assert_eq!(
+            Launch::New(AgentKind::OpenCode)
+                .arguments(Some("{}"))
+                .unwrap(),
+            Vec::<String>::new()
+        );
+    }
     #[test]
     fn resume_is_exact_and_does_not_change_permissions() {
         let session = ResumeSession::new(AgentKind::ClaudeCode, "a1-b2").unwrap();

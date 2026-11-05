@@ -11,6 +11,7 @@ use super::center_dock::CenterDock;
 use super::*;
 use crate::state::git::DiffRequest;
 
+mod agent_draft;
 mod persistence;
 
 pub(super) struct ProjectCenter {

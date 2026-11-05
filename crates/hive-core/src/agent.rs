@@ -5,6 +5,7 @@
 //! its foreground process group (`tpgid`), and the command lines in that group name the agent.
 //! One `ps` snapshot serves every open terminal.
 
+pub mod draft;
 pub mod hooks;
 pub mod launch;
 
