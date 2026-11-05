@@ -1,7 +1,8 @@
 //! Workspace integration for source control and diff tabs.
 use super::*;
-use crate::state::git::{DiffRequest, GitEvent, Target};
+use crate::state::git::{DiffRequest, GitEvent};
 use gpui_kit::base::motion::{Transition, transition};
+use hive_core::projects::Target;
 use hive_core::settings::clamp_git_panel_width;
 
 const RIGHT_TAB_WIDTH: Rems = rems(2.);

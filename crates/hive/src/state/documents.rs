@@ -1,7 +1,8 @@
 //! Open buffers have independent entities; the registry never owns a second copy of text.
-use super::{git::Target, store::Store};
+use super::store::Store;
 use gpui_kit::*;
 use hive_core::files::recovery::{self, Record};
+use hive_core::projects::Target;
 use std::path::PathBuf;
 
 mod document;

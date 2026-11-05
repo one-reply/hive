@@ -1,6 +1,6 @@
 use super::{
     documents::{DocumentEvent, OpenFile},
-    git::{GitEvent, Target},
+    git::GitEvent,
     projects::Projects,
 };
 use crate::app::AppState;
@@ -19,6 +19,7 @@ impl EventEmitter<FilesEvent> for Files {}
 use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState};
 use gpui_kit::*;
 use hive_core::files::{self, Entry, FileIndex};
+use hive_core::projects::Target;
 use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
@@ -131,7 +132,7 @@ impl Files {
                 cx.notify();
             }),
             cx.observe(&projects, |this, projects, cx| {
-                let target = selected_target(projects.read(cx));
+                let target = projects.read(cx).target();
                 if this.target != target {
                     this.target = target;
                     this._read = None;
@@ -187,7 +188,7 @@ impl Files {
             }
         });
         let mut this = Self {
-            target: selected_target(projects.read(cx)),
+            target: projects.read(cx).target(),
             tree,
             error: None,
             visible: false,
@@ -270,13 +271,4 @@ impl Files {
             }),
         ))
     }
-}
-
-fn selected_target(projects: &Projects) -> Option<Target> {
-    let (project, worktree) = projects.selection()?;
-    Some(Target {
-        project: project.path.clone(),
-        path: worktree.map_or_else(|| project.path.clone(), |w| w.path.clone()),
-        host: project.host.clone(),
-    })
 }

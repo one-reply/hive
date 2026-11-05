@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::*;
-use hive_core::projects::{self, Project, Worktree};
+use hive_core::projects::{self, Project, Target, Worktree};
 use hive_core::worktree::{self, Removal, WorktreeError};
 
 use super::store::Store;
@@ -76,6 +76,12 @@ impl Projects {
             .as_ref()
             .and_then(|path| project.worktrees.iter().find(|w| &w.path == path));
         Some((project, worktree))
+    }
+
+    /// What the selection points at, by the one rule in [`Target::of`].
+    pub fn target(&self) -> Option<Target> {
+        self.selection()
+            .map(|(project, worktree)| Target::of(project, worktree))
     }
 
     pub fn is_selected(&self, project: &Path, worktree: Option<&Path>) -> bool {

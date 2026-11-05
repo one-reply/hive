@@ -1,6 +1,7 @@
 use super::*;
-use crate::state::{files::FileOperation, git::Target};
+use crate::state::files::FileOperation;
 use gpui_kit::component::{Icon, list::ListItem};
+use hive_core::projects::Target;
 
 const EXPAND_DELAY: Duration = Duration::from_millis(650);
 const EDGE_SIZE: Pixels = px(28.);
