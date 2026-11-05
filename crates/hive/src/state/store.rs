@@ -141,14 +141,17 @@ impl Store {
             }
         });
         let (state, notice) = match loaded {
-            Ok(loaded) => (loaded.state, loaded.recovered_from.map(|path| format!(
-                "State was damaged. The original was preserved at {}. Default settings are in use.", path.display()
-            ))),
+            Ok(loaded) => (
+                loaded.state,
+                loaded.recovery.map(|recovery| recovery_notice(&recovery)),
+            ),
             Err(error) => {
                 tracing::error!(%error, "state loading failed; persistence disabled");
                 return Self {
                     state: State::default(),
-                    notice: Some(format!("{error}. Saving is disabled to protect the original state. Restart Hive after fixing the file.")),
+                    notice: Some(format!(
+                        "{error}. Saving is disabled to protect the original state. Restart Hive after fixing the file."
+                    )),
                     writer: None,
                     recovery,
                     _recovery_errors: recovery_errors,
@@ -323,5 +326,23 @@ impl Store {
             writer.submit(self.state.clone());
         }
         cx.notify();
+    }
+}
+
+/// What the user is told when `state.json` could not be used as written.
+fn recovery_notice(recovery: &hive_core::state::Recovery) -> String {
+    use hive_core::state::RecoveryCause;
+    let backup = recovery.backup.display();
+    match &recovery.cause {
+        RecoveryCause::Corrupt => format!(
+            "State was damaged. The original was preserved at {backup}. Default settings are in use."
+        ),
+        RecoveryCause::Partial(lost) => format!(
+            "Part of the saved state could not be read and was reset: {}. The original was preserved at {backup}.",
+            lost.join(", ")
+        ),
+        RecoveryCause::Newer { version } => format!(
+            "The saved state was written by a newer Hive (format {version}). Anything this version does not understand is kept only in the backup at {backup}."
+        ),
     }
 }
