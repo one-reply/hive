@@ -10,10 +10,16 @@ pub mod hooks;
 pub mod launch;
 
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use crate::command::{self, Cancellation};
 use crate::host::Host;
 use crate::terminal::Activity;
+
+/// `ps` normally answers in milliseconds; a wedged system must not stall the poll forever.
+const PS_TIMEOUT: Duration = Duration::from_secs(5);
+/// Enough for thousands of processes with long command lines.
+const PS_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
 /// An agent CLI Hive recognizes in a terminal.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -155,10 +161,12 @@ fn basename(path: &str) -> &str {
 /// Failure to read the process table.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
+    /// `ps` could not be started, timed out or printed more than the budget.
     #[error("failed to run ps: {0}")]
-    Spawn(#[source] std::io::Error),
-    #[error("ps exited with {status}: {stderr}")]
-    Failed { status: String, stderr: String },
+    Run(#[source] command::Error),
+    /// `ps` ran and exited non-zero.
+    #[error("ps exited with {code:?}: {stderr}")]
+    Failed { code: Option<i32>, stderr: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,17 +187,27 @@ pub struct ProcessTable {
 impl ProcessTable {
     /// Reads the local process table. Blocking: run it off the UI thread.
     pub fn snapshot() -> Result<Self, AgentError> {
-        let output = Host::Local
-            .command("/bin/ps", &["-ax", "-o", "pid=,pgid=,tpgid=,args="], None)
-            .output()
-            .map_err(AgentError::Spawn)?;
-        if !output.status.success() {
+        let ps = Host::Local.command("/bin/ps", &["-ax", "-o", "pid=,pgid=,tpgid=,args="], None);
+        let output = command::run(
+            ps,
+            &[],
+            &Cancellation::default(),
+            PS_TIMEOUT,
+            PS_OUTPUT_LIMIT,
+        )
+        .map_err(AgentError::Run)?;
+        if output.code != Some(0) {
             return Err(AgentError::Failed {
-                status: output.status.to_string(),
+                code: output.code,
                 stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
             });
         }
         Ok(Self::parse(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    /// Every process id in the snapshot.
+    pub(crate) fn pids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.processes.iter().map(|process| process.pid)
     }
 
     /// Parses `ps -o pid=,pgid=,tpgid=,args=` output; malformed lines are skipped.

@@ -102,6 +102,10 @@ pub fn run(host: &Host, cwd: &Path, args: &[&str]) -> Result<String, GitError> {
 }
 
 const READ_LIMIT: usize = 16 * 1024 * 1024;
+/// Deadline for queries, including anything run over ssh to inspect a worktree.
+pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(15);
+/// Deadline for commands that may change files, refs or a remote.
+const MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) fn run_mutation(host: &Host, cwd: &Path, args: &[&str]) -> Result<String, GitError> {
     Ok(
@@ -151,7 +155,11 @@ fn invoke(
         }
     };
     command.env("GIT_TERMINAL_PROMPT", "0").env("LC_ALL", "C");
-    let timeout = Duration::from_secs(if mutation { 120 } else { 15 });
+    let timeout = if mutation {
+        MUTATION_TIMEOUT
+    } else {
+        READ_TIMEOUT
+    };
     let output = command::run(command, input.unwrap_or_default(), &Cancellation::default(), timeout, limit)
         .map_err(|source| match source {
             command::Error::TooLarge(limit) if !mutation => GitError::TooLarge(limit),

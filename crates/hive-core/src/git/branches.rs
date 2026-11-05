@@ -1,8 +1,12 @@
 //! Branch discovery and conservative checkout operations.
-use super::{GitError, READ_LIMIT, bytes, run, status, text};
+use super::{GitError, READ_LIMIT, READ_TIMEOUT, bytes, run, status, text};
+use crate::command::{self, Cancellation};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+/// `test -e` prints nothing; the bound only guards against a misbehaving remote shell.
+const INSPECT_OUTPUT_LIMIT: usize = 64 * 1024;
 
 /// A local or remote-tracking branch with its worktree occupancy.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,20 +137,28 @@ pub fn require_clean(host: &Host, cwd: &Path) -> Result<(), GitError> {
                 })?
             }
             Host::Ssh { .. } => {
-                let output = host
-                    .command("test", &["-e", &path], Some(cwd))
-                    .output()
-                    .map_err(|source| GitError::Spawn {
-                        command: format!("inspect {marker}"),
-                        host: host.clone(),
-                        source,
-                    })?;
-                match output.status.code() {
+                let command = format!("inspect {marker}");
+                let output = command::run(
+                    host.command("test", &["-e", &path], Some(cwd)),
+                    &[],
+                    &Cancellation::default(),
+                    READ_TIMEOUT,
+                    INSPECT_OUTPUT_LIMIT,
+                )
+                .map_err(|source| GitError::Interrupted {
+                    command: command.clone(),
+                    host: host.clone(),
+                    cwd: cwd.into(),
+                    source,
+                    mutation: false,
+                    guidance: "Refresh to retry.",
+                })?;
+                match output.code {
                     Some(0) => true,
                     Some(1) => false,
                     code => {
                         return Err(GitError::Failed {
-                            command: format!("inspect {marker}"),
+                            command,
                             host: host.clone(),
                             cwd: cwd.into(),
                             code,
