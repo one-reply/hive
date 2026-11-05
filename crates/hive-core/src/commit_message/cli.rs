@@ -112,7 +112,7 @@ pub(super) fn generate(
     // Node-based installs need their sibling runtime even when launched from Finder's short PATH.
     if let Some(parent) = program.parent() {
         let mut paths = vec![parent.to_path_buf()];
-        if let Some(path) = std::env::var_os("PATH") {
+        if let Some(path) = crate::host::environment::path() {
             paths.extend(std::env::split_paths(&path));
         }
         if let Ok(path) = std::env::join_paths(paths) {

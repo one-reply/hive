@@ -30,6 +30,27 @@ fn init_logging() {
     }
 }
 
+/// Launched from Finder, Hive inherits launchd's minimal `PATH`; git hooks and CLIs need the
+/// terminal's. The lookup runs a login shell, so it stays off the UI thread, and commands that
+/// start before it answers keep the process environment.
+fn load_login_environment(cx: &mut App) {
+    cx.background_executor()
+        .spawn(async {
+            match hive_core::host::environment::load() {
+                Ok(environment) => {
+                    tracing::info!(
+                        variables = environment.len(),
+                        "login shell environment loaded"
+                    )
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "keeping the process environment for local commands")
+                }
+            }
+        })
+        .detach();
+}
+
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
     if args.get(1).is_some_and(|a| a == "--agent-hook") {
@@ -54,6 +75,7 @@ fn main() {
         .with_assets(gpui_kit::assets::AllAssets)
         .run(|cx| {
             gpui_kit::init(cx);
+            load_login_environment(cx);
             cx.spawn(async move |cx| {
                 let loaded = cx
                     .background_executor()

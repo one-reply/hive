@@ -100,7 +100,7 @@ impl Launch {
         );
         if let Some(parent) = executable.parent() {
             let mut paths = vec![parent.to_owned()];
-            if let Some(path) = std::env::var_os("PATH") {
+            if let Some(path) = crate::host::environment::path() {
                 paths.extend(std::env::split_paths(&path));
             }
             if let Ok(path) = std::env::join_paths(paths) {
