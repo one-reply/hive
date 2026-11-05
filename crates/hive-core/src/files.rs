@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub mod decorations;
 mod listing;
 mod mutations;
+pub mod tree;
 pub use mutations::{
     create_directory, create_file, delete_entry, entry_path, move_entry, relocated_path,
 };

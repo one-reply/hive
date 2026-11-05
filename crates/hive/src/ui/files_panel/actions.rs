@@ -123,7 +123,7 @@ impl FilesPanel {
     }
 
     pub(super) fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = self.files.read(cx).selected(cx) {
+        if let Some(path) = self.selected(cx) {
             self.confirm_delete(path, window, cx);
         }
     }

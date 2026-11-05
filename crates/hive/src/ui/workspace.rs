@@ -189,8 +189,8 @@ impl Workspace {
             }),
         ];
 
-        let files = cx.new(|cx| crate::state::files::Files::new(projects.clone(), window, cx));
-        let files_panel = cx.new(|cx| crate::ui::files_panel::FilesPanel::new(files, cx));
+        let files = cx.new(|cx| crate::state::files::Files::new(projects.clone(), None, cx));
+        let files_panel = cx.new(|cx| crate::ui::files_panel::FilesPanel::new(files, window, cx));
         let mut this = Self {
             focus: cx.focus_handle(),
             sidebar: cx.new(Sidebar::new),

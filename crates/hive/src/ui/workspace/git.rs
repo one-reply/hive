@@ -105,16 +105,12 @@ impl Workspace {
             .state
             .settings
             .files_selected;
+        let files_visible = self.git_open && selected_files;
         self.files_panel
             .read(cx)
             .files
             .clone()
-            .update(cx, |files, cx| {
-                files.visible = self.git_open && selected_files;
-                if files.visible {
-                    files.refresh(cx);
-                }
-            });
+            .update(cx, |files, cx| files.set_visible(files_visible, cx));
         self.git_animate = true;
         self.git_animation = Some(cx.spawn(async |this, cx| {
             cx.background_executor().timer(SIDEBAR_SLIDE_DURATION).await;
