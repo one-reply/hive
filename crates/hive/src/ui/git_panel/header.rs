@@ -1,4 +1,4 @@
-//! Remote actions with refresh, then the branch picker with sync counters.
+//! The branch picker with sync counters, then remote actions with refresh.
 use super::*;
 use crate::state::git::RemoteOperation;
 use std::time::Duration;
@@ -43,7 +43,7 @@ impl GitPanel {
         }
     }
 
-    /// Remote actions and refresh, then the branch picker with sync counters.
+    /// The branch picker with sync counters, then remote actions and refresh.
     pub(super) fn header(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.git.read(cx);
         let status = state.status.clone();
@@ -81,24 +81,25 @@ impl GitPanel {
         let has_upstream = upstream.is_some();
 
         let branch_row = h_flex()
-            .gap_1p5()
+            .gap_2()
             .items_center()
             .min_w_0()
             .child(
                 Button::new("branch-picker")
                     .cursor_pointer()
-                    .xsmall()
+                    .small()
                     .min_w_0()
                     .icon(Lucide::GitBranch)
                     .label(branch.clone())
                     .dropdown_caret(true)
-                    .tooltip("Switch branch")
+                    .tooltip("Switch or create branch")
                     .disabled(status.is_none() || busy)
                     .on_click(cx.listener(|this, _, window, cx| {
                         git_controls::branches(this.git.clone(), false, window, cx)
                     }))
+                    // Outlined like a select, so the branch reads as a control, not a label.
                     .smooth_hover(
-                        ButtonLook::Ghost,
+                        ButtonLook::Outline,
                         &branch_hover.enabled(status.is_some() && !busy),
                         cx,
                     )
@@ -140,7 +141,7 @@ impl GitPanel {
         let mut actions = h_flex()
             .flex_1()
             .min_w_0()
-            .gap_1()
+            .gap_1p5()
             .child(
                 sync_button(
                     "fetch",
@@ -218,7 +219,7 @@ impl GitPanel {
                 Button::new("remote")
                     .cursor_pointer()
                     .ghost()
-                    .xsmall()
+                    .small()
                     .icon(Lucide::Ellipsis)
                     .tooltip(format!("Remote: {}", remote.as_deref().unwrap_or("none")))
                     .dropdown_menu(move |menu, _, _| {
@@ -246,7 +247,7 @@ impl GitPanel {
             .child(
                 Button::new("git-refresh")
                     .cursor_pointer()
-                    .xsmall()
+                    .small()
                     .icon(Lucide::RefreshCw)
                     .loading(spinning)
                     .tooltip("Refresh")
@@ -259,13 +260,14 @@ impl GitPanel {
                     .smooth_hover(ButtonLook::Ghost, &refresh_hover.enabled(!spinning), cx),
             );
 
+        // The branch names the context the actions below operate on, so it comes first.
         v_flex()
             .px_3()
             .pt_3()
-            .pb_2()
-            .gap_1p5()
-            .child(top_row)
+            .pb_3()
+            .gap_2()
             .child(branch_row)
+            .child(top_row)
     }
 }
 
@@ -280,7 +282,7 @@ fn sync_button(
 ) -> Button {
     Button::new(id)
         .cursor_pointer()
-        .xsmall()
+        .small()
         .icon(icon)
         .label(label)
         .tooltip(tooltip)
