@@ -228,8 +228,9 @@ impl ProjectCenter {
                         host: saved.host.clone(),
                     },
                     path: path.clone(),
-                    line: None,
+                    position: None,
                     preview: false,
+                    placement: Default::default(),
                 };
                 let panel = cx.new(|cx| {
                     crate::ui::editor_panel::EditorPanel::new(

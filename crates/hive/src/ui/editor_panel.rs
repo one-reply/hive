@@ -239,18 +239,6 @@ impl Render for EditorPanel {
                     .border_color(cx.theme().border)
                     .child(div().flex_1().min_w_0().truncate().text_sm().child(header))
                     .child(
-                        Button::new("file-changes")
-                            .small()
-                            .cursor_pointer()
-                            .icon(Lucide::GitCompareArrows)
-                            .tooltip("Show changes")
-                            .disabled(self.changes == FileChanges::Clean)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_changes(false, window, cx)
-                            }))
-                            .smooth_hover(ButtonLook::Ghost, &changes_hover, cx),
-                    )
-                    .child(
                         Button::new("file-sources")
                             .small()
                             .cursor_pointer()
@@ -264,6 +252,18 @@ impl Render for EditorPanel {
                                 this.show_changes(true, window, cx)
                             }))
                             .smooth_hover(ButtonLook::Ghost, &sources_hover, cx),
+                    )
+                    .child(
+                        Button::new("file-changes")
+                            .small()
+                            .cursor_pointer()
+                            .icon(Lucide::GitCompareArrows)
+                            .tooltip("Show changes")
+                            .disabled(self.changes == FileChanges::Clean)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_changes(false, window, cx)
+                            }))
+                            .smooth_hover(ButtonLook::Ghost, &changes_hover, cx),
                     )
                     .child(
                         Button::new("file-save")

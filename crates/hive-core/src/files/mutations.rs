@@ -34,6 +34,26 @@ pub fn entry_path(parent: &Path, name: &str) -> Result<PathBuf, FileError> {
     Ok(parent.join(name))
 }
 
+/// Whether `name` collides with one of `siblings`, the paths listed in its parent folder.
+///
+/// Names compare case-insensitively, as on macOS's default volumes, where `README.md` and
+/// `Readme.md` are one entry. `renaming` is left out, so renaming an entry to its own name in
+/// another case is not a collision. The listing is a snapshot: the file system still refuses
+/// to replace an entry created since, so this only lets the panel warn while the user types.
+pub fn name_taken<'a>(
+    siblings: impl IntoIterator<Item = &'a Path>,
+    name: &str,
+    renaming: Option<&Path>,
+) -> bool {
+    let name = name.to_lowercase();
+    siblings.into_iter().any(|sibling| {
+        Some(sibling) != renaming
+            && sibling
+                .file_name()
+                .is_some_and(|existing| existing.to_string_lossy().to_lowercase() == name)
+    })
+}
+
 /// Relocate an entry or descendant, keeping a file destination free of trailing separators.
 pub fn relocated_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
     let suffix = path.strip_prefix(from).ok()?;

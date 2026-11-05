@@ -278,8 +278,9 @@ impl Files {
                 OpenFile {
                     target,
                     path,
-                    line: None,
+                    position: None,
                     preview,
+                    placement: Default::default(),
                 },
                 cx,
             )

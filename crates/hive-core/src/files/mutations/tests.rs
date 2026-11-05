@@ -209,3 +209,27 @@ fn batched_ignore_rules_preserve_spaces_and_unicode() {
         [paths[0].clone(), paths[1].clone()].into_iter().collect()
     );
 }
+
+#[test]
+fn name_taken_matches_siblings_ignoring_case() {
+    let siblings = [Path::new("src/main.rs"), Path::new("src/Lib.rs")];
+    assert!(name_taken(siblings, "main.rs", None));
+    assert!(name_taken(siblings, "lib.RS", None));
+    assert!(!name_taken(siblings, "mod.rs", None));
+    assert!(!name_taken(siblings, "main", None));
+}
+
+#[test]
+fn name_taken_skips_the_entry_being_renamed() {
+    let siblings = [Path::new("src/main.rs"), Path::new("src/lib.rs")];
+    let renaming = Some(Path::new("src/main.rs"));
+    assert!(!name_taken(siblings, "main.rs", renaming));
+    assert!(!name_taken(siblings, "Main.rs", renaming));
+    assert!(name_taken(siblings, "lib.rs", renaming));
+}
+
+#[test]
+fn name_taken_is_false_without_a_listing() {
+    assert!(!name_taken([], "main.rs", None));
+    assert!(!name_taken([Path::new("тест.rs")], "", None));
+}

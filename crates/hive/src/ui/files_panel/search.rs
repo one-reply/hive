@@ -132,8 +132,9 @@ impl ListDelegate for Paths {
                         OpenFile {
                             target,
                             path,
-                            line: None,
+                            position: None,
                             preview: false,
+                            placement: Default::default(),
                         },
                         cx,
                     )

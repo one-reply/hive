@@ -1,5 +1,9 @@
 //! Center dock and its empty state.
 use super::*;
+use crate::ui::app_menu::AddProject;
+use crate::ui::editor_panel::OpenFileSearch;
+use crate::ui::key_hint;
+use crate::ui::settings::OpenSettings;
 
 impl Workspace {
     pub(super) fn render_center(
@@ -74,25 +78,13 @@ impl Workspace {
     ) -> impl IntoElement {
         let add_hover = Hover::new("welcome-add-project", window, cx);
         let terminal_hover = Hover::new("welcome-new-terminal", window, cx);
-        let has_selection = self.projects.read(cx).selection().is_some();
-        let hint = if has_selection {
-            "Open a terminal in the selected worktree to begin."
-        } else {
-            "Select a project from the sidebar to begin."
-        };
-        let shortcut = |label: &'static str, action: &dyn Action| {
-            h_flex()
-                .w(px(320.))
-                .justify_between()
-                .items_center()
-                .text_sm()
-                .text_color(muted)
-                .child(label)
-                .children(Kbd::binding_for_action(
-                    action,
-                    Some(keymap::CONTEXT),
-                    window,
-                ))
+        let projects = self.projects.read(cx);
+        let has_projects = !projects.items.is_empty();
+        let has_selection = projects.selection().is_some();
+        let hint = match (has_selection, has_projects) {
+            (true, _) => "Open a terminal in the selected worktree to begin.",
+            (false, true) => "Select a project from the sidebar to begin.",
+            (false, false) => "Add a project folder to get started.",
         };
         v_flex()
             .size_full()
@@ -106,11 +98,16 @@ impl Workspace {
                     .text_color(cx.theme().foreground),
             )
             .child(div().text_3xl().font_weight(FontWeight::BOLD).child("HIVE"))
-            .child(div().text_sm().text_color(muted).child(hint))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(muted)
+                    .child("Control center for your AI coding agents"),
+            )
+            .child(div().mt_2().text_sm().text_color(muted).child(hint))
             .child(
                 h_flex()
                     .gap_2()
-                    .mt_2()
                     .child(
                         Button::new("welcome-add-project")
                             .cursor_pointer()
@@ -134,13 +131,38 @@ impl Workspace {
                         )
                     }),
             )
-            .when(has_selection, |el| {
-                el.child(
-                    v_flex()
-                        .gap_1()
-                        .mt_6()
-                        .child(shortcut("New terminal", &NewTerminal)),
+            .child(self.render_shortcuts(has_selection, muted, window, cx))
+    }
+
+    /// The window-wide shortcuts that make sense before anything is open.
+    fn render_shortcuts(&self, has_selection: bool, muted: Hsla, window: &Window, cx: &App) -> Div {
+        let actions: &[&dyn Action] = if has_selection {
+            &[
+                &NewTerminal,
+                &OpenFileSearch,
+                &QuickSwitch,
+                &ToggleSidebar,
+                &ToggleGitPanel,
+                &OpenSettings,
+            ]
+        } else {
+            &[&AddProject, &QuickSwitch, &ToggleSidebar, &OpenSettings]
+        };
+        v_flex()
+            .w(WELCOME_CONTENT_WIDTH)
+            .gap_1p5()
+            .mt_6()
+            .children(actions.iter().filter_map(|action| {
+                let label = keymap::label(*action)?;
+                Some(
+                    h_flex()
+                        .justify_between()
+                        .items_center()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(label)
+                        .children(key_hint::for_action(*action, keymap::CONTEXT, window, cx)),
                 )
-            })
+            }))
     }
 }

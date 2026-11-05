@@ -1,5 +1,9 @@
 use super::*;
-use crate::{state::documents::OpenFile, ui::editor_panel::EditorPanel};
+use crate::{
+    state::documents::{OpenFile, TabPlacement},
+    ui::editor_panel::EditorPanel,
+};
+use gpui_kit::component::dock::InsertTarget;
 
 impl ProjectCenter {
     pub(in crate::ui::workspace) fn remove_files(
@@ -47,8 +51,8 @@ impl ProjectCenter {
                     document.pinned = true;
                     cx.notify();
                 }
-                if let Some(line) = request.line {
-                    document.goto(line, window, cx);
+                if let Some(position) = request.position {
+                    document.goto(position, window, cx);
                 }
             });
             self.select(&panel, window, cx);
@@ -62,6 +66,7 @@ impl ProjectCenter {
             Focusable::focus_handle(&panel, cx).focus(window, cx);
         }
         self.editors.push(panel.clone());
+        self.place_beside_source(&panel, &request.placement, window, cx);
         // Dock assigns the destination group asynchronously; only replace that group's preview.
         let candidates = self.editors.clone();
         let dock = self.dock.clone();
@@ -83,5 +88,66 @@ impl ProjectCenter {
             }
         });
         self.sync_alone(cx);
+    }
+
+    /// Moves a new tab right after the tab it was opened from; `Replacing` then closes that
+    /// source tab unless it holds unsaved or in-flight edits.
+    fn place_beside_source(
+        &mut self,
+        panel: &Entity<EditorPanel>,
+        placement: &TabPlacement,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let (TabPlacement::Beside(source) | TabPlacement::Replacing(source)) = placement else {
+            return;
+        };
+        let Some(source_panel) = self
+            .editors
+            .iter()
+            .find(|candidate| {
+                *candidate != panel && candidate.read(cx).document.entity_id() == source.entity_id()
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let Some(group) = source_panel
+            .read(cx)
+            .group
+            .as_ref()
+            .and_then(WeakEntity::upgrade)
+        else {
+            return;
+        };
+        let source_id = PanelId::from(source_panel.entity_id());
+        let (node, source_ix) = {
+            let group = group.read(cx);
+            let ix = group
+                .panels()
+                .iter()
+                .position(|p| p.panel_id(cx) == source_id);
+            (group.node(), ix)
+        };
+        let Some(source_ix) = source_ix else {
+            return;
+        };
+        let id = PanelId::from(panel.entity_id());
+        let target = InsertTarget::Tabs {
+            node,
+            ix: Some(source_ix + 1),
+            activate: true,
+        };
+        self.dock
+            .update(cx, |dock, cx| dock.move_panel(id, target, window, cx));
+        let replace = matches!(placement, TabPlacement::Replacing(_)) && {
+            let document = source_panel.read(cx).document.read(cx);
+            !document.dirty && !document.saving
+        };
+        if replace {
+            self.dock
+                .update(cx, |dock, cx| dock.remove_panel(source_panel, window, cx));
+            self.prune(cx);
+        }
     }
 }

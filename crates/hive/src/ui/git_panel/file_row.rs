@@ -141,8 +141,9 @@ impl GitPanel {
                                     crate::state::documents::OpenFile {
                                         target,
                                         path: open_path.clone().into(),
-                                        line: None,
+                                        position: None,
                                         preview: false,
+                                        placement: Default::default(),
                                     },
                                     cx,
                                 )

@@ -3,7 +3,6 @@
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -11,6 +10,7 @@ use gpui_kit::*;
 use super::{setting_row, setting_title};
 use crate::app::AppState;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
+use crate::ui::key_hint;
 use crate::ui::keymap::{self, Assignment, Category, Rejection, SHORTCUTS};
 
 /// Whether a row is waiting for keys.
@@ -145,7 +145,7 @@ impl ShortcutsPage {
             "Press the new keys. Esc cancels.".into()
         } else {
             match Keystroke::parse_with_os(shortcut.default, os) {
-                Ok(default) => format!("Default: {}", default.display(os)).into(),
+                Ok(default) => format!("Default: {}", key_hint::label(&default)).into(),
                 Err(_) => SharedString::default(),
             }
         };
@@ -155,7 +155,7 @@ impl ShortcutsPage {
             });
 
         let current: AnyElement = match Keystroke::parse_with_os(&keys, os) {
-            Ok(keystroke) => Kbd::new(keystroke).into_any_element(),
+            Ok(keystroke) => key_hint::render(&keystroke, cx).into_any_element(),
             Err(_) => div()
                 .text_xs()
                 .text_color(muted)

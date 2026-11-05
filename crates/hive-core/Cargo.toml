@@ -25,6 +25,9 @@ async-channel.workspace = true
 polling.workspace = true
 rustix.workspace = true
 tracing.workspace = true
+tree-sitter.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-typescript.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework.workspace = true

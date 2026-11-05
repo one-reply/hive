@@ -8,13 +8,15 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod decorations;
+mod language;
 mod listing;
 mod mutations;
 pub mod tree;
 pub use mutations::{
-    create_directory, create_file, delete_entry, entry_path, move_entry, relocated_path,
+    create_directory, create_file, delete_entry, entry_path, move_entry, name_taken, relocated_path,
 };
 pub mod recovery;
+pub use language::{editor_language, is_dockerfile};
 pub use listing::{Entry, FileIndex, list_directory, list_files};
 
 /// Largest document accepted by the editor.

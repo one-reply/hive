@@ -35,6 +35,8 @@ pub(crate) struct TextField {
     focus: FocusHandle,
     /// Keys the focus transition; the state entity outlives re-renders, the element does not.
     key: EntityId,
+    /// Draws the frame in the danger color, for a value the caller rejects.
+    invalid: bool,
 }
 
 impl TextField {
@@ -44,6 +46,7 @@ impl TextField {
             textarea: None,
             focus: state.focus_handle(cx),
             key: state.entity_id(),
+            invalid: false,
         }
     }
 
@@ -53,7 +56,16 @@ impl TextField {
             textarea: Some(state.clone()),
             focus: state.focus_handle(cx),
             key: state.entity_id(),
+            invalid: false,
         }
+    }
+}
+
+impl TextField {
+    /// Marks the value as rejected: the frame turns to the danger color, focused or not.
+    pub(crate) fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self
     }
 }
 
@@ -72,8 +84,17 @@ impl RenderOnce for TextField {
             .map(|state| frame_scrollbar(&state, self.key, window, cx));
         let theme = cx.theme();
         let resting = theme.input.mix_oklab(theme.foreground, BORDER_CONTRAST);
-        let border = resting.mix_oklab(theme.ring, t);
-        let ring = theme.ring.alpha(RING_OPACITY * t);
+        let accent = if self.invalid {
+            theme.danger
+        } else {
+            theme.ring
+        };
+        let border = if self.invalid {
+            theme.danger
+        } else {
+            resting.mix_oklab(accent, t)
+        };
+        let ring = accent.alpha(RING_OPACITY * t);
         let radius = theme.radius;
         let show_ring = theme.focus_ring && t > 0.;
         div()

@@ -53,13 +53,16 @@ pub fn sync_system_appearance(window: &mut Window, cx: &mut App) {
 
 fn apply(appearance: Appearance, window: Option<&mut Window>, cx: &mut App) {
     apply_theme(appearance.theme, window, cx);
-    // `Theme::change` reloads the theme file, which may carry its own sizes, so the user's
-    // sizes go on top in a separate update. `font_size` is the rem every window scales from.
+    // `Theme::change` reloads the theme file, which may carry its own sizes and syntax colors,
+    // so the user's sizes and Hive's palette go on top in a separate update. `font_size` is the rem every window scales from.
     Theme::update(cx, |theme| {
         theme.font_size = px(appearance.ui_font_size);
         theme.mono_font_size = px(appearance.terminal_font_size);
         if theme.is_dark() {
             theme.tab_bar = rgb(DARK_TAB_BAR).into();
+        }
+        if let Some(highlight) = super::syntax_palette::highlight_theme(theme.is_dark()) {
+            theme.highlight_theme = highlight;
         }
     });
 }
