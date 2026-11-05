@@ -21,6 +21,8 @@ pub struct Workspace {
     /// Last sidebar selection.
     pub selection: Option<Selection>,
     /// Layouts of projects that have been opened, including deliberately empty ones.
+    /// One unreadable layout is dropped rather than costing every project its tabs.
+    #[serde(deserialize_with = "super::lenient::elements")]
     pub projects: Vec<ProjectWorkspace>,
 }
 
@@ -91,10 +93,11 @@ pub struct ProjectWorkspace {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SplitAxis {
-    /// Children arranged left to right.
-    Horizontal,
     /// Children arranged top to bottom.
     Vertical,
+    /// Children arranged left to right; also what an unknown axis means.
+    #[serde(other)]
+    Horizontal,
 }
 
 /// Serializable layout shared by dock groups and terminal panes.

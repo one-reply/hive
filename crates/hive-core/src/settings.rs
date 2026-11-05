@@ -7,10 +7,12 @@ pub use files::{FILES_FONT_SIZE_DEFAULT, FileDensity, FileIcons, FilesSettings};
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeChoice {
-    #[default]
-    System,
     Light,
     Dark,
+    /// Follow macOS; also what an unknown theme name means.
+    #[default]
+    #[serde(other)]
+    System,
 }
 
 impl ThemeChoice {

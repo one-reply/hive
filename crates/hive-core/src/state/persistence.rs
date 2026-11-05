@@ -1,6 +1,7 @@
 use super::{ProjectRef, State, hive_dir};
 use crate::{host::Host, settings::Settings};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -34,12 +35,59 @@ pub enum StateError {
     },
 }
 
-/// Loaded state and, when recovery was necessary, the preserved original's location.
+/// Layout version this build writes into `state.json`. Bump it when the meaning of an
+/// existing field changes and add the matching upgrade in [`State::load_from`]; fields
+/// added with `#[serde(default)]` need no bump. Files without a version are version 0.
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// Loaded state and, when the file could not be used as written, what happened to it.
 pub struct LoadedState {
     /// State to show in the application.
     pub state: State,
-    /// Exact backup of malformed `state.json`; the UI must report this recovery.
-    pub recovered_from: Option<PathBuf>,
+    /// Set when part or all of the file was not used; the UI must report it.
+    pub recovery: Option<Recovery>,
+}
+
+/// Why `state.json` could not be used as written. The untouched original is at `backup`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Recovery {
+    /// Byte-for-byte copy of the file as it was found.
+    pub backup: PathBuf,
+    /// What was lost.
+    pub cause: RecoveryCause,
+}
+
+/// What a recovery replaced.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RecoveryCause {
+    /// Not a JSON object: everything is default.
+    Corrupt,
+    /// These parts failed to parse and were reset or dropped; everything else was kept.
+    Partial(Vec<String>),
+    /// Written by a newer Hive; data this version does not understand survives only in the backup.
+    Newer {
+        /// The file's [`SCHEMA_VERSION`].
+        version: u32,
+    },
+}
+
+/// `state.json` as written: the version beside the top-level sections of [`State`].
+#[derive(Serialize)]
+struct Envelope<'a> {
+    version: u32,
+    #[serde(flatten)]
+    state: &'a State,
+}
+
+/// `state.json` as read: each section parsed on its own, so one bad section cannot reset
+/// the others. Any JSON object parses into this.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Sections {
+    version: u32,
+    settings: Option<Value>,
+    projects: Option<Value>,
+    workspace: Option<Value>,
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> StateError {
@@ -63,24 +111,50 @@ impl State {
         let Some(bytes) = read_optional(&path)? else {
             return Self::migrate(dir);
         };
-        match serde_json::from_slice(&bytes) {
-            Ok(state) => Ok(LoadedState {
-                state,
-                recovered_from: None,
-            }),
+        let sections: Sections = match serde_json::from_slice(&bytes) {
+            Ok(sections) => sections,
             Err(error) => {
-                let (backup, mut file) = unique_file(dir, "state.corrupt", "json")?;
-                file.write_all(&bytes)
-                    .and_then(|_| file.sync_all())
-                    .map_err(|e| io_error("back up corrupt state to", &backup, e))?;
-                sync_directory(dir)?;
+                let backup = preserve(dir, &bytes, "state.corrupt")?;
                 tracing::warn!(?path, ?backup, %error, "preserved corrupt state; using defaults");
-                Ok(LoadedState {
+                return Ok(LoadedState {
                     state: Self::default(),
-                    recovered_from: Some(backup),
-                })
+                    recovery: Some(Recovery {
+                        backup,
+                        cause: RecoveryCause::Corrupt,
+                    }),
+                });
             }
-        }
+        };
+        let mut lost = Vec::new();
+        let state = State {
+            settings: section("settings", sections.settings, &mut lost),
+            projects: projects(sections.projects, &mut lost),
+            workspace: section("workspace", sections.workspace, &mut lost),
+        };
+        let cause = if sections.version > SCHEMA_VERSION {
+            tracing::warn!(
+                ?path,
+                version = sections.version,
+                ?lost,
+                "state written by a newer Hive"
+            );
+            Some(RecoveryCause::Newer {
+                version: sections.version,
+            })
+        } else if lost.is_empty() {
+            None
+        } else {
+            tracing::warn!(?path, ?lost, "parts of the state were unreadable and reset");
+            Some(RecoveryCause::Partial(lost))
+        };
+        let recovery = match cause {
+            Some(cause) => Some(Recovery {
+                backup: preserve(dir, &bytes, "state.original")?,
+                cause,
+            }),
+            None => None,
+        };
+        Ok(LoadedState { state, recovery })
     }
 
     fn migrate(dir: &Path) -> Result<LoadedState, StateError> {
@@ -113,7 +187,7 @@ impl State {
         };
         Ok(LoadedState {
             state,
-            recovered_from: None,
+            recovery: None,
         })
     }
 
@@ -123,7 +197,11 @@ impl State {
     }
 
     fn save_to(&self, path: &Path) -> Result<(), StateError> {
-        let bytes = serde_json::to_vec_pretty(self).map_err(|source| StateError::Json {
+        let envelope = Envelope {
+            version: SCHEMA_VERSION,
+            state: self,
+        };
+        let bytes = serde_json::to_vec_pretty(&envelope).map_err(|source| StateError::Json {
             path: path.to_owned(),
             source,
         })?;
@@ -152,6 +230,57 @@ impl State {
         }
         result
     }
+}
+
+/// A top-level section, or its default when it is absent or unreadable (then listed in `lost`).
+fn section<T: Default + DeserializeOwned>(
+    name: &str,
+    value: Option<Value>,
+    lost: &mut Vec<String>,
+) -> T {
+    let Some(value) = value else {
+        return T::default();
+    };
+    serde_json::from_value(value).unwrap_or_else(|error| {
+        tracing::warn!(section = name, %error, "unreadable state section reset to defaults");
+        lost.push(name.to_owned());
+        T::default()
+    })
+}
+
+/// Registered projects, dropping only the entries that cannot be read; each is listed in `lost`.
+fn projects(value: Option<Value>, lost: &mut Vec<String>) -> Vec<ProjectRef> {
+    let Some(Value::Array(entries)) = value else {
+        if value.is_some() {
+            lost.push("projects".to_owned());
+        }
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let label = entry
+                .get("path")
+                .and_then(Value::as_str)
+                .map_or_else(|| "project".to_owned(), |path| format!("project {path}"));
+            serde_json::from_value(entry)
+                .inspect_err(|error| {
+                    tracing::warn!(%label, %error, "unreadable project dropped");
+                    lost.push(label.clone());
+                })
+                .ok()
+        })
+        .collect()
+}
+
+/// Writes an exact copy of the file as found, durably, before anything replaces it.
+fn preserve(dir: &Path, bytes: &[u8], prefix: &str) -> Result<PathBuf, StateError> {
+    let (backup, mut file) = unique_file(dir, prefix, "json")?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| io_error("back up state to", &backup, e))?;
+    sync_directory(dir)?;
+    Ok(backup)
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, StateError> {
@@ -223,18 +352,96 @@ mod tests {
         )
         .unwrap();
         let loaded = State::load_from(&fixture.0).unwrap();
-        let backup = loaded.recovered_from.unwrap();
-        assert_eq!(fs::read(&backup).unwrap(), b"{broken\xff");
+        let recovery = loaded.recovery.unwrap();
+        assert_eq!(recovery.cause, RecoveryCause::Corrupt);
+        assert_eq!(fs::read(&recovery.backup).unwrap(), b"{broken\xff");
         assert_eq!(fs::read(&path).unwrap(), b"{broken\xff");
         assert!(loaded.state.projects.is_empty());
         loaded.state.save_to(&path).unwrap();
-        assert_eq!(fs::read(backup).unwrap(), b"{broken\xff");
-        assert!(
-            State::load_from(&fixture.0)
-                .unwrap()
-                .recovered_from
-                .is_none()
+        assert_eq!(fs::read(recovery.backup).unwrap(), b"{broken\xff");
+        assert!(State::load_from(&fixture.0).unwrap().recovery.is_none());
+    }
+
+    #[test]
+    fn unknown_enum_values_fall_back_without_losing_the_rest() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.0.join("state.json"),
+            br#"{"settings":{"theme":"neon","sidebar_width":300},
+                 "projects":[{"path":"/a","worktrees":"everything","identity":{"badge":{"kind":"hologram"}}}],
+                 "workspace":{"projects":[{"project":"/a","layout":{"kind":"split","axis":"diagonal","children":[]}}]}}"#,
+        )
+        .unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert!(loaded.recovery.is_none());
+        let state = loaded.state;
+        assert_eq!(state.settings.theme, crate::settings::ThemeChoice::System);
+        assert_eq!(state.settings.sidebar_width(), 300.);
+        assert_eq!(state.projects.len(), 1);
+        assert_eq!(
+            state.projects[0].worktrees,
+            super::super::WorktreeFilter::Hive
         );
+        assert_eq!(state.projects[0].identity, Default::default());
+        assert!(matches!(
+            state.workspace.projects[0].layout,
+            Some(super::super::workspace::Layout::Split {
+                axis: super::super::workspace::SplitAxis::Horizontal,
+                ..
+            })
+        ));
+        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn one_unreadable_project_or_section_is_reset_reported_and_backed_up() {
+        let fixture = Fixture::new();
+        let original = br#"{"settings":{"sidebar_width":"wide"},
+            "projects":[{"path":"/a"},{"path":"/b","host":{"kind":"teleport"}},{"path":"/c"}],
+            "workspace":{"projects":[{"project":"/a"},{"project":7}]}}"#;
+        fs::write(fixture.0.join("state.json"), original).unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        let paths: Vec<_> = loaded
+            .state
+            .projects
+            .iter()
+            .map(|p| p.path.clone())
+            .collect();
+        assert_eq!(paths, [Path::new("/a"), Path::new("/c")]);
+        assert_eq!(
+            loaded.state.settings.sidebar_width(),
+            State::default().settings.sidebar_width()
+        );
+        assert_eq!(loaded.state.workspace.projects.len(), 1);
+        let recovery = loaded.recovery.unwrap();
+        assert_eq!(
+            recovery.cause,
+            RecoveryCause::Partial(vec!["settings".into(), "project /b".into()])
+        );
+        assert_eq!(fs::read(&recovery.backup).unwrap(), original);
+    }
+
+    #[test]
+    fn state_from_a_newer_hive_is_kept_in_a_backup_and_reported() {
+        let fixture = Fixture::new();
+        let original = br#"{"version":99,"projects":[{"path":"/a","future":1}]}"#;
+        fs::write(fixture.0.join("state.json"), original).unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert_eq!(loaded.state.projects.len(), 1);
+        let recovery = loaded.recovery.unwrap();
+        assert_eq!(recovery.cause, RecoveryCause::Newer { version: 99 });
+        assert_eq!(fs::read(&recovery.backup).unwrap(), original);
+    }
+
+    #[test]
+    fn saved_state_carries_the_schema_version_and_reloads_cleanly() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("state.json");
+        State::default().save_to(&path).unwrap();
+        let written: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written["version"], Value::from(SCHEMA_VERSION));
+        assert!(written.get("settings").is_some());
+        assert!(State::load_from(&fixture.0).unwrap().recovery.is_none());
     }
 
     #[test]

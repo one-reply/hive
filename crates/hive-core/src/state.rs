@@ -8,9 +8,10 @@ use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+mod lenient;
 mod persistence;
 pub mod workspace;
-pub use persistence::{LoadedState, StateError};
+pub use persistence::{LoadedState, Recovery, RecoveryCause, SCHEMA_VERSION, StateError};
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct ProjectRef {
@@ -19,7 +20,8 @@ pub struct ProjectRef {
     pub host: Host,
     #[serde(default)]
     pub worktrees: WorktreeFilter,
-    #[serde(default)]
+    /// Display details; an unreadable badge or color must not cost the project itself.
+    #[serde(default, deserialize_with = "lenient::or_default")]
     pub identity: ProjectIdentity,
 }
 
@@ -44,11 +46,12 @@ impl ProjectRef {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum WorktreeFilter {
-    /// The primary worktree and the ones Hive created.
-    #[default]
-    Hive,
     /// Also worktrees created by other tools (Claude Code, Codex, plain `git worktree add`).
     All,
+    /// The primary worktree and the ones Hive created; also what an unknown value means.
+    #[default]
+    #[serde(other)]
+    Hive,
 }
 
 impl WorktreeFilter {
