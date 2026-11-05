@@ -300,7 +300,7 @@ fn create_branch(
             .unwrap_or(&remote.name);
         name.update(cx, |n, cx| n.set_value(suggested.to_string(), window, cx));
     }
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_alert_dialog(cx, move |dialog, _, cx| {
         let (git, target, name, base) = (git.clone(), target.clone(), name.clone(), base.clone());
         let busy = git.read(cx).is_busy_at(&target);
         let track = remote.is_some();

@@ -56,8 +56,18 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
+        Self::open_with_launch(cwd, None, area, window, cx)
+    }
+
+    pub(crate) fn open_with_launch(
+        cwd: Option<&Path>,
+        launch: Option<hive_core::agent::launch::Launch>,
+        area: WeakEntity<DockArea>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self> {
         cx.new(|cx| {
-            let view = cx.new(|cx| TerminalView::new(cwd, window, cx));
+            let view = cx.new(|cx| TerminalView::with_launch(cwd, cwd, launch, None, window, cx));
             let mut this = Self {
                 panes: PaneTree::Leaf(view.clone()),
                 active: view.clone(),
@@ -100,6 +110,10 @@ impl TerminalPanel {
         ];
         self.pane_subscriptions
             .insert(view.entity_id(), subscriptions);
+    }
+
+    pub(crate) fn tab_title(&self, cx: &App) -> String {
+        self.active.read(cx).title(cx)
     }
 
     pub fn cwd(&self, cx: &App) -> Option<PathBuf> {

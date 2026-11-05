@@ -50,7 +50,7 @@ impl Git {
         hunk: Option<(DiffRequest, std::sync::Arc<FileDiff>, usize)>,
         cx: &mut Context<Self>,
     ) {
-        if !self.busy.insert(target.clone()) {
+        if self.unverified.contains(&target) || !self.busy.insert(target.clone()) {
             return;
         }
         if self.target.as_ref() == Some(&target) {
@@ -112,6 +112,11 @@ impl Git {
                     this.projects.update(cx, |p, cx| p.rescan(cx)).detach();
                 }
                 if let Err(error) = result {
+                    if error.outcome_unknown() {
+                        this.unverified.insert(target.clone());
+                        this.interrupted_actions
+                            .insert(target.clone(), action.clone());
+                    }
                     this.report(&target, error, cx);
                 }
                 if this.target.as_ref() == Some(&target) {

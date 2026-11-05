@@ -27,6 +27,7 @@ impl TerminalPanel {
                     value: TerminalPane {
                         directory: view.read(cx).restore_directory(cx),
                         worktree: view.read(cx).cwd().map(Path::to_owned),
+                        resume: view.read(cx).session().read(cx).resume.clone(),
                     },
                 }
             }
@@ -102,9 +103,11 @@ fn restore_panes(
     match layout {
         Layout::Leaf { value } => {
             let view = cx.new(|cx| {
-                TerminalView::in_directory(
+                TerminalView::with_launch(
                     value.worktree.as_deref(),
                     Some(&value.directory),
+                    None,
+                    value.resume.clone(),
                     window,
                     cx,
                 )

@@ -178,6 +178,9 @@ pub struct TerminalPane {
     /// Original worktree association, retained even after a shell changes directory.
     #[serde(default)]
     pub worktree: Option<PathBuf>,
+    /// A supported conversation to offer explicitly; never auto-resumed.
+    #[serde(default, deserialize_with = "crate::agent::launch::deserialize_saved")]
+    pub resume: Option<crate::agent::launch::ResumeSession>,
 }
 
 /// The two kinds of workspace tab Hive can restore.
@@ -251,6 +254,31 @@ impl Tab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_sessions_are_optional_validated_and_round_trip() {
+        let legacy: TerminalPane = serde_json::from_str(r#"{"directory":"/project"}"#).unwrap();
+        assert!(legacy.resume.is_none());
+        let valid: TerminalPane = serde_json::from_str(
+            r#"{"directory":"/project","resume":{"agent":"ClaudeCode","id":"abc-123"}}"#,
+        )
+        .unwrap();
+        assert_eq!(valid.resume.as_ref().unwrap().id(), "abc-123");
+        assert_eq!(
+            serde_json::from_str::<TerminalPane>(&serde_json::to_string(&valid).unwrap()).unwrap(),
+            valid
+        );
+        for value in [
+            r#"{"agent":"Future","id":"abc"}"#,
+            r#"{"agent":"ClaudeCode","id":"--flags"}"#,
+            r#"{}"#,
+        ] {
+            let pane: TerminalPane =
+                serde_json::from_str(&format!(r#"{{"directory":"/project","resume":{value}}}"#))
+                    .unwrap();
+            assert!(pane.resume.is_none());
+        }
+    }
 
     #[test]
     fn layout_prunes_unknown_nodes_and_keeps_matching_sizes() {
@@ -327,6 +355,7 @@ mod tests {
             value: TerminalPane {
                 directory: PathBuf::from(path),
                 worktree: Some("/project".into()),
+                resume: None,
             },
         };
         let tab = Tab::Terminal {

@@ -20,6 +20,7 @@ pub struct AppState {
     pub(crate) ai_providers: Entity<AiProviders>,
     pub(crate) agents: Entity<Agents>,
     pub(crate) git: Entity<Git>,
+    pub(crate) pull_requests: Entity<crate::state::pull_requests::PullRequests>,
     pub(crate) terminals: Arc<Terminals>,
     pub(crate) updates: Entity<Updates>,
     _quit: Subscription,
@@ -36,6 +37,8 @@ impl AppState {
         let agents = cx.new(Agents::new);
         let git = cx.new(|cx| Git::new(projects.clone(), cx));
         let updates = cx.new(Updates::new);
+        let pull_requests =
+            cx.new(|cx| crate::state::pull_requests::PullRequests::new(projects.clone(), cx));
         let quit = cx.on_app_quit(|cx| {
             let deadline = Instant::now() + Duration::from_secs(3);
             let app = Self::get(cx);
@@ -62,6 +65,7 @@ impl AppState {
             git,
             terminals: Arc::default(),
             updates,
+            pull_requests,
             _quit: quit,
         });
     }

@@ -169,7 +169,7 @@ pub fn require_clean(host: &Host, cwd: &Path) -> Result<(), GitError> {
 pub fn switch(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {
     validate_name(host, cwd, name)?;
     require_clean(host, cwd)?;
-    run(host, cwd, &["switch", "--no-guess", name]).map(drop)
+    super::run_mutation(host, cwd, &["switch", "--no-guess", name]).map(drop)
 }
 
 /// Create and switch to a branch, optionally tracking a selected remote ref.
@@ -193,9 +193,9 @@ pub fn create(
     }
     require_clean(host, cwd)?;
     if track {
-        run(host, cwd, &["switch", "--track", "-c", name, base]).map(drop)
+        super::run_mutation(host, cwd, &["switch", "--track", "-c", name, base]).map(drop)
     } else {
-        run(host, cwd, &["switch", "--no-track", "-c", name, &oid]).map(drop)
+        super::run_mutation(host, cwd, &["switch", "--no-track", "-c", name, &oid]).map(drop)
     }
 }
 
@@ -224,7 +224,7 @@ pub fn delete(host: &Host, cwd: &Path, name: &str, force: bool) -> Result<(), Gi
         )));
     }
     let flag = if force { "-D" } else { "-d" };
-    run(host, cwd, &["branch", flag, "--", name]).map(drop)
+    super::run_mutation(host, cwd, &["branch", flag, "--", name]).map(drop)
 }
 
 fn validate_name(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {

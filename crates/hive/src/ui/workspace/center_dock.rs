@@ -218,6 +218,23 @@ impl CenterTabs {
     ) -> Tab {
         let panel = &group.panels()[ix];
         let panel_id = panel.panel_id(cx);
+        let accessible_name = PanelHandle::of(panel)
+            .and_then(|handle| handle.tab_name(cx))
+            .or_else(|| {
+                panel
+                    .view()
+                    .downcast::<crate::terminal::panel::TerminalPanel>()
+                    .ok()
+                    .map(|p| p.read(cx).tab_title(cx).into())
+            })
+            .or_else(|| {
+                panel
+                    .view()
+                    .downcast::<crate::ui::diff_panel::DiffPanel>()
+                    .ok()
+                    .map(|p| p.read(cx).label(cx))
+            })
+            .unwrap_or_else(|| "Workspace tab".into());
         let label = match PanelHandle::of(panel).and_then(|handle| handle.tab_name(cx)) {
             Some(name) => name.into_any_element(),
             None => panel_title(panel, window, cx),
@@ -228,6 +245,7 @@ impl CenterTabs {
             .flatten();
 
         Tab::new()
+            .aria_label(accessible_name)
             .child(label)
             // Mirrors `TabGroup::close_panel`, which refuses the last tab: that one closes
             // itself from inside `Panel::title` through `DockArea::remove_panel`.
@@ -291,6 +309,8 @@ fn render_close_button(
     cx: &mut App,
 ) -> Button {
     Button::new(("close-tab", ix))
+        .accessibility_label("Close tab")
+        .tooltip("Close tab")
         .cursor_pointer()
         .icon(IconName::Close)
         .xsmall()

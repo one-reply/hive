@@ -18,6 +18,7 @@ mod generation;
 mod mutations;
 mod remote;
 mod review;
+mod verification;
 
 pub(crate) use remote::RemoteOperation;
 
@@ -71,9 +72,13 @@ pub(crate) struct Git {
     pub diff_visible: bool,
     pub window_active: bool,
     drafts: HashMap<Target, String>,
+    review_notes: HashMap<Target, Vec<git::review_notes::Note>>,
     failures: HashMap<Target, String>,
     operations: HashMap<Target, Task<()>>,
     busy: std::collections::HashSet<Target>,
+    unverified: std::collections::HashSet<Target>,
+    inspected: std::collections::HashSet<Target>,
+    interrupted_actions: HashMap<Target, Option<Action>>,
     remote_operations: HashMap<Target, RemoteOperation>,
     synced: Option<(Target, git::changes::Synced)>,
     generations: HashMap<Target, std::sync::Arc<hive_core::commit_message::cli::Cancellation>>,
@@ -127,9 +132,13 @@ impl Git {
             diff_visible: false,
             window_active: true,
             drafts: HashMap::new(),
+            review_notes: HashMap::new(),
             failures: HashMap::new(),
             operations: HashMap::new(),
             busy: Default::default(),
+            unverified: Default::default(),
+            inspected: Default::default(),
+            interrupted_actions: HashMap::new(),
             remote_operations: HashMap::new(),
             synced: None,
             generations: HashMap::new(),
@@ -180,11 +189,15 @@ impl Git {
         cx.notify();
     }
 
+    pub(crate) fn is_running(&self) -> bool {
+        self.target.as_ref().is_some_and(|t| self.busy.contains(t))
+    }
+
     pub fn is_busy(&self) -> bool {
         self.target.as_ref().is_some_and(|t| self.is_busy_at(t))
     }
     pub(crate) fn is_busy_at(&self, target: &Target) -> bool {
-        self.busy.contains(target)
+        self.busy.contains(target) || self.unverified.contains(target)
     }
     pub(crate) fn is_generating(&self) -> bool {
         self.target
@@ -262,7 +275,7 @@ impl Git {
     }
 
     pub fn refresh(&mut self, force: bool, cx: &mut Context<Self>) {
-        if self.loading || self.is_busy() {
+        if self.loading || self.target.as_ref().is_some_and(|t| self.busy.contains(t)) {
             return;
         }
         let Some(target) = self.target.clone() else {
@@ -362,6 +375,9 @@ impl Git {
     }
 
     pub fn clear_error(&mut self, cx: &mut Context<Self>) {
+        if self.needs_verification() {
+            return;
+        }
         if let Some(target) = &self.target {
             self.failures.remove(target);
         }

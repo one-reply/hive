@@ -142,6 +142,20 @@ impl ProjectCenter {
         true
     }
 
+    pub(super) fn open_agent(
+        &mut self,
+        cwd: &Path,
+        launch: Option<hive_core::agent::launch::Launch>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let panel =
+            TerminalPanel::open_with_launch(Some(cwd), launch, self.dock.downgrade(), window, cx);
+        self.add(panel_handle(panel.clone()), window, cx);
+        self.terminals.push(panel);
+        self.sync_alone(cx);
+    }
+
     /// Activates the diff tab for `request`, or opens one.
     pub(super) fn show_diff(&mut self, request: DiffRequest, window: &mut Window, cx: &mut App) {
         self.prune(cx);

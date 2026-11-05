@@ -6,6 +6,7 @@ use hive_core::projects::{self, Project, Worktree};
 use hive_core::worktree::{self, Removal, WorktreeError};
 
 use super::store::Store;
+use hive_core::agent::launch::Launch;
 
 pub(crate) use hive_core::state::workspace::Selection;
 
@@ -99,15 +100,27 @@ impl Projects {
         self.creating.iter().filter(|path| *path == project).count()
     }
 
-    /// Creates a worktree (generated name when `name` is blank), rescans and selects it.
+    pub(crate) fn bases(&self, project: &Path, cx: &App) -> Task<Result<Vec<String>, String>> {
+        let project = self.project(project).cloned();
+        cx.background_executor().spawn(async move {
+            let project = project.ok_or("Project is no longer available")?;
+            hive_core::git::branches::list(&project.host, &project.path)
+                .map(|branches| branches.into_iter().map(|branch| branch.name).collect())
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// Creates a worktree (generated name when `name` is blank), rescans and returns its path.
     pub fn create_worktree(
         &mut self,
         project: &Path,
         name: String,
+        base: String,
+        launch: Option<Launch>,
         cx: &mut Context<Self>,
-    ) -> Task<Result<(), WorktreeError>> {
+    ) -> Task<Result<PathBuf, String>> {
         let Some(project) = self.project(project).cloned() else {
-            return Task::ready(Ok(()));
+            return Task::ready(Err("Project is no longer available".into()));
         };
         self.creating.push(project.path.clone());
         cx.notify();
@@ -116,26 +129,31 @@ impl Projects {
                 .background_executor()
                 .spawn({
                     let project = project.clone();
-                    async move { worktree::create(&project, Some(&name)) }
+                    let launch = launch.clone();
+                    async move {
+                        if let Some(launch) = launch {
+                            if project.host != hive_core::host::Host::Local {
+                                return Err(
+                                    "Create & Start currently requires a local project".into()
+                                );
+                            }
+                            launch.executable().map_err(|error| error.to_string())?;
+                        }
+                        worktree::create_from(&project, Some(&name), Some(&base))
+                            .map_err(|error| error.to_string())
+                    }
                 })
                 .await;
             let rescan = this.update(cx, |this, cx| {
                 if let Some(ix) = this.creating.iter().position(|path| *path == project.path) {
                     this.creating.remove(ix);
                 }
-                if let Ok(created) = &created {
-                    this.pending_selection = Some(Selection {
-                        project: project.path.clone(),
-                        worktree: Some(created.path.clone()),
-                    });
-                }
                 this.rescan(cx)
             });
             if let Ok(rescan) = rescan {
                 rescan.await;
             }
-            created?;
-            Ok(())
+            created.map(|worktree| worktree.path)
         })
     }
 

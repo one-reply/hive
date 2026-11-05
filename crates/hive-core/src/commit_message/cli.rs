@@ -18,26 +18,7 @@ pub const AGENTS: [AgentKind; 2] = [AgentKind::Codex, AgentKind::ClaudeCode];
 /// Finds an executable on PATH, then in standard macOS CLI installation locations.
 /// Blocking metadata access: call off the foreground thread.
 pub fn executable(agent: AgentKind) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    let name = agent.executable();
-    let mut directories: Vec<_> = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect())
-        .unwrap_or_default();
-    directories.extend([
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/usr/local/bin"),
-    ]);
-    if let Some(home) = std::env::var_os("HOME") {
-        directories.push(PathBuf::from(home).join(".local/bin"));
-    }
-    directories
-        .into_iter()
-        .filter(|p| p.is_absolute())
-        .map(|p| p.join(name))
-        .find(|p| {
-            p.metadata()
-                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
+    crate::command::executable(agent.executable())
 }
 
 /// Parses model/effort arguments without expansion. Process protocol and permissions are fixed.

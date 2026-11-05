@@ -36,6 +36,7 @@ mod center_dock;
 mod git;
 mod persistence;
 mod project_center;
+pub(crate) mod switcher;
 
 use crate::state::store::SaveError;
 pub(crate) use git::right_sidebar_toggle;
@@ -43,7 +44,10 @@ use gpui_kit::component::{WindowExt as _, notification::Notification};
 use project_center::ProjectCenter;
 
 // Bound in `ui::keymap`, where the user can reassign them.
-actions!(workspace, [NewTerminal, ToggleSidebar, ToggleGitPanel]);
+actions!(
+    workspace,
+    [QuickSwitch, NewTerminal, ToggleSidebar, ToggleGitPanel]
+);
 
 pub struct Workspace {
     focus: FocusHandle,
@@ -123,6 +127,44 @@ impl Workspace {
             }),
             cx.subscribe_in(&agents, window, |this, _, event, window, cx| match event {
                 AgentsEvent::Reveal(session) => this.reveal_session(*session, window, cx),
+                AgentsEvent::Launch(path, launch) => {
+                    let project = this
+                        .projects
+                        .read(cx)
+                        .items
+                        .iter()
+                        .find(|project| {
+                            project.path == *path
+                                || project.worktrees.iter().any(|w| w.path == *path)
+                        })
+                        .map(|p| p.path.clone());
+                    if let Some(project) = project {
+                        this.shown = Some(project.clone());
+                        this.center(&project, window, cx).open_agent(
+                            path,
+                            launch.clone(),
+                            window,
+                            cx,
+                        );
+                        this.sync_active_worktrees(cx);
+                        this.save_center(&project, window, cx);
+                        cx.notify();
+                    }
+                }
+                AgentsEvent::Attention(session, status) => {
+                    let session = *session;
+                    let agents = AppState::get(cx).agents.clone();
+                    window.push_notification(
+                        Notification::info(status.label())
+                            .title("Agent needs attention")
+                            .id1::<AgentsEvent>(("agent", session.as_u64()))
+                            .in_app_and_system()
+                            .on_click(move |_, _, cx| {
+                                agents.update(cx, |agents, cx| agents.reveal(session, cx))
+                            }),
+                        cx,
+                    );
+                }
             }),
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::sync_system_appearance(window, cx)
@@ -521,6 +563,9 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_terminal))
+            .on_action(
+                cx.listener(|_, _: &QuickSwitch, window, cx| switcher::open(false, window, cx)),
+            )
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(|this, _: &ToggleGitPanel, _, cx| this.toggle_git(cx)))
             .bg(bg)
