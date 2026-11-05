@@ -9,7 +9,7 @@ use gpui_kit::component::{
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
-    tree::Tree,
+    tree::{Tree, TreeEvent, TreeState},
     v_flex,
 };
 use gpui_kit::component::{Disableable, tooltip::Tooltip};
@@ -27,6 +27,7 @@ mod motion;
 mod moving;
 mod row;
 pub(crate) mod search;
+mod tree;
 use editing::Edit;
 
 actions!(
@@ -47,6 +48,9 @@ const SEARCH_HEIGHT: f32 = 28.;
 
 pub(crate) struct FilesPanel {
     pub files: Entity<Files>,
+    /// The widget's rows, selection and scroll; rebuilt from `Files::nodes` when they change.
+    tree: Entity<TreeState>,
+    synced_generation: Option<u64>,
     edit: Option<Edit>,
     manual_refresh: bool,
     operation_error: Option<String>,
@@ -59,15 +63,24 @@ pub(crate) struct FilesPanel {
     _subscriptions: Vec<Subscription>,
 }
 impl FilesPanel {
-    pub fn new(files: Entity<Files>, cx: &mut Context<Self>) -> Self {
-        let tree = files.read(cx).tree.clone();
+    pub fn new(files: Entity<Files>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let tree = cx.new(|cx| TreeState::new(cx));
         let mut motion = motion::TreeMotion::default();
         motion.observe(tree.read(cx), true);
         let subscriptions = vec![
             cx.observe(&tree, |this, tree, cx| {
                 this.motion.observe(tree.read(cx), cx.reduce_motion())
             }),
+            cx.subscribe(&tree, |this, _, event, cx| {
+                let (path, expanded) = match event {
+                    TreeEvent::Expanded(path) => (PathBuf::from(path.as_ref()), true),
+                    TreeEvent::Collapsed(path) => (PathBuf::from(path.as_ref()), false),
+                };
+                this.files
+                    .update(cx, |files, cx| files.set_expanded(path, expanded, cx));
+            }),
             cx.observe(&files, |this, files, cx| {
+                this.sync_tree(cx);
                 let state = files.read(cx);
                 if !state.loading {
                     this.manual_refresh = false;
@@ -96,12 +109,24 @@ impl FilesPanel {
                         }
                     }
                 }
-                this.operation_error = event.result.as_ref().err().cloned();
+                this.operation_error = event
+                    .result
+                    .as_ref()
+                    .err()
+                    .cloned()
+                    .or_else(|| event.warning.clone());
                 cx.notify();
             }),
+            cx.observe_window_activation(window, |this, window, cx| {
+                let active = window.is_window_active();
+                this.files
+                    .update(cx, |files, cx| files.set_window_active(active, cx));
+            }),
         ];
-        Self {
+        let mut this = Self {
             files,
+            tree,
+            synced_generation: None,
             edit: None,
             manual_refresh: false,
             operation_error: None,
@@ -112,14 +137,84 @@ impl FilesPanel {
             _drag_expand: None,
             motion,
             _subscriptions: subscriptions,
+        };
+        this.sync_tree(cx);
+        this
+    }
+
+    /// Rebuilds the rows from the model when it changed, keeping the selection and serving
+    /// a pending reveal once its row exists.
+    fn sync_tree(&mut self, cx: &mut Context<Self>) {
+        let files = self.files.read(cx);
+        if self.synced_generation == Some(files.tree_generation()) {
+            return;
         }
+        self.synced_generation = Some(files.tree_generation());
+        let items = if files.destination_for().is_some() {
+            tree::destination_items(files.nodes())
+        } else {
+            tree::items(files.nodes())
+        };
+        let reveal = files.reveal_request().map(Path::to_path_buf);
+        let selected = self
+            .tree
+            .read(cx)
+            .selected_item()
+            .map(|item| item.id.clone());
+        let revealed = self.tree.update(cx, |tree, cx| {
+            tree.set_items(items, cx);
+            if let Some(id) = selected {
+                tree.set_selected_index(tree.index_of(&id), cx);
+            }
+            let Some(path) = reveal else {
+                return false;
+            };
+            let id: SharedString = path.to_string_lossy().into_owned().into();
+            match tree.index_of(&id) {
+                Some(ix) => {
+                    tree.set_selected_index(Some(ix), cx);
+                    tree.scroll_to_item(ix, ScrollStrategy::Nearest);
+                    true
+                }
+                None => false,
+            }
+        });
+        if revealed {
+            self.files.update(cx, |files, _| files.revealed());
+        }
+    }
+
+    /// The selected row's path, unless it is a placeholder.
+    pub(crate) fn selected(&self, cx: &App) -> Option<PathBuf> {
+        self.tree
+            .read(cx)
+            .selected_entry()
+            .filter(|e| !e.is_disabled())
+            .map(|e| PathBuf::from(e.item().id.as_ref()))
+    }
+
+    fn selected_is_folder(&self, cx: &App) -> bool {
+        self.tree
+            .read(cx)
+            .selected_entry()
+            .is_some_and(|e| e.is_folder())
+    }
+
+    /// Moves keyboard focus to the tree.
+    fn focus_tree(&self, window: &mut Window, cx: &mut App) {
+        self.tree.update(cx, |tree, cx| tree.focus(window, cx));
+    }
+
+    /// The widget state, for callers that focus or scroll it outside a panel lease.
+    pub(crate) fn tree(&self) -> &Entity<TreeState> {
+        &self.tree
     }
 }
 impl Render for FilesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let files = self.files.clone();
         let state = files.read(cx);
-        let tree = state.tree.clone();
+        let tree = self.tree.clone();
         let target = state.target.clone();
         let title = target
             .as_ref()
@@ -151,15 +246,8 @@ impl Render for FilesPanel {
             .min_w_0()
             .bg(cx.theme().sidebar)
             .on_action(cx.listener(|this, _: &OpenSelectedFile, _, cx| {
-                let selected = this.files.read(cx).selected(cx);
-                if let Some(path) = selected {
-                    let folder = this
-                        .files
-                        .read(cx)
-                        .tree
-                        .read(cx)
-                        .selected_entry()
-                        .is_some_and(|e| e.is_folder());
+                if let Some(path) = this.selected(cx) {
+                    let folder = this.selected_is_folder(cx);
                     this.files.update(cx, |files, cx| {
                         if folder {
                             files.toggle_directory(path, cx);
@@ -178,11 +266,7 @@ impl Render for FilesPanel {
             .on_action(cx.listener(|this, _: &CancelFileEdit, window, cx| {
                 if !this.files.read(cx).busy {
                     this.edit = None;
-                    this.files
-                        .read(cx)
-                        .tree
-                        .clone()
-                        .update(cx, |tree, cx| tree.focus(window, cx));
+                    this.focus_tree(window, cx);
                     cx.notify();
                 }
             }))

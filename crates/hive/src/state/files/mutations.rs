@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit::component::{WindowExt as _, notification::Notification};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FileOperation {
@@ -62,6 +61,7 @@ impl Files {
                     "A document is saving or moving. Try again when it finishes."
                 }
                 .into()),
+                warning: None,
             });
             return;
         }
@@ -75,6 +75,7 @@ impl Files {
                     target,
                     operation,
                     result: Err(error),
+                    warning: None,
                 });
                 return;
             }
@@ -96,19 +97,17 @@ impl Files {
             let result = cx.background_executor().spawn(async move {
                 background_operation.run(&background_target).map_err(|e| e.to_string())
             }).await;
+            let mut warning = None;
             if result.is_ok() && let FileOperation::Move { from, to } = &operation {
                     for document in &documents {
                         let completion = document.update(cx, |d, cx| {
                             let path = files::relocated_path(&d.path, from, to).expect("documents were selected inside the source path");
                             d.relocate(path, cx)
                         });
-                        {
-                            let outcome = completion.recv().await;
-                            if !matches!(outcome, Ok(Ok(()))) {
-                                let message = "File moved, but recovery could not be relocated. The editor text and previous recovery record have been retained.";
-                                tracing::error!(?outcome, "file recovery relocation failed");
-                                let _ = cx.update(|window, cx| window.push_notification(Notification::error(message), cx));
-                            }
+                        let outcome = completion.recv().await;
+                        if !matches!(outcome, Ok(Ok(()))) {
+                            tracing::error!(?outcome, "file recovery relocation failed");
+                            warning = Some("File moved, but recovery could not be relocated. The editor text and previous recovery record have been retained.".to_owned());
                         }
                     }
                 }
@@ -147,7 +146,7 @@ impl Files {
                     this.sync_documents(false, cx);
                     this.refresh_all(cx);
                 }
-                cx.emit(FilesEvent { target, operation, result });
+                cx.emit(FilesEvent { target, operation, result, warning });
                 cx.notify();
             });
         }));

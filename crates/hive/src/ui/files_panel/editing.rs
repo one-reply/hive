@@ -78,8 +78,7 @@ impl FilesPanel {
     ) {
         let state = self.files.read(cx);
         let parent = parent.unwrap_or_else(|| {
-            state
-                .selected(cx)
+            self.selected(cx)
                 .map(|path| {
                     if state.entry(&path).is_some_and(|e| e.directory) {
                         path
@@ -100,7 +99,7 @@ impl FilesPanel {
         );
     }
     pub(super) fn rename_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = self.files.read(cx).selected(cx) {
+        if let Some(path) = self.selected(cx) {
             self.start_edit(EditKind::Rename(path), window, cx);
         }
     }

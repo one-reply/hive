@@ -1,0 +1,40 @@
+//! Projects the model's rows into gpui-component tree items. Row identity is the
+//! worktree-relative path; placeholder rows under a folder get the folder's path plus `/`.
+use gpui_kit::component::tree::TreeItem;
+use hive_core::files::tree::{Contents, Node, NodeKind};
+
+pub(super) fn items(nodes: &[Node]) -> Vec<TreeItem> {
+    nodes.iter().map(item).collect()
+}
+
+fn item(node: &Node) -> TreeItem {
+    let id = node.path.to_string_lossy().into_owned();
+    let item = TreeItem::new(id.clone(), node.name());
+    let NodeKind::Directory { expanded, contents } = &node.kind else {
+        return item;
+    };
+    let children = match contents {
+        Contents::Children(children) => items(children),
+        Contents::Empty => vec![placeholder(&id, "Empty folder")],
+        Contents::Loading => vec![placeholder(&id, "Loading…")],
+    };
+    item.children(children).expanded(*expanded)
+}
+
+/// A disabled row that explains why a folder shows nothing.
+fn placeholder(parent: &str, label: &str) -> TreeItem {
+    TreeItem::new(format!("{parent}/"), label).disabled(true)
+}
+
+/// The move picker's tree: every candidate folder under a single root row.
+pub(super) fn destination_items(nodes: &[Node]) -> Vec<TreeItem> {
+    let mut children = items(nodes);
+    if children.is_empty() {
+        children.push(TreeItem::new("/", "No subfolders").disabled(true));
+    }
+    vec![
+        TreeItem::new("", "Worktree root")
+            .children(children)
+            .expanded(true),
+    ]
+}

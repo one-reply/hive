@@ -17,16 +17,12 @@ impl Workspace {
                 git.refresh(true, cx);
             }
         });
+        let visible = self.git_open && selected;
         self.files_panel
             .read(cx)
             .files
             .clone()
-            .update(cx, |files, cx| {
-                files.visible = self.git_open && selected;
-                if files.visible {
-                    files.refresh(cx);
-                }
-            });
+            .update(cx, |files, cx| files.set_visible(visible, cx));
         cx.notify();
     }
     pub(super) fn watch_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -36,11 +32,12 @@ impl Workspace {
             .state
             .settings
             .files_selected;
+        let visible = self.git_open && selected;
         self.files_panel
             .read(cx)
             .files
             .clone()
-            .update(cx, |files, _| files.visible = self.git_open && selected);
+            .update(cx, |files, cx| files.set_visible(visible, cx));
         let documents = AppState::get(cx).documents.clone();
         self._observers.push(
             cx.subscribe_in(
@@ -75,8 +72,9 @@ impl Workspace {
             .show_file(request, window, cx);
         self.save_center(&project, window, cx);
         if preview {
-            let tree = self.files_panel.read(cx).files.read(cx).tree.clone();
+            let panel = self.files_panel.clone();
             window.defer(cx, move |window, cx| {
+                let tree = panel.read(cx).tree().clone();
                 tree.update(cx, |tree, cx| tree.focus(window, cx));
             });
         }
