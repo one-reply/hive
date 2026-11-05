@@ -11,7 +11,9 @@ use crate::{
 };
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::diff::{Diff, DiffAnnotation, DiffLinePosition, DiffSide};
+use gpui_kit::component::diff::{
+    Diff, DiffAnnotation, DiffLinePosition, DiffMode, DiffSide, DiffState,
+};
 use gpui_kit::component::dock::{BasePanel, DockArea, DockEvent, Panel, PanelEvent, TabGroup};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
@@ -21,6 +23,9 @@ mod comments;
 
 pub(crate) struct DiffPanel {
     pub review: Entity<GitDiff>,
+    /// The widget's rows, selection and scroll; reloaded from `GitDiff::files` when they change.
+    display: Entity<DiffState>,
+    synced_generation: Option<u64>,
     git: Entity<Git>,
     store: Entity<Store>,
     area: WeakEntity<DockArea>,
@@ -39,20 +44,30 @@ impl DiffPanel {
     ) -> Self {
         let app = AppState::get(cx);
         let (git, store) = (app.git.clone(), app.store.clone());
-        let review = cx.new(|cx| GitDiff::new(request, git.clone(), store.clone(), cx));
-        let focus = review.read(cx).display.read(cx).focus_handle(cx);
+        let review = cx.new(|cx| GitDiff::new(request, git.clone(), cx));
+        let display = cx.new(|cx| DiffState::new([], cx).with_mode(diff_mode(&store, cx)));
+        let focus = display.read(cx).focus_handle(cx);
         let subscriptions = vec![
             cx.on_focus(&focus, window, |this, _, cx| {
                 if let Some(area) = this.area.upgrade() {
                     cx.defer(move |cx| area.update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged)));
                 }
             }),
-            cx.observe(&review, |_, _, cx| cx.notify()),
+            cx.observe(&review, |this, _, cx| {
+                this.sync_display(cx);
+                cx.notify()
+            }),
             cx.observe(&git, |_, _, cx| cx.notify()),
-            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe(&store, |this, store, cx| {
+                let mode = diff_mode(&store, cx);
+                this.display.update(cx, |d, cx| d.set_mode(mode, cx));
+                cx.notify()
+            }),
         ];
-        Self {
+        let mut this = Self {
             review,
+            display,
+            synced_generation: None,
             git,
             store,
             area,
@@ -60,7 +75,20 @@ impl DiffPanel {
             alone: false,
             current_hunk: 0,
             _subscriptions: subscriptions,
+        };
+        this.sync_display(cx);
+        this
+    }
+
+    /// Reloads the widget when the parsed patch changed.
+    fn sync_display(&mut self, cx: &mut Context<Self>) {
+        let review = self.review.read(cx);
+        if self.synced_generation == Some(review.files_generation()) {
+            return;
         }
+        self.synced_generation = Some(review.files_generation());
+        let files = review.files().to_vec();
+        self.display.update(cx, |d, cx| d.set_files(files, cx));
     }
 
     pub fn set_alone(&mut self, alone: bool, cx: &mut Context<Self>) {
@@ -116,15 +144,24 @@ impl DiffPanel {
             (DiffSide::Modified, hunk.new_line)
         };
         let position = DiffLinePosition::new(review.request.path.clone(), side, line.max(1));
-        let display = review.display.clone();
-        display.update(cx, |d, cx| d.scroll_to_line(position, cx));
+        self.display
+            .update(cx, |d, cx| d.scroll_to_line(position, cx));
+    }
+}
+
+/// The user's side-by-side preference as the widget's mode.
+fn diff_mode(store: &Entity<Store>, cx: &App) -> DiffMode {
+    if store.read(cx).state.settings.diff_split {
+        DiffMode::Split
+    } else {
+        DiffMode::Unified
     }
 }
 
 impl EventEmitter<PanelEvent> for DiffPanel {}
 impl Focusable for DiffPanel {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.review.read(cx).display.read(cx).focus_handle(cx)
+        self.display.read(cx).focus_handle(cx)
     }
 }
 impl BasePanel for DiffPanel {
@@ -134,7 +171,7 @@ impl BasePanel for DiffPanel {
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         let target = self.review.read(cx).request.target.clone();
         self.review.update(cx, |r, cx| {
-            r.active = active;
+            r.set_active(active);
             if active {
                 r.refresh(cx);
             }
@@ -159,7 +196,7 @@ impl BasePanel for DiffPanel {
     fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let id = cx.entity_id();
         self.git.update(cx, |g, _| g.set_diff_visible(id, None));
-        self.review.update(cx, |r, _| r.active = false);
+        self.review.update(cx, |r, _| r.set_active(false));
     }
 }
 impl Panel for DiffPanel {
@@ -203,7 +240,7 @@ impl Render for DiffPanel {
         let note_count = self.git.read(cx).notes(&request.target).len();
         let patch = review.patch.clone();
         let error = review.error.clone();
-        let display = review.display.clone();
+        let display = self.display.clone();
         let source = match &request.source {
             DiffSource::WorkingTree => "Unstaged".into(),
             DiffSource::Staged => "Staged".into(),
