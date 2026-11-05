@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+mod files;
+pub use files::{FileDensity, FileIcons, FilesSettings};
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeChoice {
@@ -55,6 +58,8 @@ pub const TERMINAL_FONT_SIZE_DEFAULT: f32 = 13.;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Settings {
+    /// Appearance and navigation of the Files panel.
+    pub files: FilesSettings,
     /// CLI used when preparing a Git error draft in an agent terminal.
     #[serde(deserialize_with = "deserialize_default_cli_agent")]
     default_cli_agent: crate::agent::AgentKind,
@@ -80,6 +85,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            files: FilesSettings::default(),
             default_cli_agent: crate::agent::AgentKind::Codex,
             commit_message: Default::default(),
             theme: ThemeChoice::default(),
