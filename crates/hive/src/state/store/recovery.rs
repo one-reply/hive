@@ -8,9 +8,32 @@ use std::{
 
 pub(super) struct RecoveryWriter {
     sender: async_channel::Sender<()>,
-    pending: Arc<Mutex<HashMap<String, Option<Draft>>>>,
+    pending: Arc<Mutex<HashMap<String, Pending>>>,
     done: mpsc::Receiver<()>,
     _task: Task<()>,
+}
+
+struct Pending {
+    draft: Option<Draft>,
+    retired: Vec<String>,
+    completions: Vec<async_channel::Sender<Result<(), String>>>,
+}
+
+fn save_pending(
+    directory: &std::path::Path,
+    key: &str,
+    pending: &Pending,
+) -> Result<(), hive_core::files::FileError> {
+    match &pending.draft {
+        Some(draft) => recovery::write(directory, key, draft)?,
+        None => recovery::remove(directory, key)?,
+    }
+    for old in &pending.retired {
+        if old != key {
+            recovery::remove(directory, old)?;
+        }
+    }
+    Ok(())
 }
 
 impl RecoveryWriter {
@@ -22,14 +45,14 @@ impl RecoveryWriter {
         let (finished, done) = mpsc::channel();
         let task = executor.spawn(async move {
             let directory = hive_core::state::hive_dir().join("editor-recovery");
-            drain(receiver, snapshots, |key, draft| {
-                let result = match draft {
-                    Some(draft) => recovery::write(&directory, &key, &draft),
-                    None => recovery::remove(&directory, &key),
-                };
-                if let Err(error) = result {
+            drain(receiver, snapshots, |key, pending: Pending| {
+                let result = save_pending(&directory, &key, &pending).map_err(|e| e.to_string());
+                if let Err(error) = &result {
                     tracing::error!(%error, "editor recovery failed");
                     let _ = errors.force_send(error.to_string());
+                }
+                for completion in pending.completions {
+                    let _ = completion.try_send(result.clone());
                 }
             })
             .await;
@@ -47,13 +70,38 @@ impl RecoveryWriter {
     }
 
     pub(super) fn submit(&self, key: String, draft: Option<Draft>) {
-        self.pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(key, draft);
+        self.replace(key, draft, Vec::new());
+    }
+
+    pub(super) fn replace(
+        &self,
+        key: String,
+        draft: Option<Draft>,
+        retired: Vec<String>,
+    ) -> async_channel::Receiver<Result<(), String>> {
+        let (done, completion) = async_channel::bounded(1);
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        for old in &retired {
+            if old != &key {
+                pending.remove(old);
+            }
+        }
+        let previous = pending.entry(key).or_insert_with(|| Pending {
+            draft: None,
+            retired: Vec::new(),
+            completions: Vec::new(),
+        });
+        previous.draft = draft;
+        previous.retired.extend(retired);
+        previous.retired.sort();
+        previous.retired.dedup();
+        previous.completions.retain(|sender| !sender.is_closed());
+        previous.completions.push(done);
+        drop(pending);
         if self.sender.force_send(()).is_err() {
             tracing::error!("recovery writer is closed");
         }
+        completion
     }
 
     pub(super) fn close(&self) {
@@ -67,10 +115,10 @@ impl RecoveryWriter {
     }
 }
 
-async fn drain(
+async fn drain<T>(
     wake: async_channel::Receiver<()>,
-    pending: Arc<Mutex<HashMap<String, Option<Draft>>>>,
-    mut save: impl FnMut(String, Option<Draft>),
+    pending: Arc<Mutex<HashMap<String, T>>>,
+    mut save: impl FnMut(String, T),
 ) {
     while wake.recv().await.is_ok() {
         let batch = std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner()));
@@ -87,6 +135,51 @@ mod tests {
         future::Future,
         task::{Context, Wake, Waker},
     };
+
+    #[test]
+    fn relocation_writes_new_identity_before_retiring_old_recovery() {
+        let root =
+            std::env::temp_dir().join(format!("hive-relocation-recovery-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a"), "base").unwrap();
+        let draft = Draft {
+            host: hive_core::host::Host::Local,
+            project: root.clone(),
+            root: root.clone(),
+            path: "a".into(),
+            base: hive_core::files::read(
+                &hive_core::host::Host::Local,
+                &root,
+                std::path::Path::new("a"),
+            )
+            .unwrap(),
+            text: "unsaved".into(),
+        };
+        let directory = root.join("recovery");
+        let old_key = draft.key();
+        recovery::write(&directory, &old_key, &draft).unwrap();
+        let mut moved = draft.clone();
+        moved.path = "b".into();
+        let pending = Pending {
+            draft: Some(moved.clone()),
+            retired: vec![old_key.clone()],
+            completions: vec![],
+        };
+        let new_key = moved.key();
+        // A conflicting destination recovery record must not destroy the original.
+        recovery::write(&directory, &new_key, &draft).unwrap();
+        assert!(save_pending(&directory, &new_key, &pending).is_err());
+        assert!(directory.join(format!("{old_key}.json")).exists());
+        recovery::remove(&directory, &new_key).unwrap();
+        save_pending(&directory, &new_key, &pending).unwrap();
+        let (records, errors) = recovery::load(&directory);
+        assert!(errors.is_empty());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].draft.path, std::path::Path::new("b"));
+        assert_eq!(records[0].draft.text, "unsaved");
+        assert!(!directory.join(format!("{old_key}.json")).exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn discard_follows_inflight_write_and_replaces_all_queued_snapshots() {

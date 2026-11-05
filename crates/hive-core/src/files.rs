@@ -7,7 +7,12 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod decorations;
 mod listing;
+mod mutations;
+pub use mutations::{
+    create_directory, create_file, delete_entry, entry_path, move_entry, relocated_path,
+};
 mod selection;
 pub use selection::selection_prompt;
 pub mod recovery;
@@ -20,6 +25,17 @@ static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 /// A file operation that failed without consuming the editor's draft.
 #[derive(Debug, thiserror::Error)]
 pub enum FileError {
+    /// Recursive removal stopped after deleting some entries.
+    #[error(
+        "Could not completely delete {path}: {source}. Some entries may already have been deleted; refresh to inspect the remaining files."
+    )]
+    PartialDelete {
+        /// Requested root of the removal.
+        path: PathBuf,
+        /// First filesystem error encountered.
+        #[source]
+        source: Box<FileError>,
+    },
     /// Filesystem failure with the operation and affected path.
     #[error("Cannot {operation} {path}: {source}")]
     Io {

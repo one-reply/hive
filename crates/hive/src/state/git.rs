@@ -70,6 +70,7 @@ pub(crate) struct Git {
     pub review_loading: bool,
     pub error: Option<String>,
     pub panel_visible: bool,
+    pub files_visible: bool,
     pub diff_visible: bool,
     pub window_active: bool,
     drafts: HashMap<Target, String>,
@@ -86,6 +87,8 @@ pub(crate) struct Git {
     visible_diffs: HashMap<EntityId, Target>,
     projects: Entity<Projects>,
     query_generation: u64,
+    pending_refresh: Option<bool>,
+    refresh_generation: u64,
     _subscriptions: Vec<Subscription>,
     _poll: Task<()>,
     _refresh: Option<Task<()>>,
@@ -103,7 +106,9 @@ impl Git {
                 cx.background_executor().timer(Duration::from_secs(2)).await;
                 if this
                     .update(cx, |this, cx| {
-                        if this.window_active && (this.panel_visible || this.diff_visible) {
+                        if this.window_active
+                            && (this.panel_visible || this.diff_visible || this.files_visible)
+                        {
                             this.refresh(false, cx);
                         }
                     })
@@ -130,6 +135,7 @@ impl Git {
             review_loading: false,
             error: None,
             panel_visible: true,
+            files_visible: false,
             diff_visible: false,
             window_active: true,
             drafts: HashMap::new(),
@@ -146,6 +152,8 @@ impl Git {
             visible_diffs: Default::default(),
             projects,
             query_generation: 0,
+            pending_refresh: None,
+            refresh_generation: 0,
             _subscriptions: vec![observer],
             _poll: poll,
             _refresh: None,
@@ -178,10 +186,12 @@ impl Git {
         self.files.clear();
         self.selected_commit = None;
         self._refresh = None;
+        self.refresh_generation += 1;
         self._review = None;
         self.loading = false;
         self.review_loading = false;
         self.query_generation += 1;
+        self.pending_refresh = None;
         self.error = self
             .target
             .as_ref()
@@ -282,6 +292,7 @@ impl Git {
 
     pub fn refresh(&mut self, force: bool, cx: &mut Context<Self>) {
         if self.loading || self.target.as_ref().is_some_and(|t| self.busy.contains(t)) {
+            self.pending_refresh = Some(self.pending_refresh.unwrap_or(false) || force);
             return;
         }
         let Some(target) = self.target.clone() else {
@@ -292,13 +303,20 @@ impl Git {
             .as_ref()
             .map(|s| (s.oid.clone(), s.branch.clone(), s.upstream.clone()));
         self.loading = true;
+        self.refresh_generation += 1;
+        let generation = self.refresh_generation;
+        let with_stats = self.panel_visible || self.diff_visible;
         self._refresh = Some(cx.spawn(async move |this, cx| {
             let query_target = target.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let t = &query_target;
-                    let status = git::status::read_with_stats(&t.host, &t.path)?;
+                    let status = if with_stats {
+                        git::status::read_with_stats(&t.host, &t.path)?
+                    } else {
+                        git::status::read(&t.host, &t.path)?
+                    };
                     let metadata = if force
                         || old_head
                             != Some((
@@ -323,7 +341,7 @@ impl Git {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.target.as_ref() != Some(&target) {
+                if this.target.as_ref() != Some(&target) || this.refresh_generation != generation {
                     return;
                 }
                 this.loading = false;
@@ -357,7 +375,7 @@ impl Git {
                         if branch_changed {
                             this.projects.update(cx, |p, cx| p.rescan(cx)).detach();
                         }
-                        if head_changed || force {
+                        if (head_changed || force) && with_stats {
                             this.load_review(false, cx);
                         }
                         if changed || force || head_changed {
@@ -365,6 +383,9 @@ impl Git {
                         }
                     }
                     Err(error) => this.report(&target, error, cx),
+                }
+                if let Some(force) = this.pending_refresh.take() {
+                    this.refresh(force, cx);
                 }
             });
         }));

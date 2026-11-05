@@ -4,8 +4,8 @@ use crate::{
     state::{documents::OpenFile, git::Target},
 };
 use gpui_kit::component::{
-    IndexPath, WindowExt as _,
-    list::{List, ListDelegate, ListState},
+    IndexPath,
+    list::{List, ListDelegate, ListItem, ListState},
 };
 use std::cell::Cell;
 
@@ -42,12 +42,54 @@ impl ListDelegate for Paths {
         &mut self,
         ix: IndexPath,
         _: &mut Window,
-        _: &mut Context<ListState<Self>>,
+        cx: &mut Context<ListState<Self>>,
     ) -> Option<ListItem> {
         let path = self.paths.get(*self.filtered.get(ix.row)?)?;
+        let settings = self.files.read(cx).settings.clone();
         Some(
             ListItem::new(ix.row)
-                .child(div().truncate().child(path.to_string_lossy().into_owned())),
+                .aria_label(path.to_string_lossy().into_owned())
+                .py_1()
+                .text_size(rems(settings.font_size() / 16.))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .min_w_0()
+                        .child(icons::render(
+                            path,
+                            false,
+                            false,
+                            settings.icons,
+                            rems(ICON_SIZE * settings.font_size() / LABEL_SIZE / 16.),
+                            cx,
+                        ))
+                        .child(
+                            v_flex()
+                                .min_w_0()
+                                .child(
+                                    div().truncate().child(
+                                        path.file_name()
+                                            .unwrap_or_default()
+                                            .to_string_lossy()
+                                            .into_owned(),
+                                    ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(rems(
+                                            META_SIZE * settings.font_size() / LABEL_SIZE / 16.,
+                                        ))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .truncate()
+                                        .child(
+                                            path.parent()
+                                                .unwrap_or(Path::new(""))
+                                                .to_string_lossy()
+                                                .into_owned(),
+                                        ),
+                                ),
+                        ),
+                ),
         )
     }
     fn set_selected_index(
@@ -108,7 +150,11 @@ impl ListDelegate for Paths {
         _: &mut Window,
         _: &mut Context<ListState<Self>>,
     ) -> impl IntoElement {
-        div().p_4().child(self.status.clone())
+        div().p_4().child(if self.status.is_empty() {
+            "No matching files".to_owned()
+        } else {
+            self.status.clone()
+        })
     }
 }
 
@@ -151,7 +197,7 @@ pub(crate) fn open(files: Entity<Files>, window: &mut Window, cx: &mut App) {
                         paths.status = if index.truncated {
                             "Index limited to 100,000 files"
                         } else {
-                            "No matching files"
+                            ""
                         }
                         .into();
                         paths.filter();
@@ -174,11 +220,13 @@ pub(crate) fn open(files: Entity<Files>, window: &mut Window, cx: &mut App) {
         dialog
             .title("Open file")
             .w(WIDTH)
-            .child(
-                div()
-                    .text_xs()
-                    .child(list.read(cx).delegate().status.clone()),
-            )
+            .when(!list.read(cx).delegate().status.is_empty(), |dialog| {
+                dialog.child(
+                    div()
+                        .text_xs()
+                        .child(list.read(cx).delegate().status.clone()),
+                )
+            })
             .child(
                 List::new(&list)
                     .h(HEIGHT)

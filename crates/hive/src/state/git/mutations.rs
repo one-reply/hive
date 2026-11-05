@@ -55,6 +55,7 @@ impl Git {
         }
         if self.target.as_ref() == Some(&target) {
             self._refresh = None;
+            self.refresh_generation += 1;
             self.loading = false;
             self.error = None;
         }

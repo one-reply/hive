@@ -5,6 +5,7 @@ use hive_core::files::{self, Snapshot};
 use std::time::Duration;
 
 mod io;
+mod relocation;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum DocumentError {
@@ -32,6 +33,7 @@ pub(crate) struct Document {
     pub saving: bool,
     pub visible: bool,
     pub pinned: bool,
+    pub path_busy: bool,
     store: Entity<Store>,
     recovery_key: String,
     pending_line: Option<usize>,
@@ -64,6 +66,7 @@ impl Document {
                     this.pinned = true;
                     this.update_dirty(cx);
                     this.schedule_recovery(cx);
+                    this.emit(DocumentEvent::Changed(this.target.clone()), cx);
                     cx.notify();
                 }
             }),
@@ -107,6 +110,7 @@ impl Document {
             saving: false,
             visible: false,
             pinned: !request.preview || recovered.is_some(),
+            path_busy: false,
             store,
             recovery_key,
             pending_line: request.line,
@@ -156,7 +160,13 @@ impl Document {
     ) {
         self.position = Some((cursor, scroll));
         if self.base.is_some() {
+            let focus = window.focused(cx);
             self.apply_position(window, cx);
+            if let Some(focus) = focus {
+                focus.focus(window, cx);
+            } else {
+                window.blur(cx);
+            }
         }
     }
 
@@ -171,6 +181,10 @@ impl Document {
         self.visible = active;
         if active {
             self.refresh(window, cx);
+            self.emit(
+                DocumentEvent::Activated(self.target.clone(), self.path.clone()),
+                cx,
+            );
         }
     }
 
@@ -196,6 +210,9 @@ impl Document {
     }
 
     pub fn flush_recovery(&mut self, cx: &App) {
+        if self.path_busy {
+            return;
+        }
         let draft = self.base.as_ref().filter(|_| self.dirty).map(|base| Draft {
             host: self.target.host.clone(),
             project: self.target.project.clone(),
@@ -228,6 +245,8 @@ impl Document {
     }
 
     fn install(&mut self, snapshot: Snapshot, window: &mut Window, cx: &mut Context<Self>) {
+        // Restoring a cursor focuses gpui-component's editor; background reads must not steal focus.
+        let focus = window.focused(cx);
         self.editor.update(cx, |editor, cx| {
             let position = editor.cursor_position();
             let scroll = editor.scroll_offset();
@@ -240,6 +259,12 @@ impl Document {
         self.error = None;
         self.dirty = false;
         self.apply_position(window, cx);
+        if let Some(focus) = focus {
+            focus.focus(window, cx);
+        } else {
+            window.blur(cx);
+        }
+        self.emit(DocumentEvent::Changed(self.target.clone()), cx);
         cx.notify();
     }
 

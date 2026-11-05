@@ -37,7 +37,7 @@ impl Document {
     }
 
     pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.loading || self.saving {
+        if self.loading || self.saving || self.path_busy {
             return;
         }
         self.loading = true;
@@ -61,6 +61,7 @@ impl Document {
                                     this.dirty = false;
                                     this.conflict = None;
                                     this.flush_recovery(cx);
+                                    this.emit(DocumentEvent::Changed(this.target.clone()), cx);
                                     cx.notify();
                                 } else if this.conflict.as_ref() != Some(&snapshot) {
                                     this.conflict = Some(snapshot);
@@ -96,7 +97,11 @@ impl Document {
         cx: &mut Context<Self>,
     ) -> async_channel::Receiver<bool> {
         let (done, receiver) = async_channel::bounded(1);
-        if self.saving || self.base.is_none() || (self.conflict.is_some() && overwrite.is_none()) {
+        if self.path_busy
+            || self.saving
+            || self.base.is_none()
+            || (self.conflict.is_some() && overwrite.is_none())
+        {
             let _ = done.try_send(false);
             return receiver;
         }
@@ -127,6 +132,7 @@ impl Document {
                             this.update_dirty(cx);
                             this._backup = None;
                             this.flush_recovery(cx);
+                            this.emit(DocumentEvent::Saved(this.target.clone()), cx);
                         }
                         Err(error) => {
                             tracing::warn!(%error, "file save failed");

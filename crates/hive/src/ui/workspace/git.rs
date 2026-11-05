@@ -18,6 +18,7 @@ impl Workspace {
         let git = AppState::get(cx).git.clone();
         git.update(cx, |g, _| {
             g.panel_visible = self.git_open && !selected_files;
+            g.files_visible = self.git_open && selected_files;
             g.window_active = window.is_window_active();
         });
         self._observers.push(cx.subscribe_in(
@@ -127,8 +128,11 @@ impl Workspace {
         store.update(cx, |s, cx| s.set_git_panel_open(self.git_open, cx));
         git.update(cx, |g, cx| {
             g.panel_visible = self.git_open && !selected_files;
+            g.files_visible = self.git_open && selected_files;
             if g.panel_visible {
                 g.refresh(true, cx);
+            } else if g.files_visible {
+                g.refresh(false, cx);
             }
         });
         cx.notify();

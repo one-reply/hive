@@ -17,20 +17,47 @@ pub(crate) struct OpenFile {
 
 pub(crate) enum DocumentEvent {
     Open(OpenFile),
+    Activated(Target, PathBuf),
+    Changed(Target),
+    Saved(Target),
+    Deleted(Target, PathBuf),
 }
 
 pub(crate) struct Documents {
     pub recovered: Vec<Record>,
     pub recovery_errors: Vec<String>,
     open: Vec<WeakEntity<Document>>,
+    pub(crate) mutating_paths: Vec<(Target, PathBuf)>,
     store: Entity<Store>,
 }
 impl EventEmitter<DocumentEvent> for Documents {}
 
 impl Documents {
+    pub(crate) fn in_path(
+        &self,
+        target: &Target,
+        path: &std::path::Path,
+        cx: &App,
+    ) -> Vec<Entity<Document>> {
+        self.open
+            .iter()
+            .filter_map(WeakEntity::upgrade)
+            .filter(|document| {
+                let document = document.read(cx);
+                document.target.host == target.host
+                    && document.target.path == target.path
+                    && document.path.starts_with(path)
+            })
+            .collect()
+    }
+
+    pub(crate) fn emit(&self, event: DocumentEvent, cx: &mut Context<Self>) {
+        cx.emit(event);
+    }
     pub fn new(store: Entity<Store>, (records, errors): (Vec<Record>, Vec<String>)) -> Self {
         Self {
             open: Vec::new(),
+            mutating_paths: Vec::new(),
             recovered: records,
             recovery_errors: errors,
             store,
@@ -38,6 +65,14 @@ impl Documents {
     }
 
     pub fn request(&self, mut request: OpenFile, cx: &mut Context<Self>) {
+        if self.mutating_paths.iter().any(|(target, path)| {
+            target.host == request.target.host
+                && target.path == request.target.path
+                && request.path.starts_with(path)
+        }) {
+            tracing::warn!(path = ?request.path, "cannot open a document while its path is being modified");
+            return;
+        }
         if let Some(document) = self.open.iter().filter_map(WeakEntity::upgrade).find(|d| {
             let d = d.read(cx);
             d.target.host == request.target.host

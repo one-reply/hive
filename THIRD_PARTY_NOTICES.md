@@ -11,6 +11,7 @@ their use identifies integrations and does not imply endorsement or grant tradem
 | `openai.svg`, `gemini.svg`, `copilot.svg` | [Simple Icons 14.15.0](https://github.com/simple-icons/simple-icons/tree/14.15.0/icons): `openai.svg`, `googlegemini.svg`, `githubcopilot.svg`; path data retained, SVG wrapper adapted | [CC0-1.0](licenses/simple-icons-CC0.txt) |
 | `cursor.svg` | [Simple Icons](https://github.com/simple-icons/simple-icons/blob/aac2d0877b8a8afee1792c342fac0664ed294488/icons/cursor.svg); path data retained, SVG wrapper adapted | [CC0-1.0](licenses/simple-icons-CC0.txt) |
 | `claude.svg`, `qwen.svg`, `anthropic.svg`, `opencode.svg`, `openrouter.svg`, `google-ai.svg` | [Lobe Icons](https://github.com/lobehub/lobe-icons/tree/ea434b96e75813517b377825e01c0df61dee8836/packages/static-svg/icons), same filenames except `google-ai.svg` is `google.svg`; unmodified SVGs | [MIT, LobeHub](licenses/lobe-icons-MIT.txt) |
+| `file-icons/*.svg` | [Seti UI](https://github.com/jesseweed/seti-ui/tree/2d6c5e68b4ded73c92dac291845ee44e1182d511); selected file-type glyphs | [MIT, Jesse Weed](licenses/seti-ui-MIT.txt) |
 | GPUI Kit's embedded icon catalog | `gpui-kit-assets` 0.9.0, Lucide and Feather-derived icons | [ISC and MIT notices](licenses/gpui-kit-assets-Lucide.txt) |
 
 `agent-terminal.svg` is Hive's own geometric terminal glyph. The Hive app mark and
