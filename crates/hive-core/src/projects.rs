@@ -96,7 +96,9 @@ impl Project {
 pub fn scan(project: &ProjectRef) -> Project {
     let path = &project.path;
     let worktrees = git::run(&project.host, path, &["worktree", "list", "--porcelain"])
-        .inspect_err(|err| tracing::debug!(?path, %err, "not listing worktrees"))
+        .inspect_err(|error| {
+            tracing::warn!(?path, host = ?project.host, %error, "could not list worktrees; showing the project without them")
+        })
         .map(|out| parse_worktrees(&out))
         .unwrap_or_default();
     Project {

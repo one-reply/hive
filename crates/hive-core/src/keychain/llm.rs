@@ -32,6 +32,9 @@ mod native {
     const ITEM_NOT_FOUND: i32 = -25300;
     // Reported when `security` could not run or exited without an OSStatus.
     const SECURITY_TOOL_UNAVAILABLE: i32 = -1;
+    // Writing may wait on a Keychain prompt the user has to answer.
+    const SECURITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+    const SECURITY_OUTPUT_LIMIT: usize = 64 * 1024;
 
     fn failure(
         provider: Provider,
@@ -86,12 +89,15 @@ mod native {
             "add-generic-password -A -U -s {service} -a {} -X {hex}\n",
             provider.account()
         );
-        let output = security_tool(&command).map_err(|_| Error::Keychain {
-            provider,
-            operation: "save",
-            code: SECURITY_TOOL_UNAVAILABLE,
+        let output = security_tool(&command).map_err(|error| {
+            tracing::warn!(%error, "security tool failed");
+            Error::Keychain {
+                provider,
+                operation: "save",
+                code: SECURITY_TOOL_UNAVAILABLE,
+            }
         })?;
-        if output.status.success() {
+        if output.code == Some(0) {
             return Ok(());
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -99,25 +105,23 @@ mod native {
             provider,
             operation: "save",
             code: returned_status(&stderr)
-                .or(output.status.code())
+                .or(output.code)
                 .unwrap_or(SECURITY_TOOL_UNAVAILABLE),
         })
     }
 
-    /// Runs one command in `security -i`, where the command line is read from stdin.
-    fn security_tool(command: &str) -> std::io::Result<std::process::Output> {
-        use std::io::Write as _;
-        use std::process::{Command, Stdio};
-        let mut child = Command::new("security")
-            .arg("-i")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(command.as_bytes())?;
-        }
-        child.wait_with_output()
+    /// Runs one command in `security -i`, where the command line is read from stdin,
+    /// bounded by the shared runner so a stalled prompt cannot hold the task forever.
+    fn security_tool(command: &str) -> Result<crate::command::Output, crate::command::Error> {
+        let mut security = std::process::Command::new("security");
+        security.arg("-i");
+        crate::command::run(
+            security,
+            command.as_bytes(),
+            &crate::command::Cancellation::default(),
+            SECURITY_TIMEOUT,
+            SECURITY_OUTPUT_LIMIT,
+        )
     }
 
     /// The OSStatus `security` reports as `<command>: returned <code>` on failure.

@@ -43,7 +43,8 @@ impl Host {
                     script.push_str(&quote(arg));
                 }
                 let mut cmd = Command::new("ssh");
-                cmd.args(["-o", "BatchMode=yes", target, &script]);
+                // `--` keeps a target that starts with `-` from being read as an ssh option.
+                cmd.args(["-o", "BatchMode=yes", "--", target, &script]);
                 cmd
             }
         }
@@ -99,6 +100,20 @@ mod tests {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert_eq!(cmd.get_program(), "ssh");
-        assert_eq!(args[3], "cd '/my dir' && git log '--format=%s it'\\''s'");
+        assert_eq!(args[4], "cd '/my dir' && git log '--format=%s it'\\''s'");
+    }
+
+    #[test]
+    fn ssh_target_never_becomes_an_option() {
+        let host = Host::Ssh {
+            target: "-oProxyCommand=touch /tmp/pwned".into(),
+        };
+        let cmd = host.command("git", &["status"], None);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[2], "--");
+        assert_eq!(args[3], "-oProxyCommand=touch /tmp/pwned");
     }
 }

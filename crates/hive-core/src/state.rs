@@ -138,7 +138,22 @@ pub fn hive_dir() -> PathBuf {
     {
         return path;
     }
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".hive")
+    match home_dir() {
+        Some(home) => home.join(".hive"),
+        None => {
+            // Never a relative `.hive` in whatever the current directory happens to be.
+            let fallback = std::env::temp_dir().join("hive");
+            tracing::error!(path = ?fallback, "no home directory; using a temporary data folder");
+            fallback
+        }
+    }
+}
+
+/// The user's home directory: `$HOME`, else the account database. Independent of
+/// `HIVE_DEV_DATA_DIR`, so CLI credentials under `~/.claude` and `~/.codex` are found
+/// even when Hive's own data is redirected.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::home_dir().filter(|home| home.is_absolute())
 }
 
 #[cfg(test)]

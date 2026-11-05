@@ -202,24 +202,14 @@ impl Drop for ManagedPty {
 }
 
 fn session_members(session: Pid) -> Vec<Pid> {
-    let result = crate::host::Host::Local
-        .command("/bin/ps", &["-ax", "-o", "pid="], None)
-        .output();
     let mut members = vec![session];
-    match result {
-        Ok(output) if output.status.success() => {
-            members.extend(
-                String::from_utf8_lossy(&output.stdout)
-                    .split_whitespace()
-                    .filter_map(|pid| pid.parse().ok().and_then(Pid::from_raw))
-                    .filter(|pid| {
-                        *pid != session && process::getsid(Some(*pid)).ok() == Some(session)
-                    }),
-            );
-        }
-        Ok(output) => {
-            tracing::error!(stderr = %String::from_utf8_lossy(&output.stderr), "failed to list PTY session processes")
-        }
+    match crate::agent::ProcessTable::snapshot() {
+        Ok(table) => members.extend(
+            table
+                .pids()
+                .filter_map(|pid| i32::try_from(pid).ok().and_then(Pid::from_raw))
+                .filter(|pid| *pid != session && process::getsid(Some(*pid)).ok() == Some(session)),
+        ),
         Err(error) => tracing::error!(%error, "failed to list PTY session processes"),
     }
     members
