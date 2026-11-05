@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod files;
-pub use files::{FileDensity, FileIcons, FilesSettings};
+pub use files::{FILES_FONT_SIZE_DEFAULT, FileDensity, FileIcons, FilesSettings};
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 #[serde(rename_all = "lowercase")]

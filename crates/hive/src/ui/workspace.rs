@@ -463,19 +463,14 @@ impl Render for Workspace {
         let toggle_hover = Hover::new("toggle-sidebar", window, cx);
         let bg = cx.theme().background;
         let open = self.sidebar_open;
-        // Open, the toggle sits at the sidebar's right border; collapsed, the title bar shrinks
-        // to the name and the toggle, and the center's tab bar starts right after it.
+        // The toggle stays right after the name in both states, so it does not jump when the
+        // sidebar collapses and the center's tab bar starts right after it.
         let title_bar = TitleBar::new().bg(bg).child(
             h_flex()
                 .justify_between()
                 .pr_2()
-                .map(|el| {
-                    if open {
-                        el.flex_1()
-                    } else {
-                        el.w(COLLAPSED_TITLE_CONTENT_WIDTH).flex_none()
-                    }
-                })
+                .w(COLLAPSED_TITLE_CONTENT_WIDTH)
+                .flex_none()
                 .child(div().text_sm().child("Hive"))
                 .child(
                     Button::new("toggle-sidebar")

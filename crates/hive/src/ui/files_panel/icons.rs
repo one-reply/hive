@@ -6,6 +6,10 @@ use gpui_kit::{
 use hive_core::settings::FileIcons;
 use std::path::Path;
 
+/// Folder glyphs read heavier than the file-type icons next to them, so they are drawn
+/// slightly smaller inside a box of the full icon size to keep labels aligned.
+const FOLDER_ICON_SCALE: f32 = 0.85;
+
 pub(super) fn render(
     path: &Path,
     folder: bool,
@@ -18,15 +22,21 @@ pub(super) fn render(
         return div().into_any_element();
     }
     if folder {
-        return Icon::new(if expanded {
+        let icon = Icon::new(if expanded {
             Lucide::FolderOpen
         } else {
             Lucide::Folder
         })
-        .size(size)
-        .flex_none()
-        .text_color(cx.theme().muted_foreground)
-        .into_any_element();
+        .size(rems(size.0 * FOLDER_ICON_SCALE))
+        .text_color(cx.theme().muted_foreground);
+        return div()
+            .size(size)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(icon)
+            .into_any_element();
     }
     let (data, color) = file_icon(path, cx);
     let icon = if let Some(data) = data {

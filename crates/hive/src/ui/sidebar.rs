@@ -8,6 +8,7 @@ use std::time::Duration;
 use crate::ui::text_field::TextField;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::motion::{Transition, transition};
+use gpui_kit::component::badge::Badge;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -476,16 +477,6 @@ impl Render for Sidebar {
             .bg(theme.sidebar)
             .text_color(fg)
             .child(
-                Button::new("needs-attention")
-                    .cursor_pointer()
-                    .small()
-                    .label(format!("Needs attention · {attention}"))
-                    .on_click(|_, window, cx| {
-                        crate::ui::workspace::switcher::open(true, window, cx)
-                    })
-                    .smooth_hover(ButtonLook::Ghost, &attention_hover, cx),
-            )
-            .child(
                 h_flex()
                     .justify_between()
                     .pl_4()
@@ -501,13 +492,31 @@ impl Render for Sidebar {
                             .child("Projects"),
                     )
                     .child(
-                        Button::new("add-project")
-                            .cursor_pointer()
-                            .small()
-                            .icon(Lucide::FolderPlus)
-                            .tooltip("Add project")
-                            .on_click(cx.listener(|this, _, _, cx| this.add_projects(cx)))
-                            .smooth_hover(ButtonLook::Ghost, &add_hover, cx),
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                // The badge hides itself at zero, leaving a quiet bell.
+                                Badge::new().count(attention).child(
+                                    Button::new("needs-attention")
+                                        .cursor_pointer()
+                                        .small()
+                                        .icon(Lucide::Bell)
+                                        .tooltip(format!("Needs attention · {attention}"))
+                                        .on_click(|_, window, cx| {
+                                            crate::ui::workspace::switcher::open(true, window, cx)
+                                        })
+                                        .smooth_hover(ButtonLook::Ghost, &attention_hover, cx),
+                                ),
+                            )
+                            .child(
+                                Button::new("add-project")
+                                    .cursor_pointer()
+                                    .small()
+                                    .icon(Lucide::FolderPlus)
+                                    .tooltip("Add project")
+                                    .on_click(cx.listener(|this, _, _, cx| this.add_projects(cx)))
+                                    .smooth_hover(ButtonLook::Ghost, &add_hover, cx),
+                            ),
                     ),
             )
             .child(
@@ -518,7 +527,11 @@ impl Render for Sidebar {
                     .overflow_y_scroll()
                     .px_2()
                     .child(
+                        // An explicit min height drops the flex item's `min-height: auto`, so
+                        // without `flex_shrink_0` the list shrinks to the viewport and never
+                        // overflows it, leaving nothing to scroll.
                         v_flex()
+                            .flex_shrink_0()
                             .min_h_full()
                             .children(rows)
                             .child(self.project_drop_target(None).flex_1().min_h(HEADER_HEIGHT)),

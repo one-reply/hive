@@ -23,6 +23,7 @@ use std::{
 mod actions;
 mod editing;
 mod icons;
+mod motion;
 mod moving;
 mod row;
 pub(crate) mod search;
@@ -41,6 +42,8 @@ const LABEL_SIZE: f32 = 13.;
 const META_SIZE: f32 = 11.;
 const ICON_SIZE: f32 = 16.;
 const INDENT: f32 = 16.;
+/// A touch taller than `Button::small` so the search field reads as an input, not a chip.
+const SEARCH_HEIGHT: f32 = 28.;
 
 pub(crate) struct FilesPanel {
     pub files: Entity<Files>,
@@ -52,11 +55,18 @@ pub(crate) struct FilesPanel {
     drag_scroll: Option<bool>,
     _drag_scroll: Option<Task<()>>,
     _drag_expand: Option<Task<()>>,
+    motion: motion::TreeMotion,
     _subscriptions: Vec<Subscription>,
 }
 impl FilesPanel {
     pub fn new(files: Entity<Files>, cx: &mut Context<Self>) -> Self {
+        let tree = files.read(cx).tree.clone();
+        let mut motion = motion::TreeMotion::default();
+        motion.observe(tree.read(cx), true);
         let subscriptions = vec![
+            cx.observe(&tree, |this, tree, cx| {
+                this.motion.observe(tree.read(cx), cx.reduce_motion())
+            }),
             cx.observe(&files, |this, files, cx| {
                 let state = files.read(cx);
                 if !state.loading {
@@ -100,6 +110,7 @@ impl FilesPanel {
             drag_scroll: None,
             _drag_scroll: None,
             _drag_expand: None,
+            motion,
             _subscriptions: subscriptions,
         }
     }
@@ -312,6 +323,7 @@ impl Render for FilesPanel {
                     Button::new("files-search")
                         .small()
                         .w_full()
+                        .h(px(SEARCH_HEIGHT))
                         .cursor_pointer()
                         .icon(Lucide::Search)
                         .label("Find file…")
