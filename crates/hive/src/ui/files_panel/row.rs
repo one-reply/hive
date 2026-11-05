@@ -7,6 +7,10 @@ use hive_core::{files::decorations::Decoration, git::status::Change, settings::F
 /// A quarter turn: the right-pointing chevron points down when its folder is open.
 const CHEVRON_OPEN: f32 = std::f32::consts::FRAC_PI_2;
 const CHEVRON_DURATION: Duration = Duration::from_millis(160);
+/// Matches the selected worktree card in the sidebar: a neutral tint of the foreground
+/// instead of the theme's blue `list_active`, so selection reads the same across panels.
+const SELECTED_BACKGROUND_OPACITY: f32 = 0.09;
+const SELECTED_BORDER_OPACITY: f32 = 0.14;
 
 pub(super) fn render(
     ix: usize,
@@ -52,10 +56,11 @@ pub(super) fn render(
     );
     let row_height = settings.row_height() / 16.;
     let foreground = cx.theme().foreground;
+    let sidebar = cx.theme().sidebar;
     let background = if selected {
-        cx.theme().list_active
+        sidebar.blend(foreground.opacity(SELECTED_BACKGROUND_OPACITY))
     } else {
-        cx.theme().sidebar
+        sidebar
     };
     let detail = description(
         &path,
@@ -77,7 +82,7 @@ pub(super) fn render(
         .rounded_sm()
         .border_1()
         .border_color(if selected {
-            cx.theme().ring
+            sidebar.blend(foreground.opacity(SELECTED_BORDER_OPACITY))
         } else {
             background
         })

@@ -47,6 +47,13 @@ const TITLE_TEXT: Pixels = px(13.);
 const META_TEXT: Pixels = px(11.);
 const BADGE_TEXT: Pixels = px(10.);
 const BADGE_HEIGHT: Pixels = px(16.);
+/// The badge's line box fills exactly the space inside its 1px border; the theme's taller
+/// default line height overflows the badge and pushes the label below its center.
+const BADGE_LINE_HEIGHT: Pixels = px(14.);
+/// "primary" is all x-height with a descender, so a box centered on the title's caps and a
+/// label centered in its line box both read high/low by about a pixel: the box drops by this
+/// much to center on the title's lowercase, and the label rises by the same amount inside it.
+const PRIMARY_BADGE_OPTICAL_SHIFT: Pixels = px(1.);
 const STATUS_DOT: Pixels = px(8.);
 const PROJECT_BADGE: Pixels = px(14.);
 /// Rows under a project header have fixed heights, so the collapse animation knows the
@@ -602,6 +609,7 @@ impl Meta {
                     .border_color(amber.opacity(0.3))
                     .bg(amber.opacity(0.08))
                     .text_size(BADGE_TEXT)
+                    .line_height(BADGE_LINE_HEIGHT)
                     .text_color(amber)
                     .child(Icon::new(Lucide::GitCommitHorizontal).size_3())
                     .child("detached")
@@ -627,12 +635,20 @@ fn primary_badge(fg: Hsla) -> impl IntoElement {
         .items_center()
         .rounded_sm()
         .border_1()
+        .relative()
+        .top(PRIMARY_BADGE_OPTICAL_SHIFT)
         .border_color(fg.opacity(0.2))
         .bg(fg.opacity(0.06))
         .text_size(BADGE_TEXT)
+        .line_height(BADGE_LINE_HEIGHT)
         .font_weight(FontWeight::MEDIUM)
         .text_color(fg.opacity(0.7))
-        .child("primary")
+        .child(
+            div()
+                .relative()
+                .top(-PRIMARY_BADGE_OPTICAL_SHIFT)
+                .child("primary"),
+        )
 }
 
 fn host_badge(label: SharedString, fg: Hsla, muted_fg: Hsla) -> impl IntoElement {
@@ -647,6 +663,7 @@ fn host_badge(label: SharedString, fg: Hsla, muted_fg: Hsla) -> impl IntoElement
         .border_color(fg.opacity(0.15))
         .bg(fg.opacity(0.06))
         .text_size(BADGE_TEXT)
+        .line_height(BADGE_LINE_HEIGHT)
         .text_color(muted_fg)
         .child(label)
 }

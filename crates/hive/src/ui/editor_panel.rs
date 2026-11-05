@@ -2,7 +2,9 @@ use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::{
     app::AppState,
     state::documents::{Document, OpenFile},
+    state::git::{FileChanges, Git},
 };
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, DockArea, DockEvent, Panel, PanelEvent, TabGroup};
@@ -22,7 +24,7 @@ pub(crate) struct EditorPanel {
     alone: bool,
     pub restoring: bool,
     last_position: (u32, u32, Point<Pixels>),
-    last_selection: std::ops::Range<usize>,
+    changes: FileChanges,
     _position: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -37,7 +39,16 @@ impl EditorPanel {
         let documents = AppState::get(cx).documents.clone();
         let document = documents.update(cx, |documents, cx| documents.get(&request, window, cx));
         let editor = document.read(cx).editor.clone();
+        let git = AppState::get(cx).git.clone();
+        let changes = file_changes(&git, &document, cx);
         let subscriptions = vec![
+            cx.observe(&git, |this, git, cx| {
+                let changes = file_changes(&git, &this.document, cx);
+                if this.changes != changes {
+                    this.changes = changes;
+                    cx.notify();
+                }
+            }),
             cx.observe_in(&document, window, |this, document, window, cx| {
                 if this.restoring && document.read(cx).missing && document.read(cx).base.is_none() {
                     this.request_close(window, cx);
@@ -55,11 +66,6 @@ impl EditorPanel {
                 let editor = editor.read(cx);
                 let cursor = editor.cursor_position();
                 let position = (cursor.line, cursor.character, editor.scroll_offset());
-                let selection = editor.selected_range();
-                if this.last_selection != selection {
-                    this.last_selection = selection;
-                    cx.notify();
-                }
                 if this.last_position != position {
                     this.last_position = position;
                     this._position = Some(cx.spawn(async |this, cx| {
@@ -85,7 +91,7 @@ impl EditorPanel {
             alone: false,
             restoring: false,
             last_position: (0, 0, Point::default()),
-            last_selection: 0..0,
+            changes,
             _position: None,
             _subscriptions: subscriptions,
         }
@@ -184,22 +190,16 @@ impl Panel for EditorPanel {
         false
     }
 }
+fn file_changes(git: &Entity<Git>, document: &Entity<Document>, cx: &App) -> FileChanges {
+    let document = document.read(cx);
+    git.read(cx).file_changes(&document.target, &document.path)
+}
+
 impl Render for EditorPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let [
-            save_hover,
-            changes_hover,
-            ask_hover,
-            conflict_hover,
-            sources_hover,
-        ] = [
-            "file-save",
-            "file-changes",
-            "file-ask",
-            "file-conflict",
-            "file-sources",
-        ]
-        .map(|id| Hover::new(id, window, cx));
+        let [save_hover, changes_hover, conflict_hover, sources_hover] =
+            ["file-save", "file-changes", "file-conflict", "file-sources"]
+                .map(|id| Hover::new(id, window, cx));
         let document = self.document.read(cx);
         let editor = document.editor.clone();
         let header = format!(
@@ -239,24 +239,12 @@ impl Render for EditorPanel {
                     .border_color(cx.theme().border)
                     .child(div().flex_1().min_w_0().truncate().text_sm().child(header))
                     .child(
-                        Button::new("file-save")
-                            .small()
-                            .cursor_pointer()
-                            .label("Save")
-                            .loading(saving)
-                            .disabled(!ready || !dirty || saving || conflict)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.document.update(cx, |d, cx| {
-                                    d.save(None, window, cx);
-                                });
-                            }))
-                            .smooth_hover(ButtonLook::Outline, &save_hover, cx),
-                    )
-                    .child(
                         Button::new("file-changes")
                             .small()
                             .cursor_pointer()
-                            .label("Show changes")
+                            .icon(Lucide::GitCompareArrows)
+                            .tooltip("Show changes")
+                            .disabled(self.changes == FileChanges::Clean)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.show_changes(false, window, cx)
                             }))
@@ -266,21 +254,31 @@ impl Render for EditorPanel {
                         Button::new("file-sources")
                             .small()
                             .cursor_pointer()
-                            .label("▾")
+                            .icon(Lucide::ChevronDown)
                             .tooltip("Choose unstaged or staged changes")
+                            .disabled(!matches!(
+                                self.changes,
+                                FileChanges::StagedAndUnstaged | FileChanges::Unknown
+                            ))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.show_changes(true, window, cx)
                             }))
                             .smooth_hover(ButtonLook::Ghost, &sources_hover, cx),
                     )
                     .child(
-                        Button::new("file-ask")
+                        Button::new("file-save")
                             .small()
                             .cursor_pointer()
-                            .label("Ask agent")
-                            .disabled(editor.read(cx).selected_range().is_empty())
-                            .on_click(cx.listener(|this, _, window, cx| this.ask_agent(window, cx)))
-                            .smooth_hover(ButtonLook::Ghost, &ask_hover, cx),
+                            .icon(Lucide::Save)
+                            .tooltip("Save")
+                            .loading(saving)
+                            .disabled(!ready || !dirty || saving || conflict)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.document.update(cx, |d, cx| {
+                                    d.save(None, window, cx);
+                                });
+                            }))
+                            .smooth_hover(ButtonLook::Ghost, &save_hover, cx),
                     ),
             );
         if dirty {

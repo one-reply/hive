@@ -14,8 +14,6 @@ pub mod tree;
 pub use mutations::{
     create_directory, create_file, delete_entry, entry_path, move_entry, relocated_path,
 };
-mod selection;
-pub use selection::selection_prompt;
 pub mod recovery;
 pub use listing::{Entry, FileIndex, list_directory, list_files};
 

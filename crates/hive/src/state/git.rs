@@ -45,6 +45,18 @@ pub(crate) enum Section {
     History,
 }
 
+/// What the cached `git status` says about one file, as far as the editor toolbar cares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FileChanges {
+    /// The cached status belongs to another worktree or has not loaded yet.
+    Unknown,
+    Clean,
+    /// Changed in exactly one of the index and the working tree.
+    One,
+    /// Both staged and unstaged changes, so the viewer can choose a side.
+    StagedAndUnstaged,
+}
+
 pub(crate) struct Git {
     pub target: Option<Target>,
     pub status: Option<Status>,
@@ -91,6 +103,25 @@ pub(crate) struct Git {
 impl EventEmitter<GitEvent> for Git {}
 
 impl Git {
+    /// `path` is relative to `target`, matching the paths `git status` reports.
+    pub(crate) fn file_changes(&self, target: &Target, path: &std::path::Path) -> FileChanges {
+        let Some(status) = self
+            .status
+            .as_ref()
+            .filter(|_| self.target.as_ref() == Some(target))
+        else {
+            return FileChanges::Unknown;
+        };
+        let path = path.to_string_lossy();
+        match status.files.iter().find(|file| file.path == path) {
+            None => FileChanges::Clean,
+            Some(file) if file.staged.is_some() && file.unstaged.is_some() => {
+                FileChanges::StagedAndUnstaged
+            }
+            Some(_) => FileChanges::One,
+        }
+    }
+
     pub fn new(projects: Entity<Projects>, cx: &mut Context<Self>) -> Self {
         let observer = cx.observe(&projects, |this, _, cx| this.sync_target(cx));
         let poll = cx.spawn(async move |this, cx| {
