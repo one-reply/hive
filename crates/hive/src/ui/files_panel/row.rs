@@ -1,7 +1,12 @@
 use super::*;
 use crate::ui::hover::SmoothHoverBg as _;
+use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::{Icon, list::ListItem, tree::TreeEntry};
 use hive_core::{files::decorations::Decoration, git::status::Change, settings::FilesSettings};
+
+/// A quarter turn: the right-pointing chevron points down when its folder is open.
+const CHEVRON_OPEN: f32 = std::f32::consts::FRAC_PI_2;
+const CHEVRON_DURATION: Duration = Duration::from_millis(160);
 
 pub(super) fn render(
     ix: usize,
@@ -30,6 +35,22 @@ pub(super) fn render(
     let scale = settings.font_size() / LABEL_SIZE;
     let row_key: SharedString = format!("files-row:{:?}:{}", target, path.display()).into();
     let hover = Hover::new(row_key.clone(), window, cx);
+    let motion = panel.read(cx).motion.sample(ix);
+    if motion.is_some() {
+        window.request_animation_frame();
+    }
+    let chevron_turn = transition(
+        (row_key.clone(), "chevron"),
+        if entry.is_expanded() {
+            CHEVRON_OPEN
+        } else {
+            0.
+        },
+        Transition::new(CHEVRON_DURATION),
+        window,
+        cx,
+    );
+    let row_height = settings.row_height() / 16.;
     let foreground = cx.theme().foreground;
     let background = if selected {
         cx.theme().list_active
@@ -49,7 +70,7 @@ pub(super) fn render(
         .relative()
         .w_full()
         .min_w_0()
-        .h(rems(settings.row_height() / 16.))
+        .h(rems(row_height))
         .gap(rems(4. / 16.))
         .pl(rems((4. + entry.depth() as f32 * INDENT * scale) / 16.))
         .pr_2()
@@ -84,13 +105,10 @@ pub(super) fn render(
                 .flex_none()
                 .when(folder, |slot| {
                     slot.child(
-                        Icon::new(if entry.is_expanded() {
-                            Lucide::ChevronDown
-                        } else {
-                            Lucide::ChevronRight
-                        })
-                        .size(rems(12. * scale / 16.))
-                        .text_color(cx.theme().muted_foreground),
+                        Icon::new(Lucide::ChevronRight)
+                            .rotate(radians(chevron_turn))
+                            .size(rems(12. * scale / 16.))
+                            .text_color(cx.theme().muted_foreground),
                     )
                 }),
         )
@@ -183,6 +201,10 @@ pub(super) fn render(
         .px_0()
         .py_0()
         .rounded_sm()
+        .when_some(motion, |item, motion| {
+            item.top(rems(motion.offset * row_height))
+                .opacity(motion.opacity)
+        })
         .child(content)
         .on_click(move |event, _, cx| {
             if !folder && !missing && !unsupported {

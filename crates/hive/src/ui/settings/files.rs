@@ -3,6 +3,7 @@ use crate::{
     app::AppState,
     ui::hover::{ButtonLook, Hover, SmoothButton as _},
 };
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::{
     component::{
         Selectable as _, Sizable as _,
@@ -12,7 +13,7 @@ use gpui_kit::{
     },
     *,
 };
-use hive_core::settings::{FileDensity, FileIcons, FilesSettings};
+use hive_core::settings::{FILES_FONT_SIZE_DEFAULT, FileDensity, FileIcons, FilesSettings};
 
 pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
     let store = AppState::get(cx).store.clone();
@@ -65,7 +66,7 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
         "files-font-size",
         settings.font_size(),
         11.0..=20.0,
-        13.,
+        FILES_FONT_SIZE_DEFAULT,
         move |size, cx| {
             let mut settings = font_store.read(cx).state.settings.files.clone();
             settings.set_font_size(size);
@@ -151,15 +152,19 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
     }
     let hover = Hover::new("reset-files-settings", window, cx);
     page.child(
-        Button::new("reset-files-settings")
-            .small()
-            .cursor_pointer()
-            .label("Reset Files settings")
-            .on_click(move |_, _, cx| {
-                store.update(cx, |store, cx| {
-                    store.set_files_settings(FilesSettings::default(), cx)
+        // Separates the page-wide reset from the last row's divider.
+        div().pt_4().child(
+            Button::new("reset-files-settings")
+                .small()
+                .cursor_pointer()
+                .icon(Lucide::RotateCcw)
+                .label("Reset Files settings")
+                .on_click(move |_, _, cx| {
+                    store.update(cx, |store, cx| {
+                        store.set_files_settings(FilesSettings::default(), cx)
+                    })
                 })
-            })
-            .smooth_hover(ButtonLook::Outline, &hover, cx),
+                .smooth_hover(ButtonLook::Outline, &hover, cx),
+        ),
     )
 }

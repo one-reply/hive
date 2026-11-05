@@ -26,6 +26,11 @@ pub enum FileDensity {
     Compact,
 }
 
+/// Files font size before the user changes it, in logical pixels.
+pub const FILES_FONT_SIZE_DEFAULT: f32 = 14.;
+/// Font size the row heights are designed at; rows scale relative to it.
+const ROW_REFERENCE_FONT_SIZE: f32 = 13.;
+
 /// Global Files preferences. Sizes are at the default 16px UI scale.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -54,7 +59,7 @@ impl Default for FilesSettings {
             auto_reveal: true,
             show_hidden: true,
             show_ignored: true,
-            font_size: 13.,
+            font_size: FILES_FONT_SIZE_DEFAULT,
         }
     }
 }
@@ -62,12 +67,12 @@ impl Default for FilesSettings {
 impl FilesSettings {
     /// Font size clamped to 11–20 logical pixels at the default UI scale.
     pub fn font_size(&self) -> f32 {
-        super::clamp_or_default(self.font_size, 11., 20., 13.)
+        super::clamp_or_default(self.font_size, 11., 20., FILES_FONT_SIZE_DEFAULT)
     }
 
     /// Store a finite, bounded font size.
     pub fn set_font_size(&mut self, size: f32) {
-        self.font_size = super::clamp_or_default(size, 11., 20., 13.);
+        self.font_size = super::clamp_or_default(size, 11., 20., FILES_FONT_SIZE_DEFAULT);
     }
 
     /// Row height scaled proportionally to the Files font size.
@@ -76,7 +81,7 @@ impl FilesSettings {
             FileDensity::Compact => 22.,
             FileDensity::Comfortable => 26.,
         };
-        base * self.font_size() / 13.
+        base * self.font_size() / ROW_REFERENCE_FONT_SIZE
     }
 }
 
@@ -98,7 +103,7 @@ mod tests {
         assert!(!future.show_hidden);
         let mut settings = FilesSettings::default();
         settings.set_font_size(f32::NAN);
-        assert_eq!(settings.font_size(), 13.);
+        assert_eq!(settings.font_size(), FILES_FONT_SIZE_DEFAULT);
         settings.set_font_size(0.);
         assert_eq!(settings.font_size(), 11.);
     }
