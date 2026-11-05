@@ -87,7 +87,7 @@ impl GitPanel {
             .child(
                 Button::new("branch-picker")
                     .cursor_pointer()
-                    .xsmall()
+                    .small()
                     .min_w_0()
                     .icon(Lucide::GitBranch)
                     .label(branch.clone())
@@ -219,7 +219,7 @@ impl GitPanel {
                 Button::new("remote")
                     .cursor_pointer()
                     .ghost()
-                    .xsmall()
+                    .small()
                     .icon(Lucide::Ellipsis)
                     .tooltip(format!("Remote: {}", remote.as_deref().unwrap_or("none")))
                     .dropdown_menu(move |menu, _, _| {
@@ -247,7 +247,7 @@ impl GitPanel {
             .child(
                 Button::new("git-refresh")
                     .cursor_pointer()
-                    .xsmall()
+                    .small()
                     .icon(Lucide::RefreshCw)
                     .loading(spinning)
                     .tooltip("Refresh")
@@ -282,7 +282,7 @@ fn sync_button(
 ) -> Button {
     Button::new(id)
         .cursor_pointer()
-        .xsmall()
+        .small()
         .icon(icon)
         .label(label)
         .tooltip(tooltip)
