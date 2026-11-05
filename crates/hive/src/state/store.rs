@@ -26,6 +26,25 @@ pub(crate) struct SaveError(pub(crate) String);
 impl EventEmitter<SaveError> for Store {}
 
 impl Store {
+    pub(crate) fn set_files_settings(
+        &mut self,
+        settings: hive_core::settings::FilesSettings,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.settings.files != settings {
+            self.state.settings.files = settings;
+            self.commit(cx);
+        }
+    }
+
+    pub(crate) fn replace_recovery(
+        &self,
+        key: String,
+        draft: Option<hive_core::files::recovery::Draft>,
+        retired: Vec<String>,
+    ) -> async_channel::Receiver<Result<(), String>> {
+        self.recovery.replace(key, draft, retired)
+    }
     pub(crate) fn set_default_cli_agent(
         &mut self,
         agent: hive_core::agent::AgentKind,

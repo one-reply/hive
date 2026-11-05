@@ -9,6 +9,10 @@ impl Workspace {
             .update(cx, |store, cx| store.set_files_selected(selected, cx));
         AppState::get(cx).git.clone().update(cx, |git, cx| {
             git.panel_visible = self.git_open && !selected;
+            git.files_visible = self.git_open && selected;
+            if git.files_visible {
+                git.refresh(false, cx);
+            }
             if git.panel_visible {
                 git.refresh(true, cx);
             }
@@ -44,6 +48,12 @@ impl Workspace {
                 window,
                 |this, _, event, window, cx| match event {
                     DocumentEvent::Open(request) => this.open_file(request.clone(), window, cx),
+                    DocumentEvent::Deleted(target, path) => {
+                        for center in this.centers.values_mut() {
+                            center.remove_files(target, path, window, cx);
+                        }
+                    }
+                    _ => {}
                 },
             ),
         );
@@ -56,6 +66,7 @@ impl Workspace {
     }
 
     fn open_file(&mut self, request: OpenFile, window: &mut Window, cx: &mut Context<Self>) {
+        let preview = request.preview;
         let documents = AppState::get(cx).documents.clone();
         let document = documents.update(cx, |documents, cx| documents.get(&request, window, cx));
         self.activate_target(&request.target, cx);
@@ -63,6 +74,12 @@ impl Workspace {
         self.center(&project, window, cx)
             .show_file(request, window, cx);
         self.save_center(&project, window, cx);
+        if preview {
+            let tree = self.files_panel.read(cx).files.read(cx).tree.clone();
+            window.defer(cx, move |window, cx| {
+                tree.update(cx, |tree, cx| tree.focus(window, cx));
+            });
+        }
         drop(document);
         cx.notify();
     }

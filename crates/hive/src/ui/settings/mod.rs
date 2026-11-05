@@ -3,6 +3,7 @@
 
 mod ai;
 mod appearance;
+mod files;
 mod git;
 mod project;
 mod shortcuts;
@@ -60,6 +61,10 @@ pub fn open_project(path: &Path, cx: &mut App) {
 
 pub(crate) fn open_git(cx: &mut App) {
     open_at(None, Some(Page::Git), cx);
+}
+
+pub(crate) fn open_files(cx: &mut App) {
+    open_at(None, Some(Page::Files), cx);
 }
 
 pub(crate) fn open_updates(cx: &mut App) {
@@ -133,6 +138,7 @@ enum Page {
     Terminal,
     Ai,
     Git,
+    Files,
     Updates,
 }
 
@@ -143,7 +149,10 @@ impl Page {
             "Application",
             &[Page::Appearance, Page::Shortcuts, Page::Updates],
         ),
-        ("Workspace", &[Page::Terminal, Page::Ai, Page::Git]),
+        (
+            "Workspace",
+            &[Page::Terminal, Page::Ai, Page::Git, Page::Files],
+        ),
     ];
 
     fn label(self) -> &'static str {
@@ -153,6 +162,7 @@ impl Page {
             Page::Terminal => "Terminal",
             Page::Ai => "AI",
             Page::Git => "Git",
+            Page::Files => "Files",
             Page::Updates => "Updates",
         }
     }
@@ -165,6 +175,7 @@ impl Page {
             }
             Page::Terminal => "Terminal appearance and the default CLI agent.",
             Page::Git => "Commit generation for every project and worktree.",
+            Page::Files => "File appearance and navigation for every local worktree.",
             Page::Updates => "Your version of Hive and software updates.",
             Page::Ai => {
                 "Connect LLM providers. Keys are verified online and stored in macOS Keychain."
@@ -179,6 +190,7 @@ impl Page {
             Page::Terminal => Lucide::SquareTerminal,
             Page::Ai => Lucide::Sparkles,
             Page::Git => Lucide::GitBranch,
+            Page::Files => Lucide::Folder,
             Page::Updates => Lucide::Download,
         }
     }
@@ -412,6 +424,7 @@ impl SettingsWindow {
                     Page::Terminal => terminal::render(window, cx).into_any_element(),
                     Page::Ai => self.ai.clone().into_any_element(),
                     Page::Git => self.git.clone().into_any_element(),
+                    Page::Files => files::render(window, cx).into_any_element(),
                     Page::Updates => self.updates.clone().into_any_element(),
                 };
                 (page.label().into(), page.description().into(), body)
@@ -548,6 +561,11 @@ fn font_size_stepper(
             .cursor_pointer()
             .small()
             .icon(icon)
+            .tooltip(if delta < 0. {
+                "Decrease font size"
+            } else {
+                "Increase font size"
+            })
             .disabled(disabled)
             .on_click(move |_, _, cx| set(value + delta, cx))
             .smooth_hover(ButtonLook::Ghost, &hover.clone().enabled(!disabled), cx)

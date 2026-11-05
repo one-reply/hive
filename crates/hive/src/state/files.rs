@@ -1,4 +1,21 @@
-use super::{documents::OpenFile, git::Target, projects::Projects};
+use super::{
+    documents::{DocumentEvent, OpenFile},
+    git::{GitEvent, Target},
+    projects::Projects,
+};
+use crate::app::AppState;
+use hive_core::{files::decorations::Decoration, settings::FilesSettings};
+mod listing;
+mod mutations;
+mod tree;
+pub(crate) use mutations::FileOperation;
+
+pub(crate) struct FilesEvent {
+    pub target: Target,
+    pub operation: FileOperation,
+    pub result: Result<(), String>,
+}
+impl EventEmitter<FilesEvent> for Files {}
 use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState};
 use gpui_kit::*;
 use hive_core::files::{self, Entry, FileIndex};
@@ -15,7 +32,19 @@ pub(crate) struct Files {
     pub visible: bool,
     entries: BTreeMap<PathBuf, Vec<Entry>>,
     expanded: HashSet<PathBuf>,
-    loading: bool,
+    pub loading: bool,
+    pub busy: bool,
+    pub settings: FilesSettings,
+    pub decorations: BTreeMap<PathBuf, Decoration>,
+    pub ignored: HashSet<PathBuf>,
+    pub dirty: HashSet<PathBuf>,
+    pub missing: HashSet<PathBuf>,
+    pub active: Option<PathBuf>,
+    pub destination_for: Option<PathBuf>,
+    pending_reveal: Option<PathBuf>,
+    pending_refresh: bool,
+    generation: u64,
+    _operation: Option<Task<()>>,
     _read: Option<Task<()>>,
     _poll: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -24,18 +53,103 @@ pub(crate) struct Files {
 impl Files {
     pub fn new(projects: Entity<Projects>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let tree = cx.new(|cx| TreeState::new(cx));
+        let app = AppState::get(cx);
+        let (store, git, documents) = (app.store.clone(), app.git.clone(), app.documents.clone());
+        let settings = store.read(cx).state.settings.files.clone();
         let subscriptions = vec![
+            cx.observe(&store, |this, store, cx| {
+                let settings = store.read(cx).state.settings.files.clone();
+                if settings != this.settings {
+                    let reveal = settings.auto_reveal && !this.settings.auto_reveal;
+                    this.settings = settings;
+                    if reveal && let Some(path) = this.active.clone() {
+                        this.reveal(path, cx);
+                    }
+                    this.rebuild(cx);
+                    this.refresh(cx);
+                    cx.notify();
+                }
+            }),
+            cx.observe(&git, |this, git, cx| {
+                let git = git.read(cx);
+                let decorations = git
+                    .status
+                    .as_ref()
+                    .filter(|_| git.target == this.target)
+                    .map(|s| files::decorations::collect(&s.files))
+                    .unwrap_or_default();
+                if decorations != this.decorations {
+                    this.decorations = decorations;
+                    this.rebuild(cx);
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&git, |this, _, event, cx| {
+                if let GitEvent::Refreshed(target) = event
+                    && this.target.as_ref() == Some(target)
+                    && this.visible
+                {
+                    this.refresh(cx);
+                }
+            }),
+            cx.subscribe(&documents, |this, documents, event, cx| {
+                if this.destination_for.is_some() {
+                    return;
+                }
+                let target = match event {
+                    DocumentEvent::Activated(target, path) => {
+                        if this.target.as_ref() == Some(target) {
+                            this.active = Some(path.clone());
+                            if this.settings.auto_reveal {
+                                this.reveal(path.clone(), cx);
+                            }
+                        }
+                        target
+                    }
+                    DocumentEvent::Changed(target)
+                    | DocumentEvent::Saved(target)
+                    | DocumentEvent::Deleted(target, _) => target,
+                    DocumentEvent::Open(_) => return,
+                };
+                if this.target.as_ref() != Some(target) {
+                    return;
+                }
+                this.dirty = documents
+                    .read(cx)
+                    .dirty(cx)
+                    .into_iter()
+                    .filter_map(|document| {
+                        let document = document.read(cx);
+                        (document.target == *target).then(|| document.path.clone())
+                    })
+                    .collect();
+                if matches!(event, DocumentEvent::Saved(_)) {
+                    this.refresh(cx);
+                    let git = AppState::get(cx).git.clone();
+                    cx.defer(move |cx| git.update(cx, |git, cx| git.refresh(false, cx)));
+                }
+                cx.notify();
+            }),
             cx.observe(&projects, |this, projects, cx| {
                 let target = selected_target(projects.read(cx));
                 if this.target != target {
                     this.target = target;
                     this._read = None;
+                    this.generation += 1;
+                    this.pending_refresh = false;
+                    this.pending_reveal = None;
+                    this.active = None;
+                    this.decorations.clear();
+                    this.ignored.clear();
+                    this.dirty.clear();
+                    this.missing.clear();
                     this.loading = false;
                     this.error = None;
                     this.entries.clear();
                     this.expanded.clear();
                     this.tree
                         .update(cx, |tree, cx| tree.set_items(Vec::new(), cx));
+                    this.sync_documents(true, cx);
                     this.refresh(cx);
                     cx.notify();
                 }
@@ -53,7 +167,7 @@ impl Files {
             }),
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() && this.visible {
-                    this.refresh(cx);
+                    this.refresh_all(cx);
                 }
             }),
         ];
@@ -80,6 +194,18 @@ impl Files {
             entries: BTreeMap::new(),
             expanded: HashSet::new(),
             loading: false,
+            busy: false,
+            settings,
+            decorations: BTreeMap::new(),
+            ignored: HashSet::new(),
+            dirty: HashSet::new(),
+            missing: HashSet::new(),
+            active: None,
+            destination_for: None,
+            pending_reveal: None,
+            pending_refresh: false,
+            generation: 0,
+            _operation: None,
             _read: None,
             _poll: poll,
             _subscriptions: subscriptions,
@@ -88,125 +214,35 @@ impl Files {
         this
     }
 
-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.loading {
-            return;
-        }
-        let Some(target) = self.target.clone() else {
-            return;
-        };
-        self.loading = true;
-        let paths: Vec<_> = std::iter::once(PathBuf::new())
-            .chain(self.expanded.iter().cloned())
-            .collect();
-        self._read = Some(cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let mut directories = BTreeMap::new();
-                    let mut errors = Vec::new();
-                    for path in paths {
-                        match files::list_directory(&target.host, &target.path, &path) {
-                            Ok(entries) => {
-                                directories.insert(path, entries);
-                            }
-                            Err(error) if path.as_os_str().is_empty() => {
-                                return Err(error.to_string());
-                            }
-                            Err(error) => {
-                                directories.insert(path, Vec::new());
-                                errors.push(error.to_string());
-                            }
-                        }
-                    }
-                    Ok::<_, String>((directories, (!errors.is_empty()).then(|| errors.join("\n"))))
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.loading = false;
-                match result {
-                    Ok((directories, error)) => {
-                        let error_changed = this.error != error;
-                        if error_changed && let Some(error) = &error {
-                            tracing::warn!(%error, "file tree directory unavailable");
-                        }
-                        let changed = directories
-                            .iter()
-                            .any(|(path, entries)| this.entries.get(path) != Some(entries));
-                        this.entries.extend(directories);
-                        this.error = error;
-                        if changed {
-                            let selected = this
-                                .tree
-                                .read(cx)
-                                .selected_item()
-                                .map(|item| item.id.clone());
-                            let items = this.items(Path::new(""));
-                            this.tree.update(cx, |tree, cx| {
-                                tree.set_items(items, cx);
-                                if let Some(id) = selected {
-                                    tree.set_selected_index(tree.index_of(&id), cx);
-                                }
-                            });
-                        }
-                        if changed || error_changed {
-                            cx.notify();
-                        }
-                    }
-                    Err(error) => {
-                        if this.error.as_ref() != Some(&error) {
-                            tracing::warn!(%error, "file tree failed");
-                            this.error = Some(error);
-                            cx.notify();
-                        }
-                    }
-                }
-            });
-        }));
-    }
-
-    fn items(&self, directory: &Path) -> Vec<TreeItem> {
-        self.entries
-            .get(directory)
-            .into_iter()
-            .flatten()
-            .map(|entry| {
-                let id = entry.path.to_string_lossy().into_owned();
-                let mut item = TreeItem::new(
-                    id.clone(),
-                    entry
-                        .path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
-                );
-                if entry.directory {
-                    let children = self.items(&entry.path);
-                    item = item
-                        .children(if children.is_empty() {
-                            vec![
-                                TreeItem::new(
-                                    format!("{id}/"),
-                                    if self.entries.contains_key(&entry.path) {
-                                        "Empty folder"
-                                    } else {
-                                        "Loading…"
-                                    },
-                                )
-                                .disabled(true),
-                            ]
-                        } else {
-                            children
-                        })
-                        .expanded(self.expanded.contains(&entry.path));
-                }
-                item
+    fn sync_documents(&mut self, reveal: bool, cx: &mut Context<Self>) {
+        let Some(target) = &self.target else { return };
+        let documents = AppState::get(cx)
+            .documents
+            .read(cx)
+            .in_path(target, Path::new(""), cx);
+        self.dirty = documents
+            .iter()
+            .filter_map(|document| {
+                let document = document.read(cx);
+                document.dirty.then(|| document.path.clone())
             })
-            .collect()
+            .collect();
+        self.active = documents.iter().find_map(|document| {
+            let document = document.read(cx);
+            document.visible.then(|| document.path.clone())
+        });
+        if reveal
+            && self.settings.auto_reveal
+            && let Some(path) = self.active.clone()
+        {
+            self.reveal(path, cx);
+        }
     }
 
     pub fn open(&self, path: PathBuf, preview: bool, cx: &mut Context<Self>) {
+        if self.missing.contains(&path) || self.busy {
+            return;
+        }
         let Some(target) = self.target.clone() else {
             return;
         };

@@ -145,7 +145,6 @@ impl BasePanel for EditorPanel {
             let target = self.document.read(cx).target.clone();
             let git = AppState::get(cx).git.clone();
             cx.defer(move |cx| git.update(cx, |git, cx| git.activate(target, cx)));
-            self.focus_handle(cx).focus(window, cx);
         }
     }
     fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, _: &mut Context<Self>) {
@@ -212,7 +211,7 @@ impl Render for EditorPanel {
             document.loading,
             document.saving,
             document.dirty,
-            document.base.is_some(),
+            document.base.is_some() && !document.path_busy,
         );
         let error = document
             .error

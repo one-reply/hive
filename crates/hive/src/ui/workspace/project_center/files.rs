@@ -2,6 +2,30 @@ use super::*;
 use crate::{state::documents::OpenFile, ui::editor_panel::EditorPanel};
 
 impl ProjectCenter {
+    pub(in crate::ui::workspace) fn remove_files(
+        &mut self,
+        target: &crate::state::git::Target,
+        path: &std::path::Path,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let panels: Vec<_> = self
+            .editors
+            .iter()
+            .filter(|panel| {
+                let document = panel.read(cx).document.read(cx);
+                document.target.host == target.host
+                    && document.target.path == target.path
+                    && document.path.starts_with(path)
+            })
+            .cloned()
+            .collect();
+        for panel in panels {
+            self.dock
+                .update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
+        }
+        self.prune(cx);
+    }
     pub(in crate::ui::workspace) fn show_file(
         &mut self,
         request: OpenFile,
@@ -34,6 +58,9 @@ impl ProjectCenter {
         let panel =
             cx.new(|cx| EditorPanel::new(request.clone(), self.dock.downgrade(), window, cx));
         self.add(panel_handle(panel.clone()), window, cx);
+        if !request.preview {
+            Focusable::focus_handle(&panel, cx).focus(window, cx);
+        }
         self.editors.push(panel.clone());
         // Dock assigns the destination group asynchronously; only replace that group's preview.
         let candidates = self.editors.clone();

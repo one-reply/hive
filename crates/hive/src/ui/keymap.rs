@@ -12,6 +12,9 @@ use crate::terminal::panel::{ClosePane, SplitDown, SplitRight};
 use crate::terminal::view::{Copy, Paste};
 use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
 use crate::ui::editor_panel::{CloseFile, OpenFileSearch, SaveFile};
+use crate::ui::files_panel::{
+    CancelFileEdit, DeleteSelectedFile, OpenSelectedFile, RenameSelectedFile,
+};
 use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
 use crate::ui::workspace::{NewTerminal, QuickSwitch, ToggleGitPanel, ToggleSidebar};
@@ -31,14 +34,16 @@ pub(crate) enum Category {
     Workspace,
     Terminal,
     SourceControl,
+    Files,
 }
 
 impl Category {
     /// Every category, in the order the Shortcuts page shows them.
-    pub const ALL: [Category; 3] = [
+    pub const ALL: [Category; 4] = [
         Category::Workspace,
         Category::Terminal,
         Category::SourceControl,
+        Category::Files,
     ];
 
     pub fn label(self) -> &'static str {
@@ -46,6 +51,7 @@ impl Category {
             Category::Workspace => "Workspace",
             Category::Terminal => "Terminal",
             Category::SourceControl => "Source control",
+            Category::Files => "Files",
         }
     }
 }
@@ -76,7 +82,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 17] = [
+pub(crate) static SHORTCUTS: [Shortcut; 21] = [
     Shortcut {
         label: "Open file",
         default: "cmd-p",
@@ -196,6 +202,34 @@ pub(crate) static SHORTCUTS: [Shortcut; 17] = [
         category: Category::SourceControl,
         context: COMMIT_CONTEXT,
         action: || Box::new(CommitChanges),
+    },
+    Shortcut {
+        label: "Open selected file",
+        default: "enter",
+        category: Category::Files,
+        context: "FilesPanel > Tree",
+        action: || Box::new(OpenSelectedFile),
+    },
+    Shortcut {
+        label: "Rename file",
+        default: "f2",
+        category: Category::Files,
+        context: "FilesPanel > Tree",
+        action: || Box::new(RenameSelectedFile),
+    },
+    Shortcut {
+        label: "Delete file permanently",
+        default: "cmd-backspace",
+        category: Category::Files,
+        context: "FilesPanel > Tree",
+        action: || Box::new(DeleteSelectedFile),
+    },
+    Shortcut {
+        label: "Cancel file name edit",
+        default: "escape",
+        category: Category::Files,
+        context: "FileNameEdit > Input",
+        action: || Box::new(CancelFileEdit),
     },
 ];
 
@@ -338,6 +372,35 @@ mod tests {
     use gpui_kit::{Keystroke, OperatingSystem};
 
     const MAC: OperatingSystem = OperatingSystem::Mac;
+
+    #[test]
+    fn file_mutations_never_match_editor_terminal_or_inline_input() {
+        use gpui_kit::{KeyBindingContextPredicate, KeyContext};
+        let contexts = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| KeyContext::parse(name).unwrap())
+                .collect::<Vec<_>>()
+        };
+        for shortcut in SHORTCUTS
+            .iter()
+            .filter(|s| s.label == "Rename file" || s.label == "Delete file permanently")
+        {
+            let predicate = KeyBindingContextPredicate::parse(shortcut.context).unwrap();
+            assert!(predicate.eval(&contexts(&["Workspace", "FilesPanel", "Tree"])));
+            for scope in [
+                &["Workspace", "EditorPanel", "Input"][..],
+                &["Workspace", "TerminalPanel", "Terminal"][..],
+                &["Workspace", "FilesPanel", "FileNameEdit", "Input"][..],
+            ] {
+                assert!(
+                    !predicate.eval(&contexts(scope)),
+                    "{} in {scope:?}",
+                    shortcut.label
+                );
+            }
+        }
+    }
 
     #[test]
     fn commit_binding_matches_only_source_control_and_its_inputs() {

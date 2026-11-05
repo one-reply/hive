@@ -50,6 +50,20 @@ fn guard_result(
     cx: &mut App,
     complete: impl FnOnce(bool, &mut Window, &mut App) + 'static,
 ) {
+    if !AppState::get(cx)
+        .documents
+        .read(cx)
+        .mutating_paths
+        .is_empty()
+    {
+        use gpui_kit::component::{WindowExt as _, notification::Notification};
+        window.push_notification(
+            Notification::info("Wait for the file operation to finish before closing."),
+            cx,
+        );
+        complete(false, window, cx);
+        return;
+    }
     // Re-read the whole scope after each async save: another buffer may have changed meanwhile.
     let Some(document) = scope.dirty(cx) else {
         window.defer(cx, move |window, cx| complete(true, window, cx));
