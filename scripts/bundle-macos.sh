@@ -107,10 +107,13 @@ appearances = {item.get("Appearance") for item in json.loads(Path(catalog).read_
 assert {"NSAppearanceNameAqua", "NSAppearanceNameDarkAqua"} <= appearances
 PY
 plutil -lint "$app/Contents/Info.plist"
-# Nested Sparkle helpers keep their upstream signatures; the host uses the preview ad-hoc identity.
+# Preview builds use ad-hoc signing; distribution additionally requires Apple's ticket.
 codesign --verify --deep --strict "$app/Contents/Frameworks/Sparkle.framework"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
+if [[ -n "${HIVE_APPLE_TEAM_ID:-}${HIVE_APPLE_API_KEY:-}${HIVE_APPLE_API_KEY_ID:-}${HIVE_APPLE_API_ISSUER_ID:-}" ]]; then
+    python3 scripts/sign_macos.py "$app"
+fi
 rm -rf "$output/Hive.app"
 mv "$app" "$output/Hive.app"
 echo "Built $output/Hive.app"
