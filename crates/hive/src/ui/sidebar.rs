@@ -309,8 +309,14 @@ impl Sidebar {
                 }))
                 .separator()
                 .item(
-                    PopupMenuItem::new("Remove Project").on_click(move |_, _, cx| {
-                        store.update(cx, |s, cx| s.remove_project(&path, cx))
+                    PopupMenuItem::new("Remove Project").on_click(move |_, window, cx| {
+                        let (store, path) = (store.clone(), path.clone());
+                        crate::ui::editor_panel::close::guard(
+                            crate::ui::editor_panel::close::Scope::Project(path.clone()),
+                            window,
+                            cx,
+                            move |_, cx| store.update(cx, |s, cx| s.remove_project(&path, cx)),
+                        );
                     }),
                 )
             })
@@ -689,7 +695,16 @@ fn worktree_menu(
             PopupMenuItem::new(delete_label)
                 .disabled(is_primary)
                 .on_click(move |_, window, cx| {
-                    confirm_delete(projects.clone(), &project_path, &worktree, window, cx)
+                    let (projects, project_path, worktree) =
+                        (projects.clone(), project_path.clone(), worktree.clone());
+                    crate::ui::editor_panel::close::guard(
+                        crate::ui::editor_panel::close::Scope::Worktree(worktree.path.clone()),
+                        window,
+                        cx,
+                        move |window, cx| {
+                            confirm_delete(projects, &project_path, &worktree, window, cx)
+                        },
+                    );
                 }),
         )
 }

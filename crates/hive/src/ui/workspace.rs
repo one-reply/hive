@@ -33,6 +33,7 @@ use crate::ui::{keymap, theme};
 
 mod center;
 mod center_dock;
+mod files;
 mod git;
 mod persistence;
 mod project_center;
@@ -70,6 +71,7 @@ pub struct Workspace {
     /// The project whose center fills the window; `None` shows the welcome screen.
     shown: Option<PathBuf>,
     git_panel: Entity<GitPanel>,
+    files_panel: Entity<crate::ui::files_panel::FilesPanel>,
     git_open: bool,
     /// Set by the first toggle, so the right sidebar doesn't slide in on launch.
     git_animate: bool,
@@ -102,6 +104,13 @@ pub(super) const SIDEBAR_SLIDE_DURATION: Duration = Duration::from_millis(200);
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        window.on_window_should_close(cx, |window, cx| {
+            if AppState::get(cx).documents.read(cx).dirty(cx).is_empty() {
+                return true;
+            }
+            crate::ui::editor_panel::close::all(window, cx, |window, _| window.remove_window());
+            false
+        });
         let app = AppState::get(cx);
         let (store, projects, agents) =
             (app.store.clone(), app.projects.clone(), app.agents.clone());
@@ -180,6 +189,8 @@ impl Workspace {
             }),
         ];
 
+        let files = cx.new(|cx| crate::state::files::Files::new(projects.clone(), window, cx));
+        let files_panel = cx.new(|cx| crate::ui::files_panel::FilesPanel::new(files, cx));
         let mut this = Self {
             focus: cx.focus_handle(),
             sidebar: cx.new(Sidebar::new),
@@ -194,6 +205,7 @@ impl Workspace {
             centers: HashMap::new(),
             shown: None,
             git_panel: cx.new(|cx| GitPanel::new(window, cx)),
+            files_panel,
             git_open,
             git_animate: false,
             git_animation: None,
@@ -204,6 +216,7 @@ impl Workspace {
             should_move: false,
         };
         this.watch_git(window, cx);
+        this.watch_files(window, cx);
         this.sync_selection(window, cx);
         this
     }
@@ -563,6 +576,15 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_terminal))
+            .on_action(cx.listener(
+                |this, _: &crate::ui::editor_panel::OpenFileSearch, window, cx| {
+                    crate::ui::files_panel::search::open(
+                        this.files_panel.read(cx).files.clone(),
+                        window,
+                        cx,
+                    );
+                },
+            ))
             .on_action(
                 cx.listener(|_, _: &QuickSwitch, window, cx| switcher::open(false, window, cx)),
             )

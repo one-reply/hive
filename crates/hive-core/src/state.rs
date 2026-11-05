@@ -126,7 +126,15 @@ impl State {
     }
 }
 
+/// Application data directory. Debug builds can isolate smoke tests from the running app.
 pub fn hive_dir() -> PathBuf {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("HIVE_DEV_DATA_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        return path;
+    }
     PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".hive")
 }
 

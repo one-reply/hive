@@ -102,8 +102,7 @@ impl GitPanel {
             .use_keyed_state((row_key, "focus"), cx, |_, cx| cx.focus_handle())
             .read(cx)
             .clone();
-        let show_actions =
-            can_act && (row_hover.is_hovered(cx) || focus.contains_focused(window, cx));
+        let show_actions = row_hover.is_hovered(cx) || focus.contains_focused(window, cx);
         let progress = transition(
             (row_id.clone(), "actions"),
             if show_actions { 1.0_f32 } else { 0. },
@@ -119,6 +118,39 @@ impl GitPanel {
             .into();
 
         let mut actions = h_flex().justify_end().items_center();
+        let open_hover = Hover::new(("file-open", index), window, cx);
+        let open_path = file.path.clone();
+        let target = self.git.read(cx).target.clone();
+        actions = actions.child(
+            Button::new(("file-open", index))
+                .cursor_pointer()
+                .xsmall()
+                .w(ACTION_WIDTH)
+                .h(ROW_HEIGHT)
+                .rounded_none()
+                .icon(Lucide::FileCode)
+                .tooltip("Open file")
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    if let Some(target) = target.clone() {
+                        AppState::get(cx)
+                            .documents
+                            .clone()
+                            .update(cx, |documents, cx| {
+                                documents.request(
+                                    crate::state::documents::OpenFile {
+                                        target,
+                                        path: open_path.clone().into(),
+                                        line: None,
+                                        preview: false,
+                                    },
+                                    cx,
+                                )
+                            });
+                    }
+                })
+                .smooth_hover(ButtonLook::Ghost, &open_hover, cx),
+        );
         if can_discard {
             let path = file.path.clone();
             actions = actions.child(
@@ -219,9 +251,16 @@ impl GitPanel {
                     .track_focus(&focus)
                     .tab_index(0)
                     .tab_stop(false)
-                    .when(can_act, |slot| {
-                        slot.min_w(ACTION_WIDTH * if can_discard { 2. } else { 1. })
-                    })
+                    .min_w(
+                        ACTION_WIDTH
+                            * if can_discard {
+                                3.
+                            } else if can_act {
+                                2.
+                            } else {
+                                1.
+                            },
+                    )
                     .child(
                         h_flex()
                             .h_full()
@@ -250,18 +289,16 @@ impl GitPanel {
                             })
                             .child(status_badge(change, cx)),
                     )
-                    .when(can_act, |slot| {
-                        slot.child(
-                            actions
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .right_0()
-                                .rounded_md()
-                                .bg(fg.opacity(ACTION_BACKGROUND_OPACITY))
-                                .opacity(progress),
-                        )
-                    }),
+                    .child(
+                        actions
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right_0()
+                            .rounded_md()
+                            .bg(fg.opacity(ACTION_BACKGROUND_OPACITY))
+                            .opacity(progress),
+                    ),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.git

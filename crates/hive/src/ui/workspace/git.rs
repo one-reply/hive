@@ -1,13 +1,23 @@
 //! Workspace integration for source control and diff tabs.
 use super::*;
 use crate::state::git::{DiffRequest, GitEvent, Target};
+use gpui_kit::base::motion::{Transition, transition};
 use hive_core::settings::clamp_git_panel_width;
+
+const RIGHT_TAB_WIDTH: Rems = rems(2.);
+const RIGHT_TAB_TRANSITION: Duration = Duration::from_millis(180);
 
 impl Workspace {
     pub(super) fn watch_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected_files = AppState::get(cx)
+            .store
+            .read(cx)
+            .state
+            .settings
+            .files_selected;
         let git = AppState::get(cx).git.clone();
         git.update(cx, |g, _| {
-            g.panel_visible = self.git_open;
+            g.panel_visible = self.git_open && !selected_files;
             g.window_active = window.is_window_active();
         });
         self._observers.push(cx.subscribe_in(
@@ -53,7 +63,7 @@ impl Workspace {
 
     /// Selects the target in the sidebar and shows its project's center. The caller decides
     /// which tab to show, so `sync_selection` must not open a terminal on its own.
-    fn activate_target(&mut self, target: &Target, cx: &mut Context<Self>) {
+    pub(super) fn activate_target(&mut self, target: &Target, cx: &mut Context<Self>) {
         let hidden = self
             .projects
             .read(cx)
@@ -87,6 +97,22 @@ impl Workspace {
 
     pub(super) fn toggle_git(&mut self, cx: &mut Context<Self>) {
         self.git_open = !self.git_open;
+        let selected_files = AppState::get(cx)
+            .store
+            .read(cx)
+            .state
+            .settings
+            .files_selected;
+        self.files_panel
+            .read(cx)
+            .files
+            .clone()
+            .update(cx, |files, cx| {
+                files.visible = self.git_open && selected_files;
+                if files.visible {
+                    files.refresh(cx);
+                }
+            });
         self.git_animate = true;
         self.git_animation = Some(cx.spawn(async |this, cx| {
             cx.background_executor().timer(SIDEBAR_SLIDE_DURATION).await;
@@ -100,15 +126,15 @@ impl Workspace {
         let (store, git) = (app.store.clone(), app.git.clone());
         store.update(cx, |s, cx| s.set_git_panel_open(self.git_open, cx));
         git.update(cx, |g, cx| {
-            g.panel_visible = self.git_open;
-            if self.git_open {
+            g.panel_visible = self.git_open && !selected_files;
+            if g.panel_visible {
                 g.refresh(true, cx);
             }
         });
         cx.notify();
     }
 
-    /// The right sidebar: a tab bar of sections (only Git today) with the sidebar toggle at
+    /// The right sidebar: a tab bar for Git and Files with the sidebar toggle at
     /// its right end, then the selected section. Toggling slides it in from or out past the
     /// window's right edge: the content keeps its width and is clipped by an outer column
     /// whose width animates, the same way the left sidebar collapses.
@@ -120,7 +146,20 @@ impl Workspace {
         let toggle_hover = Hover::new("toggle-right-sidebar", window, cx);
         let border = cx.theme().border;
         let open = self.git_open;
+        let selected_files = AppState::get(cx)
+            .store
+            .read(cx)
+            .state
+            .settings
+            .files_selected;
         let width = self.git_width;
+        let indicator_position = transition(
+            "right-sidebar-tab-indicator",
+            if selected_files { 1.0 } else { 0.0 },
+            Transition::new(RIGHT_TAB_TRANSITION).ease(ease_in_out),
+            window,
+            cx,
+        );
         // The header sits where the macOS title bar would be, so it drags the window too.
         let header = h_flex()
             .id("right-sidebar-header")
@@ -131,12 +170,31 @@ impl Workspace {
             .items_center()
             .border_b_1()
             .border_color(border)
-            .child(h_flex().h_full().child(render_right_tab(
-                "right-tab-git",
-                Lucide::GitBranch,
-                true,
-                cx,
-            )))
+            .child(
+                h_flex()
+                    .relative()
+                    .h_full()
+                    .flex_none()
+                    .child(
+                        render_right_tab("choose-git", Lucide::GitBranch, !selected_files, cx)
+                            .aria_label("Git")
+                            .on_click(cx.listener(|this, _, _, cx| this.choose_files(false, cx))),
+                    )
+                    .child(
+                        render_right_tab("choose-files", Lucide::Folder, selected_files, cx)
+                            .aria_label("Files")
+                            .on_click(cx.listener(|this, _, _, cx| this.choose_files(true, cx))),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .left(RIGHT_TAB_WIDTH * indicator_position)
+                            .w(RIGHT_TAB_WIDTH)
+                            .h(RIGHT_TAB_UNDERLINE)
+                            .bg(cx.theme().primary),
+                    ),
+            )
             .child(right_sidebar_toggle().small().smooth_hover(
                 ButtonLook::Ghost,
                 &toggle_hover,
@@ -150,7 +208,11 @@ impl Workspace {
             .border_l_1()
             .border_color(border)
             .child(header)
-            .child(div().flex_1().min_h_0().child(self.git_panel.clone()));
+            .child(div().flex_1().min_h_0().child(if selected_files {
+                self.files_panel.clone().into_any_element()
+            } else {
+                self.git_panel.clone().into_any_element()
+            }));
         // Right-aligned so the content's left edge moves while its right edge stays put.
         let outer = v_flex()
             .h_full()
@@ -217,9 +279,8 @@ impl Workspace {
     }
 }
 
-/// An icon tab of the right sidebar's header; the active one is underlined. There is one
-/// section so far, so a tab only shows where it is.
-fn render_right_tab(id: &'static str, icon: Lucide, active: bool, cx: &App) -> impl IntoElement {
+/// Full-height tabs share one sliding indicator in their parent row.
+fn render_right_tab(id: &'static str, icon: Lucide, active: bool, cx: &App) -> Stateful<Div> {
     let color = if active {
         cx.theme().foreground
     } else {
@@ -227,24 +288,13 @@ fn render_right_tab(id: &'static str, icon: Lucide, active: bool, cx: &App) -> i
     };
     div()
         .id(id)
-        .relative()
         .h_full()
-        .px_2()
+        .w(RIGHT_TAB_WIDTH)
         .flex()
+        .justify_center()
         .items_center()
         .cursor_pointer()
         .child(Icon::new(icon).small().text_color(color))
-        .when(active, |el| {
-            el.child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .h(RIGHT_TAB_UNDERLINE)
-                    .bg(cx.theme().primary),
-            )
-        })
 }
 
 /// The button that shows or hides the right sidebar. It stays in the window's top-right

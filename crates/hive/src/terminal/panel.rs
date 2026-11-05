@@ -317,7 +317,13 @@ impl Panel for TerminalPanel {
                     cx.listener(|this, _, window, cx| this.split(Axis::Vertical, window, cx)),
                 ),
         ];
-        if !AppState::get(cx).git.read(cx).panel_visible {
+        if !AppState::get(cx)
+            .store
+            .read(cx)
+            .state
+            .settings
+            .git_panel_open
+        {
             buttons.push(right_sidebar_toggle());
         }
         Some(buttons)

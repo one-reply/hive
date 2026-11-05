@@ -187,6 +187,19 @@ pub struct TerminalPane {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Tab {
+    /// A pinned file buffer; unsaved contents are stored separately in editor recovery.
+    File {
+        /// Worktree containing this file.
+        worktree: PathBuf,
+        /// Worktree-relative path.
+        path: PathBuf,
+        /// Zero-based UTF-16 cursor position.
+        #[serde(default)]
+        cursor: [u32; 2],
+        /// Editor scroll offset in logical pixels.
+        #[serde(default)]
+        scroll: [f32; 2],
+    },
     /// Fresh shells in the saved pane layout.
     Terminal {
         /// Pane working directories and split sizes.
@@ -246,6 +259,12 @@ impl Tab {
                 })
             }
             Self::Diff { worktree, .. } => available(worktree).then(|| self.clone()),
+            Self::File { worktree, path, .. } => (available(worktree)
+                && !path.as_os_str().is_empty()
+                && path
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(name) if name != ".git")))
+            .then(|| self.clone()),
             Self::Unknown => None,
         }
     }
@@ -254,6 +273,30 @@ impl Tab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_tabs_default_position_and_roundtrip() {
+        let file: Tab =
+            serde_json::from_str(r#"{"kind":"file","worktree":"/project","path":"src/a.rs"}"#)
+                .unwrap();
+        assert!(matches!(
+            &file,
+            Tab::File {
+                cursor: [0, 0],
+                scroll: [0.0, 0.0],
+                ..
+            }
+        ));
+        assert_eq!(
+            serde_json::from_str::<Tab>(&serde_json::to_string(&file).unwrap()).unwrap(),
+            file
+        );
+        assert!(file.prepare(&|_| true).is_some());
+        let outside: Tab =
+            serde_json::from_str(r#"{"kind":"file","worktree":"/project","path":"../secret"}"#)
+                .unwrap();
+        assert!(outside.prepare(&|_| true).is_none());
+    }
 
     #[test]
     fn saved_sessions_are_optional_validated_and_round_trip() {
