@@ -1,7 +1,7 @@
 //! The library owns dock placement; Hive persists only typed tab contents and layout.
 use super::*;
-use crate::state::git::Target;
 use gpui_kit::component::dock::{DockLayout, PaneNode, PaneRef};
+use hive_core::projects::Target;
 use hive_core::state::workspace::{Layout, ProjectWorkspace, SplitAxis, Tab, Tabs};
 
 impl ProjectCenter {

@@ -4,7 +4,7 @@ use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _}
 use crate::ui::text_field::TextField;
 use crate::{
     app::AppState,
-    state::git::{Git, Section, Target},
+    state::git::{Git, Section},
 };
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::Disableable as _;
@@ -23,6 +23,7 @@ use hive_core::git::{
     diff::DiffSource,
     status::{Change, FileChange, Status},
 };
+use hive_core::projects::Target;
 use std::collections::HashSet;
 
 mod commit;

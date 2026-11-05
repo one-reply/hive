@@ -9,9 +9,8 @@ use hive_core::git::{
     history::Commit,
     status::{FileChange, Status},
 };
-use hive_core::host::Host;
+use hive_core::projects::Target;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::Duration;
 
 mod generation;
@@ -21,13 +20,6 @@ mod review;
 mod verification;
 
 pub(crate) use remote::RemoteOperation;
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Target {
-    pub project: PathBuf,
-    pub path: PathBuf,
-    pub host: Host,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct DiffRequest {
@@ -163,13 +155,7 @@ impl Git {
     }
 
     fn sync_target(&mut self, cx: &mut Context<Self>) {
-        let target = self.projects.read(cx).selection().and_then(|(p, w)| {
-            w.map(|w| Target {
-                project: p.path.clone(),
-                path: w.path.clone(),
-                host: p.host.clone(),
-            })
-        });
+        let target = self.projects.read(cx).target();
         if target == self.target {
             return;
         }

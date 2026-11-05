@@ -52,6 +52,31 @@ impl Worktree {
     }
 }
 
+/// The checkout a selection points at: what Git, Files and terminals operate on.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Target {
+    /// The registered project folder.
+    pub project: PathBuf,
+    /// The folder to work in: the selected worktree, or the project folder itself.
+    pub path: PathBuf,
+    /// Where `path` lives.
+    pub host: Host,
+}
+
+impl Target {
+    /// The one rule for turning a sidebar selection into a target: the selected worktree,
+    /// or, for a project without worktrees (a plain folder, or a repository whose scan
+    /// failed), the project folder itself. A failed scan then surfaces as a Git error
+    /// instead of an empty panel.
+    pub fn of(project: &Project, worktree: Option<&Worktree>) -> Self {
+        Self {
+            project: project.path.clone(),
+            path: worktree.map_or_else(|| project.path.clone(), |w| w.path.clone()),
+            host: project.host.clone(),
+        }
+    }
+}
+
 impl Project {
     /// Where Hive creates this project's worktrees: a sibling of the repository root,
     /// `<repo>-worktrees`, so it works the same on every host and stays out of the repo itself.
@@ -145,6 +170,30 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_is_the_worktree_or_else_the_project_folder() {
+        let project = Project {
+            name: "app".into(),
+            path: PathBuf::from("/repo"),
+            host: Host::Ssh {
+                target: "box".into(),
+            },
+            filter: WorktreeFilter::Hive,
+            identity: ProjectIdentity::default(),
+            worktrees: vec![Worktree {
+                path: PathBuf::from("/repo-worktrees/clover"),
+                head: Head::Detached,
+            }],
+        };
+        let worktree = Target::of(&project, project.worktrees.first());
+        assert_eq!(worktree.path, Path::new("/repo-worktrees/clover"));
+        assert_eq!(worktree.project, Path::new("/repo"));
+        assert_eq!(worktree.host, project.host);
+        let folder = Target::of(&project, None);
+        assert_eq!(folder.path, Path::new("/repo"));
+        assert_eq!(folder.project, Path::new("/repo"));
+    }
 
     /// Captured from a repo with Claude Code worktrees and one deleted worktree.
     const PORCELAIN: &str = "worktree /Users/me/projects/app

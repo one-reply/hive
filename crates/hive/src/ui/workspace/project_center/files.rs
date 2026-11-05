@@ -4,7 +4,7 @@ use crate::{state::documents::OpenFile, ui::editor_panel::EditorPanel};
 impl ProjectCenter {
     pub(in crate::ui::workspace) fn remove_files(
         &mut self,
-        target: &crate::state::git::Target,
+        target: &hive_core::projects::Target,
         path: &std::path::Path,
         window: &mut Window,
         cx: &mut App,

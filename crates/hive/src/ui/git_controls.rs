@@ -1,5 +1,5 @@
 //! Branch selection and confirmations with their original worktree captured at opening.
-use crate::state::git::{Git, Target};
+use crate::state::git::Git;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
 use crate::ui::text_field::TextField;
 use gpui_kit::assets::IconName as Lucide;
@@ -13,6 +13,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hive_core::git::{branches::Branch, changes::Action};
+use hive_core::projects::Target;
 
 const DIALOG_WIDTH: Pixels = px(460.);
 const BRANCH_LIST_HEIGHT: Pixels = px(320.);

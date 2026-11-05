@@ -98,7 +98,7 @@ impl Workspace {
             {
                 self.open_file(
                     OpenFile {
-                        target: crate::state::git::Target {
+                        target: hive_core::projects::Target {
                             project: draft.project.clone(),
                             path: draft.root.clone(),
                             host: draft.host.clone(),

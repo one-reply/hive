@@ -1,12 +1,10 @@
 use super::*;
-use crate::{
-    app::AppState,
-    state::{documents::OpenFile, git::Target},
-};
+use crate::{app::AppState, state::documents::OpenFile};
 use gpui_kit::component::{
     IndexPath,
     list::{List, ListDelegate, ListItem, ListState},
 };
+use hive_core::projects::Target;
 use std::cell::Cell;
 
 const WIDTH: Pixels = px(600.);

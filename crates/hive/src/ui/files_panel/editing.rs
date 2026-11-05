@@ -1,6 +1,7 @@
 use super::*;
-use crate::state::{files::FileOperation, git::Target};
+use crate::state::files::FileOperation;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use hive_core::projects::Target;
 
 pub(super) enum EditKind {
     File(PathBuf),
