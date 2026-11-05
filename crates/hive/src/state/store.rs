@@ -23,6 +23,20 @@ pub(crate) struct SaveError(pub(crate) String);
 impl EventEmitter<SaveError> for Store {}
 
 impl Store {
+    pub(crate) fn set_default_cli_agent(
+        &mut self,
+        agent: hive_core::agent::AgentKind,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.settings.default_cli_agent() == agent {
+            return;
+        }
+        if let Err(error) = self.state.settings.set_default_cli_agent(agent) {
+            tracing::error!(%error, "could not select default CLI agent");
+            return;
+        }
+        self.commit(cx);
+    }
     pub(crate) fn set_selection(&mut self, selection: Option<Selection>, cx: &mut Context<Self>) {
         if self.state.workspace.selection != selection {
             self.state.workspace.selection = selection;

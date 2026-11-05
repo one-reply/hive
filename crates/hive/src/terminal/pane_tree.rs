@@ -14,6 +14,16 @@ pub(crate) enum PaneTree<T> {
 }
 
 impl<T: Clone + PartialEq> PaneTree<T> {
+    pub(crate) fn for_each(&self, visit: &mut impl FnMut(&T)) {
+        match self {
+            Self::Leaf(leaf) => visit(leaf),
+            Self::Split { children, .. } => {
+                for child in children {
+                    child.for_each(visit);
+                }
+            }
+        }
+    }
     /// Put `new` right after `target` along `axis`. `false` when `target` is not in the tree.
     pub(crate) fn split(&mut self, target: &T, new: T, axis: Axis) -> bool {
         match self {

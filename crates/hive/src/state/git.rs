@@ -42,6 +42,7 @@ pub(crate) enum GitEvent {
     OpenDiff(DiffRequest),
     Activate(Target),
     Terminal(Target),
+    AgentDraft(Target, hive_core::agent::AgentKind, String),
     Refreshed(Target),
 }
 
@@ -256,11 +257,16 @@ impl Git {
             .values()
             .any(|t| self.target.as_ref() == Some(t));
     }
-    pub fn terminal(&self, cx: &mut Context<Self>) {
-        if let Some(t) = &self.target {
-            tracing::debug!(path = %t.path.display(), "source control: open terminal");
-            cx.emit(GitEvent::Terminal(t.clone()));
-        }
+
+    pub(crate) fn prepare_error_draft(&self, target: Target, error: &str, cx: &mut Context<Self>) {
+        let agent = crate::app::AppState::get(cx)
+            .store
+            .read(cx)
+            .state
+            .settings
+            .default_cli_agent();
+        let prompt = hive_core::agent::draft::git_error(&target.path, error);
+        cx.emit(GitEvent::AgentDraft(target, agent, prompt));
     }
     pub fn open_diff(&self, file: &FileChange, source: DiffSource, cx: &mut Context<Self>) {
         if let Some(target) = &self.target {

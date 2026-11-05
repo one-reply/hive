@@ -8,7 +8,6 @@ use crate::{
 };
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::Disableable as _;
-use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -27,6 +26,7 @@ use hive_core::git::{
 use std::collections::HashSet;
 
 mod commit;
+mod error;
 mod file_row;
 mod files;
 mod header;
@@ -40,7 +40,6 @@ const ROW_HEIGHT: Pixels = px(26.);
 const GROUP_HEIGHT: Pixels = px(24.);
 const BADGE_SIZE: Pixels = px(16.);
 const EMPTY_ICON: Pixels = px(28.);
-const ERROR_HEIGHT: Pixels = px(120.);
 
 pub(crate) struct GitPanel {
     git: Entity<Git>,
@@ -59,6 +58,7 @@ pub(crate) struct GitPanel {
 impl GitPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let git = AppState::get(cx).git.clone();
+        let store = AppState::get(cx).store.clone();
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
         let message = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -66,6 +66,7 @@ impl GitPanel {
                 .placeholder("Commit message")
         });
         let subscriptions = vec![
+            cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe_in(&git, window, |this, _, window, cx| {
                 let state = this.git.read(cx);
                 let target = state.target.clone();
@@ -109,73 +110,6 @@ impl GitPanel {
             self.collapsed.insert(group);
         }
         cx.notify();
-    }
-
-    fn error(
-        &self,
-        error: SharedString,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let terminal_hover = Hover::new("error-terminal", window, cx);
-        let verify_hover = Hover::new("error-verified", window, cx);
-        let needs_verification = self.git.read(cx).needs_verification();
-        let inspected = self.git.read(cx).result_inspected();
-        v_flex()
-            .px_3()
-            .pb_2()
-            .gap_1()
-            .child(
-                div()
-                    .id("git-error")
-                    .max_h(ERROR_HEIGHT)
-                    .overflow_y_scroll()
-                    .child(
-                        Alert::error("git-error-alert", error)
-                            .small()
-                            .on_close(cx.listener(|this, _, _, cx| {
-                                this.git.update(cx, |g, cx| g.clear_error(cx))
-                            })),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .justify_end()
-                    .gap_2()
-                    .when(needs_verification, |row| {
-                        row.child(
-                            Button::new("error-verified")
-                                .cursor_pointer()
-                                .xsmall()
-                                .label(if inspected {
-                                    "I reviewed this result"
-                                } else {
-                                    "Verify actual result"
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.git.update(cx, |g, cx| {
-                                        if inspected {
-                                            g.acknowledge_outcome(cx)
-                                        } else {
-                                            g.verify_result(cx)
-                                        }
-                                    })
-                                }))
-                                .smooth_hover(ButtonLook::Outline, &verify_hover, cx),
-                        )
-                    })
-                    .child(
-                        Button::new("error-terminal")
-                            .cursor_pointer()
-                            .xsmall()
-                            .icon(Lucide::SquareTerminal)
-                            .label("Open terminal")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.git.update(cx, |g, cx| g.terminal(cx))
-                            }))
-                            .smooth_hover(ButtonLook::Outline, &terminal_hover, cx),
-                    ),
-            )
     }
 
     fn tabs(&self, section: Section, changes: usize) -> impl IntoElement {

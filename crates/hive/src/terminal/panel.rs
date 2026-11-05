@@ -22,6 +22,7 @@ use crate::ui::workspace::{NewTerminal, right_sidebar_toggle};
 
 actions!(terminal_panel, [SplitRight, SplitDown, ClosePane]);
 
+mod agent_draft;
 mod persistence;
 mod tiles;
 
@@ -159,6 +160,16 @@ impl TerminalPanel {
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.cwd(cx);
         let view = cx.new(|cx| TerminalView::new(cwd.as_deref(), window, cx));
+        self.insert_pane(view, axis, window, cx);
+    }
+
+    fn insert_pane(
+        &mut self,
+        view: Entity<TerminalView>,
+        axis: Axis,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.watch_pane(&view, window, cx);
         self.panes.split(&self.active, view.clone(), axis);
         self.active = view;
