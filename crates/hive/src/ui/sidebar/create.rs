@@ -1,8 +1,9 @@
 //! Create a worktree and optionally launch its first agent.
 use super::*;
+use crate::ui::agent_logo;
 use gpui_kit::component::{
-    Disableable as _, IndexPath,
-    searchable_list::SearchableVec,
+    Disableable as _, Icon, IndexPath,
+    searchable_list::{SearchableListItem, SearchableVec},
     select::{Select, SelectState},
 };
 use hive_core::agent::{
@@ -13,12 +14,55 @@ use hive_core::agent::{
 const WIDTH: Pixels = px(480.);
 const DEFAULT_BASE: &str = "Default branch";
 
+/// A "Start with" choice: a plain terminal (`None`) or an agent.
+#[derive(Clone, IntoElement)]
+struct StartItem(Option<AgentKind>);
+
+impl StartItem {
+    fn name(&self) -> &'static str {
+        self.0.map_or("Terminal", AgentKind::name)
+    }
+}
+
+impl SearchableListItem for StartItem {
+    type Value = Option<AgentKind>;
+    fn title(&self) -> SharedString {
+        self.name().into()
+    }
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(self.clone().into_any_element())
+    }
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        self.clone()
+    }
+    fn value(&self) -> &Option<AgentKind> {
+        &self.0
+    }
+}
+
+impl RenderOnce for StartItem {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let icon = match self.0 {
+            Some(kind) => Icon::default()
+                .data(agent_logo::svg(kind))
+                .text_color(agent_logo::color(kind, cx)),
+            None => Icon::new(Lucide::SquareTerminal),
+        };
+        h_flex()
+            .min_w_0()
+            .items_center()
+            .gap_2()
+            .child(icon.size_4().flex_none())
+            .child(div().min_w_0().truncate().child(self.name()))
+    }
+}
+
 struct CreateWorktree {
     projects: Entity<Projects>,
     project: PathBuf,
     name: Entity<InputState>,
     base: Entity<SelectState<SearchableVec<String>>>,
-    agent: Entity<SelectState<SearchableVec<String>>>,
+    agent: Entity<SelectState<SearchableVec<StartItem>>>,
     error: Option<String>,
     busy: bool,
     _load: Task<()>,
@@ -46,9 +90,8 @@ impl CreateWorktree {
         let agent = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::new(
-                    std::iter::once("Terminal")
-                        .chain(launch::AGENTS.map(AgentKind::name))
-                        .map(String::from)
+                    std::iter::once(StartItem(None))
+                        .chain(launch::AGENTS.map(|kind| StartItem(Some(kind))))
                         .collect::<Vec<_>>(),
                 ),
                 Some(IndexPath::default()),
@@ -98,10 +141,12 @@ impl CreateWorktree {
             .filter(|s| s.as_str() != DEFAULT_BASE)
             .cloned()
             .unwrap_or_default();
-        let selected = self.agent.read(cx).selected_value();
-        let launch = launch::AGENTS
-            .into_iter()
-            .find(|agent| selected.is_some_and(|name| name == agent.name()))
+        let launch = self
+            .agent
+            .read(cx)
+            .selected_value()
+            .copied()
+            .flatten()
             .map(Launch::New);
         self.busy = true;
         self.error = None;
