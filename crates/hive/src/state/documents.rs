@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 mod definitions;
 mod document;
-pub(crate) use document::Document;
+pub(crate) use document::{Content, Document, PreviewState, SvgMode};
 
 #[derive(Clone)]
 pub(crate) struct OpenFile {
@@ -173,11 +173,7 @@ impl Documents {
                                     && d.path == *path
                             })
                         {
-                            let editor = document.read(cx).editor.read(cx);
-                            let position = editor.cursor_position();
-                            let offset = editor.scroll_offset();
-                            *cursor = [position.line, position.character];
-                            *scroll = [offset.x.into(), offset.y.into()];
+                            (*cursor, *scroll) = document.read(cx).saved_position(cx);
                         }
                     }
                     Some(tabs)

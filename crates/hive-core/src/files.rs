@@ -8,6 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod decorations;
+pub mod images;
 mod language;
 mod listing;
 mod mutations;
@@ -100,6 +101,23 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Parse bounded UTF-8 source bytes, preserving their exact disk representation.
+    pub fn parse(path: &Path, bytes: &[u8]) -> Result<Self, FileError> {
+        if bytes.len() > MAX_FILE_BYTES {
+            return Err(unsupported(
+                path,
+                "files larger than 1 MiB are not supported in Code",
+            ));
+        }
+        if bytes.contains(&0) {
+            return Err(unsupported(path, "binary files are not supported"));
+        }
+        let raw = std::str::from_utf8(bytes)
+            .map_err(|_| unsupported(path, "the file is not UTF-8"))?
+            .to_owned();
+        Ok(Self { raw })
+    }
+
     /// Text presented to the editor; uniform CRLF documents use LF internally.
     pub fn text(&self) -> String {
         let text = self.raw.strip_prefix('\u{feff}').unwrap_or(&self.raw);
@@ -166,15 +184,25 @@ pub fn read(host: &Host, root: &Path, relative: &Path) -> Result<Snapshot, FileE
 }
 
 fn read_path(path: &Path) -> Result<Snapshot, FileError> {
+    let bytes = read_bytes(
+        path,
+        MAX_FILE_BYTES,
+        "files larger than 1 MiB are not supported",
+    )?;
+    Snapshot::parse(path, &bytes)
+}
+
+fn read_bytes(
+    path: &Path,
+    limit: usize,
+    limit_message: &'static str,
+) -> Result<Vec<u8>, FileError> {
     let metadata = fs::symlink_metadata(path).map_err(|e| io_error("inspect", path, e))?;
     if !metadata.is_file() {
         return Err(unsupported(path, "only regular files are supported"));
     }
-    if metadata.len() > MAX_FILE_BYTES as u64 {
-        return Err(unsupported(
-            path,
-            "files larger than 1 MiB are not supported",
-        ));
+    if metadata.len() > limit as u64 {
+        return Err(unsupported(path, limit_message));
     }
     let file = OpenOptions::new()
         .read(true)
@@ -189,20 +217,13 @@ fn read_path(path: &Path) -> Result<Snapshot, FileError> {
         return Err(unsupported(path, "only regular files are supported"));
     }
     let mut bytes = Vec::new();
-    file.take((MAX_FILE_BYTES + 1) as u64)
+    file.take((limit + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|e| io_error("read", path, e))?;
-    if bytes.len() > MAX_FILE_BYTES {
-        return Err(unsupported(
-            path,
-            "files larger than 1 MiB are not supported",
-        ));
+    if bytes.len() > limit {
+        return Err(unsupported(path, limit_message));
     }
-    if bytes.contains(&0) {
-        return Err(unsupported(path, "binary files are not supported"));
-    }
-    let raw = String::from_utf8(bytes).map_err(|_| unsupported(path, "the file is not UTF-8"))?;
-    Ok(Snapshot { raw })
+    Ok(bytes)
 }
 
 /// Save only if the on-disk version still equals `expected`; never recreate a missing file.

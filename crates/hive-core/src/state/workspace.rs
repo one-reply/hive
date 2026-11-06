@@ -302,6 +302,28 @@ mod tests {
     }
 
     #[test]
+    fn image_tabs_use_the_existing_file_snapshot_with_unknown_fields() {
+        for path in ["images/photo.PNG", "icons/logo.svg"] {
+            let tab: Tab = serde_json::from_value(serde_json::json!({
+                "kind": "file", "worktree": "/project", "path": path, "future": true
+            }))
+            .unwrap();
+            assert!(matches!(
+                &tab,
+                Tab::File {
+                    cursor: [0, 0],
+                    scroll: [0., 0.],
+                    ..
+                }
+            ));
+            assert_eq!(
+                serde_json::from_str::<Tab>(&serde_json::to_string(&tab).unwrap()).unwrap(),
+                tab
+            );
+        }
+    }
+
+    #[test]
     fn saved_sessions_are_optional_validated_and_round_trip() {
         let legacy: TerminalPane = serde_json::from_str(r#"{"directory":"/project"}"#).unwrap();
         assert!(legacy.resume.is_none());

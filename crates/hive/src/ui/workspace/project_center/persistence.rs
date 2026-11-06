@@ -94,14 +94,12 @@ impl ProjectCenter {
             if !document.pinned {
                 return None;
             }
-            let editor = document.editor.read(cx);
-            let cursor = editor.cursor_position();
-            let scroll = editor.scroll_offset();
+            let (cursor, scroll) = document.saved_position(cx);
             return Some(Tab::File {
                 worktree: document.target.path.clone(),
                 path: document.path.clone(),
-                cursor: [cursor.line, cursor.character],
-                scroll: [scroll.x.into(), scroll.y.into()],
+                cursor,
+                scroll,
             });
         }
         if let Some(panel) = self

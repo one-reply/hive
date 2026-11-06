@@ -8,6 +8,7 @@ impl Document {
         self.flush_recovery(cx);
         self._read = None;
         self._backup = None;
+        self.invalidate_image(cx);
         self.loading = false;
         self.path_busy = true;
         self.editor
@@ -21,6 +22,7 @@ impl Document {
         self.editor
             .update(cx, |editor, cx| editor.set_disabled(false, cx));
         self.flush_recovery(cx);
+        self.render_image(cx);
         cx.notify();
     }
 
@@ -30,6 +32,16 @@ impl Document {
         cx: &mut Context<Self>,
     ) -> async_channel::Receiver<Result<(), String>> {
         self.path = path;
+        let content = Content::new(&self.path, self.dirty);
+        if std::mem::discriminant(&self.content) != std::mem::discriminant(&content) {
+            self.invalidate_image(cx);
+            if self.content.is_raster() || content.is_raster() {
+                self.base = None;
+                self.conflict = None;
+            }
+            self.content = content;
+            self.error = None;
+        }
         let old_key = std::mem::replace(
             &mut self.recovery_key,
             recovery::key(&self.target.host, &self.target.path, &self.path),
@@ -56,6 +68,7 @@ impl Document {
 
     pub(crate) fn deleted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.discard(window, cx);
+        self.invalidate_image(cx);
         self.missing = true;
         self.path_busy = true;
         cx.notify();

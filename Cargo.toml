@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/vitaliits-stack/hive"
@@ -24,7 +24,8 @@ thiserror = "2"
 alacritty_terminal = "0.26"
 rustix-openpty = "0.2"
 libc = { version = "0.2", default-features = false }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "webp", "gif", "bmp", "ico"] }
+resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts", "raster-images"] }
 async-channel = "2.5"
 polling = "3.11"
 rustix = { version = "1.1", default-features = false, features = ["std", "process", "termios", "fs"] }

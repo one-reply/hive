@@ -47,6 +47,9 @@ pub struct FilesSettings {
     pub show_hidden: bool,
     /// Include ignored paths, rendered with subdued labels.
     pub show_ignored: bool,
+    /// Save a dirty editor buffer when keyboard focus leaves it, and on close
+    /// instead of asking.
+    pub save_on_focus_change: bool,
     font_size: f32,
 }
 
@@ -59,6 +62,7 @@ impl Default for FilesSettings {
             auto_reveal: true,
             show_hidden: true,
             show_ignored: true,
+            save_on_focus_change: true,
             font_size: FILES_FONT_SIZE_DEFAULT,
         }
     }
@@ -101,6 +105,10 @@ mod tests {
         assert_eq!(future.density, FileDensity::Compact);
         assert_eq!(future.font_size(), 20.);
         assert!(!future.show_hidden);
+        assert!(future.save_on_focus_change);
+        let opted_out: FilesSettings =
+            serde_json::from_str(r#"{"save_on_focus_change":false}"#).unwrap();
+        assert!(!opted_out.save_on_focus_change);
         let mut settings = FilesSettings::default();
         settings.set_font_size(f32::NAN);
         assert_eq!(settings.font_size(), FILES_FONT_SIZE_DEFAULT);

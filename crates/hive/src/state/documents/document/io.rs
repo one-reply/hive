@@ -40,53 +40,72 @@ impl Document {
         if self.loading || self.saving || self.path_busy {
             return;
         }
+        if self.content.preview().is_some() {
+            self.refresh_image(window, cx);
+            return;
+        }
         self.loading = true;
         let (target, path) = (self.target.clone(), self.path.clone());
         self._read = Some(cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move {
-                    files::read(&target.host, &target.path, &path)
-                })
+                .spawn(async move { files::read(&target.host, &target.path, &path) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.loading = false;
                 match result {
-                    Ok(snapshot) => {
-                        this.missing = false;
-                        if this.base.as_ref() != Some(&snapshot) {
-                            if this.dirty {
-                                if snapshot.matches(&this.text(cx)) {
-                                    this.base = Some(snapshot);
-                                    this.dirty = false;
-                                    this.conflict = None;
-                                    this.flush_recovery(cx);
-                                    this.emit(DocumentEvent::Changed(this.target.clone()), cx);
-                                    cx.notify();
-                                } else if this.conflict.as_ref() != Some(&snapshot) {
-                                    this.conflict = Some(snapshot);
-                                    cx.notify();
-                                }
-                            } else {
-                                this.install(snapshot, window, cx);
-                            }
-                        } else if this.conflict.take().is_some() || matches!(this.error, Some(DocumentError::Read(_))) {
-                            if matches!(this.error, Some(DocumentError::Read(_))) { this.error = None; }
-                            cx.notify();
-                        }
-                    }
-                    Err(error) => {
-                        this.missing = matches!(&error, files::FileError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound);
-                        let error = DocumentError::Read(error.to_string());
-                        if this.error.as_ref() != Some(&error) {
-                            tracing::warn!(error = error.message(), "file refresh failed");
-                            this.error = Some(error);
-                            cx.notify();
-                        }
-                    }
+                    Ok(snapshot) => this.accept_snapshot(snapshot, window, cx),
+                    Err(error) => this.read_failed(error, cx),
                 }
             });
         }));
+    }
+
+    pub(super) fn accept_snapshot(
+        &mut self,
+        snapshot: Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.missing = false;
+        let text = self.dirty.then(|| self.text(cx));
+        match disk_update(self.base.as_ref(), text.as_deref(), &snapshot) {
+            DiskUpdate::Reload => self.install(snapshot, window, cx),
+            DiskUpdate::MatchesBuffer => {
+                self.base = Some(snapshot);
+                self.dirty = false;
+                self.conflict = None;
+                self.flush_recovery(cx);
+                self.emit(DocumentEvent::Changed(self.target.clone()), cx);
+                cx.notify();
+            }
+            DiskUpdate::Conflict => {
+                if self.conflict.as_ref() != Some(&snapshot) {
+                    self.conflict = Some(snapshot);
+                    cx.notify();
+                }
+            }
+            DiskUpdate::Unchanged => {
+                let changed = self.conflict.take().is_some();
+                let read_error = matches!(self.error, Some(DocumentError::Read(_)));
+                if read_error {
+                    self.error = None;
+                }
+                if changed || read_error {
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    pub(super) fn read_failed(&mut self, error: files::FileError, cx: &mut Context<Self>) {
+        self.missing = matches!(&error, files::FileError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound);
+        let error = DocumentError::Read(error.to_string());
+        if self.error.as_ref() != Some(&error) {
+            tracing::warn!(error = error.message(), "file refresh failed");
+            self.error = Some(error);
+            cx.notify();
+        }
     }
 
     /// Completion is true only if this exact buffer is clean after the serialized write.
@@ -97,8 +116,13 @@ impl Document {
         cx: &mut Context<Self>,
     ) -> async_channel::Receiver<bool> {
         let (done, receiver) = async_channel::bounded(1);
-        if self.path_busy
-            || self.saving
+        // A focus-out save may already be writing when the user saves or closes.
+        if self.saving {
+            self.save_waiters.push(done);
+            return receiver;
+        }
+        if self.content.is_raster()
+            || self.path_busy
             || self.base.is_none()
             || (self.conflict.is_some() && overwrite.is_none())
         {
@@ -141,12 +165,61 @@ impl Document {
                         }
                     }
                     cx.notify();
-                    !this.dirty && this.error.is_none()
+                    let success = !this.dirty && this.error.is_none();
+                    for waiter in this.save_waiters.drain(..) {
+                        let _ = waiter.try_send(success);
+                    }
+                    success
                 })
                 .unwrap_or(false);
             let _ = done.try_send(success);
         }));
         cx.notify();
         receiver
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DiskUpdate {
+    Unchanged,
+    Reload,
+    MatchesBuffer,
+    Conflict,
+}
+
+fn disk_update(base: Option<&Snapshot>, dirty_text: Option<&str>, disk: &Snapshot) -> DiskUpdate {
+    if base == Some(disk) {
+        return DiskUpdate::Unchanged;
+    }
+    match dirty_text {
+        None => DiskUpdate::Reload,
+        Some(text) if disk.matches(text) => DiskUpdate::MatchesBuffer,
+        Some(_) => DiskUpdate::Conflict,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DiskUpdate, Snapshot, disk_update};
+    use std::path::Path;
+
+    #[test]
+    fn disk_refresh_preserves_unsaved_svg_and_recognizes_external_save() {
+        let old = Snapshot::parse(Path::new("a.svg"), b"<svg/>").unwrap();
+        let external = Snapshot::parse(Path::new("a.svg"), b"<svg width=\"10\"/>").unwrap();
+        assert_eq!(disk_update(None, None, &old), DiskUpdate::Reload);
+        assert_eq!(disk_update(Some(&old), None, &external), DiskUpdate::Reload);
+        assert_eq!(
+            disk_update(Some(&old), Some("mine"), &external),
+            DiskUpdate::Conflict
+        );
+        assert_eq!(
+            disk_update(Some(&old), Some("mine"), &old),
+            DiskUpdate::Unchanged
+        );
+        assert_eq!(
+            disk_update(Some(&old), Some(&external.text()), &external),
+            DiskUpdate::MatchesBuffer
+        );
     }
 }

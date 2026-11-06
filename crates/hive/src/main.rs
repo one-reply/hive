@@ -5,6 +5,7 @@ mod terminal;
 mod ui;
 mod updater;
 
+use gpui_kit::base::Root;
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 
@@ -52,6 +53,37 @@ fn load_login_environment(cx: &mut App) {
         .detach();
 }
 
+fn open_main_window(cx: &mut App) {
+    let options = WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            title: Some("Hive".into()),
+            ..TitleBar::title_bar_options()
+        }),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+            None,
+            size(px(1200.), px(760.)),
+            cx,
+        ))),
+        ..TitleBar::window_options()
+    };
+    if let Err(error) = gpui_kit::open_window(options, cx, |window, cx| {
+        cx.new(|cx| Workspace::new(window, cx))
+    }) {
+        tracing::error!(%error, "failed to open the main window");
+    }
+}
+
+/// The open main window, found among the app's windows (Settings is another one) by its root view.
+fn workspace_window(cx: &App) -> Option<WindowHandle<Root>> {
+    cx.windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<Root>())
+        .find(|root| {
+            root.read(cx)
+                .is_ok_and(|root| root.view().clone().downcast::<Workspace>().is_ok())
+        })
+}
+
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
     if args.get(1).is_some_and(|a| a == "--agent-hook") {
@@ -72,50 +104,50 @@ fn main() {
     init_logging();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "hive starting");
 
-    gpui_kit::application()
-        .with_assets(gpui_kit::assets::AllAssets)
-        .run(|cx| {
-            gpui_kit::init(cx);
-            load_login_environment(cx);
-            cx.spawn(async move |cx| {
-                let (loaded, recovery) = cx
-                    .background_executor()
-                    .spawn(async {
-                        let loaded = hive_core::state::State::load();
-                        // Recovery must be available before any restored buffer becomes editable.
-                        let recovery = hive_core::files::recovery::load(
-                            &hive_core::state::hive_dir().join("editor-recovery"),
-                        );
-                        (loaded, recovery)
-                    })
-                    .await;
-                cx.update(|cx| {
-                    AppState::init(loaded, recovery, cx);
-                    ui::app_menu::init(cx);
-                    ui::theme::init(cx);
-                    ui::syntax::init();
-                    // After every layer has bound its keys: it rebuilds the keymap around them.
-                    ui::keymap::init(cx);
-                    ui::settings::init(cx);
-                    let options = WindowOptions {
-                        titlebar: Some(TitlebarOptions {
-                            title: Some("Hive".into()),
-                            ..TitleBar::title_bar_options()
-                        }),
-                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                            None,
-                            size(px(1200.), px(760.)),
-                            cx,
-                        ))),
-                        ..TitleBar::window_options()
-                    };
-                    gpui_kit::open_window(options, cx, |window, cx| {
-                        cx.new(|cx| Workspace::new(window, cx))
-                    })
-                    .expect("failed to open window");
-                    cx.activate(true);
-                });
-            })
-            .detach();
-        });
+    let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
+    // Closing the last window keeps the process alive (macOS convention), so a Dock click
+    // must bring a window back. Before `AppState` loads, the launch path opens it instead.
+    application.on_reopen(|cx| {
+        if !cx.has_global::<AppState>() {
+            return;
+        }
+        match workspace_window(cx) {
+            Some(window) => {
+                if let Err(error) = window.update(cx, |_, window, _| window.activate_window()) {
+                    tracing::warn!(%error, "failed to activate the main window");
+                }
+            }
+            None => open_main_window(cx),
+        }
+        cx.activate(true);
+    });
+    application.run(|cx| {
+        gpui_kit::init(cx);
+        load_login_environment(cx);
+        cx.spawn(async move |cx| {
+            let (loaded, recovery) = cx
+                .background_executor()
+                .spawn(async {
+                    let loaded = hive_core::state::State::load();
+                    // Recovery must be available before any restored buffer becomes editable.
+                    let recovery = hive_core::files::recovery::load(
+                        &hive_core::state::hive_dir().join("editor-recovery"),
+                    );
+                    (loaded, recovery)
+                })
+                .await;
+            cx.update(|cx| {
+                AppState::init(loaded, recovery, cx);
+                ui::app_menu::init(cx);
+                ui::theme::init(cx);
+                ui::syntax::init();
+                // After every layer has bound its keys: it rebuilds the keymap around them.
+                ui::keymap::init(cx);
+                ui::settings::init(cx);
+                open_main_window(cx);
+                cx.activate(true);
+            });
+        })
+        .detach();
+    });
 }
