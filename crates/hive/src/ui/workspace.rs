@@ -83,8 +83,10 @@ pub struct Workspace {
     should_move: bool,
 }
 
-/// Height of the band at the top of the center column that behaves like a title bar.
-const TAB_BAR_HEIGHT: Pixels = px(34.);
+/// Height of the band at the top of the center column that behaves like a title bar. Equals the
+/// center tab bar, which is as tall as gpui-component's default `Tab`, so the bottom lines of
+/// the title bar, the tab bar and the right sidebar's header form one line.
+const TAB_BAR_HEIGHT: Pixels = px(32.);
 /// Grab area straddling the sidebar's right border.
 const RESIZE_HANDLE_WIDTH: Pixels = px(6.);
 /// Marker under the active tab of the right sidebar's header.
@@ -466,27 +468,34 @@ impl Render for Workspace {
         let open = self.sidebar_open;
         // The toggle keeps a fixed slot in both states, so it does not jump when the sidebar
         // collapses and the center's tab bar starts right after it.
-        let title_bar = TitleBar::new().bg(bg).child(
-            h_flex()
-                .pr_2()
-                .w(COLLAPSED_TITLE_CONTENT_WIDTH)
-                .flex_none()
-                .child(
-                    Button::new("toggle-sidebar")
-                        .cursor_pointer()
-                        .small()
-                        .icon(Lucide::PanelLeft)
-                        .tooltip_with_action(
-                            "Toggle sidebar",
-                            &ToggleSidebar,
-                            Some(keymap::CONTEXT),
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_sidebar(&ToggleSidebar, window, cx)
-                        }))
-                        .smooth_hover(ButtonLook::Ghost, &toggle_hover, cx),
-                ),
-        );
+        let sidebar_border = cx.theme().sidebar_border;
+        // Open, the title bar draws the sidebar border over the tab bar's first column, where
+        // the center dock tucks the first tab's left border so the two don't double up.
+        let title_bar = TitleBar::new()
+            .h(TAB_BAR_HEIGHT)
+            .bg(bg)
+            .when(open, |bar| bar.border_r_1().border_color(sidebar_border))
+            .child(
+                h_flex()
+                    .pr_2()
+                    .w(COLLAPSED_TITLE_CONTENT_WIDTH)
+                    .flex_none()
+                    .child(
+                        Button::new("toggle-sidebar")
+                            .cursor_pointer()
+                            .small()
+                            .icon(Lucide::PanelLeft)
+                            .tooltip_with_action(
+                                "Toggle sidebar",
+                                &ToggleSidebar,
+                                Some(keymap::CONTEXT),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_sidebar(&ToggleSidebar, window, cx)
+                            }))
+                            .smooth_hover(ButtonLook::Ghost, &toggle_hover, cx),
+                    ),
+            );
         let title_bar = self.animate_title_inset(title_bar);
         // Orca-style: the title bar (traffic lights + name) sits above the sidebar only and the
         // center dock with its tab bar runs to the very top. Collapsing slides the sidebar to
@@ -552,13 +561,7 @@ impl Render for Workspace {
                     .absolute()
                     .top_0()
                     .left_0()
-                    .map(|el| {
-                        if open {
-                            el.w(width - px(1.)) /* leave the sidebar border visible */
-                        } else {
-                            el.w(title_width)
-                        }
-                    })
+                    .map(|el| if open { el.w(width) } else { el.w(title_width) })
                     .child(title_bar),
             )
             .when(open, |el| el.child(self.render_sidebar_resize_handle(cx)))
