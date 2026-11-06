@@ -10,12 +10,14 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 use hive_core::agent::{
-    AgentKind, AgentStatus, ProcessTable, hooks,
+    AgentKind, AgentStatus, ProcessTable, conversation, hooks,
     launch::{Launch, ResumeSession},
 };
 use hive_core::terminal::{Activity, Terminal};
 
 use crate::state::terminal_session::TerminalSession;
+
+mod conversations;
 
 /// Short enough that a spinner starts soon after the agent does, long enough that one `ps`
 /// per tick stays negligible.
@@ -72,6 +74,8 @@ struct Sighting {
     worktree: PathBuf,
     kind: AgentKind,
     status: AgentStatus,
+    /// The conversation the agent runs, once its CLI has recorded one.
+    conversation: Option<ResumeSession>,
 }
 
 impl EventEmitter<AgentsEvent> for Agents {}
@@ -249,7 +253,7 @@ impl Agents {
                 .session
                 .and_then(|id| ResumeSession::new(AgentKind::ClaudeCode, &id))
             {
-                session.update(cx, |session, cx| session.set_resume(id, cx));
+                session.update(cx, |session, cx| session.set_resume(Some(id), cx));
             }
             if let Some(status) = report.status
                 && update_status(&mut watched.reported, &mut watched.unread, status)
@@ -287,6 +291,11 @@ impl Agents {
                 return;
             }
         };
+        let seen: HashMap<EntityId, (AgentKind, Option<ResumeSession>)> = sightings
+            .iter()
+            .map(|sighting| (sighting.id, (sighting.kind, sighting.conversation.clone())))
+            .collect();
+        self.track_conversations(&seen, cx);
         let mut by_worktree: HashMap<PathBuf, Vec<AgentSession>> = HashMap::new();
         for sighting in sightings {
             let title = self
@@ -323,18 +332,28 @@ impl Agents {
 fn look(probes: &[(EntityId, Probe)]) -> Result<Vec<Sighting>, String> {
     let table = ProcessTable::snapshot().map_err(|error| error.to_string())?;
     let now = Instant::now();
-    Ok(probes
+    let mut sightings: Vec<Sighting> = probes
         .iter()
         .filter_map(|(id, probe)| {
             let kind = table.foreground_agent(probe.shell_pid)?;
+            let conversation =
+                conversation::discover(kind, &table.foreground_pids(probe.shell_pid));
             Some(Sighting {
                 id: *id,
                 worktree: probe.worktree.clone(),
                 kind,
                 status: AgentStatus::of(&probe.activity, now),
+                conversation,
             })
         })
-        .collect())
+        .collect();
+    conversations::forget_shared(
+        &mut sightings
+            .iter_mut()
+            .map(|sighting| &mut sighting.conversation)
+            .collect::<Vec<_>>(),
+    );
+    Ok(sightings)
 }
 
 fn update_status(

@@ -181,7 +181,7 @@ pub struct TerminalPane {
     /// Original worktree association, retained even after a shell changes directory.
     #[serde(default)]
     pub worktree: Option<PathBuf>,
-    /// A supported conversation to offer explicitly; never auto-resumed.
+    /// The conversation the pane's agent ran at quit; restoration resumes it in this pane.
     #[serde(default, deserialize_with = "crate::agent::launch::deserialize_saved")]
     pub resume: Option<crate::agent::launch::ResumeSession>,
 }

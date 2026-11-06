@@ -5,6 +5,7 @@
 //! its foreground process group (`tpgid`), and the command lines in that group name the agent.
 //! One `ps` snapshot serves every open terminal.
 
+pub mod conversation;
 pub mod draft;
 pub mod hooks;
 pub mod launch;
@@ -34,11 +35,12 @@ pub enum AgentKind {
     Amp,
     Aider,
     Droid,
+    Antigravity,
 }
 
 impl AgentKind {
     /// Every recognized agent, in display order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::ClaudeCode,
         Self::Codex,
         Self::OpenCode,
@@ -49,6 +51,7 @@ impl AgentKind {
         Self::Amp,
         Self::Aider,
         Self::Droid,
+        Self::Antigravity,
     ];
 
     /// Display name, as the vendor spells it.
@@ -64,6 +67,7 @@ impl AgentKind {
             Self::Amp => "Amp",
             Self::Aider => "Aider",
             Self::Droid => "Droid",
+            Self::Antigravity => "Antigravity",
         }
     }
 
@@ -80,6 +84,7 @@ impl AgentKind {
             Self::Amp => "amp",
             Self::Aider => "aider",
             Self::Droid => "droid",
+            Self::Antigravity => "agy",
         }
     }
 
@@ -220,7 +225,7 @@ impl ProcessTable {
     /// `None` while the shell itself is in the foreground or runs something else.
     pub fn foreground_agent(&self, shell_pid: u32) -> Option<AgentKind> {
         let shell = self.processes.iter().find(|p| p.pid == shell_pid)?;
-        let foreground = u32::try_from(shell.tpgid).ok().filter(|&group| group > 0)?;
+        let foreground = Self::foreground_group(shell)?;
         if foreground == shell.pgid {
             return AgentKind::from_command(&shell.args);
         }
@@ -229,6 +234,28 @@ impl ProcessTable {
             .iter()
             .filter(|p| p.pgid == foreground)
             .find_map(|p| AgentKind::from_command(&p.args))
+    }
+
+    /// Every process of the foreground job of the terminal whose shell is `shell_pid`,
+    /// including the shell itself when nothing else is in the foreground.
+    pub fn foreground_pids(&self, shell_pid: u32) -> Vec<u32> {
+        let Some(foreground) = self
+            .processes
+            .iter()
+            .find(|p| p.pid == shell_pid)
+            .and_then(Self::foreground_group)
+        else {
+            return Vec::new();
+        };
+        self.processes
+            .iter()
+            .filter(|p| p.pgid == foreground)
+            .map(|p| p.pid)
+            .collect()
+    }
+
+    fn foreground_group(shell: &Process) -> Option<u32> {
+        u32::try_from(shell.tpgid).ok().filter(|&group| group > 0)
     }
 }
 
@@ -287,6 +314,16 @@ garbage line
     fn agent_in_the_foreground_is_found() {
         let table = ProcessTable::parse(SAMPLE);
         assert_eq!(table.foreground_agent(51000), Some(AgentKind::ClaudeCode));
+    }
+
+    #[test]
+    fn foreground_pids_cover_the_whole_job() {
+        let table = ProcessTable::parse(SAMPLE);
+        assert_eq!(table.foreground_pids(51000), [98260, 98948]);
+        assert_eq!(table.foreground_pids(54000), [54100, 54101]);
+        assert_eq!(table.foreground_pids(52000), [52000]);
+        assert!(table.foreground_pids(1).is_empty());
+        assert!(table.foreground_pids(4242).is_empty());
     }
 
     #[test]

@@ -16,6 +16,7 @@ pub(crate) fn svg(kind: AgentKind) -> &'static [u8] {
         AgentKind::CursorAgent => include_bytes!("../../assets/cursor.svg"),
         AgentKind::CopilotCli => include_bytes!("../../assets/copilot.svg"),
         AgentKind::QwenCode => include_bytes!("../../assets/qwen.svg"),
+        AgentKind::Antigravity => include_bytes!("../../assets/antigravity.svg"),
         AgentKind::Amp | AgentKind::Aider | AgentKind::Droid => {
             include_bytes!("../../assets/agent-terminal.svg")
         }

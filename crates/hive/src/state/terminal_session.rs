@@ -35,8 +35,8 @@ pub(crate) struct TerminalSession {
     pub(crate) exited: bool,
     pub(crate) directory: Option<PathBuf>,
     worktree: Option<PathBuf>,
+    /// The conversation this terminal's agent is running, kept so a restart can resume it.
     pub(crate) resume: Option<ResumeSession>,
-    pub(crate) resume_available: bool,
     focused: bool,
     pub(crate) last_focused: Option<std::time::Instant>,
     pub(crate) launched_agent: Option<hive_core::agent::AgentKind>,
@@ -155,7 +155,6 @@ impl TerminalSession {
             directory,
             worktree,
             resume,
-            resume_available: false,
             focused: false,
             last_focused: None,
             launched_agent,
@@ -169,20 +168,11 @@ impl TerminalSession {
         }
     }
 
-    pub(crate) fn set_resume(&mut self, resume: ResumeSession, cx: &mut Context<Self>) {
-        if self.resume.as_ref() != Some(&resume) {
-            self.resume = Some(resume);
+    /// Records the conversation the agent runs now, or that none runs; persisted with the tile.
+    pub(crate) fn set_resume(&mut self, resume: Option<ResumeSession>, cx: &mut Context<Self>) {
+        if self.resume != resume {
+            self.resume = resume;
             cx.emit(SessionEvent::DirectoryChanged);
-        }
-    }
-
-    pub(crate) fn request_resume(&mut self, worktree: PathBuf, cx: &mut Context<Self>) {
-        if let Some(resume) = self.resume.clone() {
-            AppState::get(cx).agents.clone().update(cx, |agents, cx| {
-                agents.start(worktree, Some(Launch::Resume(resume)), cx)
-            });
-            self.resume_available = false;
-            cx.notify();
         }
     }
 
