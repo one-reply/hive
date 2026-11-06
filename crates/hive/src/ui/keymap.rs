@@ -245,6 +245,11 @@ pub(crate) fn label(action: &dyn Action) -> Option<&'static str> {
 /// Installs the shortcuts now and again whenever the user reassigns one.
 pub fn init(cx: &mut App) {
     cx.bind_keys(terminal_input_bindings());
+    cx.bind_keys([KeyBinding::new(
+        "down",
+        crate::ui::files_panel::FocusFileResults,
+        Some("FileSearch > Input"),
+    )]);
     let store = AppState::get(cx).store.clone();
     let mut installed = store.read(cx).state.settings.keybindings().clone();
     install(cx);

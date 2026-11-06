@@ -146,6 +146,8 @@ impl Files {
                     this.sync_documents(false, cx);
                     this.refresh_all(cx);
                 }
+                // A query in another worktree may have been waiting for this mutation.
+                this.search(cx);
                 cx.emit(FilesEvent { target, operation, result, warning });
                 cx.notify();
             });

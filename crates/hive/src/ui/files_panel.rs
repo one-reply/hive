@@ -26,7 +26,7 @@ mod icons;
 mod motion;
 mod moving;
 mod row;
-pub(crate) mod search;
+mod search;
 mod tree;
 use editing::Edit;
 
@@ -36,21 +36,24 @@ actions!(
         OpenSelectedFile,
         RenameSelectedFile,
         DeleteSelectedFile,
-        CancelFileEdit
+        CancelFileEdit,
+        FocusFileResults
     ]
 );
 const LABEL_SIZE: f32 = 13.;
 const META_SIZE: f32 = 11.;
 const ICON_SIZE: f32 = 16.;
 const INDENT: f32 = 16.;
-/// A touch taller than `Button::small` so the search field reads as an input, not a chip.
-const SEARCH_HEIGHT: f32 = 28.;
+/// Matches the library's `Input` medium height so the search field reads as an input, not a chip.
+const SEARCH_HEIGHT: f32 = 32.;
 
 pub(crate) struct FilesPanel {
     pub files: Entity<Files>,
     /// The widget's rows, selection and scroll; rebuilt from `Files::nodes` when they change.
     tree: Entity<TreeState>,
     synced_generation: Option<u64>,
+    search_input: Entity<gpui_kit::component::input::InputState>,
+    filtered_tree: bool,
     edit: Option<Edit>,
     manual_refresh: bool,
     operation_error: Option<String>,
@@ -64,10 +67,12 @@ pub(crate) struct FilesPanel {
 }
 impl FilesPanel {
     pub fn new(files: Entity<Files>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let (search_input, search_subscription) = search::input(window, cx);
         let tree = cx.new(|cx| TreeState::new(cx));
         let mut motion = motion::TreeMotion::default();
         motion.observe(tree.read(cx), true);
         let subscriptions = vec![
+            search_subscription,
             cx.observe(&tree, |this, tree, cx| {
                 this.motion.observe(tree.read(cx), cx.reduce_motion())
             }),
@@ -79,7 +84,8 @@ impl FilesPanel {
                 this.files
                     .update(cx, |files, cx| files.set_expanded(path, expanded, cx));
             }),
-            cx.observe(&files, |this, files, cx| {
+            cx.observe_in(&files, window, |this, files, window, cx| {
+                this.sync_search_input(window, cx);
                 this.sync_tree(cx);
                 let state = files.read(cx);
                 if !state.loading {
@@ -136,6 +142,8 @@ impl FilesPanel {
             files,
             tree,
             synced_generation: None,
+            search_input,
+            filtered_tree: false,
             edit: None,
             manual_refresh: false,
             operation_error: None,
@@ -164,6 +172,9 @@ impl FilesPanel {
         } else {
             tree::items(files.nodes())
         };
+        let searching = !files.search_query().is_empty();
+        let suppress_motion = searching || self.filtered_tree;
+        self.filtered_tree = searching;
         let reveal = files.reveal_request().map(Path::to_path_buf);
         let selected = self
             .tree
@@ -188,6 +199,9 @@ impl FilesPanel {
                 None => false,
             }
         });
+        if suppress_motion {
+            self.motion.observe(self.tree.read(cx), true);
+        }
         if revealed {
             self.files.update(cx, |files, _| files.revealed());
         }
@@ -235,19 +249,24 @@ impl Render for FilesPanel {
             .map(|t| t.path.display().to_string())
             .unwrap_or_default();
         let settings = state.settings.clone();
-        let error = state.error.clone();
+        let searching = !state.search_query().is_empty();
+        let search_loading = state.search_loading();
+        let truncated = state.search_truncated();
+        let error = state
+            .search_error()
+            .map(str::to_owned)
+            .or_else(|| state.error.clone());
         let available = target
             .as_ref()
             .is_some_and(|t| t.host == hive_core::host::Host::Local);
         let loading = state.loading && (self.manual_refresh || tree.read(cx).entry(0).is_none());
         let busy = state.busy;
-        let empty = !state.loading && tree.read(cx).entry(0).is_none();
+        let empty = !state.loading && !search_loading && tree.read(cx).entry(0).is_none();
         let active = state.active.clone();
         let panel = cx.entity();
         let menu_panel = panel.clone();
         let root_drop = panel.clone();
-        let [refresh_hover, search_hover] =
-            ["files-refresh", "files-search"].map(|id| Hover::new(id, window, cx));
+        let refresh_hover = Hover::new("files-refresh", window, cx);
         let mut body = v_flex()
             .key_context("FilesPanel")
             .size_full()
@@ -411,23 +430,17 @@ impl Render for FilesPanel {
                             }),
                     ),
             )
-            .child(
-                div().px_2().pb_2().child(
-                    Button::new("files-search")
-                        .small()
-                        .w_full()
-                        .h(px(SEARCH_HEIGHT))
-                        .cursor_pointer()
-                        .icon(Lucide::Search)
-                        .label("Find file…")
-                        .tooltip("Open file · ⌘P")
-                        .disabled(!available)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            search::open(this.files.clone(), window, cx)
-                        }))
-                        .smooth_hover(ButtonLook::Outline, &search_hover, cx),
-                ),
+            .child(self.search_field(available, cx));
+        if truncated {
+            body = body.child(
+                div()
+                    .px_2()
+                    .pb_2()
+                    .text_size(rems(META_SIZE / 16.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Index limited to 100,000 files"),
             );
+        }
         if let Some(edit) = self.edit.as_ref().filter(|edit| edit.renaming().is_none()) {
             body = body.child(edit.render_form(busy, window, cx));
         }
@@ -450,7 +463,7 @@ impl Render for FilesPanel {
                     .child("Select a project or worktree to browse its files."),
             );
         } else if empty && available {
-            body = body.child(div().p_3().text_sm().text_color(cx.theme().muted_foreground).child("No files to show. Create a file from the menu, or check visibility in Files Settings."));
+            body = body.child(div().p_3().text_sm().text_color(cx.theme().muted_foreground).child(if searching { "No matching files" } else { "No files to show. Create a file from the menu, or check visibility in Files Settings." }));
         }
         let context_panel = panel.clone();
         let drag_panel = panel.clone();

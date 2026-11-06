@@ -16,6 +16,7 @@ pub use mutations::{
     create_directory, create_file, delete_entry, entry_path, move_entry, name_taken, relocated_path,
 };
 pub mod recovery;
+pub mod search;
 pub use language::{editor_language, is_dockerfile};
 pub use listing::{Entry, FileIndex, list_directory, list_files};
 

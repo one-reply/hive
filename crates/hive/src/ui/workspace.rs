@@ -572,11 +572,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(
                 |this, _: &crate::ui::editor_panel::OpenFileSearch, window, cx| {
-                    crate::ui::files_panel::search::open(
-                        this.files_panel.read(cx).files.clone(),
-                        window,
-                        cx,
-                    );
+                    this.choose_files(true, cx);
+                    if !this.git_open {
+                        this.toggle_git(cx);
+                    }
+                    let panel = this.files_panel.clone();
+                    window.defer(cx, move |window, cx| {
+                        panel.update(cx, |panel, cx| panel.focus_search(window, cx))
+                    });
                 },
             ))
             .on_action(
