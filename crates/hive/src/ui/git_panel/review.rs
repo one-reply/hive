@@ -19,7 +19,7 @@ impl GitPanel {
         let muted = cx.theme().muted_foreground;
         let mut content = v_flex().gap_1().child(
             h_flex()
-                .mt_1()
+                .mt_3()
                 .px_1()
                 .gap_2()
                 .items_center()
@@ -88,7 +88,7 @@ impl GitPanel {
                     Button::new("history-back")
                         .cursor_pointer()
                         .xsmall()
-                        .mt_1()
+                        .mt_3()
                         .icon(Lucide::ArrowLeft)
                         .label("All commits")
                         .on_click(cx.listener(|this, _, _, cx| {
