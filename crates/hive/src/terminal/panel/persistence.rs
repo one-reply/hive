@@ -102,15 +102,11 @@ fn restore_panes(
 ) -> Option<PaneTree<Entity<TerminalView>>> {
     match layout {
         Layout::Leaf { value } => {
-            let view = cx.new(|cx| {
-                TerminalView::with_launch(
-                    value.worktree.as_deref(),
-                    Some(&value.directory),
-                    None,
-                    value.resume.clone(),
-                    window,
-                    cx,
-                )
+            let worktree = value.worktree.as_deref();
+            let directory = Some(value.directory.as_path());
+            let view = cx.new(|cx| match value.resume.clone() {
+                Some(resume) => TerminalView::resuming(worktree, directory, resume, window, cx),
+                None => TerminalView::in_directory(worktree, directory, window, cx),
             });
             views.push(view.clone());
             Some(PaneTree::Leaf(view))

@@ -10,14 +10,19 @@ use std::{
 };
 
 /// Interactive CLIs Hive can launch explicitly.
-pub const AGENTS: [AgentKind; 3] = [AgentKind::Codex, AgentKind::ClaudeCode, AgentKind::OpenCode];
+pub const AGENTS: [AgentKind; 4] = [
+    AgentKind::Codex,
+    AgentKind::ClaudeCode,
+    AgentKind::OpenCode,
+    AgentKind::Antigravity,
+];
 
 /// OpenCode rejects `--session` values without this prefix.
 const OPENCODE_SESSION_PREFIX: &str = "ses_";
 static NEXT_OPENCODE_SESSION: AtomicU64 = AtomicU64::new(0);
 
 /// A supported conversation the user can explicitly resume.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ResumeSession {
     agent: AgentKind,
     id: String,
@@ -26,7 +31,7 @@ impl ResumeSession {
     /// Capture a validated conversation identifier from an agent event.
     pub fn new(agent: AgentKind, id: &str) -> Option<Self> {
         let supported = match agent {
-            AgentKind::ClaudeCode | AgentKind::Codex => true,
+            AgentKind::ClaudeCode | AgentKind::Codex | AgentKind::Antigravity => true,
             AgentKind::OpenCode => id.starts_with(OPENCODE_SESSION_PREFIX),
             _ => false,
         };
@@ -159,6 +164,7 @@ impl Launch {
                 match session.agent {
                     AgentKind::ClaudeCode => "--resume",
                     AgentKind::OpenCode => "--session",
+                    AgentKind::Antigravity => "--conversation",
                     _ => "resume",
                 }
                 .into(),
@@ -181,7 +187,7 @@ pub enum LaunchError {
     #[error("{0} CLI not found. Install it, then try again.")]
     Missing(&'static str),
     /// This agent does not support explicit interactive launches.
-    #[error("Choose Claude Code, Codex, or OpenCode.")]
+    #[error("Choose Claude Code, Codex, OpenCode, or Antigravity.")]
     Unsupported,
     /// An invalid saved session must never become CLI flags.
     #[error("The saved agent session id is invalid. Start a new session.")]
@@ -216,6 +222,19 @@ mod tests {
         assert!(ResumeSession::new(AgentKind::Codex, "$(touch /tmp/no)").is_none());
     }
     #[test]
+    fn antigravity_resumes_its_conversation_by_id() {
+        let session = ResumeSession::new(
+            AgentKind::Antigravity,
+            "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        )
+        .unwrap();
+        assert_eq!(
+            Launch::Resume(session).arguments(Some("{}")).unwrap(),
+            ["--conversation", "a1b2c3d4-e5f6-7890-abcd-ef1234567890"]
+        );
+        assert!(ResumeSession::new(AgentKind::Antigravity, "-c").is_none());
+    }
+    #[test]
     fn new_opencode_launch_owns_a_resumable_session_id() {
         let launch = Launch::New(AgentKind::OpenCode).with_known_session();
         let session = launch
@@ -236,7 +255,11 @@ mod tests {
     }
     #[test]
     fn other_new_launches_keep_their_unknown_session() {
-        for agent in [AgentKind::ClaudeCode, AgentKind::Codex] {
+        for agent in [
+            AgentKind::ClaudeCode,
+            AgentKind::Codex,
+            AgentKind::Antigravity,
+        ] {
             assert!(Launch::New(agent).with_known_session().session().is_none());
         }
     }

@@ -68,7 +68,7 @@ impl TerminalPanel {
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            let view = cx.new(|cx| TerminalView::with_launch(cwd, cwd, launch, None, window, cx));
+            let view = cx.new(|cx| TerminalView::with_launch(cwd, cwd, launch, window, cx));
             let mut this = Self {
                 panes: PaneTree::Leaf(view.clone()),
                 active: view.clone(),

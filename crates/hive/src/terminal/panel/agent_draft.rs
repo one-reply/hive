@@ -26,14 +26,7 @@ impl TerminalPanel {
     ) -> Entity<TerminalSession> {
         self.active = pane;
         let view = cx.new(|cx| {
-            TerminalView::with_launch(
-                Some(worktree),
-                Some(worktree),
-                Some(launch),
-                None,
-                window,
-                cx,
-            )
+            TerminalView::with_launch(Some(worktree), Some(worktree), Some(launch), window, cx)
         });
         let session = view.read(cx).session().clone();
         self.insert_pane(view, Axis::Horizontal, window, cx);

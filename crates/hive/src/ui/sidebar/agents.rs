@@ -16,7 +16,7 @@ const SECTION_TOP: Pixels = px(2.);
 const SECTION_BOTTOM: Pixels = px(8.);
 const LOGO_SIZE: Pixels = px(13.);
 /// Logos the strip shows before collapsing the rest into "+N".
-const STRIP_LOGOS: usize = 2;
+const STRIP_LOGOS: usize = 5;
 const AGENTS_DURATION: Duration = Duration::from_millis(200);
 const STRIP_BACKGROUND_OPACITY: f32 = 0.03;
 const STRIP_HOVER_OPACITY: f32 = 0.07;

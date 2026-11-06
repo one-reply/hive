@@ -7,7 +7,6 @@ use crate::ui::files_panel::DraggedFiles;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, notification::Notification};
 use gpui_kit::component::{Sizable as _, button::Button, v_flex};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hive_core::agent::launch::{Launch, ResumeSession};
 use hive_core::terminal::{ScrollModifiers, SelectionType};
@@ -29,11 +28,15 @@ pub struct TerminalView {
     session: Entity<TerminalSession>,
     focus_handle: FocusHandle,
     cwd: Option<PathBuf>,
+    /// A conversation resumed on restore hands its tile back to a shell when the agent ends,
+    /// including a resume the CLI rejects, instead of closing the tile.
+    shell_after_exit: bool,
     /// Fractional scroll-wheel lines not yet applied.
     scroll_remainder: f32,
     grid: Option<GridGeometry>,
     selecting: bool,
     _subscriptions: Vec<Subscription>,
+    _session_subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<TerminalViewEvent> for TerminalView {}
@@ -49,14 +52,26 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::with_launch(cwd, directory, None, None, window, cx)
+        Self::with_launch(cwd, directory, None, window, cx)
+    }
+
+    /// A restored tile that continues the conversation it showed when Hive quit.
+    pub(crate) fn resuming(
+        cwd: Option<&Path>,
+        directory: Option<&Path>,
+        resume: ResumeSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::with_launch(cwd, directory, Some(Launch::Resume(resume)), window, cx);
+        view.shell_after_exit = true;
+        view
     }
 
     pub(crate) fn with_launch(
         cwd: Option<&Path>,
         directory: Option<&Path>,
         launch: Option<Launch>,
-        resume: Option<ResumeSession>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -68,13 +83,6 @@ impl TerminalView {
                 cx,
             )
         });
-        // A restored tile offers its saved conversation; a fresh launch may already own one.
-        if let Some(resume) = resume {
-            session.update(cx, |session, _| {
-                session.resume_available = true;
-                session.resume = Some(resume);
-            });
-        }
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.on_focus(&focus_handle, window, |this, _, cx| {
@@ -88,26 +96,57 @@ impl TerminalView {
                     .update(cx, |session, _| session.set_focused(false));
                 cx.notify();
             }),
-            cx.observe(&session, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&session, window, |_, _, event, window, cx| match event {
+        ];
+        Self {
+            _session_subscriptions: Self::subscribe_session(&session, window, cx),
+            session,
+            focus_handle,
+            cwd: cwd.map(Path::to_path_buf),
+            shell_after_exit: false,
+            scroll_remainder: 0.,
+            grid: None,
+            selecting: false,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    fn subscribe_session(
+        session: &Entity<TerminalSession>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Subscription> {
+        vec![
+            cx.observe(session, |_, _, cx| cx.notify()),
+            cx.subscribe_in(session, window, |this, _, event, window, cx| match event {
                 SessionEvent::TitleChanged => cx.emit(TerminalViewEvent::TitleChanged),
                 SessionEvent::DirectoryChanged => cx.emit(TerminalViewEvent::DirectoryChanged),
+                SessionEvent::Exited if this.shell_after_exit => this.continue_in_shell(window, cx),
                 SessionEvent::Exited => cx.emit(TerminalViewEvent::Exited),
                 SessionEvent::PasteFailed(error) => window.push_notification(
                     Notification::error(error.clone()).title("Could not paste image"),
                     cx,
                 ),
             }),
-        ];
-        Self {
-            session,
-            focus_handle,
-            cwd: cwd.map(Path::to_path_buf),
-            scroll_remainder: 0.,
-            grid: None,
-            selecting: false,
-            _subscriptions: subscriptions,
-        }
+        ]
+    }
+
+    /// Replaces the ended agent with a shell in its last directory, keeping the tile in place.
+    fn continue_in_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.shell_after_exit = false;
+        let directory = self.restore_directory(cx);
+        let worktree = self.cwd.clone();
+        let focused = self.focus_handle.is_focused(window);
+        let session = cx.new(|cx| {
+            let mut session = TerminalSession::new(Some(directory), worktree, None, cx);
+            session.set_focused(focused);
+            session
+        });
+        self._session_subscriptions = Self::subscribe_session(&session, window, cx);
+        self.session = session;
+        self.selecting = false;
+        // The saved tile no longer holds a conversation to resume.
+        cx.emit(TerminalViewEvent::DirectoryChanged);
+        cx.notify();
     }
 
     pub(crate) fn session(&self) -> &Entity<TerminalSession> {
@@ -274,77 +313,51 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
         let bg = cx.theme().background;
-        let resume = self
-            .session
-            .read(cx)
-            .resume
-            .clone()
-            .filter(|_| self.session.read(cx).resume_available);
-        let resume_hover = Hover::new("resume-agent", window, cx);
         let draft = self.render_agent_draft(window, cx);
         let drop_session = self.session.clone();
-        v_flex()
-            .size_full()
-            .children(draft)
-            .when_some(resume, |view, resume| {
-                view.child(
-                    Button::new("resume-agent")
-                        .cursor_pointer()
-                        .small()
-                        .label(format!("Resume {} session", resume.agent().name()))
-                        .tooltip("Continue the saved conversation in a new terminal")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(path) = this.cwd.clone() {
-                                this.session
-                                    .update(cx, |session, cx| session.request_resume(path, cx));
-                            }
-                        }))
-                        .smooth_hover(ButtonLook::Outline, &resume_hover, cx),
-                )
-            })
-            .child(
-                div()
-                    .id("terminal")
-                    .track_focus(&self.focus_handle)
-                    .key_context(keymap::TERMINAL_VIEW_CONTEXT)
-                    .w_full()
-                    .flex_1()
-                    .min_h_0()
-                    .bg(bg)
-                    .border_1()
-                    .border_color(bg)
-                    .cursor(CursorStyle::IBeam)
-                    .can_drop(move |value, _, cx| {
-                        value.downcast_ref::<DraggedFiles>().is_some_and(|drag| {
-                            drop_session.read(cx).accepts_file_drop(&drag.target)
-                        })
-                    })
-                    .drag_over::<DraggedFiles>(|style, _, _, cx| {
-                        style.border_color(cx.theme().drag_border)
-                    })
-                    .on_drop(cx.listener(Self::drop_file))
-                    .on_key_down(cx.listener(Self::key_down))
-                    .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
-                    .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
-                    .on_action(cx.listener(|this, _: &component::input::Copy, _, cx| this.copy(cx)))
-                    .on_scroll(cx.listener(Self::scroll_wheel))
-                    .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
-                    .on_mouse_move(cx.listener(Self::mouse_move))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
-                    .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
-                    .child(match &self.session.read(cx).status {
-                        SessionStatus::Starting => {
-                            div().p_4().child("Starting terminal…").into_any_element()
-                        }
-                        SessionStatus::Failed(error) => div()
-                            .p_4()
-                            .child(format!("Could not start terminal: {error}"))
-                            .into_any_element(),
-                        SessionStatus::Ready(_) => {
-                            TerminalElement::new(cx.entity(), focused).into_any_element()
-                        }
-                    }),
-            )
+        v_flex().size_full().children(draft).child(
+            div()
+                .id("terminal")
+                .track_focus(&self.focus_handle)
+                .key_context(keymap::TERMINAL_VIEW_CONTEXT)
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .bg(bg)
+                .border_1()
+                .border_color(bg)
+                .cursor(CursorStyle::IBeam)
+                .can_drop(move |value, _, cx| {
+                    value
+                        .downcast_ref::<DraggedFiles>()
+                        .is_some_and(|drag| drop_session.read(cx).accepts_file_drop(&drag.target))
+                })
+                .drag_over::<DraggedFiles>(|style, _, _, cx| {
+                    style.border_color(cx.theme().drag_border)
+                })
+                .on_drop(cx.listener(Self::drop_file))
+                .on_key_down(cx.listener(Self::key_down))
+                .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
+                .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
+                .on_action(cx.listener(|this, _: &component::input::Copy, _, cx| this.copy(cx)))
+                .on_scroll(cx.listener(Self::scroll_wheel))
+                .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+                .on_mouse_move(cx.listener(Self::mouse_move))
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+                .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
+                .child(match &self.session.read(cx).status {
+                    SessionStatus::Starting => {
+                        div().p_4().child("Starting terminal…").into_any_element()
+                    }
+                    SessionStatus::Failed(error) => div()
+                        .p_4()
+                        .child(format!("Could not start terminal: {error}"))
+                        .into_any_element(),
+                    SessionStatus::Ready(_) => {
+                        TerminalElement::new(cx.entity(), focused).into_any_element()
+                    }
+                }),
+        )
     }
 }
 
