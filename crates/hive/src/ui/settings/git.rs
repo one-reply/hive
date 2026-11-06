@@ -22,6 +22,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
     *,
 };
+use hive_core::agent::AgentKind;
 use hive_core::commit_message::{DEFAULT_PROMPT, Generator, VARIABLES};
 
 mod choices;
@@ -29,6 +30,26 @@ mod view;
 use choices::{SourceItem, sources};
 
 const PROMPT_ROWS: usize = 9;
+
+/// Example arguments (the input placeholder) and the help line for a commit CLI.
+/// The example uses a real model ID so it can be copied as is.
+fn argument_hint(agent: AgentKind) -> (&'static str, &'static str) {
+    match agent {
+        AgentKind::Codex => (
+            "--model gpt-6.1-sol -c model_reasoning_effort=low",
+            "Optional: --model gpt-6.1-sol, -c model_reasoning_effort=low. Uses Codex's default model when empty.",
+        ),
+        AgentKind::ClaudeCode => (
+            "--model haiku",
+            "Optional: --model haiku (or sonnet, opus, a full ID), --effort low, --max-budget-usd 0.05. Uses Claude's default model when empty.",
+        ),
+        AgentKind::OpenCode => (
+            "-m anthropic/claude-haiku-5-5",
+            "Optional: -m provider/model or -m provider/model#variant. Uses OpenCode's default model when empty; runs without your OpenCode config and tools.",
+        ),
+        _ => ("", hive_core::commit_message::cli::UNSUPPORTED_GENERATOR),
+    }
+}
 
 pub(super) struct GitPage {
     providers: Entity<AiProviders>,
@@ -57,7 +78,7 @@ impl GitPage {
             SelectState::new(SearchableVec::<String>::new(vec![]), None, window, cx)
                 .searchable(true)
         });
-        let arguments = cx.new(|cx| InputState::new(window, cx).placeholder("--model …"));
+        let arguments = cx.new(|cx| InputState::new(window, cx));
         let prompt = cx.new(|cx| TextareaState::new(window, cx).rows(PROMPT_ROWS));
         if let Some(Generator::Cli {
             arguments: value, ..
@@ -181,6 +202,13 @@ impl GitPage {
             .commit_message
             .generator()
             .cloned();
+        let placeholder = match &generator {
+            Some(Generator::Cli { agent, .. }) => argument_hint(*agent).0,
+            _ => "",
+        };
+        self.arguments.update(cx, |input, cx| {
+            input.set_placeholder(placeholder, window, cx)
+        });
         let items = sources(self.providers.read(cx), generator.as_ref());
         self.source.update(cx, |select, cx| {
             select.set_items(SearchableVec::new(items), window, cx);
@@ -210,6 +238,21 @@ impl GitPage {
             self.providers.update(cx, |providers, cx| {
                 providers.load_models(provider, false, cx)
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::argument_hint;
+    use hive_core::commit_message::cli::{AGENTS, arguments};
+
+    #[test]
+    fn every_cli_example_is_accepted_by_the_argument_parser() {
+        for agent in AGENTS {
+            let (example, _) = argument_hint(agent);
+            assert!(!example.is_empty(), "{agent:?} has no example");
+            assert!(arguments(agent, example).is_ok(), "{agent:?}: {example}");
         }
     }
 }
