@@ -109,7 +109,7 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
         bool,
         fn(&mut FilesSettings, bool),
     );
-    let toggles: [Toggle; 4] = [
+    let toggles: [Toggle; 5] = [
         (
             "Git decorations",
             "Show staged, unstaged and changed-folder indicators.",
@@ -133,6 +133,12 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
             "Display ignored paths with subdued labels.",
             settings.show_ignored,
             |s, v| s.show_ignored = v,
+        ),
+        (
+            "Save on focus change",
+            "Save edits when the editor loses focus or its tab closes.",
+            settings.save_on_focus_change,
+            |s, v| s.save_on_focus_change = v,
         ),
     ];
     for (label, description, checked, set) in toggles {

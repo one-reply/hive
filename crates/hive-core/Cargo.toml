@@ -21,6 +21,7 @@ alacritty_terminal.workspace = true
 rustix-openpty.workspace = true
 libc.workspace = true
 image.workspace = true
+resvg.workspace = true
 async-channel.workspace = true
 polling.workspace = true
 rustix.workspace = true

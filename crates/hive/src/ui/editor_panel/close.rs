@@ -69,6 +69,33 @@ fn guard_result(
         window.defer(cx, move |window, cx| complete(true, window, cx));
         return;
     };
+    if document.read(cx).saves_on_focus_change(cx) {
+        let save = document.update(cx, |d, cx| d.save(None, window, cx));
+        let handle = window.window_handle();
+        cx.spawn(async move |cx| {
+            let saved = save.recv().await == Ok(true);
+            let _ = handle.update(cx, |_, window, cx| {
+                if saved {
+                    guard_result(scope, window, cx, complete);
+                } else {
+                    // A conflict or failed write still needs the user's Discard/Cancel choice.
+                    prompt(document, scope, window, cx, complete);
+                }
+            });
+        })
+        .detach();
+        return;
+    }
+    prompt(document, scope, window, cx, complete);
+}
+
+fn prompt(
+    document: Entity<Document>,
+    scope: Scope,
+    window: &mut Window,
+    cx: &mut App,
+    complete: impl FnOnce(bool, &mut Window, &mut App) + 'static,
+) {
     let message = format!("Save changes to {}?", document.read(cx).path.display());
     let answer = window.prompt(
         PromptLevel::Warning,

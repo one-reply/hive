@@ -4,8 +4,10 @@ use hive_core::files::recovery::Draft;
 use hive_core::files::{self, Snapshot};
 use std::time::Duration;
 
+mod image;
 mod io;
 mod relocation;
+pub(crate) use image::{Content, PreviewState, SvgMode};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum DocumentError {
@@ -24,6 +26,7 @@ pub(crate) struct Document {
     pub target: Target,
     pub path: PathBuf,
     pub editor: Entity<EditorState>,
+    pub content: Content,
     pub base: Option<Snapshot>,
     pub conflict: Option<Snapshot>,
     pub error: Option<DocumentError>,
@@ -40,6 +43,8 @@ pub(crate) struct Document {
     position: Option<([u32; 2], [f32; 2])>,
     _read: Option<Task<()>>,
     _save: Option<Task<()>>,
+    /// Callers that asked to save while a write was already running.
+    save_waiters: Vec<async_channel::Sender<bool>>,
     _backup: Option<Task<()>>,
     _poll: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -55,9 +60,11 @@ impl Document {
     ) -> Self {
         let language = files::editor_language(&request.path);
         let editor = cx.new(|cx| EditorState::new(window, cx).language(language));
+        let editor_focus = editor.read(cx).focus_handle(cx);
         let subscriptions = vec![
             cx.subscribe_in(&editor, window, |this, _, event, _, cx| {
                 if matches!(event, InputEvent::Change) {
+                    this.invalidate_image(cx);
                     this.pinned = true;
                     this.update_dirty(cx);
                     this.schedule_recovery(cx);
@@ -65,6 +72,12 @@ impl Document {
                     cx.notify();
                 }
             }),
+            cx.on_focus_out(&editor_focus, window, |this, _, window, cx| {
+                if this.dirty && this.saves_on_focus_change(cx) {
+                    this.save(None, window, cx);
+                }
+            }),
+            cx.on_release(|this, cx| this.invalidate_image(cx)),
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() && this.should_poll(cx) {
                     this.refresh(window, cx);
@@ -92,10 +105,12 @@ impl Document {
             .unwrap_or_else(|| {
                 recovery::key(&request.target.host, &request.target.path, &request.path)
             });
+        let content = Content::new(&request.path, recovered.is_some());
         let mut document = Self {
             target: request.target,
             path: request.path,
             editor,
+            content,
             base: None,
             conflict: None,
             error: None,
@@ -112,6 +127,7 @@ impl Document {
             position: None,
             _read: None,
             _save: None,
+            save_waiters: Vec::new(),
             _backup: None,
             _poll: poll,
             _subscriptions: subscriptions,
@@ -134,6 +150,28 @@ impl Document {
         self.editor.read(cx).text().to_string()
     }
 
+    pub fn saved_position(&self, cx: &App) -> ([u32; 2], [f32; 2]) {
+        if self.content.is_raster() {
+            return ([0; 2], [0.; 2]);
+        }
+        let editor = self.editor.read(cx);
+        let position = editor.cursor_position();
+        let offset = editor.scroll_offset();
+        (
+            [position.line, position.character],
+            [offset.x.into(), offset.y.into()],
+        )
+    }
+
+    pub fn saves_on_focus_change(&self, cx: &App) -> bool {
+        self.store
+            .read(cx)
+            .state
+            .settings
+            .files
+            .save_on_focus_change
+    }
+
     fn should_poll(&self, cx: &App) -> bool {
         self.dirty
             || (self.visible
@@ -153,6 +191,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.content.is_raster() {
+            return;
+        }
         self.position = Some((cursor, scroll));
         if self.base.is_some() {
             let focus = window.focused(cx);
@@ -184,6 +225,10 @@ impl Document {
     }
 
     pub fn goto(&mut self, position: Position, window: &mut Window, cx: &mut Context<Self>) {
+        if self.content.is_raster() {
+            return;
+        }
+        self.set_svg_mode(SvgMode::Code, window, cx);
         if self.base.is_none() {
             self.pending_position = Some(position);
             return;
@@ -204,7 +249,7 @@ impl Document {
     }
 
     pub fn flush_recovery(&mut self, cx: &App) {
-        if self.path_busy {
+        if self.path_busy || self.content.is_raster() {
             return;
         }
         let draft = self.base.as_ref().filter(|_| self.dirty).map(|base| Draft {
@@ -259,6 +304,7 @@ impl Document {
             window.blur(cx);
         }
         self.emit(DocumentEvent::Changed(self.target.clone()), cx);
+        self.render_image(cx);
         cx.notify();
     }
 
