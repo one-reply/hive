@@ -23,6 +23,8 @@ use crate::ui::workspace::{NewTerminal, QuickSwitch, ToggleGitPanel, ToggleSideb
 pub(crate) const CONTEXT: &str = "Workspace";
 // Match the input dispatch node too, where Textarea binds its own Cmd-Enter.
 pub(crate) const COMMIT_CONTEXT: &str = "(SourceControl > Input) || SourceControl";
+/// Key context of a file's tab, an editor or a diff, which "Close file" closes.
+pub(crate) const FILE_TAB_CONTEXT: &str = "EditorPanel || DiffPanel";
 /// Key context of pane shortcuts: a focused terminal tab.
 pub(crate) const TERMINAL_CONTEXT: &str = "TerminalPanel";
 /// Key context of a focused terminal pane's own shortcuts.
@@ -101,7 +103,7 @@ pub(crate) static SHORTCUTS: [Shortcut; 21] = [
         label: "Close file",
         default: "cmd-w",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: FILE_TAB_CONTEXT,
         action: || Box::new(CloseFile),
     },
     Shortcut {
@@ -361,13 +363,11 @@ pub(crate) fn assign(
         let current = keybindings
             .get(shortcut.name())
             .map_or(shortcut.default, String::as_str);
-        let editor_terminal = (shortcut.context == "EditorPanel"
-            && matches!(
-                SHORTCUTS[ix].context,
-                TERMINAL_CONTEXT | TERMINAL_VIEW_CONTEXT
-            ))
-            || (SHORTCUTS[ix].context == "EditorPanel"
-                && matches!(shortcut.context, TERMINAL_CONTEXT | TERMINAL_VIEW_CONTEXT));
+        let is_file = |context| matches!(context, "EditorPanel" | FILE_TAB_CONTEXT);
+        let is_terminal = |context| matches!(context, TERMINAL_CONTEXT | TERMINAL_VIEW_CONTEXT);
+        let (theirs, ours) = (shortcut.context, SHORTCUTS[ix].context);
+        let editor_terminal =
+            (is_file(theirs) && is_terminal(ours)) || (is_file(ours) && is_terminal(theirs));
         *other != ix && !editor_terminal && normalize(current) == keys
     });
     if let Some((_, shortcut)) = taken {
@@ -414,6 +414,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn close_file_matches_editor_and_diff_tabs_only() {
+        use gpui_kit::{KeyBindingContextPredicate, KeyContext};
+        let predicate =
+            KeyBindingContextPredicate::parse(super::FILE_TAB_CONTEXT).expect("file tab context");
+        let contexts = |names: &[&str]| {
+            names
+                .iter()
+                .map(|n| KeyContext::parse(n).expect("context"))
+                .collect::<Vec<_>>()
+        };
+        assert!(predicate.eval(&contexts(&["Workspace", "EditorPanel"])));
+        assert!(predicate.eval(&contexts(&["Workspace", "DiffPanel"])));
+        assert!(!predicate.eval(&contexts(&["Workspace", "TerminalPanel", "Terminal"])));
+        assert!(!predicate.eval(&contexts(&["Workspace", "FilesPanel", "Tree"])));
     }
 
     #[test]

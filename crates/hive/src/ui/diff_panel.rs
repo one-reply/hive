@@ -7,7 +7,7 @@ use crate::{
         git_diff::GitDiff,
         store::Store,
     },
-    ui::workspace::right_sidebar_toggle,
+    ui::{editor_panel::CloseFile, workspace::right_sidebar_toggle},
 };
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::button::Button;
@@ -339,91 +339,99 @@ impl Render for DiffPanel {
                         .smooth_hover(ButtonLook::Outline, &hover, cx),
                 )
             });
-        let mut content = v_flex().size_full().min_w_0().min_h_0().child(
-            h_flex()
-                .p_2()
-                .gap_2()
-                .items_center()
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .child(div().flex_1().min_w_0().truncate().text_sm().child(source))
-                .child({
-                    let hover = Hover::new("diff-open-file", window, cx);
-                    let request = request.clone();
-                    Button::new("diff-open-file")
-                        .small()
-                        .cursor_pointer()
-                        .label("Open file")
-                        .tooltip("Open the current file on disk")
-                        .on_click(move |_, _, cx| {
-                            AppState::get(cx)
-                                .documents
-                                .clone()
-                                .update(cx, |documents, cx| {
-                                    documents.request(
-                                        crate::state::documents::OpenFile {
-                                            target: request.target.clone(),
-                                            path: request.path.clone().into(),
-                                            position: None,
-                                            preview: false,
-                                            placement: Default::default(),
-                                        },
-                                        cx,
-                                    )
-                                })
-                        })
-                        .smooth_hover(ButtonLook::Ghost, &hover, cx)
-                })
-                .child(
-                    Button::new("review-notes")
-                        .cursor_pointer()
-                        .small()
-                        .label(format!("Review notes · {note_count}"))
-                        .disabled(note_count == 0)
-                        .on_click(cx.listener(|this, _, window, cx| this.review_prompt(window, cx)))
-                        .smooth_hover(ButtonLook::Outline, &notes_hover, cx),
-                )
-                .child(
-                    Button::new("diff-prev")
-                        .cursor_pointer()
-                        .small()
-                        .label("↑")
-                        .tooltip("Previous hunk")
-                        .on_click(cx.listener(|this, _, _, cx| this.navigate(false, cx)))
-                        .smooth_hover(ButtonLook::Ghost, &prev_hover, cx),
-                )
-                .child(
-                    Button::new("diff-next")
-                        .cursor_pointer()
-                        .small()
-                        .label("↓")
-                        .tooltip("Next hunk")
-                        .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx)))
-                        .smooth_hover(ButtonLook::Ghost, &next_hover, cx),
-                )
-                .child(
-                    Button::new("diff-mode")
-                        .cursor_pointer()
-                        .small()
-                        .label(if split { "Split" } else { "Unified" })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            let split = this.store.read(cx).state.settings.diff_split;
-                            this.store.update(cx, |s, cx| s.set_diff_split(!split, cx));
-                        }))
-                        .smooth_hover(ButtonLook::Ghost, &mode_hover, cx),
-                )
-                .child(
-                    Button::new("diff-refresh")
-                        .cursor_pointer()
-                        .small()
-                        .label("↻")
-                        .tooltip("Refresh diff")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.review.update(cx, |r, cx| r.refresh(cx))
-                        }))
-                        .smooth_hover(ButtonLook::Ghost, &refresh_hover, cx),
-                ),
-        );
+        let mut content = v_flex()
+            .key_context("DiffPanel")
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .on_action(cx.listener(|this, _: &CloseFile, window, cx| this.close(window, cx)))
+            .child(
+                h_flex()
+                    .p_2()
+                    .gap_2()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(div().flex_1().min_w_0().truncate().text_sm().child(source))
+                    .child({
+                        let hover = Hover::new("diff-open-file", window, cx);
+                        let request = request.clone();
+                        Button::new("diff-open-file")
+                            .small()
+                            .cursor_pointer()
+                            .label("Open file")
+                            .tooltip("Open the current file on disk")
+                            .on_click(move |_, _, cx| {
+                                AppState::get(cx)
+                                    .documents
+                                    .clone()
+                                    .update(cx, |documents, cx| {
+                                        documents.request(
+                                            crate::state::documents::OpenFile {
+                                                target: request.target.clone(),
+                                                path: request.path.clone().into(),
+                                                position: None,
+                                                preview: false,
+                                                placement: Default::default(),
+                                            },
+                                            cx,
+                                        )
+                                    })
+                            })
+                            .smooth_hover(ButtonLook::Ghost, &hover, cx)
+                    })
+                    .child(
+                        Button::new("review-notes")
+                            .cursor_pointer()
+                            .small()
+                            .label(format!("Review notes · {note_count}"))
+                            .disabled(note_count == 0)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.review_prompt(window, cx)),
+                            )
+                            .smooth_hover(ButtonLook::Outline, &notes_hover, cx),
+                    )
+                    .child(
+                        Button::new("diff-prev")
+                            .cursor_pointer()
+                            .small()
+                            .label("↑")
+                            .tooltip("Previous hunk")
+                            .on_click(cx.listener(|this, _, _, cx| this.navigate(false, cx)))
+                            .smooth_hover(ButtonLook::Ghost, &prev_hover, cx),
+                    )
+                    .child(
+                        Button::new("diff-next")
+                            .cursor_pointer()
+                            .small()
+                            .label("↓")
+                            .tooltip("Next hunk")
+                            .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx)))
+                            .smooth_hover(ButtonLook::Ghost, &next_hover, cx),
+                    )
+                    .child(
+                        Button::new("diff-mode")
+                            .cursor_pointer()
+                            .small()
+                            .label(if split { "Split" } else { "Unified" })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let split = this.store.read(cx).state.settings.diff_split;
+                                this.store.update(cx, |s, cx| s.set_diff_split(!split, cx));
+                            }))
+                            .smooth_hover(ButtonLook::Ghost, &mode_hover, cx),
+                    )
+                    .child(
+                        Button::new("diff-refresh")
+                            .cursor_pointer()
+                            .small()
+                            .label("↻")
+                            .tooltip("Refresh diff")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.review.update(cx, |r, cx| r.refresh(cx))
+                            }))
+                            .smooth_hover(ButtonLook::Ghost, &refresh_hover, cx),
+                    ),
+            );
         if let Some(error) = error {
             content = content.child(div().p_3().text_color(cx.theme().danger).child(error));
         } else if patch.as_ref().is_some_and(|p| p.patch().is_empty()) {

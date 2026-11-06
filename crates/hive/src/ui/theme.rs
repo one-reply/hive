@@ -11,6 +11,11 @@ use crate::app::AppState;
 /// The dock's tab bar in dark mode; the stock `#171717` reads too light next to the terminal.
 const DARK_TAB_BAR: u32 = 0x111111;
 
+/// The backdrop behind dialogs in dark mode. The stock 20% black is invisible on a near-black
+/// window, and the library's dialog shadow is fixed and just as faint, so dimming the content
+/// behind is what lifts a dialog off the page.
+const DARK_OVERLAY: u32 = 0x00000080;
+
 /// What `apply` last wrote to the global theme; other settings changes skip the reload.
 #[derive(Clone, PartialEq)]
 struct Appearance {
@@ -80,6 +85,7 @@ fn apply(appearance: &Appearance, window: Option<&mut Window>, cx: &mut App) {
         theme.mono_font_family = mono_font_family;
         if theme.is_dark() {
             theme.tab_bar = rgb(DARK_TAB_BAR).into();
+            theme.overlay = rgba(DARK_OVERLAY).into();
         } else {
             // The stock light sidebar is an off-white gray; Hive's light sidebars are white.
             theme.sidebar = theme.background;
