@@ -60,6 +60,9 @@ fn apply(appearance: Appearance, window: Option<&mut Window>, cx: &mut App) {
         theme.mono_font_size = px(appearance.terminal_font_size);
         if theme.is_dark() {
             theme.tab_bar = rgb(DARK_TAB_BAR).into();
+        } else {
+            // The stock light sidebar is an off-white gray; Hive's light sidebars are white.
+            theme.sidebar = theme.background;
         }
         if let Some(highlight) = super::syntax_palette::highlight_theme(theme.is_dark()) {
             theme.highlight_theme = highlight;
