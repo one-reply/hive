@@ -69,19 +69,26 @@ pub fn find(paths: &[PathBuf], query: &str, show_hidden: bool) -> Matches {
         if !folded.contains(&query) {
             continue;
         }
-        // Lowercasing can expand a character (İ → i + combining dot). Keep offsets
-        // in the original label, never use lowercase byte offsets to slice UTF-8.
-        let original: Vec<_> = text
-            .char_indices()
-            .flat_map(|(offset, character)| {
-                let bytes = character.to_lowercase().map(char::len_utf8).sum();
-                std::iter::repeat_n(offset..offset + character.len_utf8(), bytes)
-            })
-            .collect();
-        let ranges: Vec<_> = folded
-            .match_indices(&query)
-            .map(|(start, value)| original[start].start..original[start + value.len() - 1].end)
-            .collect();
+        let ranges: Vec<_> = if text.is_ascii() {
+            folded
+                .match_indices(&query)
+                .map(|(start, value)| start..start + value.len())
+                .collect()
+        } else {
+            // Lowercasing can expand a character (İ → i + combining dot). Keep offsets
+            // in the original label, never use lowercase byte offsets to slice UTF-8.
+            let original: Vec<_> = text
+                .char_indices()
+                .flat_map(|(offset, character)| {
+                    let bytes = character.to_lowercase().map(char::len_utf8).sum();
+                    std::iter::repeat_n(offset..offset + character.len_utf8(), bytes)
+                })
+                .collect();
+            folded
+                .match_indices(&query)
+                .map(|(start, value)| original[start].start..original[start + value.len() - 1].end)
+                .collect()
+        };
         for ancestor in path.ancestors().filter(|p| !p.as_os_str().is_empty()) {
             let name = ancestor.file_name().unwrap_or_default().to_string_lossy();
             let end = ancestor.to_string_lossy().len();
@@ -97,6 +104,9 @@ pub fn find(paths: &[PathBuf], query: &str, show_hidden: bool) -> Matches {
         }
     }
     for ranges in matches.rows.values_mut() {
+        if ranges.len() < 2 {
+            continue;
+        }
         ranges.sort_unstable_by_key(|range| range.start);
         let mut merged: Vec<Range<usize>> = Vec::new();
         for range in ranges.drain(..) {
@@ -114,7 +124,11 @@ pub fn find(paths: &[PathBuf], query: &str, show_hidden: bool) -> Matches {
 }
 
 fn lowercase(text: &str) -> String {
-    text.chars().flat_map(char::to_lowercase).collect()
+    if text.is_ascii() {
+        text.to_ascii_lowercase()
+    } else {
+        text.chars().flat_map(char::to_lowercase).collect()
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +173,18 @@ mod tests {
         let name = "ЇЖАК-İ.rs";
         let ranges = matches.highlights(&paths[0]);
         assert_eq!(&name[ranges[0].clone()], "ЇЖАК-İ");
+    }
+
+    #[test]
+    fn ascii_and_unicode_paths_keep_original_offsets_and_simple_case_folding() {
+        let paths = vec!["SRC/TEST-test.rs".into(), "Код/TEST-test.rs".into()];
+        let matches = find(&paths, "test", true);
+        for path in &paths {
+            assert_eq!(matches.highlights(path), &[0..4, 5..9]);
+        }
+        assert_eq!(lowercase("ΟΣ"), "οσ");
+        assert_eq!(lowercase("AİΣ"), "ai\u{307}σ");
+        assert!(find(&paths, "ї", true).rows.is_empty());
     }
 
     #[test]
