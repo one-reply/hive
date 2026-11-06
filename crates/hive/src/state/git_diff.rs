@@ -70,6 +70,7 @@ impl GitDiff {
         }
         self.loading = true;
         let request = self.request.clone();
+        let previous = self.patch.clone();
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -82,9 +83,7 @@ impl GitDiff {
                         request.old_path.as_deref(),
                     )
                     .map_err(|e| e.to_string())?;
-                    let files = DiffFile::parse(patch.patch()).map_err(|e| {
-                        format!("Cannot display this patch: {e}. Open it in the terminal.")
-                    })?;
+                    let files = changed_display(&patch, previous.as_deref())?;
                     Ok::<_, String>((patch, files))
                 })
                 .await;
@@ -92,9 +91,8 @@ impl GitDiff {
                 this.loading = false;
                 match result {
                     Ok((patch, files)) => {
-                        let changed = this.patch.as_deref() != Some(&patch) || this.error.is_some();
                         this.error = None;
-                        if changed {
+                        if let Some(files) = files {
                             this.patch = Some(Arc::new(patch));
                             this.files = files;
                             this.files_generation += 1;
@@ -115,5 +113,91 @@ impl GitDiff {
                 }
             });
         }));
+    }
+}
+
+fn changed_display(
+    patch: &FileDiff,
+    previous: Option<&FileDiff>,
+) -> Result<Option<Vec<DiffFile>>, String> {
+    if previous == Some(patch) {
+        return Ok(None);
+    }
+    let files = DiffFile::parse(patch.patch())
+        .map_err(|e| format!("Cannot display this patch: {e}. Open it in the terminal."))?;
+    Ok(Some(files))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::changed_display;
+    use hive_core::{
+        git::diff::{self, DiffSource},
+        host::Host,
+    };
+    use std::{fs, path::PathBuf};
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn unchanged_patch_skips_display_but_status_does_not_hide_content_changes() {
+        let fixture =
+            Fixture(std::env::temp_dir().join(format!("hive-diff-display-{}", std::process::id())));
+        fs::create_dir(&fixture.0).unwrap();
+        assert!(
+            Host::Local
+                .command(
+                    "git",
+                    &["init", "-q", "-b", "main", "--template="],
+                    Some(&fixture.0)
+                )
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let read = || {
+            diff::read(
+                &Host::Local,
+                &fixture.0,
+                "sample.txt",
+                &DiffSource::Untracked,
+                None,
+            )
+            .unwrap()
+        };
+        fs::write(fixture.0.join("sample.txt"), "first\n").unwrap();
+        let initial = read();
+        let status = hive_core::git::status::read(&Host::Local, &fixture.0).unwrap();
+        assert!(changed_display(&initial, None).unwrap().is_some());
+        assert!(changed_display(&read(), Some(&initial)).unwrap().is_none());
+
+        fs::write(fixture.0.join("sample.txt"), "second\n").unwrap();
+        assert_eq!(
+            status,
+            hive_core::git::status::read(&Host::Local, &fixture.0).unwrap()
+        );
+        let updated = read();
+        assert!(changed_display(&updated, Some(&initial)).unwrap().is_some());
+        assert!(changed_display(&read(), Some(&updated)).unwrap().is_none());
+        assert!(
+            diff::read(
+                &Host::Local,
+                &fixture.0.join("missing"),
+                "sample.txt",
+                &DiffSource::Untracked,
+                None
+            )
+            .is_err()
+        );
+        // Refresh clears the previous patch on I/O failure, so recovery must parse again.
+        assert!(changed_display(&read(), None).unwrap().is_some());
     }
 }

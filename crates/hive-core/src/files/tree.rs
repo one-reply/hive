@@ -6,6 +6,7 @@ use super::Entry;
 use super::decorations::Decoration;
 use crate::git::status::Change;
 use crate::settings::FilesSettings;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -91,14 +92,14 @@ pub fn build(source: &Source) -> Tree {
     }
 }
 
-/// A copy of `entries` with every Git-deleted path (and the folders leading to it) added,
+/// Adds every Git-deleted path (and the folders leading to it), copying only when needed,
 /// so the row can still be opened in a diff; those paths are collected in `missing`.
-fn with_deleted(
-    entries: &BTreeMap<PathBuf, Vec<Entry>>,
+fn with_deleted<'a>(
+    entries: &'a BTreeMap<PathBuf, Vec<Entry>>,
     decorations: &BTreeMap<PathBuf, Decoration>,
     missing: &mut HashSet<PathBuf>,
-) -> BTreeMap<PathBuf, Vec<Entry>> {
-    let mut entries = entries.clone();
+) -> Cow<'a, BTreeMap<PathBuf, Vec<Entry>>> {
+    let mut entries = Cow::Borrowed(entries);
     for (path, decoration) in decorations {
         if decoration.staged != Some(Change::Deleted)
             && decoration.unstaged != Some(Change::Deleted)
@@ -112,7 +113,7 @@ fn with_deleted(
         let mut child = path.clone();
         let mut directory = false;
         while let Some(parent) = child.parent() {
-            let siblings = entries.entry(parent.into()).or_default();
+            let siblings = entries.to_mut().entry(parent.into()).or_default();
             if !siblings.iter().any(|entry| entry.path == child) {
                 siblings.push(Entry {
                     path: child.clone(),
@@ -335,6 +336,33 @@ mod tests {
         let plain = build_with(&entries, &settings, &HashSet::new(), &decorations, None);
         assert!(plain.missing.is_empty());
         assert!(!paths(&plain.nodes).contains(&"docs"));
+    }
+
+    #[test]
+    fn unchanged_listings_are_borrowed_until_a_missing_git_path_is_added() {
+        let entries = listing();
+        let mut missing = HashSet::new();
+        assert!(matches!(
+            with_deleted(&entries, &BTreeMap::new(), &mut missing),
+            Cow::Borrowed(_)
+        ));
+        let deleted = Decoration {
+            staged: Some(Change::Deleted),
+            unstaged: None,
+            descendants: false,
+            conflicted: false,
+        };
+        let mut decorations = BTreeMap::from([(PathBuf::from("src/main.rs"), deleted.clone())]);
+        assert!(matches!(
+            with_deleted(&entries, &decorations, &mut missing),
+            Cow::Borrowed(_)
+        ));
+        decorations.insert("src/gone.rs".into(), deleted);
+        let updated = with_deleted(&entries, &decorations, &mut missing);
+        assert!(matches!(updated, Cow::Owned(_)));
+        assert!(listed(&updated, Path::new("src/gone.rs")));
+        assert!(!listed(&entries, Path::new("src/gone.rs")));
+        assert_eq!(missing, HashSet::from([PathBuf::from("src/gone.rs")]));
     }
 
     #[test]

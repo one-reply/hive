@@ -56,7 +56,7 @@ fn loaded(paths: &[&str], query: &str) -> Loaded {
     Loaded {
         matches: search::find(&index.paths, query, true),
         index,
-        entries: BTreeMap::new(),
+        entries: Arc::default(),
         error: None,
     }
 }
@@ -158,7 +158,7 @@ fn result_metadata_keeps_nonmatching_siblings_and_marks_symlinks_unsupported() {
         "main",
         true,
         Some(index(&["src/main.rs"])),
-        &BTreeMap::new(),
+        Arc::default(),
     )
     .unwrap();
     let siblings = &loaded.entries[Path::new("src")];
@@ -186,7 +186,7 @@ fn missing_directory_returns_partial_results_and_an_error() {
         "main",
         true,
         Some(index(&["good/main.rs", "gone/main.rs"])),
-        &BTreeMap::new(),
+        Arc::default(),
     )
     .unwrap();
     assert!(loaded.entries.contains_key(Path::new("good")));
@@ -200,25 +200,85 @@ fn missing_directory_returns_partial_results_and_an_error() {
         path: fixture.0.path.join("absent"),
         ..fixture.0.clone()
     };
-    assert!(load(&missing_root, "main", true, None, &BTreeMap::new()).is_err());
+    assert!(load(&missing_root, "main", true, None, Arc::default()).is_err());
 }
 
 #[test]
 fn refreshed_index_follows_rename_and_delete() {
     let fixture = Fixture::new();
     fixture.write("src/old.rs");
-    let first = load(&fixture.0, ".rs", true, None, &BTreeMap::new()).unwrap();
+    let first = load(&fixture.0, ".rs", true, None, Arc::default()).unwrap();
     assert!(first.index.paths.contains(&"src/old.rs".into()));
     fs::rename(
         fixture.0.path.join("src/old.rs"),
         fixture.0.path.join("src/new.rs"),
     )
     .unwrap();
-    let renamed = load(&fixture.0, ".rs", true, None, &BTreeMap::new()).unwrap();
+    let renamed = load(&fixture.0, ".rs", true, None, Arc::default()).unwrap();
     assert_eq!(renamed.index.paths, [PathBuf::from("src/new.rs")]);
     fs::remove_file(fixture.0.path.join("src/new.rs")).unwrap();
-    let deleted = load(&fixture.0, ".rs", true, None, &BTreeMap::new()).unwrap();
+    let deleted = load(&fixture.0, ".rs", true, None, Arc::default()).unwrap();
     assert!(deleted.index.paths.is_empty());
+}
+
+#[test]
+fn cached_queries_share_listings_and_new_directories_leave_the_old_snapshot_unchanged() {
+    let fixture = Fixture::new();
+    fixture.write("src/main.rs");
+    fixture.write("docs/guide.md");
+    let paths = index(&["src/main.rs", "docs/guide.md"]);
+    let first = load(
+        &fixture.0,
+        "main",
+        true,
+        Some(paths.clone()),
+        Arc::default(),
+    )
+    .unwrap();
+    let cached = first.entries;
+    let repeated = load(
+        &fixture.0,
+        "main",
+        true,
+        Some(paths.clone()),
+        cached.clone(),
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(&cached, &repeated.entries));
+    let empty = load(
+        &fixture.0,
+        "absent",
+        true,
+        Some(paths.clone()),
+        cached.clone(),
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(&cached, &empty.entries));
+    let extended = load(&fixture.0, "guide", true, Some(paths), cached.clone()).unwrap();
+    assert!(!Arc::ptr_eq(&cached, &extended.entries));
+    assert!(!cached.contains_key(Path::new("docs")));
+    assert!(extended.entries.contains_key(Path::new("docs")));
+    assert_eq!(extended.entries[Path::new("src")], cached[Path::new("src")]);
+}
+
+#[test]
+fn directory_read_failure_keeps_the_cached_snapshot_shared() {
+    let fixture = Fixture::new();
+    fixture.write("src/main.rs");
+    let paths = index(&["src/main.rs", "gone/file.rs"]);
+    let first = load(
+        &fixture.0,
+        "main",
+        true,
+        Some(paths.clone()),
+        Arc::default(),
+    )
+    .unwrap();
+    let cached = first.entries;
+    let failed = load(&fixture.0, "gone", true, Some(paths), cached.clone()).unwrap();
+    assert!(failed.error.is_some());
+    assert!(Arc::ptr_eq(&cached, &failed.entries));
+    assert!(!failed.entries.contains_key(Path::new("gone")));
 }
 
 #[test]
@@ -227,7 +287,7 @@ fn large_directory_search_keeps_all_matching_rows() {
     for number in 0..2000 {
         fixture.write(&format!("large/file-{number:04}.txt"));
     }
-    let loaded = load(&fixture.0, "file-1", true, None, &BTreeMap::new()).unwrap();
+    let loaded = load(&fixture.0, "file-1", true, None, Arc::default()).unwrap();
     assert_eq!(loaded.index.paths.len(), 2000);
     let mut tree = tree::build(&Source {
         entries: &loaded.entries,
@@ -257,7 +317,7 @@ fn search_expansion_does_not_change_the_ordinary_tree() {
         "main",
         true,
         Some(index(&["src/deep/main.rs"])),
-        &BTreeMap::new(),
+        Arc::default(),
     )
     .unwrap();
     let expanded = HashSet::from([PathBuf::from("src")]);

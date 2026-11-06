@@ -69,7 +69,7 @@ impl Search {
         match result {
             Ok(loaded) => {
                 self.index = Some(loaded.index);
-                self.entries = Arc::new(loaded.entries);
+                self.entries = loaded.entries;
                 if self.query != query || visibility_changed {
                     return true;
                 }
@@ -90,7 +90,7 @@ impl Search {
 
 struct Loaded {
     index: Arc<FileIndex>,
-    entries: BTreeMap<PathBuf, Vec<Entry>>,
+    entries: Arc<BTreeMap<PathBuf, Vec<Entry>>>,
     matches: search::Matches,
     error: Option<String>,
 }
@@ -155,7 +155,7 @@ impl Files {
             let read_query = query.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { load(&read_target, &read_query, show_hidden, index, &entries) })
+                .spawn(async move { load(&read_target, &read_query, show_hidden, index, entries) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.target.as_ref() != Some(&target) || !this.search.accepts(generation) {
@@ -204,7 +204,7 @@ fn load(
     query: &str,
     show_hidden: bool,
     index: Option<Arc<FileIndex>>,
-    cached: &BTreeMap<PathBuf, Vec<Entry>>,
+    mut entries: Arc<BTreeMap<PathBuf, Vec<Entry>>>,
 ) -> Result<Loaded, String> {
     let index = match index {
         Some(index) => index,
@@ -213,7 +213,6 @@ fn load(
         ),
     };
     let matches = search::find(&index.paths, query, show_hidden);
-    let mut entries = cached.clone();
     let mut errors = Vec::new();
     for directory in matches.directories() {
         if entries.contains_key(&directory) {
@@ -221,7 +220,7 @@ fn load(
         }
         match files::list_directory(&target.host, &target.path, &directory) {
             Ok(listed) => {
-                entries.insert(directory, listed);
+                Arc::make_mut(&mut entries).insert(directory, listed);
             }
             Err(error) => errors.push(error.to_string()),
         }
