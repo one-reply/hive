@@ -1,7 +1,9 @@
 use super::{SessionEvent, TerminalSession};
 use gpui_kit::{ClipboardEntry, ClipboardItem, Context};
 use hive_core::terminal::paste;
+use hive_core::{host::Host, projects::Target};
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 
 pub(super) enum Input {
     Bytes(Vec<u8>),
@@ -18,6 +20,29 @@ impl TerminalSession {
         if let Some(input) = cx.read_from_clipboard().and_then(clipboard_input) {
             self.enqueue_input(input, cx);
         }
+    }
+
+    pub(crate) fn accepts_file_drop(&self, target: &Target) -> bool {
+        same_worktree(target, self.worktree.as_deref()) && !self.exited && self.terminal().is_some()
+    }
+
+    pub(crate) fn insert_file_references(
+        &mut self,
+        target: &Target,
+        paths: &[PathBuf],
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if !self.accepts_file_drop(target) {
+            return Err("Drop the file into a running terminal in the same worktree.".into());
+        }
+        let references = paste::file_references(
+            &target.path,
+            paths,
+            self.directory.as_deref().unwrap_or(&target.path),
+        )
+        .map_err(|error| error.to_string())?;
+        self.enqueue_input(Input::Text(references), cx);
+        Ok(())
     }
 
     pub(super) fn enqueue_input(&mut self, input: Input, cx: &mut Context<Self>) {
@@ -88,6 +113,10 @@ impl TerminalSession {
     }
 }
 
+fn same_worktree(target: &Target, worktree: Option<&Path>) -> bool {
+    target.host == Host::Local && worktree == Some(target.path.as_path())
+}
+
 fn clipboard_input(item: ClipboardItem) -> Option<Input> {
     if item
         .entries()
@@ -112,6 +141,23 @@ fn discard_submissions(pending: &mut VecDeque<Input>) {
 mod tests {
     use super::*;
     use gpui_kit::{Image, ImageFormat};
+
+    #[test]
+    fn file_drops_only_target_the_same_local_worktree() {
+        let mut target = Target {
+            project: "/repo".into(),
+            path: "/repo-worktrees/feature".into(),
+            host: Host::Local,
+        };
+        assert!(same_worktree(&target, Some(&target.path)));
+        assert!(!same_worktree(&target, Some(&target.project)));
+        assert!(!same_worktree(&target, Some(Path::new("/other"))));
+        assert!(!same_worktree(&target, None));
+        target.host = Host::Ssh {
+            target: "remote".into(),
+        };
+        assert!(!same_worktree(&target, Some(&target.path)));
+    }
 
     #[test]
     fn snapshots_image_bytes_and_preserves_text_clipboards() {

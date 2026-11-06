@@ -34,6 +34,7 @@ pub(crate) struct TerminalSession {
     pub(crate) title: Option<String>,
     pub(crate) exited: bool,
     pub(crate) directory: Option<PathBuf>,
+    worktree: Option<PathBuf>,
     pub(crate) resume: Option<ResumeSession>,
     pub(crate) resume_available: bool,
     focused: bool,
@@ -92,6 +93,7 @@ impl TerminalSession {
             }
             result.map_err(|error| error.to_string())
         });
+        let registered_worktree = worktree.clone();
         let start = cx.spawn(async move |this, cx| {
             let result = start.await;
             // If the view closed while spawning, dropping the result closes the late PTY.
@@ -100,7 +102,7 @@ impl TerminalSession {
                     Ok(mut terminal) => {
                         this.watch_directory(terminal.shell_pid(), cx);
                         terminal.set_focused(this.focused);
-                        if let Some(worktree) = &worktree {
+                        if let Some(worktree) = &registered_worktree {
                             let session = cx.entity();
                             AppState::get(cx).agents.clone().update(cx, |agents, _| {
                                 agents.watch(&session, worktree, &terminal)
@@ -151,6 +153,7 @@ impl TerminalSession {
             title: None,
             exited: false,
             directory,
+            worktree,
             resume,
             resume_available: false,
             focused: false,

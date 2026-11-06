@@ -27,8 +27,10 @@ mod motion;
 mod moving;
 mod row;
 mod search;
+mod selection;
 mod tree;
 use editing::Edit;
+pub(crate) use moving::DraggedFiles;
 
 actions!(
     files_panel,
@@ -52,6 +54,7 @@ pub(crate) struct FilesPanel {
     /// The widget's rows, selection and scroll; rebuilt from `Files::nodes` when they change.
     tree: Entity<TreeState>,
     synced_generation: Option<u64>,
+    selection: selection::Selection,
     search_input: Entity<gpui_kit::component::input::InputState>,
     filtered_tree: bool,
     edit: Option<Edit>,
@@ -74,7 +77,10 @@ impl FilesPanel {
         let subscriptions = vec![
             search_subscription,
             cx.observe(&tree, |this, tree, cx| {
-                this.motion.observe(tree.read(cx), cx.reduce_motion())
+                this.motion.observe(tree.read(cx), cx.reduce_motion());
+                if this.sync_selection(tree.read(cx), cx) {
+                    cx.notify();
+                }
             }),
             cx.subscribe(&tree, |this, _, event, cx| {
                 let (path, expanded) = match event {
@@ -142,6 +148,7 @@ impl FilesPanel {
             files,
             tree,
             synced_generation: None,
+            selection: selection::Selection::default(),
             search_input,
             filtered_tree: false,
             edit: None,
@@ -202,6 +209,10 @@ impl FilesPanel {
         if suppress_motion {
             self.motion.observe(self.tree.read(cx), true);
         }
+        let tree = self.tree.clone();
+        if self.sync_selection(tree.read(cx), cx) {
+            cx.notify();
+        }
         if revealed {
             self.files.update(cx, |files, _| files.revealed());
         }
@@ -209,6 +220,9 @@ impl FilesPanel {
 
     /// The selected row's path, unless it is a placeholder.
     pub(crate) fn selected(&self, cx: &App) -> Option<PathBuf> {
+        if self.selection.count() > 1 {
+            return None;
+        }
         self.tree
             .read(cx)
             .selected_entry()
@@ -266,6 +280,7 @@ impl Render for FilesPanel {
         let panel = cx.entity();
         let menu_panel = panel.clone();
         let root_drop = panel.clone();
+        let root_target = target.clone();
         let refresh_hover = Hover::new("files-refresh", window, cx);
         let mut body = v_flex()
             .key_context("FilesPanel")
@@ -315,10 +330,17 @@ impl Render for FilesPanel {
                             .tooltip(move |window, cx| {
                                 Tooltip::new(full_path.clone()).build(window, cx)
                             })
-                            .drag_over::<moving::DraggedFile>(|style, _, _, cx| {
+                            .can_drop(move |value, _, _| {
+                                value
+                                    .downcast_ref::<moving::DraggedFiles>()
+                                    .is_some_and(|drag| {
+                                        drag.can_move_to(root_target.as_ref(), Path::new(""))
+                                    })
+                            })
+                            .drag_over::<moving::DraggedFiles>(|style, _, _, cx| {
                                 style.bg(cx.theme().drop_target)
                             })
-                            .on_drop(move |drag: &moving::DraggedFile, window, cx| {
+                            .on_drop(move |drag: &moving::DraggedFiles, window, cx| {
                                 root_drop.update(cx, |p, cx| {
                                     p.drop_file(drag, Path::new(""), window, cx)
                                 })
@@ -431,6 +453,20 @@ impl Render for FilesPanel {
                     ),
             )
             .child(self.search_field(available, cx));
+        if self.selection.count() > 1 {
+            let label = format!("{} files selected", self.selection.count());
+            body = body.child(
+                div()
+                    .id("files-selection-status")
+                    .role(Role::Status)
+                    .aria_label(label.clone())
+                    .px_2()
+                    .pb_1()
+                    .text_size(rems(META_SIZE / 16.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label),
+            );
+        }
         if truncated {
             body = body.child(
                 div()
@@ -474,7 +510,7 @@ impl Render for FilesPanel {
                 .min_h_0()
                 .min_w_0()
                 .on_drag_move(
-                    move |event: &DragMoveEvent<moving::DraggedFile>, window, cx| {
+                    move |event: &DragMoveEvent<moving::DraggedFiles>, window, cx| {
                         drag_panel.update(cx, |p, cx| p.drag_scroll(event, window, cx))
                     },
                 )

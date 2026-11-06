@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::state::terminal_session::{SessionEvent, SessionStatus, TerminalSession};
+use crate::ui::files_panel::DraggedFiles;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, notification::Notification};
 use gpui_kit::component::{Sizable as _, button::Button, v_flex};
@@ -224,6 +225,22 @@ impl TerminalView {
         self.session.update(cx, |session, cx| session.paste(cx));
     }
 
+    fn drop_file(&mut self, drag: &DraggedFiles, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.session.update(cx, |session, cx| {
+            session.insert_file_references(&drag.target, &drag.paths, cx)
+        });
+        match result {
+            Ok(()) => self.focus_handle.focus(window, cx),
+            Err(error) => {
+                tracing::warn!(%error, "could not insert dropped file reference");
+                window.push_notification(
+                    Notification::error(error).title("Could not insert file path"),
+                    cx,
+                );
+            }
+        }
+    }
+
     fn scroll_wheel(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         let Some(grid) = self.grid else { return };
         let line_height = grid.cell.height;
@@ -265,6 +282,7 @@ impl Render for TerminalView {
             .filter(|_| self.session.read(cx).resume_available);
         let resume_hover = Hover::new("resume-agent", window, cx);
         let draft = self.render_agent_draft(window, cx);
+        let drop_session = self.session.clone();
         v_flex()
             .size_full()
             .children(draft)
@@ -293,7 +311,18 @@ impl Render for TerminalView {
                     .flex_1()
                     .min_h_0()
                     .bg(bg)
+                    .border_1()
+                    .border_color(bg)
                     .cursor(CursorStyle::IBeam)
+                    .can_drop(move |value, _, cx| {
+                        value.downcast_ref::<DraggedFiles>().is_some_and(|drag| {
+                            drop_session.read(cx).accepts_file_drop(&drag.target)
+                        })
+                    })
+                    .drag_over::<DraggedFiles>(|style, _, _, cx| {
+                        style.border_color(cx.theme().drag_border)
+                    })
+                    .on_drop(cx.listener(Self::drop_file))
                     .on_key_down(cx.listener(Self::key_down))
                     .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
                     .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))

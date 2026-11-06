@@ -9,7 +9,7 @@ impl Files {
             .find(|entry| entry.path == path)
     }
 
-    fn listing(&self, directory: &Path) -> Option<&Vec<Entry>> {
+    pub(crate) fn listing(&self, directory: &Path) -> Option<&Vec<Entry>> {
         if !self.search.query.is_empty()
             && let Some(entries) = self.search.entries.get(directory)
         {
