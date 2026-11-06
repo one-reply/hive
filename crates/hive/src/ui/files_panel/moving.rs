@@ -9,51 +9,36 @@ const SCROLL_STEP: Pixels = px(18.);
 const SCROLL_INTERVAL: Duration = Duration::from_millis(35);
 
 #[derive(Clone)]
-pub(super) struct DraggedFile {
+pub(crate) struct DraggedFiles {
     pub target: Target,
-    pub path: PathBuf,
+    pub paths: std::sync::Arc<[PathBuf]>,
 }
-impl Render for DraggedFile {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .px_2()
-            .py_1()
-            .gap_1()
-            .rounded_md()
-            .shadow_md()
-            .bg(cx.theme().sidebar)
-            .text_sm()
-            .child(Icon::new(Lucide::File).size_4())
-            .child(
-                self.path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-            )
+
+impl DraggedFiles {
+    pub(super) fn can_move_to(&self, target: Option<&Target>, directory: &Path) -> bool {
+        matches!(self.paths.as_ref(), [path] if target == Some(&self.target) && !directory.starts_with(path))
     }
 }
 
 impl FilesPanel {
     pub(super) fn drop_file(
         &mut self,
-        drag: &DraggedFile,
+        drag: &DraggedFiles,
         directory: &Path,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.drag_hover = None;
         self._drag_expand = None;
-        if self.files.read(cx).target.as_ref() != Some(&drag.target)
-            || directory.starts_with(&drag.path)
-        {
+        if !drag.can_move_to(self.files.read(cx).target.as_ref(), directory) {
             return;
         }
-        let Some(name) = drag.path.file_name() else {
+        let [path] = drag.paths.as_ref() else { return };
+        let Some(name) = path.file_name() else {
             return;
         };
         let operation = FileOperation::Move {
-            from: drag.path.clone(),
+            from: path.clone(),
             to: directory.join(name),
         };
         self.files
@@ -63,12 +48,11 @@ impl FilesPanel {
     pub(super) fn drag_expand(
         &mut self,
         path: PathBuf,
-        drag: &DraggedFile,
+        drag: &DraggedFiles,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.files.read(cx).target.as_ref() != Some(&drag.target) || path.starts_with(&drag.path)
-        {
+        if !drag.can_move_to(self.files.read(cx).target.as_ref(), &path) {
             return;
         }
         if self
@@ -98,7 +82,7 @@ impl FilesPanel {
 
     pub(super) fn drag_scroll(
         &mut self,
-        event: &DragMoveEvent<DraggedFile>,
+        event: &DragMoveEvent<DraggedFiles>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -333,5 +317,31 @@ impl Render for DestinationPicker {
                             .smooth_hover(ButtonLook::Outline, &move_hover, cx),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DraggedFiles;
+    use hive_core::projects::Target;
+    use std::path::Path;
+
+    #[test]
+    fn folder_drops_never_move_only_one_file_from_a_group() {
+        let target = Target {
+            project: "/repo".into(),
+            path: "/repo".into(),
+            host: hive_core::host::Host::Local,
+        };
+        let mut drag = DraggedFiles {
+            target: target.clone(),
+            paths: std::sync::Arc::from(["a.rs".into(), "b.rs".into()]),
+        };
+        assert!(!drag.can_move_to(Some(&target), Path::new("destination")));
+        assert!(!drag.can_move_to(Some(&target), Path::new("")));
+        drag.paths = std::sync::Arc::from(["folder".into()]);
+        assert!(drag.can_move_to(Some(&target), Path::new("destination")));
+        assert!(!drag.can_move_to(Some(&target), Path::new("folder/child")));
+        assert!(!drag.can_move_to(None, Path::new("destination")));
     }
 }

@@ -3,6 +3,9 @@ use crate::ui::hover::SmoothHoverBg as _;
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::{Icon, list::ListItem, tree::TreeEntry};
 use hive_core::{files::decorations::Decoration, git::status::Change, settings::FilesSettings};
+use std::{cell::Cell, rc::Rc};
+
+mod appearance;
 
 /// A quarter turn: the right-pointing chevron points down when its folder is open.
 const CHEVRON_OPEN: f32 = std::f32::consts::FRAC_PI_2;
@@ -28,6 +31,12 @@ pub(super) fn render(
     let folder = entry.is_folder();
     let missing = state.missing.contains(&path);
     let unsupported = state.entry(&path).is_some_and(|e| e.unsupported);
+    let disabled = entry.is_disabled();
+    let selected = if !folder && !missing && !unsupported && !disabled {
+        panel.read(cx).selection.contains(&path)
+    } else {
+        selected
+    };
     let ignored = state.ignored.contains(&path);
     let dirty = state.dirty.contains(&path);
     let decoration = settings
@@ -60,7 +69,6 @@ pub(super) fn render(
         .filter(|edit| edit.renaming() == Some(path.as_path()))
         .map(|edit| edit.field(busy, settings.font_size(), window, cx));
     let renaming = rename_field.is_some();
-    let scale = settings.font_size() / LABEL_SIZE;
     let row_key: SharedString = format!("files-row:{:?}:{}", target, path.display()).into();
     let hover = Hover::new(row_key.clone(), window, cx);
     let motion = panel.read(cx).motion.sample(ix);
@@ -80,12 +88,6 @@ pub(super) fn render(
     );
     let row_height = settings.row_height() / 16.;
     let foreground = cx.theme().foreground;
-    let sidebar = cx.theme().sidebar;
-    let background = if selected {
-        sidebar.blend(foreground.opacity(SELECTED_BACKGROUND_OPACITY))
-    } else {
-        sidebar
-    };
     let detail = description(
         &path,
         decoration.as_ref(),
@@ -94,91 +96,29 @@ pub(super) fn render(
         missing,
         unsupported,
     );
-    let mut content = h_flex()
+    let appearance = appearance::Appearance {
+        path: path.clone(),
+        label: entry.item().label.clone(),
+        depth: entry.depth(),
+        folder,
+        expanded: entry.is_expanded(),
+        disabled: entry.is_disabled(),
+        settings: settings.clone(),
+        selected,
+        missing,
+        ignored,
+        dirty,
+        decoration,
+        highlights,
+        chevron_turn,
+    };
+    let background = appearance.background(cx);
+    let mut content = appearance
+        .render(rename_field, cx)
         .id(row_key)
-        .relative()
-        .w_full()
-        .min_w_0()
-        .h(rems(row_height))
-        .gap(rems(4. / 16.))
-        .pl(rems((4. + entry.depth() as f32 * INDENT * scale) / 16.))
-        .pr_2()
-        .rounded_sm()
-        .border_1()
-        .border_color(if selected {
-            sidebar.blend(foreground.opacity(SELECTED_BORDER_OPACITY))
-        } else {
-            background
-        })
-        .bg(background)
         .cursor_pointer()
-        .text_size(rems(settings.font_size() / 16.))
-        .text_color(if missing || ignored || entry.is_disabled() {
-            cx.theme().muted_foreground
-        } else {
-            foreground
-        })
         .when(!renaming, |row| {
             row.tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
-        })
-        .children((0..entry.depth()).map(|depth| {
-            div()
-                .absolute()
-                .left(rems((10. + depth as f32 * INDENT * scale) / 16.))
-                .top_0()
-                .bottom_0()
-                .w(px(1.))
-                .bg(cx.theme().border.opacity(0.6))
-        }))
-        .child(
-            div()
-                .w(rems(12. * scale / 16.))
-                .flex_none()
-                .when(folder, |slot| {
-                    slot.child(
-                        Icon::new(Lucide::ChevronRight)
-                            .rotate(radians(chevron_turn))
-                            .size(rems(12. * scale / 16.))
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                }),
-        )
-        .when(!entry.is_disabled(), |row| {
-            row.child(icons::render(
-                &path,
-                folder,
-                entry.is_expanded(),
-                settings.icons,
-                rems(ICON_SIZE * scale / 16.),
-                cx,
-            ))
-        })
-        .child(match rename_field {
-            Some(field) => div()
-                .key_context(editing::EDIT_CONTEXT)
-                .flex_1()
-                .min_w_0()
-                // The press belongs to the field: it must not select, toggle or drag the row.
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(field),
-            None => div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .when(missing, |label| label.line_through())
-                .child(StyledText::new(entry.item().label.clone()).with_highlights(highlights)),
-        })
-        .when(dirty, |row| {
-            row.child(
-                div()
-                    .flex_none()
-                    .size(rems(5. * scale / 16.))
-                    .rounded_full()
-                    .bg(foreground),
-            )
-        })
-        .when_some(decoration, |row, decoration| {
-            row.child(badge(&decoration, folder, scale, cx))
         })
         .hover_bg(
             &hover,
@@ -190,17 +130,24 @@ pub(super) fn render(
             },
         );
     if folder && !entry.is_disabled() {
+        let drop_target = target.clone();
+        let drop_destination = path.clone();
         let (drop_panel, hover_panel, destination) = (panel.clone(), panel.clone(), path.clone());
         let hover_destination = path.clone();
         content = content
-            .drag_over::<moving::DraggedFile>(|style, _, _, cx| {
+            .can_drop(move |value, _, _| {
+                value
+                    .downcast_ref::<moving::DraggedFiles>()
+                    .is_some_and(|drag| drag.can_move_to(drop_target.as_ref(), &drop_destination))
+            })
+            .drag_over::<moving::DraggedFiles>(|style, _, _, cx| {
                 style
                     .bg(cx.theme().drop_target)
                     .border_1()
                     .border_color(cx.theme().drag_border)
             })
             .on_drag_move(
-                move |event: &DragMoveEvent<moving::DraggedFile>, window, cx| {
+                move |event: &DragMoveEvent<moving::DraggedFiles>, window, cx| {
                     if event.bounds.contains(&event.event.position) {
                         let drag = event.drag(cx).clone();
                         hover_panel.update(cx, |p, cx| {
@@ -219,10 +166,11 @@ pub(super) fn render(
                     }
                 },
             )
-            .on_drop(move |drag: &moving::DraggedFile, window, cx| {
+            .on_drop(move |drag: &moving::DraggedFiles, window, cx| {
                 drop_panel.update(cx, |p, cx| p.drop_file(drag, &destination, window, cx));
             });
     }
+    let mut preview_width = None;
     if !missing
         && !unsupported
         && !entry.is_disabled()
@@ -230,12 +178,34 @@ pub(super) fn render(
         && !renaming
         && let Some(target) = target
     {
-        let dragged = moving::DraggedFile {
+        let dragged = moving::DraggedFiles {
             target,
-            path: path.clone(),
+            paths: panel.read(cx).selection.drag_paths(&path),
         };
-        content = content.on_drag(dragged, |drag, _, _, cx| cx.new(|_| drag.clone()));
+        let width = Rc::new(Cell::new(px(0.)));
+        preview_width = Some(width.clone());
+        content = content.on_drag(dragged, move |drag, _, _, cx| {
+            cx.new(|_| DragPreview {
+                appearance: appearance.clone(),
+                width: width.get(),
+                count: drag.paths.len(),
+            })
+        });
     }
+    let content = div()
+        .w_full()
+        .when_some(preview_width, |row, width| {
+            row.on_children_prepainted(move |bounds, _, _| {
+                if let Some(bounds) = bounds.first() {
+                    width.set(bounds.size.width);
+                }
+            })
+        })
+        .child(content);
+
+    let click_panel = panel.clone();
+    let context_panel = panel.clone();
+    let context_path = path.clone();
     ListItem::new(ix)
         .px_0()
         .py_0()
@@ -245,13 +215,57 @@ pub(super) fn render(
                 .opacity(motion.opacity)
         })
         .child(content)
-        .on_click(move |event, _, cx| {
+        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+            if !renaming && !disabled {
+                context_panel.update(cx, |panel, cx| {
+                    panel.select_row(&context_path, selection::Gesture::Replace, window, cx);
+                });
+            }
+        })
+        .on_click(move |event, window, cx| {
+            if renaming || disabled {
+                return;
+            }
+            let modifiers = event.modifiers();
+            let gesture = selection::Gesture::from_modifiers(modifiers.shift, modifiers.platform);
+            click_panel.update(cx, |panel, cx| panel.select_row(&path, gesture, window, cx));
+            if modifiers.shift || modifiers.platform {
+                cx.stop_propagation();
+                return;
+            }
             if !folder && !missing && !unsupported && !renaming {
                 files.update(cx, |files, cx| {
                     files.open(path.clone(), event.click_count() < 2, cx)
                 });
             }
         })
+}
+
+struct DragPreview {
+    appearance: appearance::Appearance,
+    width: Pixels,
+    count: usize,
+}
+
+impl Render for DragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .w(self.width)
+            .child(self.appearance.render(None, cx))
+            .when(self.count > 1, |preview| {
+                preview.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .bg(cx.theme().sidebar)
+                        .text_color(cx.theme().foreground)
+                        .font_family(cx.theme().font_family.clone())
+                        .text_size(rems(META_SIZE / 16.))
+                        .child(format!("{} files", self.count)),
+                )
+            })
+    }
 }
 
 fn description(
