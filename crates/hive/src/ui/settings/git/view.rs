@@ -5,18 +5,7 @@ impl GitPage {
     fn backend_control(&self, generator: Option<&Generator>, cx: &mut Context<Self>) -> Div {
         match generator {
             Some(Generator::Cli { agent, .. }) => {
-                let help = match agent {
-                    hive_core::agent::AgentKind::Codex => {
-                        "Optional: --model … or -c model_reasoning_effort=low. Uses Codex's default model when empty."
-                    }
-                    hive_core::agent::AgentKind::ClaudeCode => {
-                        "Optional: --model …, --effort low, --max-budget-usd …. Uses Claude's default model when empty."
-                    }
-                    hive_core::agent::AgentKind::OpenCode => {
-                        "Optional: -m provider/model or -m provider/model#variant. Uses OpenCode's default model when empty; runs without your OpenCode config and tools."
-                    }
-                    _ => hive_core::commit_message::cli::UNSUPPORTED_GENERATOR,
-                };
+                let help = argument_hint(*agent).1;
                 v_flex()
                     .gap_2()
                     .child("Arguments")
