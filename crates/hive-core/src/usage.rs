@@ -273,10 +273,110 @@ pub fn until(t: SystemTime) -> String {
     }
 }
 
+/// Usage from this percent on is worth a glance.
+const WARNING_PERCENT: f64 = 70.0;
+/// Usage from this percent on is about to stop work.
+const CRITICAL_PERCENT: f64 = 90.0;
+
+/// How close a window is to its limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsageLevel {
+    Ok,
+    Warning,
+    Critical,
+}
+
+impl UsageWindow {
+    /// What is left of the limit, 0..=100; a malformed (NaN) percent reads as all left.
+    pub fn remaining_percent(&self) -> f64 {
+        if self.percent.is_nan() {
+            return 100.0;
+        }
+        (100.0 - self.percent).clamp(0.0, 100.0)
+    }
+
+    /// The level of this window; a malformed (NaN) percent reads as `Ok`.
+    pub fn level(&self) -> UsageLevel {
+        match self.percent {
+            p if p >= CRITICAL_PERCENT => UsageLevel::Critical,
+            p if p >= WARNING_PERCENT => UsageLevel::Warning,
+            _ => UsageLevel::Ok,
+        }
+    }
+}
+
+/// The window that will stop work first: the most used one, the sooner reset on a tie.
+pub fn binding_window(windows: &[UsageWindow]) -> Option<&UsageWindow> {
+    let used = |w: &UsageWindow| if w.percent.is_nan() { 0.0 } else { w.percent };
+    windows.iter().max_by(|a, b| {
+        used(a)
+            .total_cmp(&used(b))
+            .then_with(|| match (a.resets_at, b.resets_at) {
+                (Some(a), Some(b)) => b.cmp(&a),
+                (a, b) => a.is_some().cmp(&b.is_some()),
+            })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn window(percent: f64, resets_in_secs: Option<u64>) -> UsageWindow {
+        UsageWindow {
+            label: "w",
+            percent,
+            resets_at: resets_in_secs.map(|s| UNIX_EPOCH + Duration::from_secs(s)),
+        }
+    }
+
+    #[test]
+    fn binding_window_is_the_most_used_one() {
+        let windows = [window(2.0, Some(10)), window(46.0, Some(1000))];
+        assert_eq!(binding_window(&windows), Some(&windows[1]));
+    }
+
+    #[test]
+    fn binding_window_tie_prefers_sooner_known_reset() {
+        let windows = [
+            window(50.0, None),
+            window(50.0, Some(1000)),
+            window(50.0, Some(10)),
+        ];
+        assert_eq!(binding_window(&windows), Some(&windows[2]));
+    }
+
+    #[test]
+    fn binding_window_of_nothing_is_none() {
+        assert_eq!(binding_window(&[]), None);
+    }
+
+    #[test]
+    fn binding_window_tolerates_nan_percent() {
+        let windows = [window(f64::NAN, None), window(5.0, None)];
+        assert_eq!(binding_window(&windows), Some(&windows[1]));
+    }
+
+    #[test]
+    fn remaining_percent_is_clamped() {
+        assert_eq!(window(3.0, None).remaining_percent(), 97.0);
+        assert_eq!(window(150.0, None).remaining_percent(), 0.0);
+        assert_eq!(window(-5.0, None).remaining_percent(), 100.0);
+        assert_eq!(window(f64::NAN, None).remaining_percent(), 100.0);
+    }
+
+    #[test]
+    fn level_follows_thresholds() {
+        let level = |p| window(p, None).level();
+        assert_eq!(level(-1.0), UsageLevel::Ok);
+        assert_eq!(level(69.9), UsageLevel::Ok);
+        assert_eq!(level(70.0), UsageLevel::Warning);
+        assert_eq!(level(89.9), UsageLevel::Warning);
+        assert_eq!(level(90.0), UsageLevel::Critical);
+        assert_eq!(level(150.0), UsageLevel::Critical);
+        assert_eq!(level(f64::NAN), UsageLevel::Ok);
+    }
 
     #[test]
     fn usage_debug_log_does_not_expose_credentials_or_response_body() {
