@@ -23,6 +23,8 @@ use gpui_kit::*;
 const DRAG_PREVIEW_SIZE: Size<Pixels> = size(px(96.), px(30.));
 /// The 20px close button has a 12px icon: pulling it 8px left keeps the label-to-icon gap at 12px.
 const CLOSE_BUTTON_PULL: Pixels = px(8.);
+/// Width of the left border gpui-component draws on every `Tab`, the first one included.
+const FIRST_TAB_BORDER: Pixels = px(1.);
 
 /// `DockSkin` with Hive's own tab bar. Build it with [`CenterDock::dock_area`].
 pub(super) struct CenterDock {
@@ -168,7 +170,16 @@ impl TabGroupRenderer for CenterTabs {
         let inset = self.tab_inset.get();
         TabBar::new("tab-bar")
             .track_scroll(&self.scroll_handle)
-            .when(inset > px(0.), |bar| bar.prefix(div().w(inset).flex_none()))
+            .map(|bar| {
+                if inset > px(0.) {
+                    bar.prefix(div().w(inset).flex_none())
+                } else {
+                    // gpui-component keeps the first tab's left border even without a prefix,
+                    // doubling the divider on the bar's left. Tucking the bar under that divider
+                    // hides the border; the workspace title bar repaints the divider on top.
+                    bar.ml(-FIRST_TAB_BORDER)
+                }
+            })
             .children(visible.into_iter().map(|ix| {
                 self.render_tab(group, ix, displayed_ix == Some(ix), droppable, window, cx)
             }))
