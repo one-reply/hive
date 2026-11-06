@@ -93,8 +93,14 @@ fn file_icon(path: &Path, cx: &App) -> (Option<&'static [u8]>, Hsla) {
     if name.starts_with(".git") {
         return icon!("git", theme.red);
     }
-    if name == "dockerfile" || name.starts_with("docker-compose") {
+    if hive_core::files::is_dockerfile(path)
+        || name.starts_with("docker-compose")
+        || name == ".dockerignore"
+    {
         return icon!("docker", theme.blue);
+    }
+    if hive_core::files::editor_language(path) == "make" {
+        return icon!("makefile", theme.yellow);
     }
     if name.ends_with(".lock") || name.ends_with("-lock.json") {
         return icon!("lock", theme.muted_foreground);

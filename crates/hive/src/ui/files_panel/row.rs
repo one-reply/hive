@@ -36,6 +36,13 @@ pub(super) fn render(
         .cloned();
     let target = state.target.clone();
     let busy = state.busy;
+    let rename_field = panel
+        .read(cx)
+        .edit
+        .as_ref()
+        .filter(|edit| edit.renaming() == Some(path.as_path()))
+        .map(|edit| edit.field(busy, settings.font_size(), window, cx));
+    let renaming = rename_field.is_some();
     let scale = settings.font_size() / LABEL_SIZE;
     let row_key: SharedString = format!("files-row:{:?}:{}", target, path.display()).into();
     let hover = Hover::new(row_key.clone(), window, cx);
@@ -94,7 +101,9 @@ pub(super) fn render(
         } else {
             foreground
         })
-        .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
+        .when(!renaming, |row| {
+            row.tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
+        })
         .children((0..entry.depth()).map(|depth| {
             div()
                 .absolute()
@@ -127,14 +136,21 @@ pub(super) fn render(
                 cx,
             ))
         })
-        .child(
-            div()
+        .child(match rename_field {
+            Some(field) => div()
+                .key_context(editing::EDIT_CONTEXT)
+                .flex_1()
+                .min_w_0()
+                // The press belongs to the field: it must not select, toggle or drag the row.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(field),
+            None => div()
                 .flex_1()
                 .min_w_0()
                 .truncate()
                 .when(missing, |label| label.line_through())
                 .child(entry.item().label.clone()),
-        )
+        })
         .when(dirty, |row| {
             row.child(
                 div()
@@ -194,6 +210,7 @@ pub(super) fn render(
         && !unsupported
         && !entry.is_disabled()
         && !busy
+        && !renaming
         && let Some(target) = target
     {
         let dragged = moving::DraggedFile {
@@ -212,7 +229,7 @@ pub(super) fn render(
         })
         .child(content)
         .on_click(move |event, _, cx| {
-            if !folder && !missing && !unsupported {
+            if !folder && !missing && !unsupported && !renaming {
                 files.update(cx, |files, cx| {
                     files.open(path.clone(), event.click_count() < 2, cx)
                 });

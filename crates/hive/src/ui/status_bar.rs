@@ -4,7 +4,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
 use gpui_kit::*;
-use hive_core::usage;
+use hive_core::usage::{self, Vendor};
 
 use crate::app::AppState;
 use crate::state::usage::Usage;
@@ -27,10 +27,12 @@ impl StatusBarView {
     }
 }
 
-fn logo_svg(provider: &str) -> &'static [u8] {
-    match provider {
-        "Claude" => include_bytes!("../../assets/claude.svg"),
-        _ => include_bytes!("../../assets/openai.svg"),
+fn logo_svg(vendor: Vendor) -> &'static [u8] {
+    match vendor {
+        Vendor::Claude => include_bytes!("../../assets/claude.svg"),
+        Vendor::Codex => include_bytes!("../../assets/openai.svg"),
+        Vendor::Cursor => include_bytes!("../../assets/cursor.svg"),
+        Vendor::Antigravity => include_bytes!("../../assets/antigravity.svg"),
     }
 }
 
@@ -44,8 +46,12 @@ impl Render for StatusBarView {
             let row = h_flex()
                 .gap_2()
                 .items_center()
-                .child(Icon::default().data(logo_svg(p.name)).xsmall())
-                .child(div().font_weight(FontWeight::SEMIBOLD).child(p.name));
+                .child(Icon::default().data(logo_svg(p.vendor)).xsmall())
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(p.vendor.name()),
+                );
             match &p.error {
                 Some(err) => row.child(err.to_string()),
                 None if p.windows.is_empty() => row.child("no data"),

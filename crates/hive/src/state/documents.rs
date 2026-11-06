@@ -1,10 +1,14 @@
 //! Open buffers have independent entities; the registry never owns a second copy of text.
 use super::store::Store;
+use gpui_kit::component::input::Position;
 use gpui_kit::*;
+use hive_core::code_navigation::Navigator;
 use hive_core::files::recovery::{self, Record};
 use hive_core::projects::Target;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+mod definitions;
 mod document;
 pub(crate) use document::Document;
 
@@ -12,8 +16,23 @@ pub(crate) use document::Document;
 pub(crate) struct OpenFile {
     pub target: Target,
     pub path: PathBuf,
-    pub line: Option<usize>,
+    /// Zero-based cursor target, applied once the text is loaded.
+    pub position: Option<Position>,
     pub preview: bool,
+    pub placement: TabPlacement,
+}
+
+/// Where a newly opened file's tab goes; a file that already has a tab is focused instead.
+#[derive(Clone, Default)]
+pub(crate) enum TabPlacement {
+    /// The dock's default position.
+    #[default]
+    Default,
+    /// Right after the tab showing this document (⌘⇧-click Go to Definition).
+    Beside(WeakEntity<Document>),
+    /// In place of the tab showing this document, if it has no unsaved edits; beside it
+    /// otherwise (⌘-click Go to Definition).
+    Replacing(WeakEntity<Document>),
 }
 
 pub(crate) enum DocumentEvent {
@@ -30,6 +49,8 @@ pub(crate) struct Documents {
     open: Vec<WeakEntity<Document>>,
     pub(crate) mutating_paths: Vec<(Target, PathBuf)>,
     store: Entity<Store>,
+    /// Shared by every document so `package.json`/`tsconfig` parses are reused.
+    navigator: Arc<Navigator>,
 }
 impl EventEmitter<DocumentEvent> for Documents {}
 
@@ -62,6 +83,7 @@ impl Documents {
             recovered: records,
             recovery_errors: errors,
             store,
+            navigator: Arc::default(),
         }
     }
 
@@ -98,6 +120,9 @@ impl Documents {
                 && d.target.path == request.target.path
                 && d.path == request.path
         }) {
+            if let Some(position) = request.position {
+                document.update(cx, |document, cx| document.goto(position, window, cx));
+            }
             return document;
         }
         let recovered = self
@@ -111,6 +136,7 @@ impl Documents {
             .map(|index| self.recovered.remove(index));
         let document =
             cx.new(|cx| Document::new(request.clone(), recovered, self.store.clone(), window, cx));
+        definitions::install(&document, cx.weak_entity(), self.navigator.clone(), cx);
         self.open.push(document.downgrade());
         document
     }

@@ -11,7 +11,6 @@ use std::time::Duration;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{DockArea, DockPlacement, PanelId, panel_handle};
-use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, InteractiveElementExt as _, Sizable as _, TitleBar, h_flex,
     v_flex,
@@ -92,10 +91,12 @@ const RESIZE_HANDLE_WIDTH: Pixels = px(6.);
 const RIGHT_TAB_UNDERLINE: Pixels = px(2.);
 const HIVE_MARK: &[u8] = include_bytes!("../../assets/icons/Hive.icon/Assets/mark.svg");
 const WELCOME_LOGO_SIZE: Pixels = px(96.);
+/// Width of the welcome screen's shortcut list.
+const WELCOME_CONTENT_WIDTH: Pixels = px(360.);
 /// `TitleBar`'s left padding that clears the macOS traffic lights.
 const TRAFFIC_LIGHTS_INSET: Pixels = px(80.);
-/// Width of the name and the sidebar toggle in the collapsed title bar, after the inset.
-const COLLAPSED_TITLE_CONTENT_WIDTH: Pixels = px(72.);
+/// Width of the sidebar toggle in the collapsed title bar, after the inset.
+const COLLAPSED_TITLE_CONTENT_WIDTH: Pixels = px(32.);
 /// Left padding `TitleBar` adds on its own in fullscreen, where the traffic lights are hidden.
 const FULLSCREEN_INSET: Pixels = px(12.);
 const TITLE_INSET_DURATION: Duration = Duration::from_millis(200);
@@ -463,15 +464,13 @@ impl Render for Workspace {
         let toggle_hover = Hover::new("toggle-sidebar", window, cx);
         let bg = cx.theme().background;
         let open = self.sidebar_open;
-        // The toggle stays right after the name in both states, so it does not jump when the
-        // sidebar collapses and the center's tab bar starts right after it.
+        // The toggle keeps a fixed slot in both states, so it does not jump when the sidebar
+        // collapses and the center's tab bar starts right after it.
         let title_bar = TitleBar::new().bg(bg).child(
             h_flex()
-                .justify_between()
                 .pr_2()
                 .w(COLLAPSED_TITLE_CONTENT_WIDTH)
                 .flex_none()
-                .child(div().text_sm().child("Hive"))
                 .child(
                     Button::new("toggle-sidebar")
                         .cursor_pointer()

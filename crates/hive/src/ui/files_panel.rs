@@ -94,14 +94,20 @@ impl FilesPanel {
                 }
                 cx.notify();
             }),
-            cx.subscribe(&files, |this, _, event: &FilesEvent, cx| {
+            cx.subscribe_in(&files, window, |this, _, event: &FilesEvent, window, cx| {
                 if this
                     .edit
                     .as_ref()
                     .is_some_and(|edit| edit.target == event.target)
                 {
                     match &event.result {
-                        Ok(()) => this.edit = None,
+                        Ok(()) => {
+                            // The rename field held focus; hand it back to its row. A new
+                            // file opens in the editor instead, which takes focus itself.
+                            if this.edit.take().is_some_and(|e| e.renaming().is_some()) {
+                                this.focus_tree(window, cx);
+                            }
+                        }
                         Err(error) => {
                             if let Some(edit) = &mut this.edit {
                                 edit.error = Some(error.clone());
@@ -109,10 +115,13 @@ impl FilesPanel {
                         }
                     }
                 }
+                // A failure the open edit already shows next to its field is not repeated.
+                let shown_by_edit = this.edit.as_ref().is_some_and(|edit| edit.error.is_some());
                 this.operation_error = event
                     .result
                     .as_ref()
                     .err()
+                    .filter(|_| !shown_by_edit)
                     .cloned()
                     .or_else(|| event.warning.clone());
                 cx.notify();
@@ -419,8 +428,8 @@ impl Render for FilesPanel {
                         .smooth_hover(ButtonLook::Outline, &search_hover, cx),
                 ),
             );
-        if let Some(edit) = &self.edit {
-            body = body.child(edit.render(busy, window, cx));
+        if let Some(edit) = self.edit.as_ref().filter(|edit| edit.renaming().is_none()) {
+            body = body.child(edit.render_form(busy, window, cx));
         }
         if let Some(error) = self.operation_error.clone().or(error) {
             body = body.child(

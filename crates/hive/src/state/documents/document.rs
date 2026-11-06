@@ -36,7 +36,7 @@ pub(crate) struct Document {
     pub path_busy: bool,
     store: Entity<Store>,
     recovery_key: String,
-    pending_line: Option<usize>,
+    pending_position: Option<Position>,
     position: Option<([u32; 2], [f32; 2])>,
     _read: Option<Task<()>>,
     _save: Option<Task<()>>,
@@ -53,12 +53,7 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let language = request
-            .path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_lowercase();
+        let language = files::editor_language(&request.path);
         let editor = cx.new(|cx| EditorState::new(window, cx).language(language));
         let subscriptions = vec![
             cx.subscribe_in(&editor, window, |this, _, event, _, cx| {
@@ -113,7 +108,7 @@ impl Document {
             path_busy: false,
             store,
             recovery_key,
-            pending_line: request.line,
+            pending_position: request.position,
             position: None,
             _read: None,
             _save: None,
@@ -188,13 +183,12 @@ impl Document {
         }
     }
 
-    pub fn goto(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn goto(&mut self, position: Position, window: &mut Window, cx: &mut Context<Self>) {
         if self.base.is_none() {
-            self.pending_line = Some(line);
+            self.pending_position = Some(position);
             return;
         }
         self.editor.update(cx, |editor, cx| {
-            let position = Position::new(line.saturating_sub(1) as u32, 0);
             editor.unfold_at(position, cx);
             editor.set_cursor_position(position, window, cx);
         });
@@ -269,8 +263,8 @@ impl Document {
     }
 
     fn apply_position(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(line) = self.pending_line.take() {
-            self.goto(line, window, cx);
+        if let Some(position) = self.pending_position.take() {
+            self.goto(position, window, cx);
         } else if let Some((cursor, scroll)) = self.position.take() {
             self.editor.update(cx, |editor, cx| {
                 editor.set_cursor_position(Position::new(cursor[0], cursor[1]), window, cx);

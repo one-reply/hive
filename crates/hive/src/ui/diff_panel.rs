@@ -15,6 +15,7 @@ use gpui_kit::component::diff::{
     Diff, DiffAnnotation, DiffLinePosition, DiffMode, DiffSide, DiffState,
 };
 use gpui_kit::component::dock::{BasePanel, DockArea, DockEvent, Panel, PanelEvent, TabGroup};
+use gpui_kit::component::input::Position;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 use hive_core::git::diff::DiffSource;
@@ -294,8 +295,13 @@ impl Render for DiffPanel {
                             crate::state::documents::OpenFile {
                                 target: file_request.target.clone(),
                                 path: file_request.path.clone().into(),
-                                line: Some(position.line()),
+                                position: Some(Position::new(
+                                    u32::try_from(position.line().saturating_sub(1))
+                                        .unwrap_or(u32::MAX),
+                                    0,
+                                )),
                                 preview: false,
+                                placement: Default::default(),
                             },
                             cx,
                         )
@@ -358,8 +364,9 @@ impl Render for DiffPanel {
                                         crate::state::documents::OpenFile {
                                             target: request.target.clone(),
                                             path: request.path.clone().into(),
-                                            line: None,
+                                            position: None,
                                             preview: false,
+                                            placement: Default::default(),
                                         },
                                         cx,
                                     )

@@ -10,6 +10,15 @@ impl Files {
             .find(|entry| entry.path == path)
     }
 
+    /// Paths listed in `directory` so far; nothing when it has not been listed.
+    pub(crate) fn listed(&self, directory: &Path) -> impl Iterator<Item = &Path> {
+        self.entries
+            .get(directory)
+            .into_iter()
+            .flatten()
+            .map(|entry| entry.path.as_path())
+    }
+
     /// The tree as the panel should show it.
     pub(crate) fn nodes(&self) -> &[Node] {
         &self.nodes

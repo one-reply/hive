@@ -1,6 +1,11 @@
-//! Usage limits of the Claude Code and Codex CLIs. Both endpoints are undocumented;
-//! parsers are lenient; debug logs contain response metadata, never response bodies.
+//! Usage limits of the installed agent CLIs: Claude Code, Codex, Cursor Agent and Antigravity.
+//! Every endpoint is undocumented; parsers are lenient; debug logs contain response metadata,
+//! never response bodies.
 
+mod antigravity;
+mod cursor;
+
+use crate::command;
 use crate::keychain::{self, CredentialError};
 use serde_json::Value;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,29 +27,78 @@ pub enum UsageError {
     Json(String),
 }
 
+/// A vendor whose plan limits Hive reads with the credentials of its CLI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Vendor {
+    Claude,
+    Codex,
+    Cursor,
+    Antigravity,
+}
+
+impl Vendor {
+    /// Every vendor, in status bar order.
+    pub const ALL: [Self; 4] = [Self::Claude, Self::Codex, Self::Cursor, Self::Antigravity];
+
+    /// Display name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::Codex => "Codex",
+            Self::Cursor => "Cursor",
+            Self::Antigravity => "Antigravity",
+        }
+    }
+
+    /// The CLI whose presence decides whether the vendor is shown at all.
+    pub fn executable(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Cursor => "cursor-agent",
+            Self::Antigravity => "agy",
+        }
+    }
+
+    fn fetch(self) -> Result<Vec<UsageWindow>, UsageError> {
+        match self {
+            Self::Claude => claude(),
+            Self::Codex => codex(),
+            Self::Cursor => cursor::fetch(),
+            Self::Antigravity => antigravity::fetch(),
+        }
+    }
+}
+
+/// The limits of one vendor, or why they could not be read.
 #[derive(Clone, Debug)]
 pub struct Provider {
-    pub name: &'static str,
+    pub vendor: Vendor,
     pub windows: Vec<UsageWindow>,
     pub error: Option<UsageError>,
 }
 
-/// Blocking network calls; run on a background executor.
+/// Blocking: the limits of every vendor whose CLI is installed. A CLI that is installed but
+/// signed out still shows, with the command that signs in; one that is missing is left out.
 pub fn fetch_all() -> Vec<Provider> {
-    vec![provider("Claude", claude()), provider("Codex", codex())]
+    Vendor::ALL
+        .into_iter()
+        .filter(|vendor| command::executable(vendor.executable()).is_some())
+        .map(|vendor| provider(vendor, vendor.fetch()))
+        .collect()
 }
 
-fn provider(name: &'static str, result: Result<Vec<UsageWindow>, UsageError>) -> Provider {
+fn provider(vendor: Vendor, result: Result<Vec<UsageWindow>, UsageError>) -> Provider {
     match result {
         Ok(windows) => Provider {
-            name,
+            vendor,
             windows,
             error: None,
         },
         Err(error) => {
-            tracing::warn!(provider = name, %error, "usage fetch failed");
+            tracing::warn!(provider = vendor.name(), %error, "usage fetch failed");
             Provider {
-                name,
+                vendor,
                 windows: vec![],
                 error: Some(error),
             }
@@ -61,23 +115,55 @@ fn get_json_with_timeout(
     headers: &[(&str, &str)],
     timeout: Duration,
 ) -> Result<Value, UsageError> {
-    let config = ureq::Agent::config_builder()
-        .timeout_connect(Some(Duration::from_secs(3).min(timeout)))
-        .timeout_global(Some(timeout))
-        .build();
-    let agent = ureq::Agent::new_with_config(config);
-    let mut req = agent.get(url);
+    let mut req = agent(timeout).get(url);
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    let mut res = req.call().map_err(|e| UsageError::Http(e.to_string()))?;
+    let (status, text) = response_text(req.call())?;
+    json_of(status, &text)
+}
+
+/// Blocking: POSTs `body` as JSON; the status and text, for callers that read error bodies.
+fn post_text(url: &str, headers: &[(&str, &str)], body: &str) -> Result<(u16, String), UsageError> {
+    let mut req = agent(Duration::from_secs(10))
+        .post(url)
+        .content_type("application/json");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    response_text(req.send(body))
+}
+
+/// Non-2xx statuses come back as responses, so a caller can tell them apart by their body.
+fn agent(timeout: Duration) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_connect(Some(Duration::from_secs(3).min(timeout)))
+        .timeout_global(Some(timeout))
+        .build();
+    ureq::Agent::new_with_config(config)
+}
+
+fn response_text(
+    response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+) -> Result<(u16, String), UsageError> {
+    let mut res = response.map_err(|e| UsageError::Http(e.to_string()))?;
     let status = res.status().as_u16();
     let text = res
         .body_mut()
         .read_to_string()
         .map_err(|e| UsageError::Http(e.to_string()))?;
     tracing::debug!(status, response_bytes = text.len(), "usage response");
-    serde_json::from_str(&text).map_err(|e| UsageError::Json(e.to_string()))
+    Ok((status, text))
+}
+
+/// The body of a 2xx response as JSON. Error bodies may name the account, so only the status
+/// reaches the message.
+fn json_of(status: u16, text: &str) -> Result<Value, UsageError> {
+    if !(200..300).contains(&status) {
+        return Err(UsageError::Http(format!("HTTP {status}")));
+    }
+    serde_json::from_str(text).map_err(|e| UsageError::Json(e.to_string()))
 }
 
 fn claude() -> Result<Vec<UsageWindow>, UsageError> {
@@ -293,6 +379,13 @@ mod tests {
             );
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn error_statuses_never_carry_the_body() {
+        let error = json_of(403, r#"{"email":"private-account-marker"}"#).unwrap_err();
+        assert_eq!(error, UsageError::Http("HTTP 403".into()));
+        assert_eq!(json_of(200, r#"{"ok":1}"#).unwrap(), json!({"ok": 1}));
     }
 
     #[test]

@@ -205,14 +205,15 @@ pub(crate) static SHORTCUTS: [Shortcut; 21] = [
     },
     Shortcut {
         label: "Open selected file",
-        default: "enter",
+        // VS Code's macOS keys: Enter renames the selected entry, Cmd-Down opens it.
+        default: "cmd-down",
         category: Category::Files,
         context: "FilesPanel > Tree",
         action: || Box::new(OpenSelectedFile),
     },
     Shortcut {
         label: "Rename file",
-        default: "f2",
+        default: "enter",
         category: Category::Files,
         context: "FilesPanel > Tree",
         action: || Box::new(RenameSelectedFile),
@@ -232,6 +233,14 @@ pub(crate) static SHORTCUTS: [Shortcut; 21] = [
         action: || Box::new(CancelFileEdit),
     },
 ];
+
+/// The Shortcuts page's label of `action`, so other screens name it the same way.
+pub(crate) fn label(action: &dyn Action) -> Option<&'static str> {
+    SHORTCUTS
+        .iter()
+        .find(|shortcut| shortcut.name() == action.name())
+        .map(|shortcut| shortcut.label)
+}
 
 /// Installs the shortcuts now and again whenever the user reassigns one.
 pub fn init(cx: &mut App) {

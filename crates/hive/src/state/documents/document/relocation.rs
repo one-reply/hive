@@ -34,12 +34,7 @@ impl Document {
             &mut self.recovery_key,
             recovery::key(&self.target.host, &self.target.path, &self.path),
         );
-        let language = self
-            .path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_lowercase();
+        let language = files::editor_language(&self.path);
         self.editor
             .update(cx, |editor, cx| editor.set_highlighter(language, cx));
         let draft = self.base.as_ref().filter(|_| self.dirty).map(|base| Draft {
