@@ -11,6 +11,7 @@ const CHEVRON_DURATION: Duration = Duration::from_millis(160);
 /// instead of the theme's blue `list_active`, so selection reads the same across panels.
 const SELECTED_BACKGROUND_OPACITY: f32 = 0.09;
 const SELECTED_BORDER_OPACITY: f32 = 0.14;
+const SEARCH_HIGHLIGHT_OPACITY: f32 = 0.15;
 
 pub(super) fn render(
     ix: usize,
@@ -36,6 +37,22 @@ pub(super) fn render(
         .cloned();
     let target = state.target.clone();
     let busy = state.busy;
+    let highlights = state
+        .search_highlights(&path)
+        .iter()
+        .cloned()
+        .map(|range| {
+            (
+                range,
+                HighlightStyle {
+                    color: Some(cx.theme().primary),
+                    background_color: Some(cx.theme().primary.opacity(SEARCH_HIGHLIGHT_OPACITY)),
+                    font_weight: Some(FontWeight::SEMIBOLD),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
     let rename_field = panel
         .read(cx)
         .edit
@@ -149,7 +166,7 @@ pub(super) fn render(
                 .min_w_0()
                 .truncate()
                 .when(missing, |label| label.line_through())
-                .child(entry.item().label.clone()),
+                .child(StyledText::new(entry.item().label.clone()).with_highlights(highlights)),
         })
         .when(dirty, |row| {
             row.child(

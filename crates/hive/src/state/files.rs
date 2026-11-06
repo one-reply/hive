@@ -12,6 +12,7 @@ use hive_core::{
 };
 mod listing;
 mod mutations;
+mod search;
 mod tree;
 pub(crate) use mutations::FileOperation;
 
@@ -57,6 +58,7 @@ pub(crate) struct Files {
     destination_for: Option<PathBuf>,
     pending_reveal: Option<PathBuf>,
     pending_refresh: bool,
+    search: search::Search,
     generation: u64,
     _operation: Option<Task<()>>,
     _read: Option<Task<()>>,
@@ -85,6 +87,7 @@ impl Files {
                         this.reveal(path, cx);
                     }
                     this.rebuild(cx);
+                    this.search(cx);
                     this.refresh(cx);
                     cx.notify();
                 }
@@ -166,6 +169,7 @@ impl Files {
                     this.error = None;
                     this.entries.clear();
                     this.expanded.clear();
+                    this.search.reset();
                     this.rebuild(cx);
                     this.sync_documents(true, cx);
                     this.refresh(cx);
@@ -208,6 +212,7 @@ impl Files {
             destination_for,
             pending_reveal: None,
             pending_refresh: false,
+            search: search::Search::default(),
             generation: 0,
             _operation: None,
             _read: None,
@@ -285,16 +290,5 @@ impl Files {
                 cx,
             )
         });
-    }
-
-    pub fn index(&self, cx: &App) -> Option<(Target, Task<Result<FileIndex, String>>)> {
-        let target = self.target.clone()?;
-        let index_target = target.clone();
-        Some((
-            target,
-            cx.background_executor().spawn(async move {
-                files::list_files(&index_target.host, &index_target.path).map_err(|e| e.to_string())
-            }),
-        ))
     }
 }

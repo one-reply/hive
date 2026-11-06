@@ -26,6 +26,7 @@ use crate::app::AppState;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
 use crate::ui::project_badge;
 use ai::AiPage;
+use appearance::AppearancePage;
 use project::ProjectPage;
 use shortcuts::ShortcutsPage;
 
@@ -169,7 +170,7 @@ impl Page {
 
     fn description(self) -> &'static str {
         match self {
-            Page::Appearance => "Theme and text size of every Hive window.",
+            Page::Appearance => "Theme, fonts and scrollbars of every Hive window.",
             Page::Shortcuts => {
                 "Keyboard shortcuts of the main window. Click Edit and press new keys."
             }
@@ -204,6 +205,7 @@ enum View {
 
 pub struct SettingsWindow {
     view: View,
+    appearance: Entity<AppearancePage>,
     shortcuts: Entity<ShortcutsPage>,
     ai: Entity<AiPage>,
     git: Entity<git::GitPage>,
@@ -217,6 +219,7 @@ impl SettingsWindow {
         let (store, projects) = (state.store.clone(), state.projects.clone());
         Self {
             view: View::Page(Page::Appearance),
+            appearance: cx.new(|cx| AppearancePage::new(window, cx)),
             shortcuts: cx.new(ShortcutsPage::new),
             ai: cx.new(|cx| AiPage::new(window, cx)),
             git: cx.new(|cx| git::GitPage::new(window, cx)),
@@ -419,7 +422,7 @@ impl SettingsWindow {
         {
             View::Page(page) => {
                 let body = match page {
-                    Page::Appearance => appearance::render(window, cx).into_any_element(),
+                    Page::Appearance => self.appearance.clone().into_any_element(),
                     Page::Shortcuts => self.shortcuts.clone().into_any_element(),
                     Page::Terminal => terminal::render(window, cx).into_any_element(),
                     Page::Ai => self.ai.clone().into_any_element(),

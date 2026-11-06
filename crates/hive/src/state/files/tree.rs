@@ -4,16 +4,23 @@ use hive_core::git::status::Change;
 
 impl Files {
     pub(crate) fn entry(&self, path: &Path) -> Option<&Entry> {
-        self.entries
-            .get(path.parent().unwrap_or(Path::new("")))?
+        self.listing(path.parent().unwrap_or(Path::new("")))?
             .iter()
             .find(|entry| entry.path == path)
     }
 
+    fn listing(&self, directory: &Path) -> Option<&Vec<Entry>> {
+        if !self.search.query.is_empty()
+            && let Some(entries) = self.search.entries.get(directory)
+        {
+            return Some(entries);
+        }
+        self.entries.get(directory)
+    }
+
     /// Paths listed in `directory` so far; nothing when it has not been listed.
     pub(crate) fn listed(&self, directory: &Path) -> impl Iterator<Item = &Path> {
-        self.entries
-            .get(directory)
+        self.listing(directory)
             .into_iter()
             .flatten()
             .map(|entry| entry.path.as_path())
@@ -41,6 +48,15 @@ impl Files {
 
     /// The user opened or closed a directory in the panel; its children are listed on demand.
     pub(crate) fn set_expanded(&mut self, path: PathBuf, expanded: bool, cx: &mut Context<Self>) {
+        if !self.search.query.is_empty() {
+            if expanded {
+                self.search.collapsed.remove(&path);
+            } else {
+                self.search.collapsed.insert(path);
+            }
+            self.rebuild(cx);
+            return;
+        }
         if expanded {
             self.expanded.insert(path);
         } else {
@@ -50,12 +66,20 @@ impl Files {
     }
 
     pub(crate) fn collapse_all(&mut self, cx: &mut Context<Self>) {
-        self.expanded.clear();
+        if !self.search.query.is_empty() {
+            self.search.collapsed = self.search.matches.directories().into_iter().collect();
+        } else {
+            self.expanded.clear();
+        }
         self.pending_reveal = None;
         self.rebuild(cx);
     }
 
     pub(crate) fn expand(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !self.search.query.is_empty() {
+            self.set_expanded(path, true, cx);
+            return;
+        }
         if self.expanded.insert(path) {
             self.rebuild(cx);
             self.refresh(cx);
@@ -63,6 +87,11 @@ impl Files {
     }
 
     pub(crate) fn toggle_directory(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !self.search.query.is_empty() {
+            let expanded = self.search.collapsed.contains(&path);
+            self.set_expanded(path, expanded, cx);
+            return;
+        }
         if self.expanded.remove(&path) {
             self.rebuild(cx);
         } else {
@@ -76,7 +105,11 @@ impl Files {
             .skip(1)
             .filter(|p| !p.as_os_str().is_empty())
         {
-            self.expanded.insert(parent.into());
+            if self.search.query.is_empty() {
+                self.expanded.insert(parent.into());
+            } else {
+                self.search.collapsed.remove(parent);
+            }
         }
         self.pending_reveal = Some(path);
         self.rebuild(cx);
@@ -85,14 +118,24 @@ impl Files {
 
     /// Rebuilds the rows from the model; the panel picks them up on its next observation.
     pub(super) fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let built = tree::build(&Source {
-            entries: &self.entries,
+        let searching = !self.search.query.is_empty();
+        let mut built = tree::build(&Source {
+            entries: if searching {
+                &self.search.entries
+            } else {
+                &self.entries
+            },
             expanded: &self.expanded,
             ignored: &self.ignored,
             decorations: &self.decorations,
             settings: &self.settings,
             destination_for: self.destination_for.as_deref(),
         });
+        if searching {
+            self.search
+                .matches
+                .filter(&mut built.nodes, &self.search.collapsed);
+        }
         self.nodes = built.nodes;
         self.missing = built.missing;
         self.tree_generation += 1;

@@ -27,6 +27,42 @@ impl ThemeChoice {
     }
 }
 
+/// When scrollbars are drawn in every scrollable area.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Scrollbars {
+    /// Shown while scrolling, then faded out.
+    Scrolling,
+    /// Shown while the pointer is over the scrollable area.
+    Hover,
+    /// Always shown.
+    Always,
+    /// Follow the macOS "Show scroll bars" preference; also what an unknown value means.
+    #[default]
+    #[serde(other)]
+    System,
+}
+
+impl Scrollbars {
+    /// Every choice, in the order the settings page shows them.
+    pub const ALL: [Scrollbars; 4] = [
+        Scrollbars::System,
+        Scrollbars::Scrolling,
+        Scrollbars::Hover,
+        Scrollbars::Always,
+    ];
+
+    /// The name shown on the settings page.
+    pub fn label(self) -> &'static str {
+        match self {
+            Scrollbars::System => "System",
+            Scrollbars::Scrolling => "Scrolling",
+            Scrollbars::Hover => "Hover",
+            Scrollbars::Always => "Always",
+        }
+    }
+}
+
 /// Narrowest sidebar the user can drag to, in logical pixels.
 pub const SIDEBAR_WIDTH_MIN: f32 = 180.;
 /// Widest sidebar the user can drag to, in logical pixels.
@@ -68,6 +104,13 @@ pub struct Settings {
     /// Global recipe for generating a staged commit message; never contains API keys.
     pub commit_message: crate::commit_message::Recipe,
     pub theme: ThemeChoice,
+    /// UI font family; `None` uses the system font.
+    #[serde(deserialize_with = "deserialize_font_family")]
+    ui_font_family: Option<String>,
+    /// Monospace family of terminals, diffs and code; `None` uses the theme default.
+    #[serde(deserialize_with = "deserialize_font_family")]
+    code_font_family: Option<String>,
+    pub scrollbars: Scrollbars,
     sidebar_width: f32,
     git_panel_width: f32,
     /// Whether source control is visible on launch.
@@ -91,6 +134,9 @@ impl Default for Settings {
             default_cli_agent: crate::agent::AgentKind::Codex,
             commit_message: Default::default(),
             theme: ThemeChoice::default(),
+            ui_font_family: None,
+            code_font_family: None,
+            scrollbars: Scrollbars::default(),
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             git_panel_width: GIT_PANEL_WIDTH_DEFAULT,
             git_panel_open: true,
@@ -149,6 +195,26 @@ impl Settings {
         self.ui_font_size = clamp_ui_font_size(size);
     }
 
+    /// The UI font family the user chose, or `None` for the system font.
+    pub fn ui_font_family(&self) -> Option<&str> {
+        self.ui_font_family.as_deref()
+    }
+
+    /// Stores `family`; `None` or a blank name returns to the system font.
+    pub fn set_ui_font_family(&mut self, family: Option<&str>) {
+        self.ui_font_family = family.and_then(font_family);
+    }
+
+    /// The monospace family the user chose, or `None` for the theme default.
+    pub fn code_font_family(&self) -> Option<&str> {
+        self.code_font_family.as_deref()
+    }
+
+    /// Stores `family`; `None` or a blank name returns to the theme default.
+    pub fn set_code_font_family(&mut self, family: Option<&str>) {
+        self.code_font_family = family.and_then(font_family);
+    }
+
     /// Terminal font size in logical pixels, within
     /// `TERMINAL_FONT_SIZE_MIN..=TERMINAL_FONT_SIZE_MAX`.
     pub fn terminal_font_size(&self) -> f32 {
@@ -193,6 +259,19 @@ fn deserialize_default_cli_agent<'de, D: serde::Deserializer<'de>>(
             Ok(crate::agent::AgentKind::Codex)
         }
     }
+}
+
+/// A hand-edited family that is not a string, or is blank, means the default font.
+fn deserialize_font_family<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_str().and_then(font_family))
+}
+
+fn font_family(name: &str) -> Option<String> {
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 /// Clamps `width` to `SIDEBAR_WIDTH_MIN..=SIDEBAR_WIDTH_MAX`; a non-finite value falls back
@@ -325,6 +404,38 @@ mod tests {
         settings.set_terminal_font_size(f32::NEG_INFINITY);
         assert_eq!(settings.ui_font_size(), UI_FONT_SIZE_DEFAULT);
         assert_eq!(settings.terminal_font_size(), TERMINAL_FONT_SIZE_DEFAULT);
+    }
+
+    #[test]
+    fn appearance_choices_default_round_trip_and_tolerate_bad_values() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.ui_font_family(), None);
+        assert_eq!(settings.code_font_family(), None);
+        assert_eq!(settings.scrollbars, Scrollbars::System);
+
+        let mut settings = Settings::default();
+        settings.set_ui_font_family(Some(" Inter "));
+        settings.set_code_font_family(Some("JetBrains Mono"));
+        settings.scrollbars = Scrollbars::Always;
+        let loaded: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(loaded.ui_font_family(), Some("Inter"));
+        assert_eq!(loaded.code_font_family(), Some("JetBrains Mono"));
+        assert_eq!(loaded.scrollbars, Scrollbars::Always);
+
+        let loaded: Settings = serde_json::from_str(
+            r#"{"ui_font_family":"   ","code_font_family":42,"scrollbars":"sometimes","theme":"dark"}"#,
+        )
+        .unwrap();
+        assert_eq!(loaded.ui_font_family(), None);
+        assert_eq!(loaded.code_font_family(), None);
+        assert_eq!(loaded.scrollbars, Scrollbars::System);
+        assert_eq!(loaded.theme, ThemeChoice::Dark);
+
+        settings.set_code_font_family(None);
+        settings.set_ui_font_family(Some(""));
+        assert_eq!(settings.code_font_family(), None);
+        assert_eq!(settings.ui_font_family(), None);
     }
 
     #[test]

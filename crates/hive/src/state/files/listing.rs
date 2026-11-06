@@ -109,6 +109,7 @@ impl Files {
     }
 
     pub(crate) fn refresh_all(&mut self, cx: &mut Context<Self>) {
+        self.refresh_search(cx);
         self.refresh(cx);
         let git = AppState::get(cx).git.clone();
         let target = self.target.clone();

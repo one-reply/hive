@@ -83,11 +83,16 @@ mod native {
     /// after each update. `security` is the only public API for that ACL (`-A`); the command
     /// goes through stdin so the key never appears in process arguments, and `-X` hex data
     /// needs no quoting. The item ends up in the login keychain like before.
+    ///
+    /// `-U` would keep an existing item's ACL, so an item written with the old per-build ACL
+    /// is deleted and created anew; `security -i` exits with the status of the last command,
+    /// so a missing item to delete is not a failure.
     pub(super) fn save_key(service: &str, provider: Provider, key: &ApiKey) -> Result<(), Error> {
+        let account = provider.account();
         let hex: String = key.as_str().bytes().map(|b| format!("{b:02x}")).collect();
         let command = format!(
-            "add-generic-password -A -U -s {service} -a {} -X {hex}\n",
-            provider.account()
+            "delete-generic-password -s {service} -a {account}\n\
+             add-generic-password -A -s {service} -a {account} -X {hex}\n"
         );
         let output = security_tool(&command).map_err(|error| {
             tracing::warn!(%error, "security tool failed");
@@ -162,6 +167,15 @@ mod native {
             let _cleanup = Cleanup(service.clone());
             assert!(!has_key(&service, provider).unwrap());
             assert!(load_key(&service, provider).unwrap().is_none());
+            // An item with the default ACL that trusts only its writer, like the ones
+            // saved before the any-application ACL.
+            let legacy = std::process::Command::new("security")
+                .args(["add-generic-password", "-s", &service])
+                .args(["-a", provider.account(), "-w", "hive-test-legacy"])
+                .status()
+                .unwrap();
+            assert!(legacy.success());
+            assert!(!any_application_may_read(&service, provider));
             for value in ["hive-test-first", "hive-test-replacement"] {
                 let key = ApiKey::try_from(value.to_owned()).unwrap();
                 save_key(&service, provider, &key).unwrap();

@@ -1,7 +1,7 @@
 use gpui_kit::*;
 use hive_core::host::Host;
 use hive_core::identity::ProjectIdentity;
-use hive_core::settings::ThemeChoice;
+use hive_core::settings::{Scrollbars, ThemeChoice};
 use hive_core::state::workspace::{ProjectWorkspace, Selection};
 use hive_core::state::{LoadedState, ProjectRef, State, StateError};
 use std::path::{Path, PathBuf};
@@ -220,6 +220,21 @@ impl Store {
 
     pub fn set_terminal_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
         self.state.settings.set_terminal_font_size(size);
+        self.commit(cx);
+    }
+
+    pub fn set_ui_font_family(&mut self, family: Option<&str>, cx: &mut Context<Self>) {
+        self.state.settings.set_ui_font_family(family);
+        self.commit(cx);
+    }
+
+    pub fn set_code_font_family(&mut self, family: Option<&str>, cx: &mut Context<Self>) {
+        self.state.settings.set_code_font_family(family);
+        self.commit(cx);
+    }
+
+    pub fn set_scrollbars(&mut self, scrollbars: Scrollbars, cx: &mut Context<Self>) {
+        self.state.settings.scrollbars = scrollbars;
         self.commit(cx);
     }
 
