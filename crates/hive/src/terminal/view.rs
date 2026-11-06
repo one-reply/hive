@@ -67,10 +67,13 @@ impl TerminalView {
                 cx,
             )
         });
-        session.update(cx, |session, _| {
-            session.resume_available = resume.is_some();
-            session.resume = resume;
-        });
+        // A restored tile offers its saved conversation; a fresh launch may already own one.
+        if let Some(resume) = resume {
+            session.update(cx, |session, _| {
+                session.resume_available = true;
+                session.resume = Some(resume);
+            });
+        }
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.on_focus(&focus_handle, window, |this, _, cx| {

@@ -5,10 +5,16 @@ use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 /// Interactive CLIs Hive can launch explicitly.
 pub const AGENTS: [AgentKind; 3] = [AgentKind::Codex, AgentKind::ClaudeCode, AgentKind::OpenCode];
+
+/// OpenCode rejects `--session` values without this prefix.
+const OPENCODE_SESSION_PREFIX: &str = "ses_";
+static NEXT_OPENCODE_SESSION: AtomicU64 = AtomicU64::new(0);
 
 /// A supported conversation the user can explicitly resume.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,12 +25,15 @@ pub struct ResumeSession {
 impl ResumeSession {
     /// Capture a validated conversation identifier from an agent event.
     pub fn new(agent: AgentKind, id: &str) -> Option<Self> {
-        (matches!(agent, AgentKind::ClaudeCode | AgentKind::Codex) && valid_session_id(id)).then(
-            || Self {
-                agent,
-                id: id.into(),
-            },
-        )
+        let supported = match agent {
+            AgentKind::ClaudeCode | AgentKind::Codex => true,
+            AgentKind::OpenCode => id.starts_with(OPENCODE_SESSION_PREFIX),
+            _ => false,
+        };
+        (supported && valid_session_id(id)).then(|| Self {
+            agent,
+            id: id.into(),
+        })
     }
     /// Agent that owns this conversation.
     pub fn agent(&self) -> AgentKind {
@@ -61,6 +70,19 @@ pub(super) fn valid_session_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// A fresh id for `opencode --session`, which creates the session when it does not exist.
+/// Unique per process by the counter and across processes by the pid and clock.
+pub(crate) fn new_opencode_session_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    format!(
+        "{OPENCODE_SESSION_PREFIX}hive{nanos:x}{:x}{:x}",
+        std::process::id(),
+        NEXT_OPENCODE_SESSION.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// A new interactive agent or an explicit resume, always in a new PTY.
 #[derive(Clone, Debug)]
 pub enum Launch {
@@ -75,6 +97,24 @@ impl Launch {
         match self {
             Self::New(agent) => *agent,
             Self::Resume(session) => session.agent,
+        }
+    }
+    /// Gives a new OpenCode conversation its id up front, so it is resumable from the first
+    /// moment: OpenCode reports no session events Hive could capture it from later.
+    pub fn with_known_session(self) -> Self {
+        match self {
+            Self::New(AgentKind::OpenCode) => Self::Resume(ResumeSession {
+                agent: AgentKind::OpenCode,
+                id: new_opencode_session_id(),
+            }),
+            launch => launch,
+        }
+    }
+    /// The conversation this launch continues, when its id is known before it starts.
+    pub fn session(&self) -> Option<&ResumeSession> {
+        match self {
+            Self::New(_) => None,
+            Self::Resume(session) => Some(session),
         }
     }
     /// Blocking: discover the binary before creating a worktree or starting a terminal.
@@ -116,10 +156,10 @@ impl Launch {
                 return Err(LaunchError::InvalidSession);
             }
             args.push(
-                if session.agent == AgentKind::ClaudeCode {
-                    "--resume"
-                } else {
-                    "resume"
+                match session.agent {
+                    AgentKind::ClaudeCode => "--resume",
+                    AgentKind::OpenCode => "--session",
+                    _ => "resume",
                 }
                 .into(),
             );
@@ -174,5 +214,36 @@ mod tests {
             ResumeSession::new(AgentKind::ClaudeCode, "--dangerously-skip-permissions").is_none()
         );
         assert!(ResumeSession::new(AgentKind::Codex, "$(touch /tmp/no)").is_none());
+    }
+    #[test]
+    fn new_opencode_launch_owns_a_resumable_session_id() {
+        let launch = Launch::New(AgentKind::OpenCode).with_known_session();
+        let session = launch
+            .session()
+            .expect("OpenCode gets its id before start")
+            .clone();
+        assert_eq!(session.agent(), AgentKind::OpenCode);
+        assert_eq!(
+            ResumeSession::new(AgentKind::OpenCode, session.id()),
+            Some(session.clone())
+        );
+        assert_eq!(
+            launch.arguments(Some("{}")).unwrap(),
+            ["--session", session.id()]
+        );
+        let other = Launch::New(AgentKind::OpenCode).with_known_session();
+        assert_ne!(other.session(), Some(&session));
+    }
+    #[test]
+    fn other_new_launches_keep_their_unknown_session() {
+        for agent in [AgentKind::ClaudeCode, AgentKind::Codex] {
+            assert!(Launch::New(agent).with_known_session().session().is_none());
+        }
+    }
+    #[test]
+    fn opencode_ids_without_its_prefix_are_rejected() {
+        assert!(ResumeSession::new(AgentKind::OpenCode, "a1-b2").is_none());
+        assert!(ResumeSession::new(AgentKind::OpenCode, "ses_--x;").is_none());
+        assert!(ResumeSession::new(AgentKind::GeminiCli, "ses_abc").is_none());
     }
 }

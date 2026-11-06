@@ -61,7 +61,9 @@ impl TerminalSession {
         let directory = cwd.clone();
         let endpoint = AppState::get(cx).agents.read(cx).endpoint();
         let terminal_id = cx.entity_id().as_u64();
+        let launch = launch.map(Launch::with_known_session);
         let launched_agent = launch.as_ref().map(Launch::agent);
+        let resume = launch.as_ref().and_then(Launch::session).cloned();
         let start = cx.background_executor().spawn(async move {
             let Some(starting) = starting else {
                 return Err("Hive is shutting down".to_owned());
@@ -149,7 +151,7 @@ impl TerminalSession {
             title: None,
             exited: false,
             directory,
-            resume: None,
+            resume,
             resume_available: false,
             focused: false,
             last_focused: None,

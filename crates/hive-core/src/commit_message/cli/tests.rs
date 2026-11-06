@@ -91,18 +91,106 @@ fn only_final_cli_messages_are_returned() {
     assert!(parse(AgentKind::Codex, b"not json").is_err());
 }
 
+// `opencode run --format json` 2.2.5 output; ids shortened, payloads replaced with fixture text.
+// The second step is the answer; the first ends in a denied tool call.
+const OPENCODE: &str = r#"{"type":"step_start","timestamp":1,"sessionID":"ses_t","part":{"id":"prt_1","sessionID":"ses_t","messageID":"msg_1","type":"step-start"}}
+{"type":"text","timestamp":2,"sessionID":"ses_t","part":{"id":"prt_2","sessionID":"ses_t","messageID":"msg_1","type":"text","text":"I'll read the file.","time":{"start":1,"end":2}}}
+{"type":"tool_use","timestamp":3,"sessionID":"ses_t","part":{"partID":"prt_3","sessionID":"ses_t","messageID":"msg_1","type":"tool","tool":"skill","state":{"status":"error","input":{"id":"fs"},"error":"Unable to load skill fs"}}}
+{"type":"step_finish","timestamp":4,"sessionID":"ses_t","part":{"id":"prt_4","sessionID":"ses_t","messageID":"msg_1","type":"step-finish","reason":"tool-calls","cost":0.001,"tokens":{"input":1,"output":1}}}
+{"type":"step_start","timestamp":5,"sessionID":"ses_t","part":{"id":"prt_5","sessionID":"ses_t","messageID":"msg_2","type":"step-start"}}
+{"type":"text","timestamp":6,"sessionID":"ses_t","part":{"id":"prt_6","sessionID":"ses_t","messageID":"msg_2","type":"text","text":"chore: fixture","time":{"start":5,"end":6}}}
+{"type":"step_finish","timestamp":7,"sessionID":"ses_t","part":{"id":"prt_7","sessionID":"ses_t","messageID":"msg_2","type":"step-finish","reason":"stop","cost":0.001,"tokens":{"input":1,"output":1}}}
+"#;
+const OPENCODE_ERROR: &str = r#"{"type":"error","timestamp":1,"sessionID":"ses_t","error":{"type":"provider.no-route","message":"Model unavailable: anthropic/no-such-model"}}"#;
+
+#[test]
+fn opencode_returns_only_the_stopped_step_text() {
+    assert_eq!(
+        parse(AgentKind::OpenCode, OPENCODE.as_bytes()).unwrap(),
+        "chore: fixture"
+    );
+}
+
+#[test]
+fn incomplete_or_failed_opencode_runs_are_rejected() {
+    let without_stop: String = OPENCODE.lines().take(6).collect::<Vec<_>>().join("\n");
+    for output in [
+        without_stop.as_str(),
+        OPENCODE_ERROR,
+        &format!("{OPENCODE}{OPENCODE_ERROR}"),
+        "",
+        "not json",
+        &OPENCODE[..OPENCODE.len() / 2],
+    ] {
+        assert!(
+            parse(AgentKind::OpenCode, output.as_bytes()).is_err(),
+            "{output}"
+        );
+    }
+}
+
+#[test]
+fn opencode_accepts_only_a_model_argument() {
+    assert_eq!(
+        arguments(AgentKind::OpenCode, "-m anthropic/claude-haiku-4-5#low").unwrap(),
+        ["-m", "anthropic/claude-haiku-4-5#low"]
+    );
+    for value in [
+        "--auto",
+        "--agent build",
+        "--session ses_x",
+        "--format default",
+        "--effort low",
+    ] {
+        assert!(arguments(AgentKind::OpenCode, value).is_err(), "{value}");
+    }
+}
+
+#[test]
+fn opencode_runs_without_user_config_or_tool_permissions() {
+    let directory = process::Directory::new().unwrap();
+    let command = cli_command(
+        AgentKind::OpenCode,
+        std::path::Path::new("/bin/opencode"),
+        &["run"],
+        &directory,
+    );
+    let env: HashMap<_, _> = command
+        .get_envs()
+        .filter_map(|(key, value)| Some((key.to_str()?.to_owned(), value?.to_str()?.to_owned())))
+        .collect();
+    assert_eq!(
+        env["XDG_CONFIG_HOME"],
+        directory.0.join("config").to_string_lossy()
+    );
+    assert_eq!(
+        env["OPENCODE_CONFIG_CONTENT"],
+        r#"{"permission":{"*":"deny"}}"#
+    );
+    assert_eq!(env["OPENCODE_DISABLE_PROJECT_CONFIG"], "1");
+    let codex = cli_command(
+        AgentKind::Codex,
+        std::path::Path::new("/bin/codex"),
+        &[],
+        &directory,
+    );
+    assert!(codex.get_envs().all(|(key, _)| key != "XDG_CONFIG_HOME"));
+}
+
 #[test]
 #[ignore = "uses installed CLI login and sends a synthetic prompt; opt-in only"]
 fn installed_cli_smoke() {
-    let name = std::env::var("HIVE_TEST_CLI").expect("set HIVE_TEST_CLI=codex or claude");
+    let name = std::env::var("HIVE_TEST_CLI").expect("set HIVE_TEST_CLI=codex, claude or opencode");
+    let arguments = std::env::var("HIVE_TEST_CLI_ARGS").unwrap_or_default();
     let agent = match name.as_str() {
         "codex" => AgentKind::Codex,
         "claude" => AgentKind::ClaudeCode,
+        "opencode" => AgentKind::OpenCode,
         _ => panic!("unknown HIVE_TEST_CLI"),
     };
     let message = generate(
         agent,
-        "",
+        &arguments,
         "Return exactly this commit message and nothing else: docs: update synthetic fixture",
         &Cancellation::default(),
     )
