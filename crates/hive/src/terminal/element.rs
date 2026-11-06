@@ -14,6 +14,9 @@ const MIN_FONT_SIZE: Pixels = px(11.);
 /// Zed's "standard" terminal line height: tight like a native terminal, still readable.
 const LINE_HEIGHT_RATIO: f32 = 1.3;
 const GRID_PADDING: Pixels = px(4.);
+/// Selection is the text color at low opacity, a neutral tint over any cell background in both
+/// themes; the library's saturated `theme.selection` blue floods the dark terminal.
+const SELECTION_OPACITY: f32 = 0.3;
 
 pub struct TerminalElement {
     view: Entity<TerminalView>,
@@ -71,7 +74,7 @@ impl Palette {
             fg: theme.foreground,
             bg: theme.background,
             cursor: theme.foreground,
-            selection: theme.selection,
+            selection: theme.foreground.opacity(SELECTION_OPACITY),
             ansi: ansi.map(hex),
         }
     }
