@@ -1,19 +1,30 @@
-//! Discovery and bounded, non-interactive invocation of the supported local CLIs (Codex and
-//! Claude Code; the other `AgentKind`s are only recognized in terminals, not driven here).
+//! Discovery and bounded, non-interactive invocation of the supported local CLIs (Codex,
+//! Claude Code and OpenCode; the other `AgentKind`s are only recognized in terminals).
 use super::Error;
 use crate::{agent::AgentKind, host::Host};
 use serde::Deserialize;
-use std::{path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf, process::Command, time::Duration};
 
 mod process;
 pub use process::Cancellation;
 
 /// Shown when a saved recipe names an agent that only terminal detection knows.
-pub const UNSUPPORTED_GENERATOR: &str =
-    "This agent cannot generate commit messages yet. Select Codex, Claude Code or an API provider.";
+pub const UNSUPPORTED_GENERATOR: &str = "This agent cannot generate commit messages yet. Select Codex, Claude Code, OpenCode or an API provider.";
 
 /// Supported commit CLIs, in picker order.
-pub const AGENTS: [AgentKind; 2] = [AgentKind::Codex, AgentKind::ClaudeCode];
+pub const AGENTS: [AgentKind; 3] = [AgentKind::Codex, AgentKind::ClaudeCode, AgentKind::OpenCode];
+
+const TIMEOUT: Duration = Duration::from_secs(120);
+/// Deleting the throwaway OpenCode session is local bookkeeping; it must not hold a slot long.
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(15);
+/// OpenCode has no flag that turns its tools off; denying every permission does, and an
+/// empty config home keeps the user's MCP servers, plugins and providers out of the run.
+const OPENCODE_ISOLATION: [(&str, &str); 4] = [
+    ("OPENCODE_CONFIG_CONTENT", r#"{"permission":{"*":"deny"}}"#),
+    ("OPENCODE_DISABLE_PROJECT_CONFIG", "1"),
+    ("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
+    ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
+];
 
 /// Finds an executable on PATH, then in standard macOS CLI installation locations.
 /// Blocking metadata access: call off the foreground thread.
@@ -100,6 +111,7 @@ pub(super) fn generate(
             "--permission-mode",
             "dontAsk",
         ],
+        AgentKind::OpenCode => return generate_opencode(&extra, &program, prompt, cancellation),
         _ => return Err(Error::Invalid(UNSUPPORTED_GENERATOR)),
     };
     let directory = process::Directory::new().map_err(|source| Error::CliIo { agent, source })?;
@@ -108,7 +120,56 @@ pub(super) fn generate(
     if agent == AgentKind::Codex {
         argv.push("-");
     }
-    let mut command = Host::Local.command(&program.to_string_lossy(), &argv, Some(&directory.0));
+    let command = cli_command(agent, &program, &argv, &directory);
+    let output = process::run(agent, command, prompt, cancellation, TIMEOUT)?;
+    parse(agent, &output)
+}
+
+/// OpenCode keeps every `run` in the user's session list; the throwaway session is deleted
+/// afterwards, whatever the outcome, because a failed or cancelled run may still have saved it.
+fn generate_opencode(
+    extra: &[String],
+    program: &std::path::Path,
+    prompt: &str,
+    cancellation: &Cancellation,
+) -> Result<String, Error> {
+    let agent = AgentKind::OpenCode;
+    let directory = process::Directory::new().map_err(|source| Error::CliIo { agent, source })?;
+    let session = crate::agent::launch::new_opencode_session_id();
+    let mut argv = vec![
+        "run",
+        "--format",
+        "json",
+        "--standalone",
+        "--session",
+        &session,
+    ];
+    argv.extend(extra.iter().map(String::as_str));
+    let command = cli_command(agent, program, &argv, &directory);
+    let result = process::run(agent, command, prompt, cancellation, TIMEOUT)
+        .and_then(|output| parse(agent, &output));
+    let delete = ["session", "delete", "--standalone", &session];
+    let cleanup = cli_command(agent, program, &delete, &directory);
+    if let Err(error) = crate::command::run(
+        cleanup,
+        b"",
+        &Cancellation::default(),
+        CLEANUP_TIMEOUT,
+        64 * 1024,
+    ) {
+        tracing::warn!(%error, "could not delete the OpenCode commit message session");
+    }
+    result
+}
+
+/// A generator process in its private temporary directory, with the environment it needs.
+fn cli_command(
+    agent: AgentKind,
+    program: &std::path::Path,
+    argv: &[&str],
+    directory: &process::Directory,
+) -> Command {
+    let mut command = Host::Local.command(&program.to_string_lossy(), argv, Some(&directory.0));
     // Node-based installs need their sibling runtime even when launched from Finder's short PATH.
     if let Some(parent) = program.parent() {
         let mut paths = vec![parent.to_path_buf()];
@@ -119,14 +180,12 @@ pub(super) fn generate(
             command.env("PATH", path);
         }
     }
-    let output = process::run(
-        agent,
-        command,
-        prompt,
-        cancellation,
-        Duration::from_secs(120),
-    )?;
-    parse(agent, &output)
+    if agent == AgentKind::OpenCode {
+        // Credentials live in OpenCode's data directory, which stays the user's.
+        command.env("XDG_CONFIG_HOME", directory.0.join("config"));
+        command.envs(OPENCODE_ISOLATION);
+    }
+    command
 }
 
 #[derive(Default, Deserialize)]
@@ -138,6 +197,16 @@ struct Event {
     is_error: bool,
     result: String,
     item: Option<Item>,
+    part: Option<Part>,
+}
+/// An OpenCode message part: text arrives per message, and a step ends with a reason.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Part {
+    #[serde(rename = "messageID")]
+    message: String,
+    text: String,
+    reason: String,
 }
 #[derive(Default, Deserialize)]
 #[serde(default)]
@@ -159,6 +228,11 @@ fn parse(agent: AgentKind, output: &[u8]) -> Result<String, Error> {
             return Err(invalid());
         }
         return super::message(event.result);
+    }
+    if agent == AgentKind::OpenCode {
+        return parse_opencode(output)
+            .ok_or_else(invalid)
+            .and_then(super::message);
     }
     let mut message = None;
     let mut completed = false;
@@ -184,6 +258,27 @@ fn parse(agent: AgentKind, output: &[u8]) -> Result<String, Error> {
         return Err(invalid());
     }
     super::message(message.ok_or_else(invalid)?)
+}
+
+/// The text of the message whose step stopped on its own. Earlier steps end in tool calls,
+/// and their narration ("I'll read the file") is not the answer.
+fn parse_opencode(output: &[u8]) -> Option<String> {
+    let mut texts: HashMap<String, String> = HashMap::new();
+    let mut answer = None;
+    for line in output
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.iter().all(u8::is_ascii_whitespace))
+    {
+        let event: Event = serde_json::from_slice(line).ok()?;
+        let part = event.part.unwrap_or_default();
+        match event.kind.as_str() {
+            "error" => return None,
+            "text" => texts.entry(part.message).or_default().push_str(&part.text),
+            "step_finish" if part.reason == "stop" => answer = texts.remove(&part.message),
+            _ => {}
+        }
+    }
+    answer
 }
 
 #[cfg(test)]

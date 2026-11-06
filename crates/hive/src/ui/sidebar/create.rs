@@ -5,7 +5,10 @@ use gpui_kit::component::{
     searchable_list::SearchableVec,
     select::{Select, SelectState},
 };
-use hive_core::agent::{AgentKind, launch::Launch};
+use hive_core::agent::{
+    AgentKind,
+    launch::{self, Launch},
+};
 
 const WIDTH: Pixels = px(480.);
 const DEFAULT_BASE: &str = "Default branch";
@@ -42,11 +45,12 @@ impl CreateWorktree {
         });
         let agent = cx.new(|cx| {
             SelectState::new(
-                SearchableVec::new(vec![
-                    "Terminal".into(),
-                    "Claude Code".into(),
-                    "Codex".into(),
-                ]),
+                SearchableVec::new(
+                    std::iter::once("Terminal")
+                        .chain(launch::AGENTS.map(AgentKind::name))
+                        .map(String::from)
+                        .collect::<Vec<_>>(),
+                ),
                 Some(IndexPath::default()),
                 window,
                 cx,
@@ -94,11 +98,11 @@ impl CreateWorktree {
             .filter(|s| s.as_str() != DEFAULT_BASE)
             .cloned()
             .unwrap_or_default();
-        let launch = match self.agent.read(cx).selected_value().map(String::as_str) {
-            Some("Claude Code") => Some(Launch::New(AgentKind::ClaudeCode)),
-            Some("Codex") => Some(Launch::New(AgentKind::Codex)),
-            _ => None,
-        };
+        let selected = self.agent.read(cx).selected_value();
+        let launch = launch::AGENTS
+            .into_iter()
+            .find(|agent| selected.is_some_and(|name| name == agent.name()))
+            .map(Launch::New);
         self.busy = true;
         self.error = None;
         let task = self.projects.update(cx, |projects, cx| {

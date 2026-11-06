@@ -314,9 +314,15 @@ mod tests {
             serde_json::from_str::<TerminalPane>(&serde_json::to_string(&valid).unwrap()).unwrap(),
             valid
         );
+        let opencode: TerminalPane = serde_json::from_str(
+            r#"{"directory":"/project","resume":{"agent":"OpenCode","id":"ses_hive1a2b"}}"#,
+        )
+        .unwrap();
+        assert_eq!(opencode.resume.as_ref().unwrap().id(), "ses_hive1a2b");
         for value in [
             r#"{"agent":"Future","id":"abc"}"#,
             r#"{"agent":"ClaudeCode","id":"--flags"}"#,
+            r#"{"agent":"OpenCode","id":"abc-123"}"#,
             r#"{}"#,
         ] {
             let pane: TerminalPane =
