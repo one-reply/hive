@@ -13,7 +13,7 @@ Run agents in separate Git worktrees, edit their changes, and review and commit
 without leaving your workspace. Hive brings projects, terminals, a native code
 editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-kit`.
 
-![Hive's native Rust editor, Files navigator, and worktree sidebar](docs/images/hive-editor.jpg)
+![Hive's native Rust editor, Files navigator, and worktree sidebar](docs/images/hive-editor.png)
 
 *Hive editing its own Rust source, with worktrees on the left and Files on the right.*
 
@@ -73,11 +73,11 @@ restore the previous directory.
 
 ## A closer look
 
-![Hive showing a unified diff beside the Git Changes panel](docs/images/hive-review.jpg)
+![Hive showing a unified diff beside the Git Changes panel](docs/images/hive-review.png)
 
 *Review changes, stage individual hunks, and keep the worktree's Git context visible.*
 
-![Hive's New worktree dialog with task name, base branch, and agent choices](docs/images/hive-create-worktree.jpg)
+<img src="docs/images/hive-create-worktree.png" alt="Hive's New worktree dialog with task name, base branch, and agent choices" width="540" />
 
 *Create an isolated worktree and choose the terminal or agent that starts in it.*
 
