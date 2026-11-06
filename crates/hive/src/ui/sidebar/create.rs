@@ -232,7 +232,6 @@ pub(super) fn open(
 ) {
     let title = format!("New worktree in {}", project.name);
     let form = cx.new(|cx| CreateWorktree::new(projects, project.path.clone(), window, cx));
-    // Keep creation alive and visible until Git finishes; the form supplies its own Cancel.
     let initial_focus = std::cell::Cell::new(true);
     window.open_dialog(cx, move |dialog, window, cx| {
         if initial_focus.replace(false) {
@@ -241,12 +240,14 @@ pub(super) fn open(
                 name.focus_handle(cx).focus(window, cx)
             });
         }
+        // Closing drops the form and cancels its task, so dismissal waits until Git finishes.
+        let dismissable = !form.read(cx).busy;
         dialog
             .title(title.clone())
             .w(WIDTH)
             .close_button(false)
-            .overlay_closable(false)
-            .keyboard(false)
+            .overlay_closable(dismissable)
+            .keyboard(dismissable)
             .child(form.clone())
     });
 }
