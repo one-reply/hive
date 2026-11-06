@@ -228,6 +228,8 @@ impl Sidebar {
                         .icon(IconName::Plus)
                         .tooltip(format!("New worktree in {}", project.name))
                         .on_click(move |_, window, cx| {
+                            // The header behind would otherwise collapse the project.
+                            cx.stop_propagation();
                             create::open(projects.clone(), &project, window, cx)
                         })
                         .smooth_hover(ButtonLook::Ghost, &new_worktree_hover, cx),
