@@ -26,7 +26,8 @@ Verification performed on 2026-11-04, macOS 27.2 (26B123), Apple Silicon.
 The QA build differs only in package identity, the state directory and Keychain
 service names. It protects the maintainer's existing data and credentials; it is
 not the distributed executable and does not replace the downloaded-release gate.
-The public screenshot uses this build and a disposable clone of Hive's own source.
+The original public screenshot used this build and a disposable clone of Hive's
+own source. The current README screenshots are documented below.
 
 The `v0.1.0` tag points to `91e6c9a06e809ce108b91a4f08145a484615c0d1`.
 Its [tag workflow](https://github.com/vitaliits-stack/hive/actions/runs/41894907955)
@@ -40,3 +41,26 @@ Do not promote the draft until the remaining installation checks in
 [RELEASING.md](RELEASING.md) have been recorded. Only macOS 27.2 has been exercised
 locally through the UI; macOS 26.7.2 has automated coverage. No support claim is made
 for macOS 11 from the Mach-O deployment target.
+
+## README refresh — November 6, 2026
+
+The current README reflects the terminal-agent workflow, native editor and Files
+navigator, review feedback, PR/CI cards, supported usage providers, and restoration
+limits. The public Releases API returned no published releases on this date, so
+the download section directs readers to a source build.
+
+`docs/images/hive-editor.jpg`, `hive-review.jpg`, and `hive-create-worktree.jpg` are
+direct captures of the running development app on macOS. They show the editor and
+Files tree, a unified diff with the Git panel, and the Create & Start agent picker.
+The app was built from the November 6 checkout at `b263fd2`, including the pending
+Git-settings model-hint change later committed as `5faf3d5`; those settings are not
+shown. A separate app identity and `HIVE_DEV_DATA_DIR` isolated its saved workspace.
+The sample repository came from `git archive b263fd2`, with disposable worktrees
+and a small documentation-only change to `terminal/activity.rs`. No agent prompts
+were submitted and no sample changes were pushed.
+
+Validation: source build, formatting, Clippy with warnings denied, 311 workspace
+tests passed (three opt-in tests ignored), and no GPUI in the `hive-core` dependency
+tree. The tests required local socket/process access outside the restricted
+sandbox. These screenshots and checks do not replace the release installation,
+notarization, real-agent, or notification verification gates above.
