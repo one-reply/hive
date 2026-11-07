@@ -25,11 +25,13 @@ editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-k
 
 ## Download
 
-There are **no published binary releases yet** as of November 6, 2026. Use the
-[source build](#build-and-run) below. Packaged downloads will appear on
-[GitHub Releases](https://github.com/one-reply/hive/releases) after release
-verification. See the [verification record](docs/RELEASE_CHECKS.md) for completed
-and pending checks.
+[![Download for macOS — latest release](https://img.shields.io/github/v/release/one-reply/hive?include_prereleases&sort=semver&style=for-the-badge&logo=apple&logoColor=white&label=Download%20for%20macOS&color=6E56CF)](https://github.com/one-reply/hive/releases)
+
+**Apple Silicon only.** The button opens GitHub Releases, where you can download
+the latest published release, including early previews, and its SHA-256 checksum.
+Drafts are not public downloads; until the first release is published, use the
+[source build](#build-and-run). See the [verification record](docs/RELEASE_CHECKS.md)
+for completed and pending checks.
 
 Packaged builds from **0.1.1** include signed in-app updates. Open **Settings → Updates**
 or **Hive → Check for Updates…** to check manually. Hive also checks daily and asks
