@@ -14,9 +14,6 @@ const MIN_FONT_SIZE: Pixels = px(11.);
 /// Zed's "standard" terminal line height: tight like a native terminal, still readable.
 const LINE_HEIGHT_RATIO: f32 = 1.3;
 const GRID_PADDING: Pixels = px(4.);
-/// Selection is the text color at low opacity, a neutral tint over any cell background in both
-/// themes; the library's saturated `theme.selection` blue floods the dark terminal.
-const SELECTION_OPACITY: f32 = 0.3;
 
 pub struct TerminalElement {
     view: Entity<TerminalView>,
@@ -55,27 +52,13 @@ struct Palette {
 
 impl Palette {
     fn from_theme(cx: &App) -> Self {
-        let theme = cx.theme();
-        let hex = |v: u32| -> Hsla { rgb(v).into() };
-        let ansi = if theme.is_dark() {
-            [
-                0x3f4451, 0xe05561, 0x8cc265, 0xd18f52, 0x4aa5f0, 0xc162de, 0x42b3c2,
-                0xe6e6e6, //
-                0x4f5666, 0xff616e, 0xa5e075, 0xf0a45d, 0x4dc4ff, 0xde73ff, 0x4cd1e0, 0xffffff,
-            ]
-        } else {
-            [
-                0x000000, 0xc91b00, 0x00a600, 0x999900, 0x0225c7, 0xca30c7, 0x00a6b2,
-                0xbfbfbf, //
-                0x686868, 0xe50000, 0x00d900, 0xe5e500, 0x0000ff, 0xe500e5, 0x00e5e5, 0xffffff,
-            ]
-        };
+        let palette = crate::ui::theme::terminal_palette(cx);
         Self {
-            fg: theme.foreground,
-            bg: theme.background,
-            cursor: theme.foreground,
-            selection: theme.foreground.opacity(SELECTION_OPACITY),
-            ansi: ansi.map(hex),
+            fg: palette.foreground,
+            bg: palette.background,
+            cursor: palette.cursor,
+            selection: palette.selection,
+            ansi: palette.ansi,
         }
     }
 

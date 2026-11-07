@@ -344,6 +344,30 @@ mod tests {
     }
 
     #[test]
+    fn old_state_gains_independent_palettes_and_saves_them_without_a_version_bump() {
+        use crate::settings::{DarkTheme, LightTheme, ThemeChoice};
+        let fixture = Fixture::new();
+        let path = fixture.0.join("state.json");
+        fs::write(&path, br#"{"version":1,"settings":{"theme":"system","ui_font_size":18},"projects":[{"path":"/saved"}]}"#).unwrap();
+        let mut loaded = State::load_from(&fixture.0).unwrap();
+        assert!(loaded.recovery.is_none());
+        assert_eq!(loaded.state.settings.light_theme(), LightTheme::Hive);
+        assert_eq!(loaded.state.settings.dark_theme(), DarkTheme::Hive);
+        loaded.state.settings.set_light_theme(LightTheme::Solarized);
+        loaded.state.settings.set_dark_theme(DarkTheme::Dracula);
+        loaded.state.save_to(&path).unwrap();
+        let reloaded = State::load_from(&fixture.0).unwrap();
+        assert!(reloaded.recovery.is_none());
+        assert_eq!(reloaded.state.settings.theme, ThemeChoice::System);
+        assert_eq!(reloaded.state.settings.light_theme(), LightTheme::Solarized);
+        assert_eq!(reloaded.state.settings.dark_theme(), DarkTheme::Dracula);
+        assert_eq!(reloaded.state.settings.ui_font_size(), 18.);
+        assert_eq!(reloaded.state.projects.len(), 1);
+        let saved: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 1);
+    }
+
+    #[test]
     fn corrupt_state_is_preserved_and_never_imports_legacy() {
         let fixture = Fixture::new();
         let path = fixture.0.join("state.json");

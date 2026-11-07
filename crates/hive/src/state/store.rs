@@ -1,7 +1,7 @@
 use gpui_kit::*;
 use hive_core::host::Host;
 use hive_core::identity::ProjectIdentity;
-use hive_core::settings::{Scrollbars, ThemeChoice};
+use hive_core::settings::{DarkTheme, LightTheme, Scrollbars, ThemeChoice};
 use hive_core::state::workspace::{ProjectWorkspace, Selection};
 use hive_core::state::{LoadedState, ProjectRef, State, StateError};
 use std::path::{Path, PathBuf};
@@ -227,8 +227,24 @@ impl Store {
     }
 
     pub fn set_theme(&mut self, theme: ThemeChoice, cx: &mut Context<Self>) {
-        self.state.settings.theme = theme;
-        self.commit(cx);
+        if self.state.settings.theme != theme {
+            self.state.settings.theme = theme;
+            self.commit(cx);
+        }
+    }
+
+    pub(crate) fn set_light_theme(&mut self, theme: LightTheme, cx: &mut Context<Self>) {
+        if self.state.settings.light_theme() != theme {
+            self.state.settings.set_light_theme(theme);
+            self.commit(cx);
+        }
+    }
+
+    pub(crate) fn set_dark_theme(&mut self, theme: DarkTheme, cx: &mut Context<Self>) {
+        if self.state.settings.dark_theme() != theme {
+            self.state.settings.set_dark_theme(theme);
+            self.commit(cx);
+        }
     }
 
     pub fn set_sidebar_width(&mut self, width: f32, cx: &mut Context<Self>) {

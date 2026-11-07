@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod files;
+mod themes;
 pub use files::{FILES_FONT_SIZE_DEFAULT, FileDensity, FileIcons, FilesSettings};
+pub use themes::{DarkTheme, LightTheme};
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -104,6 +106,10 @@ pub struct Settings {
     /// Global recipe for generating a staged commit message; never contains API keys.
     pub commit_message: crate::commit_message::Recipe,
     pub theme: ThemeChoice,
+    #[serde(deserialize_with = "themes::deserialize_theme")]
+    light_theme: LightTheme,
+    #[serde(deserialize_with = "themes::deserialize_theme")]
+    dark_theme: DarkTheme,
     /// UI font family; `None` uses the system font.
     #[serde(deserialize_with = "deserialize_font_family")]
     ui_font_family: Option<String>,
@@ -136,6 +142,8 @@ impl Default for Settings {
             default_cli_agent: crate::agent::AgentKind::Codex,
             commit_message: Default::default(),
             theme: ThemeChoice::default(),
+            light_theme: LightTheme::default(),
+            dark_theme: DarkTheme::default(),
             ui_font_family: None,
             code_font_family: None,
             scrollbars: Scrollbars::default(),
@@ -153,6 +161,26 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// The saved palette for light mode, independent of the current appearance.
+    pub fn light_theme(&self) -> LightTheme {
+        self.light_theme
+    }
+
+    /// Selects the light palette without changing the appearance mode.
+    pub fn set_light_theme(&mut self, theme: LightTheme) {
+        self.light_theme = theme;
+    }
+
+    /// The saved palette for dark mode, independent of the current appearance.
+    pub fn dark_theme(&self) -> DarkTheme {
+        self.dark_theme
+    }
+
+    /// Selects the dark palette without changing the appearance mode.
+    pub fn set_dark_theme(&mut self, theme: DarkTheme) {
+        self.dark_theme = theme;
+    }
+
     /// The interactive CLI that receives Git error drafts.
     pub fn default_cli_agent(&self) -> crate::agent::AgentKind {
         self.default_cli_agent

@@ -25,6 +25,17 @@ The JSX query fragments in `crates/hive/src/ui/syntax.rs` are adapted from
 Its [MIT copyright and license](licenses/tree-sitter-javascript-MIT.txt) are included.
 Other queries and grammars are provided by the dependencies listed in `Cargo.lock`.
 
+## Built-in color palettes
+
+Hive adapts these palettes to its own controls, editor highlighting and terminal.
+The JSON files in `crates/hive/assets/themes/` are embedded in the executable.
+
+| Palette | Original source | License |
+| --- | --- | --- |
+| One Light / One Dark | [Atom One Light](https://github.com/atom/one-light-syntax/blob/master/styles/colors.less), [Atom One Dark](https://github.com/atom/one-dark-syntax/blob/master/styles/colors.less) | [MIT, GitHub Inc.](licenses/atom-one-MIT.txt) |
+| Solarized Light | [Solarized, Ethan Schoonover](https://ethanschoonover.com/solarized/) | [MIT, Ethan Schoonover](licenses/solarized-MIT.txt) |
+| Dracula | [Dracula color palette](https://draculatheme.com/contribute) | [MIT, Dracula Theme](licenses/dracula-MIT.txt) |
+
 ## Rust dependencies
 
 The macOS bundle includes [Sparkle 2.10.1](https://github.com/sparkle-project/Sparkle/releases/tag/2.10.1)
