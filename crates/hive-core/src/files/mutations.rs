@@ -36,21 +36,30 @@ pub fn entry_path(parent: &Path, name: &str) -> Result<PathBuf, FileError> {
 
 /// Whether `name` collides with one of `siblings`, the paths listed in its parent folder.
 ///
-/// Names compare case-insensitively, as on macOS's default volumes, where `README.md` and
+/// Local names compare case-insensitively, as on macOS's default volumes, where `README.md` and
 /// `Readme.md` are one entry. `renaming` is left out, so renaming an entry to its own name in
 /// another case is not a collision. The listing is a snapshot: the file system still refuses
 /// to replace an entry created since, so this only lets the panel warn while the user types.
 pub fn name_taken<'a>(
+    host: &Host,
     siblings: impl IntoIterator<Item = &'a Path>,
     name: &str,
     renaming: Option<&Path>,
 ) -> bool {
-    let name = name.to_lowercase();
+    let name = if host.is_local() {
+        name.to_lowercase()
+    } else {
+        name.to_owned()
+    };
     siblings.into_iter().any(|sibling| {
         Some(sibling) != renaming
-            && sibling
-                .file_name()
-                .is_some_and(|existing| existing.to_string_lossy().to_lowercase() == name)
+            && sibling.file_name().is_some_and(|existing| {
+                if host.is_local() {
+                    existing.to_string_lossy().to_lowercase() == name
+                } else {
+                    existing == std::ffi::OsStr::new(&name)
+                }
+            })
     })
 }
 
@@ -98,6 +107,15 @@ fn kind(directory: &OwnedFd, name: &std::ffi::OsStr, path: &Path) -> Result<File
 
 /// Create one empty file exclusively. Its parent must already exist.
 pub fn create_file(host: &Host, root: &Path, path: &Path) -> Result<(), FileError> {
+    if !host.is_local() {
+        return crate::remote::mutate(
+            host,
+            root,
+            path,
+            crate::remote::Mutation::CreateFile,
+            &crate::command::Cancellation::default(),
+        );
+    }
     let (directory, name) = parent(host, root, path)?;
     let file = fs::openat(
         &directory,
@@ -112,6 +130,15 @@ pub fn create_file(host: &Host, root: &Path, path: &Path) -> Result<(), FileErro
 
 /// Create one directory exclusively, without creating missing ancestors.
 pub fn create_directory(host: &Host, root: &Path, path: &Path) -> Result<(), FileError> {
+    if !host.is_local() {
+        return crate::remote::mutate(
+            host,
+            root,
+            path,
+            crate::remote::Mutation::CreateDirectory,
+            &crate::command::Cancellation::default(),
+        );
+    }
     let (directory, name) = parent(host, root, path)?;
     fs::mkdirat(&directory, &name, Mode::from_raw_mode(0o755))
         .map_err(|e| io_error("create directory", &root.join(path), e.into()))
@@ -119,6 +146,15 @@ pub fn create_directory(host: &Host, root: &Path, path: &Path) -> Result<(), Fil
 
 /// Rename or move an entry without replacing a destination or changing the Git index.
 pub fn move_entry(host: &Host, root: &Path, from: &Path, to: &Path) -> Result<(), FileError> {
+    if !host.is_local() {
+        return crate::remote::mutate(
+            host,
+            root,
+            from,
+            crate::remote::Mutation::Move { to: to.into() },
+            &crate::command::Cancellation::default(),
+        );
+    }
     let (source, name) = parent(host, root, from)?;
     let (destination, new_name) = parent(host, root, to)?;
     if from == to {
@@ -225,6 +261,15 @@ fn inspect_directory(
 /// Permanently remove a file or directory. Symlinks inside a directory are unlinked, never followed.
 /// A recursive failure reports that the removal may have partially completed.
 pub fn delete_entry(host: &Host, root: &Path, path: &Path) -> Result<(), FileError> {
+    if !host.is_local() {
+        return crate::remote::mutate(
+            host,
+            root,
+            path,
+            crate::remote::Mutation::Delete,
+            &crate::command::Cancellation::default(),
+        );
+    }
     let (directory, name) = parent(host, root, path)?;
     let absolute = root.join(path);
     let entry_kind = kind(&directory, &name, &absolute)?;

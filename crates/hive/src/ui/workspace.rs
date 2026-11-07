@@ -4,7 +4,7 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -17,12 +17,12 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use hive_core::host::Host;
 use hive_core::settings::clamp_sidebar_width;
 
 use crate::app::AppState;
 use crate::state::agents::AgentsEvent;
 use crate::state::projects::Projects;
-use crate::state::store::Store;
 use crate::terminal::TerminalPanel;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::ui::sidebar::Sidebar;
@@ -66,9 +66,9 @@ pub struct Workspace {
     status_bar: Entity<StatusBarView>,
     projects: Entity<Projects>,
     /// One center per project path, created on first use and dropped with the project.
-    centers: HashMap<PathBuf, ProjectCenter>,
+    centers: HashMap<(Host, PathBuf), ProjectCenter>,
     /// The project whose center fills the window; `None` shows the welcome screen.
-    shown: Option<PathBuf>,
+    shown: Option<(Host, PathBuf)>,
     git_panel: Entity<GitPanel>,
     files_panel: Entity<crate::ui::files_panel::FilesPanel>,
     git_open: bool,
@@ -151,17 +151,18 @@ impl Workspace {
             }),
             cx.subscribe_in(&agents, window, |this, _, event, window, cx| match event {
                 AgentsEvent::Reveal(session) => this.reveal_session(*session, window, cx),
-                AgentsEvent::Launch(path, launch) => {
+                AgentsEvent::Launch(host, path, launch) => {
                     let project = this
                         .projects
                         .read(cx)
                         .items
                         .iter()
                         .find(|project| {
-                            project.path == *path
-                                || project.worktrees.iter().any(|w| w.path == *path)
+                            project.host == *host
+                                && (project.path == *path
+                                    || project.worktrees.iter().any(|w| w.path == *path))
                         })
-                        .map(|p| p.path.clone());
+                        .map(|p| (p.host.clone(), p.path.clone()));
                     if let Some(project) = project {
                         this.shown = Some(project.clone());
                         this.center(&project, window, cx).open_agent(
@@ -238,12 +239,9 @@ impl Workspace {
 
     /// The selected project and the folder terminals open in: its selected worktree, or the
     /// project folder itself when it is not a git repository.
-    fn selected_target(&self, cx: &App) -> Option<(PathBuf, PathBuf)> {
-        let (project, worktree) = self.projects.read(cx).selection()?;
-        let cwd = worktree
-            .map(|w| w.path.clone())
-            .unwrap_or_else(|| project.path.clone());
-        Some((project.path.clone(), cwd))
+    fn selected_target(&self, cx: &App) -> Option<((Host, PathBuf), PathBuf)> {
+        let target = self.projects.read(cx).target()?;
+        Some(((target.host, target.project), target.path))
     }
 
     /// Show the selected project's center with a terminal for its selected worktree: focus an
@@ -291,28 +289,26 @@ impl Workspace {
     fn drop_removed_centers(&mut self, cx: &App) {
         let projects = self.projects.read(cx);
         self.centers
-            .retain(|path, _| projects.project(path).is_some());
+            .retain(|(host, path), _| projects.project(host, path).is_some());
     }
 
     /// The project's center, created on first use.
     fn center(
         &mut self,
-        project: &Path,
+        project: &(Host, PathBuf),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> &mut ProjectCenter {
         let saved = (!self.centers.contains_key(project))
             .then(|| self.saved_center(project, cx))
             .flatten();
-        self.centers
-            .entry(project.to_path_buf())
-            .or_insert_with(|| {
-                let mut center = ProjectCenter::new(project, window, cx);
-                if let Some(saved) = saved {
-                    center.restore(&saved, window, cx);
-                }
-                center
-            })
+        self.centers.entry(project.clone()).or_insert_with(|| {
+            let mut center = ProjectCenter::new(project, window, cx);
+            if let Some(saved) = saved {
+                center.restore(&saved, window, cx);
+            }
+            center
+        })
     }
 
     /// Lets `band` drag and double-click-zoom the window the way `TitleBar` does, for the
@@ -354,10 +350,14 @@ impl Workspace {
 
     /// Worktrees with an open terminal in any project get a lit status dot in the sidebar.
     fn sync_active_worktrees(&self, cx: &mut Context<Self>) {
-        let paths: HashSet<PathBuf> = self
+        let paths: HashSet<(Host, PathBuf)> = self
             .centers
             .values()
-            .flat_map(|center| center.terminal_paths(cx))
+            .flat_map(|center| {
+                center
+                    .terminal_paths(cx)
+                    .map(|path| (center.host.clone(), path))
+            })
             .collect();
         self.projects
             .update(cx, |projects, cx| projects.set_active(paths, cx));

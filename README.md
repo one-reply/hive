@@ -42,7 +42,7 @@ Older builds need one manual installation of a version that includes the updater
 
 | Workflow | What Hive provides |
 | --- | --- |
-| **Organize your work** | Add local projects, create and remove Git worktrees, reorder projects, and customize their names, colors, and icons. |
+| **Organize your work** | Add local or SSH Linux projects, create and remove Git worktrees, reorder projects, and customize their names, colors, and icons. |
 | **Start a task** | Create a worktree from a chosen base branch and launch a terminal, Claude Code, Codex, or OpenCode with **Create & Start**. |
 | **Run agents in terminals** | Use terminal tabs and split panes, with text selection, scrollback, and clipboard image paste. See running agents on their worktree cards. |
 | **Edit files** | Browse and search with **Files / ⌘P**, use syntax highlighting and preview or pinned tabs, save with **⌘S**, and handle external changes and recovery drafts. |
@@ -112,7 +112,7 @@ For a release build, use `cargo run --locked --release -p hive`.
 
 ### Your first workspace
 
-1. Press **⌘O** to add a local repository.
+1. Press **⌘O** to add a local repository, or choose **Add Project → Through SSH** for a Linux host.
 2. Use the project's **+** button, choose a task name, base branch, and agent, then
    select **Create & Start**. Choose **Terminal** to start a plain shell instead.
 3. Use **⌘K** to switch between tasks and agents, or **⌘T** to open another terminal.
@@ -131,12 +131,33 @@ search; it searches filenames and paths, not file contents. Click a file to prev
 it, or double-click to keep it open. File actions are available from the tree's
 context menu, including **Delete Permanently** with confirmation.
 
-The editor supports local UTF-8 files up to **1 MiB**, syntax highlighting,
+The editor supports local and remote UTF-8 files up to **1 MiB**, syntax highlighting,
 find/replace, explicit saves, and recovery of unsaved drafts after a restart.
 External edits are reloaded for clean files; unsaved files show a conflict instead
 of silently overwriting either version. **⌘-click** follows JavaScript/TypeScript
 imports to their definitions; **⌘⇧-click** opens them in an adjacent tab. A full
 language server and autocomplete are not included.
+
+### Linux projects over SSH
+
+Choose **Add Project → Through SSH**, enter an SSH alias such as `home` or
+`user@host`, then browse to a project folder. Hive uses OpenSSH with your existing
+SSH config, keys, and agent. Connect once in a normal terminal first to accept the
+host key and unlock your key if needed. Password entry inside Hive is not supported.
+
+The host needs Linux on x86_64 or arm64, Git, and `sha256sum`. Hive installs its
+versioned file helper in `~/.hive/bin` without sudo, Rust, a daemon, or an open port.
+Files, search, editing, image previews, Git, worktrees, and terminal splits operate
+on that host. Install and sign in to agent CLIs on the Linux machine separately;
+Hive does not copy your Mac's credentials or agent hooks there.
+
+Remote drafts stay on your Mac. Failed scans retain the last workspace, and an
+interrupted save requires checking the remote file before another write. SSH
+terminals have no tmux persistence or automatic agent restart: use **New SSH
+Session** after disconnecting. Remote activity/approval tracking and conversation
+Resume are not available. Uploading local files or clipboard images and port
+forwarding are deferred. Creating or removing worktrees currently requires UTF-8
+paths; remote file operations also preserve non-UTF-8 Unix names.
 
 ### AI commit messages
 
@@ -159,6 +180,12 @@ tools into a local build directory:
 ```sh
 python3 scripts/install-release-tools.py target/release-tools
 python3 scripts/install-sparkle.py target/sparkle
+```
+
+Prepare both Linux helper binaries as described in
+[Releasing](docs/RELEASING.md#linux-helpers), then build the bundle:
+
+```sh
 PATH="$PWD/target/release-tools:$PATH" bash scripts/bundle-macos.sh release
 open target/release/bundle/Hive.app
 ```
@@ -208,9 +235,9 @@ Shortcuts can be changed in **Settings → Application → Shortcuts**.
 
 The immediate focus is a dependable daily workflow with several terminal agents:
 real-agent and notification testing, reliable restoration, and release verification.
-Next steps include automatic Codex conversation resume, SSH configuration and
-remote agent launch, then Linux and Windows support. These are not available in
-the current build. A separate structured agent chat UI is deferred.
+Next steps include automatic Codex conversation resume, persistent remote sessions,
+then Linux and Windows desktop support. These are not available in the current
+build. A separate structured agent chat UI is deferred.
 
 ## Contributing
 

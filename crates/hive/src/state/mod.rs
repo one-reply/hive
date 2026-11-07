@@ -15,3 +15,7 @@ pub(crate) mod updates;
 pub mod usage;
 
 pub(crate) mod pull_requests;
+
+pub(crate) mod remote_project;
+
+pub(crate) mod file_io;

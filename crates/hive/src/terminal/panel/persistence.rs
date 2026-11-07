@@ -50,6 +50,7 @@ impl TerminalPanel {
     }
 
     pub(crate) fn restore(
+        host: &Host,
         panes: &Layout<TerminalPane>,
         active: usize,
         area: WeakEntity<DockArea>,
@@ -61,10 +62,11 @@ impl TerminalPanel {
         Some(cx.new(|cx| {
             let mut sizes = HashMap::new();
             let mut views = Vec::new();
-            let tree = restore_panes(&panes, &mut sizes, &mut views, window, cx)
+            let tree = restore_panes(host, &panes, &mut sizes, &mut views, window, cx)
                 .expect("filter_map removed empty and unknown nodes");
             let active = views.get(active).unwrap_or(&views[0]).clone();
             let mut panel = Self {
+                host: host.clone(),
                 panes: tree,
                 active,
                 pane_subscriptions: HashMap::new(),
@@ -94,6 +96,7 @@ impl TerminalPanel {
 }
 
 fn restore_panes(
+    host: &Host,
     layout: &Layout<TerminalPane>,
     sizes: &mut HashMap<SharedString, Vec<f32>>,
     views: &mut Vec<Entity<TerminalView>>,
@@ -104,9 +107,17 @@ fn restore_panes(
         Layout::Leaf { value } => {
             let worktree = value.worktree.as_deref();
             let directory = Some(value.directory.as_path());
-            let view = cx.new(|cx| match value.resume.clone() {
-                Some(resume) => TerminalView::resuming(worktree, directory, resume, window, cx),
-                None => TerminalView::in_directory(worktree, directory, window, cx),
+            let view = cx.new(|cx| {
+                if !host.is_local() {
+                    TerminalView::on_host(host, (worktree, directory), None, false, window, cx)
+                } else {
+                    match value.resume.clone() {
+                        Some(resume) => {
+                            TerminalView::resuming(worktree, directory, resume, window, cx)
+                        }
+                        None => TerminalView::in_directory(worktree, directory, window, cx),
+                    }
+                }
             });
             views.push(view.clone());
             Some(PaneTree::Leaf(view))
@@ -122,7 +133,7 @@ fn restore_panes(
             };
             let children: Vec<_> = children
                 .iter()
-                .filter_map(|child| restore_panes(child, sizes, views, window, cx))
+                .filter_map(|child| restore_panes(host, child, sizes, views, window, cx))
                 .collect();
             let count = children.len();
             let tree = PaneTree::Split { axis, children };

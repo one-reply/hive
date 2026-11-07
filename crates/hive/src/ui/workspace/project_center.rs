@@ -16,6 +16,7 @@ mod files;
 mod persistence;
 
 pub(super) struct ProjectCenter {
+    pub(super) host: Host,
     dock: Entity<DockArea>,
     /// Tabs we opened; pruned when the dock no longer holds them.
     terminals: Vec<Entity<TerminalPanel>>,
@@ -29,11 +30,16 @@ pub(super) struct ProjectCenter {
 }
 
 impl ProjectCenter {
-    pub(super) fn new(project: &Path, window: &mut Window, cx: &mut Context<Workspace>) -> Self {
-        let id = format!("center:{}", project.display());
+    pub(super) fn new(
+        project: &(Host, PathBuf),
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Self {
+        let id = format!("center:{:?}:{:?}", project.0, project.1);
         let tab_inset = Rc::new(Cell::new(px(0.)));
         let dock = CenterDock::dock_area(id, tab_inset.clone(), window, cx);
-        let project = project.to_path_buf();
+        let host = project.0.clone();
+        let project = project.clone();
         // Tabs closed from the dock (× button, exited shell) must drop out of our lists so
         // the welcome screen comes back and the last tab draws its own ×.
         let observed_project = project.clone();
@@ -51,6 +57,7 @@ impl ProjectCenter {
             }
         });
         Self {
+            host,
             dock,
             terminals: Vec::new(),
             diffs: Vec::new(),
@@ -141,7 +148,7 @@ impl ProjectCenter {
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
-        let panel = TerminalPanel::open(cwd, self.dock.downgrade(), window, cx);
+        let panel = TerminalPanel::open(&self.host, cwd, self.dock.downgrade(), window, cx);
         self.add(panel_handle(panel.clone()), window, cx);
         self.terminals.push(panel);
         self.sync_alone(cx);
@@ -155,8 +162,14 @@ impl ProjectCenter {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let panel =
-            TerminalPanel::open_with_launch(Some(cwd), launch, self.dock.downgrade(), window, cx);
+        let panel = TerminalPanel::open_with_launch(
+            &self.host,
+            Some(cwd),
+            launch,
+            self.dock.downgrade(),
+            window,
+            cx,
+        );
         self.add(panel_handle(panel.clone()), window, cx);
         self.terminals.push(panel);
         self.sync_alone(cx);

@@ -87,7 +87,9 @@ impl Project {
             .worktrees
             .first()
             .map_or(self.path.as_path(), |primary| primary.path.as_path());
-        root.with_file_name(format!("{}{WORKTREES_DIR_SUFFIX}", file_name(root)))
+        let mut name = root.file_name().unwrap_or_default().to_os_string();
+        name.push(WORKTREES_DIR_SUFFIX);
+        root.with_file_name(name)
     }
 
     /// The main worktree (listed first by git). It cannot be removed.
@@ -118,24 +120,42 @@ impl Project {
 }
 
 /// Blocking: runs `git` (possibly over ssh). Call from a background executor.
-pub fn scan(project: &ProjectRef) -> Project {
-    let path = &project.path;
-    let worktrees = git::run(&project.host, path, &["worktree", "list", "--porcelain"])
-        .inspect_err(|error| {
-            tracing::warn!(?path, host = ?project.host, %error, "could not list worktrees; showing the project without them")
-        })
-        .map(|out| parse_worktrees(&out))
-        .unwrap_or_default();
-    Project {
-        name: project
-            .identity
-            .name()
-            .map_or_else(|| file_name(path), str::to_owned),
-        path: path.clone(),
-        host: project.host.clone(),
-        filter: project.worktrees,
-        identity: project.identity.clone(),
+pub fn scan(project: &ProjectRef) -> Result<Project, git::GitError> {
+    let worktrees = match git::bytes(
+        &project.host,
+        &project.path,
+        &["worktree", "list", "--porcelain", "-z"],
+        None,
+        16 * 1024 * 1024,
+        false,
+    ) {
+        Ok(output) => parse_worktrees(&output)?,
+        Err(git::GitError::Failed {
+            code: Some(128),
+            ref stderr,
+            ..
+        }) if stderr.contains("not a git repository") => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    Ok(Project {
         worktrees,
+        ..Project::from(project)
+    })
+}
+
+impl From<&ProjectRef> for Project {
+    fn from(project: &ProjectRef) -> Self {
+        Self {
+            name: project
+                .identity
+                .name()
+                .map_or_else(|| file_name(&project.path), str::to_owned),
+            path: project.path.clone(),
+            host: project.host.clone(),
+            filter: project.worktrees,
+            identity: project.identity.clone(),
+            worktrees: Vec::new(),
+        }
     }
 }
 
@@ -145,31 +165,64 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// Parses `git worktree list --porcelain`. Skips bare repositories and worktrees whose
-/// folder is gone (`prunable`), since there is nothing to open in either.
-fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
-    porcelain
-        .split("\n\n")
-        .filter_map(|block| {
-            let mut path = None;
-            let mut head = Head::Detached;
-            for line in block.lines() {
-                if let Some(p) = line.strip_prefix("worktree ") {
-                    path = Some(PathBuf::from(p));
-                } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
-                    head = Head::Branch(b.to_string());
-                } else if line == "bare" || line.starts_with("prunable") {
-                    return None;
-                }
+/// NUL-delimited porcelain keeps newlines and non-UTF-8 Unix paths unambiguous.
+fn parse_worktrees(porcelain: &[u8]) -> Result<Vec<Worktree>, git::GitError> {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let mut worktrees = Vec::new();
+    let mut path = None;
+    let mut head = Head::Detached;
+    let mut skip = false;
+    for field in porcelain
+        .split(|byte| *byte == 0)
+        .chain(std::iter::once(&b""[..]))
+    {
+        if field.is_empty() {
+            if let Some(path) = path.take()
+                && !skip
+            {
+                worktrees.push(Worktree {
+                    path,
+                    head: head.clone(),
+                });
             }
-            Some(Worktree { path: path?, head })
-        })
-        .collect()
+            head = Head::Detached;
+            skip = false;
+        } else if let Some(value) = field.strip_prefix(b"worktree ") {
+            path = Some(PathBuf::from(OsString::from_vec(value.to_vec())));
+        } else if let Some(value) = field.strip_prefix(b"branch refs/heads/") {
+            head = Head::Branch(
+                std::str::from_utf8(value)
+                    .map_err(|_| {
+                        git::GitError::Invalid(
+                            "A branch name is not UTF-8; use the terminal for this repository."
+                                .into(),
+                        )
+                    })?
+                    .into(),
+            );
+        } else if field == b"bare" || field.starts_with(b"prunable") {
+            skip = true;
+        }
+    }
+    Ok(worktrees)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_paths_keep_non_utf8_newlines_and_quotes() {
+        use std::os::unix::ffi::OsStrExt;
+        let worktrees =
+            parse_worktrees(b"worktree /repo/\xff'\nname\0HEAD abc\0branch refs/heads/main\0\0")
+                .unwrap();
+        assert_eq!(
+            worktrees[0].path.as_os_str().as_bytes(),
+            b"/repo/\xff'\nname"
+        );
+        assert!(parse_worktrees(b"worktree /repo\0branch refs/heads/\xff\0").is_err());
+    }
 
     #[test]
     fn target_is_the_worktree_or_else_the_project_folder() {
@@ -221,13 +274,13 @@ branch refs/heads/lavender
             host: Host::Local,
             filter,
             identity: ProjectIdentity::default(),
-            worktrees: parse_worktrees(PORCELAIN),
+            worktrees: parse_worktrees(PORCELAIN.replace('\n', "\0").as_bytes()).unwrap(),
         }
     }
 
     #[test]
     fn parses_porcelain_skipping_prunable() {
-        let worktrees = parse_worktrees(PORCELAIN);
+        let worktrees = parse_worktrees(PORCELAIN.replace('\n', "\0").as_bytes()).unwrap();
         let heads: Vec<_> = worktrees.iter().map(|w| w.head.clone()).collect();
         assert_eq!(
             heads,

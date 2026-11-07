@@ -17,12 +17,16 @@ const MAX_RECORD_BYTES: usize = MAX_FILE_BYTES * 32;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Draft {
     /// Host owning the document.
+    #[serde(default)]
     pub host: Host,
     /// Registered project path.
+    #[serde(with = "crate::path_encoding::persisted")]
     pub project: PathBuf,
     /// Worktree or ordinary project directory.
+    #[serde(with = "crate::path_encoding::persisted")]
     pub root: PathBuf,
     /// Worktree-relative document path.
+    #[serde(with = "crate::path_encoding::persisted")]
     pub path: PathBuf,
     /// Last disk version accepted by the user.
     pub base: Snapshot,

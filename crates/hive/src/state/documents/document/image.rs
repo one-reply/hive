@@ -189,10 +189,10 @@ impl Document {
         let (target, path) = (self.target.clone(), self.path.clone());
         let svg = matches!(self.content, Content::Svg { .. });
         self._read = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let bytes = images::read(&target.host, &target.path, &path)?;
+            let result =
+                crate::state::file_io::run(cx.background_executor().clone(), move |cancellation| {
+                    let bytes = files::Access::new(&target.host, cancellation)
+                        .image(&target.path, &path)?;
                     let source = svg.then(|| Snapshot::parse(&path, &bytes));
                     Ok::<_, files::FileError>((Arc::<[u8]>::from(bytes), source))
                 })

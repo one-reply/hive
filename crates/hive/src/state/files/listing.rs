@@ -9,14 +9,6 @@ impl Files {
         let Some(target) = self.target.clone() else {
             return;
         };
-        if target.host != hive_core::host::Host::Local {
-            self.error = Some(
-                "Files is available for local worktrees. SSH file browsing is not supported yet."
-                    .into(),
-            );
-            cx.notify();
-            return;
-        }
         self.loading = true;
         let generation = self.generation;
         let paths: Vec<_> = std::iter::once(PathBuf::new())
@@ -26,13 +18,14 @@ impl Files {
         let is_git = git.target.as_ref() == Some(&target) && git.status.is_some();
         self._read = Some(cx.spawn(async move |this, cx| {
             let read_target = target.clone();
-            let result = cx
-                .background_executor()
-                .spawn(async move {
+            let result =
+                crate::state::file_io::run(cx.background_executor().clone(), move |cancellation| {
                     let mut directories = BTreeMap::new();
                     let mut errors = Vec::new();
                     for path in paths {
-                        match files::list_directory(&read_target.host, &read_target.path, &path) {
+                        match files::Access::new(&read_target.host, cancellation)
+                            .list_directory(&read_target.path, &path)
+                        {
                             Ok(entries) => {
                                 directories.insert(path, entries);
                             }

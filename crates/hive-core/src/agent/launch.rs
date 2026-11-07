@@ -97,6 +97,36 @@ pub enum Launch {
     Resume(ResumeSession),
 }
 impl Launch {
+    /// Check the CLI on the selected host, without starting a conversation.
+    pub fn check_executable(&self, host: &Host) -> Result<(), LaunchError> {
+        if host.is_local() {
+            return self.executable().map(|_| ());
+        }
+        if !AGENTS.contains(&self.agent()) {
+            return Err(LaunchError::Unsupported);
+        }
+        if matches!(self, Self::Resume(_)) {
+            return Err(LaunchError::Remote(
+                "Remote Resume is not supported; start a new session".into(),
+            ));
+        }
+        host.check_executable(self.agent().executable())
+            .map_err(LaunchError::Remote)
+    }
+
+    /// Build a remote interactive launch without local hooks, tokens or session identities.
+    pub fn remote_command(&self, host: &Host, directory: &Path) -> Result<Command, LaunchError> {
+        self.check_executable(host)?;
+        let args = self.arguments(None)?;
+        host.terminal_command(
+            directory,
+            Some((
+                self.agent().executable(),
+                &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            )),
+        )
+        .map_err(|e| LaunchError::Remote(e.to_string()))
+    }
     /// Selected CLI provider.
     pub fn agent(&self) -> AgentKind {
         match self {
@@ -183,6 +213,9 @@ impl Launch {
 /// A launch that could not be prepared; no repository is changed by discovery.
 #[derive(Debug, thiserror::Error)]
 pub enum LaunchError {
+    /// SSH preflight or remote command preparation failed.
+    #[error("{0}")]
+    Remote(String),
     /// The selected CLI is not installed in a supported executable location.
     #[error("{0} CLI not found. Install it, then try again.")]
     Missing(&'static str),

@@ -23,7 +23,9 @@ impl TerminalSession {
     }
 
     pub(crate) fn accepts_file_drop(&self, target: &Target) -> bool {
-        same_worktree(target, self.worktree.as_deref()) && !self.exited && self.terminal().is_some()
+        same_worktree(&self.host, target, self.worktree.as_deref())
+            && !self.exited
+            && self.terminal().is_some()
     }
 
     pub(crate) fn insert_file_references(
@@ -35,12 +37,29 @@ impl TerminalSession {
         if !self.accepts_file_drop(target) {
             return Err("Drop the file into a running terminal in the same worktree.".into());
         }
-        let references = paste::file_references(
-            &target.path,
-            paths,
-            self.directory.as_deref().unwrap_or(&target.path),
-        )
-        .map_err(|error| error.to_string())?;
+        let references = if self.host.is_local() {
+            paste::file_references(
+                &target.path,
+                paths,
+                self.directory.as_deref().unwrap_or(&target.path),
+            )
+            .map_err(|error| error.to_string())?
+        } else {
+            paths
+                .iter()
+                .map(|path| {
+                    if path.is_absolute()
+                        || path
+                            .components()
+                            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+                    {
+                        return Err("Invalid worktree-relative path".to_owned());
+                    }
+                    paste::quoted_path(&target.path.join(path)).map_err(|error| error.to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join(" ")
+        };
         self.enqueue_input(Input::Text(references), cx);
         Ok(())
     }
@@ -54,6 +73,12 @@ impl TerminalSession {
             .is_some_and(|terminal| terminal.clear_selection())
         {
             cx.notify();
+        }
+        if !self.host.is_local() && matches!(input, Input::Image(_)) {
+            cx.emit(SessionEvent::PasteFailed(
+                "Image upload to SSH terminals is not available yet.".into(),
+            ));
+            return;
         }
         self.pending_input.push_back(input);
         self.flush_input(cx);
@@ -113,8 +138,8 @@ impl TerminalSession {
     }
 }
 
-fn same_worktree(target: &Target, worktree: Option<&Path>) -> bool {
-    target.host == Host::Local && worktree == Some(target.path.as_path())
+fn same_worktree(host: &Host, target: &Target, worktree: Option<&Path>) -> bool {
+    target.host == *host && worktree == Some(target.path.as_path())
 }
 
 fn clipboard_input(item: ClipboardItem) -> Option<Input> {
@@ -149,14 +174,18 @@ mod tests {
             path: "/repo-worktrees/feature".into(),
             host: Host::Local,
         };
-        assert!(same_worktree(&target, Some(&target.path)));
-        assert!(!same_worktree(&target, Some(&target.project)));
-        assert!(!same_worktree(&target, Some(Path::new("/other"))));
-        assert!(!same_worktree(&target, None));
+        assert!(same_worktree(&Host::Local, &target, Some(&target.path)));
+        assert!(!same_worktree(&Host::Local, &target, Some(&target.project)));
+        assert!(!same_worktree(
+            &Host::Local,
+            &target,
+            Some(Path::new("/other"))
+        ));
+        assert!(!same_worktree(&Host::Local, &target, None));
         target.host = Host::Ssh {
             target: "remote".into(),
         };
-        assert!(!same_worktree(&target, Some(&target.path)));
+        assert!(!same_worktree(&Host::Local, &target, Some(&target.path)));
     }
 
     #[test]

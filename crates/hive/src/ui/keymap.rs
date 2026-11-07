@@ -210,21 +210,21 @@ pub(crate) static SHORTCUTS: [Shortcut; 21] = [
         // VS Code's macOS keys: Enter renames the selected entry, Cmd-Down opens it.
         default: "cmd-down",
         category: Category::Files,
-        context: "FilesPanel > Tree",
+        context: "(FilesPanel > Tree) && !Input",
         action: || Box::new(OpenSelectedFile),
     },
     Shortcut {
         label: "Rename file",
         default: "enter",
         category: Category::Files,
-        context: "FilesPanel > Tree",
+        context: "(FilesPanel > Tree) && !Input",
         action: || Box::new(RenameSelectedFile),
     },
     Shortcut {
         label: "Delete file permanently",
         default: "cmd-backspace",
         category: Category::Files,
-        context: "FilesPanel > Tree",
+        context: "(FilesPanel > Tree) && !Input",
         action: || Box::new(DeleteSelectedFile),
     },
     Shortcut {
@@ -406,9 +406,10 @@ mod tests {
                 &["Workspace", "EditorPanel", "Input"][..],
                 &["Workspace", "TerminalPanel", "Terminal"][..],
                 &["Workspace", "FilesPanel", "FileNameEdit", "Input"][..],
+                &["Workspace", "FilesPanel", "Tree", "FileNameEdit", "Input"][..],
             ] {
                 assert!(
-                    !predicate.eval(&contexts(scope)),
+                    predicate.depth_of(&contexts(scope)).is_none(),
                     "{} in {scope:?}",
                     shortcut.label
                 );

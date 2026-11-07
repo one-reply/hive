@@ -19,6 +19,7 @@ use crate::app::AppState;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::ui::keymap;
 use crate::ui::workspace::{NewTerminal, right_sidebar_toggle};
+use hive_core::host::Host;
 
 actions!(terminal_panel, [SplitRight, SplitDown, ClosePane]);
 
@@ -31,6 +32,7 @@ mod tiles;
 const PANE_CLOSE_INSET: Pixels = px(6.);
 
 pub struct TerminalPanel {
+    host: Host,
     panes: PaneTree<Entity<TerminalView>>,
     /// The pane that last had focus: it is split and closed by the shortcuts and names the tab.
     active: Entity<TerminalView>,
@@ -53,15 +55,17 @@ impl TerminalPanel {
 
     /// Open a panel immediately; its session starts the shell in the background.
     pub fn open(
+        host: &Host,
         cwd: Option<&Path>,
         area: WeakEntity<DockArea>,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
-        Self::open_with_launch(cwd, None, area, window, cx)
+        Self::open_with_launch(host, cwd, None, area, window, cx)
     }
 
     pub(crate) fn open_with_launch(
+        host: &Host,
         cwd: Option<&Path>,
         launch: Option<hive_core::agent::launch::Launch>,
         area: WeakEntity<DockArea>,
@@ -69,8 +73,10 @@ impl TerminalPanel {
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            let view = cx.new(|cx| TerminalView::with_launch(cwd, cwd, launch, window, cx));
+            let view =
+                cx.new(|cx| TerminalView::on_host(host, (cwd, cwd), launch, true, window, cx));
             let mut this = Self {
+                host: host.clone(),
                 panes: PaneTree::Leaf(view.clone()),
                 active: view.clone(),
                 pane_subscriptions: HashMap::new(),
@@ -99,7 +105,13 @@ impl TerminalPanel {
             cx.subscribe_in(view, window, |this, view, event, window, cx| match event {
                 TerminalViewEvent::TitleChanged => this.notify_group(cx),
                 TerminalViewEvent::DirectoryChanged => this.layout_changed(cx),
-                TerminalViewEvent::Exited => this.close_pane(view, window, cx),
+                TerminalViewEvent::Exited => {
+                    if this.host.is_local() {
+                        this.close_pane(view, window, cx);
+                    } else {
+                        this.notify_group(cx);
+                    }
+                }
             }),
             cx.on_focus(&focus_handle, window, move |this, _, cx| {
                 if let Some(view) = weak_view.upgrade() {
@@ -160,7 +172,16 @@ impl TerminalPanel {
     /// Split the active pane: a new shell in the same cwd lands after it along `axis`.
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.cwd(cx);
-        let view = cx.new(|cx| TerminalView::new(cwd.as_deref(), window, cx));
+        let view = cx.new(|cx| {
+            TerminalView::on_host(
+                &self.host,
+                (cwd.as_deref(), cwd.as_deref()),
+                None,
+                true,
+                window,
+                cx,
+            )
+        });
         self.insert_pane(view, axis, window, cx);
     }
 

@@ -1,4 +1,19 @@
 use super::*;
+
+#[test]
+fn linux_names_are_case_sensitive_and_local_names_keep_their_matching_rule() {
+    let host = Host::Ssh {
+        target: "home".into(),
+    };
+    assert!(!name_taken(&host, [Path::new("README")], "readme", None));
+    assert!(name_taken(&host, [Path::new("README")], "README", None));
+    assert!(name_taken(
+        &Host::Local,
+        [Path::new("README")],
+        "readme",
+        None
+    ));
+}
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::{
@@ -213,23 +228,23 @@ fn batched_ignore_rules_preserve_spaces_and_unicode() {
 #[test]
 fn name_taken_matches_siblings_ignoring_case() {
     let siblings = [Path::new("src/main.rs"), Path::new("src/Lib.rs")];
-    assert!(name_taken(siblings, "main.rs", None));
-    assert!(name_taken(siblings, "lib.RS", None));
-    assert!(!name_taken(siblings, "mod.rs", None));
-    assert!(!name_taken(siblings, "main", None));
+    assert!(name_taken(&Host::Local, siblings, "main.rs", None));
+    assert!(name_taken(&Host::Local, siblings, "lib.RS", None));
+    assert!(!name_taken(&Host::Local, siblings, "mod.rs", None));
+    assert!(!name_taken(&Host::Local, siblings, "main", None));
 }
 
 #[test]
 fn name_taken_skips_the_entry_being_renamed() {
     let siblings = [Path::new("src/main.rs"), Path::new("src/lib.rs")];
     let renaming = Some(Path::new("src/main.rs"));
-    assert!(!name_taken(siblings, "main.rs", renaming));
-    assert!(!name_taken(siblings, "Main.rs", renaming));
-    assert!(name_taken(siblings, "lib.rs", renaming));
+    assert!(!name_taken(&Host::Local, siblings, "main.rs", renaming));
+    assert!(!name_taken(&Host::Local, siblings, "Main.rs", renaming));
+    assert!(name_taken(&Host::Local, siblings, "lib.rs", renaming));
 }
 
 #[test]
 fn name_taken_is_false_without_a_listing() {
-    assert!(!name_taken([], "main.rs", None));
-    assert!(!name_taken([Path::new("тест.rs")], "", None));
+    assert!(!name_taken(&Host::Local, [], "main.rs", None));
+    assert!(!name_taken(&Host::Local, [Path::new("тест.rs")], "", None));
 }

@@ -1,5 +1,6 @@
 //! One project's page (Orca's "Identity"): display name, color and badge shown in the sidebar.
 
+use hive_core::host::Host;
 use std::path::{Path, PathBuf};
 
 use crate::ui::text_field::TextField;
@@ -67,6 +68,7 @@ struct Snapshot {
 }
 
 pub(crate) struct ProjectPage {
+    pub(super) host: Host,
     path: PathBuf,
     tab: BadgeTab,
     name_input: Entity<InputState>,
@@ -76,8 +78,13 @@ pub(crate) struct ProjectPage {
 }
 
 impl ProjectPage {
-    pub(crate) fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let identity = identity(&path, cx).unwrap_or_default();
+    pub(crate) fn new(
+        host: Host,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let identity = identity(&host, &path, cx).unwrap_or_default();
         let emoji = match identity.badge() {
             Badge::Emoji(emoji) => emoji.as_str(),
             _ => "",
@@ -125,6 +132,7 @@ impl ProjectPage {
             }),
         ];
         Self {
+            host,
             path,
             tab: BadgeTab::from(identity.badge()),
             name_input,
@@ -140,7 +148,9 @@ impl ProjectPage {
 
     fn update_identity(&self, cx: &mut App, edit: impl FnOnce(&mut ProjectIdentity)) {
         let store = AppState::get(cx).store.clone();
-        store.update(cx, |store, cx| store.update_identity(&self.path, edit, cx));
+        store.update(cx, |store, cx| {
+            store.update_identity(&self.host, &self.path, edit, cx)
+        });
     }
 
     fn snapshot(&self, cx: &App) -> Option<Snapshot> {
@@ -152,8 +162,8 @@ impl ProjectPage {
             .projects
             .iter()
             .enumerate()
-            .find(|(_, project)| project.path == self.path)?;
-        let scanned = state.projects.read(cx).project(&self.path);
+            .find(|(_, project)| project.host == self.host && project.path == self.path)?;
+        let scanned = state.projects.read(cx).project(&self.host, &self.path);
         Some(Snapshot {
             identity: project.identity.clone(),
             ix,
@@ -186,6 +196,7 @@ impl ProjectPage {
         let remove_hover = Hover::new("remove-project", window, cx);
         let muted = cx.theme().muted_foreground;
         let path = self.path.clone();
+        let host = self.host.clone();
         h_flex()
             .justify_between()
             .items_start()
@@ -210,9 +221,21 @@ impl ProjectPage {
                     .small()
                     .icon(Lucide::Trash)
                     .tooltip("Remove from Hive")
-                    .on_click(move |_, _, cx| {
-                        let store = AppState::get(cx).store.clone();
-                        store.update(cx, |store, cx| store.remove_project(&path, cx));
+                    .on_click(move |_, window, cx| {
+                        let (host, path) = (host.clone(), path.clone());
+                        crate::ui::editor_panel::close::guard(
+                            crate::ui::editor_panel::close::Scope::Project(
+                                host.clone(),
+                                path.clone(),
+                            ),
+                            window,
+                            cx,
+                            move |_, cx| {
+                                let store = AppState::get(cx).store.clone();
+                                store
+                                    .update(cx, |store, cx| store.remove_project(&host, &path, cx));
+                            },
+                        );
                     })
                     .smooth_hover(ButtonLook::Outline, &remove_hover, cx),
             )
@@ -458,9 +481,13 @@ fn is_commit(event: &InputEvent) -> bool {
     matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur)
 }
 
-fn identity(path: &Path, cx: &App) -> Option<ProjectIdentity> {
+fn identity(host: &Host, path: &Path, cx: &App) -> Option<ProjectIdentity> {
     let store = AppState::get(cx).store.read(cx);
-    let project = store.state.projects.iter().find(|p| p.path == path)?;
+    let project = store
+        .state
+        .projects
+        .iter()
+        .find(|p| p.host == *host && p.path == path)?;
     Some(project.identity.clone())
 }
 

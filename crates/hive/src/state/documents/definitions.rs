@@ -24,8 +24,7 @@ pub(super) fn install(
 ) {
     let (editor, supported) = {
         let document = document.read(cx);
-        let supported =
-            document.target.host == Host::Local && code_navigation::is_supported(&document.path);
+        let supported = code_navigation::is_supported(&document.path);
         (document.editor.clone(), supported)
     };
     if !supported {
@@ -66,9 +65,13 @@ impl DefinitionProvider for ImportDefinitions {
         cx: &mut App,
     ) -> Task<gpui_kit::Result<Vec<LocationLink>>> {
         // Read at request time: a rename or move changes the document's path.
-        let Some((root, path)) = self.document.upgrade().map(|document| {
+        let Some((host, root, path)) = self.document.upgrade().map(|document| {
             let document = document.read(cx);
-            (document.target.path.clone(), document.path.clone())
+            (
+                document.target.host.clone(),
+                document.target.path.clone(),
+                document.path.clone(),
+            )
         }) else {
             return Task::ready(Ok(Vec::new()));
         };
@@ -83,26 +86,39 @@ impl DefinitionProvider for ImportDefinitions {
             return Task::ready(Ok(answer.links.clone()));
         }
         let (text, navigator, last) = (text.clone(), self.navigator.clone(), self.last.clone());
-        cx.background_executor().spawn(async move {
-            let links = links(&navigator, &root, &path, &text, offset);
-            *last.lock().unwrap_or_else(PoisonError::into_inner) = Some(Answer {
-                text,
-                word,
-                links: links.clone(),
-            });
-            Ok(links)
-        })
+        cx.foreground_executor().spawn(crate::state::file_io::run(
+            cx.background_executor().clone(),
+            move |cancellation| {
+                let links = links(&navigator, &host, &root, &path, &text, offset, cancellation);
+                *last.lock().unwrap_or_else(PoisonError::into_inner) = Some(Answer {
+                    text,
+                    word,
+                    links: links.clone(),
+                });
+                Ok(links)
+            },
+        ))
     }
 }
 
 fn links(
     navigator: &Navigator,
+    host: &Host,
     root: &Path,
     path: &Path,
     text: &Rope,
     offset: usize,
+    cancellation: &hive_core::command::Cancellation,
 ) -> Vec<LocationLink> {
-    let definition = match navigator.definition(root, path, &text.to_string(), offset) {
+    let result = if host.is_local() {
+        navigator
+            .definition(root, path, &text.to_string(), offset)
+            .map_err(|e| e.to_string())
+    } else {
+        hive_core::remote::definition(host, root, path, &text.to_string(), offset, cancellation)
+            .map_err(|e| e.to_string())
+    };
+    let definition = match result {
         Ok(Some(definition)) => definition,
         Ok(None) => return Vec::new(),
         Err(error) => {
@@ -228,10 +244,12 @@ mod tests {
         let offset = text.rfind("Привіт").unwrap() + 2;
         let found = links(
             &Navigator::default(),
+            &hive_core::host::Host::Local,
             &root,
             Path::new("src/a.ts"),
             &rope,
             offset,
+            &hive_core::command::Cancellation::default(),
         );
         std::fs::remove_dir_all(&root).unwrap();
         let [link] = found.as_slice() else {

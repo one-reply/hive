@@ -47,6 +47,12 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 mkdir -p "$app/Contents/Frameworks"
 ditto "$sparkle/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 cp "$executable" "$app/Contents/MacOS/hive"
+if [[ -f target/remote/manifest.json ]]; then
+    cp -R target/remote "$app/Contents/Resources/remote"
+elif [[ "${1:-debug}" == release ]]; then
+    echo "Missing Linux helpers: run scripts/package-remote.py before bundling a release" >&2
+    exit 1
+fi
 cp LICENSE NOTICE THIRD_PARTY_NOTICES.md "$app/Contents/Resources/"
 cp -R licenses "$app/Contents/Resources/licenses"
 cp "$sparkle/LICENSE" "$app/Contents/Resources/licenses/Sparkle.txt"

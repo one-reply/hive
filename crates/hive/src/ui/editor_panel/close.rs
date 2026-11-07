@@ -4,8 +4,8 @@ use super::*;
 #[derive(Clone)]
 pub(crate) enum Scope {
     Document(Entity<Document>),
-    Project(std::path::PathBuf),
-    Worktree(std::path::PathBuf),
+    Project(hive_core::host::Host, std::path::PathBuf),
+    Worktree(hive_core::host::Host, std::path::PathBuf),
     All,
 }
 
@@ -22,8 +22,8 @@ impl Scope {
             .find(|document| {
                 let target = &document.read(cx).target;
                 match self {
-                    Self::Project(path) => &target.project == path,
-                    Self::Worktree(path) => &target.path == path,
+                    Self::Project(host, path) => &target.host == host && &target.project == path,
+                    Self::Worktree(host, path) => &target.host == host && &target.path == path,
                     Self::All => true,
                     Self::Document(_) => false,
                 }

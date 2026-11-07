@@ -88,7 +88,10 @@ impl DiffPanel {
                 .default_value(prompt)
         });
         let agents = AppState::get(cx).agents.clone();
-        let sessions = agents.read(cx).sessions(&target.path).to_vec();
+        let sessions = agents
+            .read(cx)
+            .sessions(&target.host, &target.path)
+            .to_vec();
         let labels: Vec<String> = sessions
             .iter()
             .map(|session| {

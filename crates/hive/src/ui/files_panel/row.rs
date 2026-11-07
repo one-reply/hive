@@ -25,7 +25,7 @@ pub(super) fn render(
     window: &mut Window,
     cx: &mut App,
 ) -> ListItem {
-    let path = PathBuf::from(entry.item().id.as_ref());
+    let path = tree::path(entry.item().id.as_ref());
     let files = panel.read(cx).files.clone();
     let state = files.read(cx);
     let folder = entry.is_folder();
@@ -69,7 +69,7 @@ pub(super) fn render(
         .filter(|edit| edit.renaming() == Some(path.as_path()))
         .map(|edit| edit.field(busy, settings.font_size(), window, cx));
     let renaming = rename_field.is_some();
-    let row_key: SharedString = format!("files-row:{:?}:{}", target, path.display()).into();
+    let row_key: SharedString = format!("files-row:{target:?}:{}", entry.item().id).into();
     let hover = Hover::new(row_key.clone(), window, cx);
     let motion = panel.read(cx).motion.sample(ix);
     if motion.is_some() {

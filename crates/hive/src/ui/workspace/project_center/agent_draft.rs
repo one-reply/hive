@@ -16,7 +16,7 @@ impl ProjectCenter {
         let existing = AppState::get(cx)
             .agents
             .read(cx)
-            .preferred_session(worktree, agent, cx);
+            .preferred_session(&self.host, worktree, agent, cx);
         if let Some(session) = existing {
             self.reveal_session(session.entity_id(), window, cx);
             session.update(cx, |session, cx| {
@@ -68,6 +68,7 @@ impl ProjectCenter {
             })
         } else {
             let panel = TerminalPanel::open_with_launch(
+                &self.host,
                 Some(worktree),
                 Some(Launch::New(agent)),
                 self.dock.downgrade(),
