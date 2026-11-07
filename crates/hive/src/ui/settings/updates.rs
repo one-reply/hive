@@ -2,7 +2,7 @@
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
 use gpui_kit::*;
 
 use super::{setting_row, setting_title};
@@ -33,6 +33,7 @@ impl Render for UpdatesPage {
         let error = updates.error().map(str::to_owned);
         let check_hover = Hover::new("check-updates-hover", window, cx).enabled(available);
         let releases_hover = Hover::new("release-notes-hover", window, cx);
+        let highlights_hover = Hover::new("release-highlights-hover", window, cx);
         let muted = cx.theme().muted_foreground;
         v_flex()
             .gap_3()
@@ -42,7 +43,11 @@ impl Render for UpdatesPage {
                 cx,
             ))
             .child(setting_row(
-                setting_title("Software updates", "Check for a newer version of Hive.", cx),
+                setting_title(
+                    "Software updates",
+                    "Download and installation progress opens in a separate window.",
+                    cx,
+                ),
                 Button::new("check-updates")
                     .label("Check for Updates")
                     .icon(Lucide::RefreshCw)
@@ -55,17 +60,28 @@ impl Render for UpdatesPage {
             ))
             .child(
                 div().text_sm().text_color(muted).child(error.unwrap_or_else(|| {
-                    "Hive checks daily. You choose when to install and restart. Finish active agent sessions before restarting.".into()
+                    "Hive checks on launch and daily. You choose when to install and restart. Finish active agent sessions before restarting.".into()
                 })),
             )
             .child(setting_row(
                 setting_title("Release notes", "What's new and previous releases.", cx),
-                Button::new("open-releases")
-                    .label("View Releases")
-                    .icon(Lucide::ExternalLink)
-                    .cursor_pointer()
-                    .on_click(|_, _, cx| Updates::open_releases(cx))
-                    .smooth_hover(ButtonLook::Outline, &releases_hover, cx),
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("show-release-notes")
+                            .label("What's New")
+                            .cursor_pointer()
+                            .on_click(|_, window, cx| crate::ui::release_notes::show(window, cx))
+                            .smooth_hover(ButtonLook::Outline, &highlights_hover, cx),
+                    )
+                    .child(
+                        Button::new("open-releases")
+                            .label("View Releases")
+                            .icon(Lucide::ExternalLink)
+                            .cursor_pointer()
+                            .on_click(|_, _, cx| Updates::open_releases(cx))
+                            .smooth_hover(ButtonLook::Outline, &releases_hover, cx),
+                    ),
                 cx,
             ))
     }

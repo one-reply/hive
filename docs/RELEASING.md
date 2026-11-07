@@ -143,9 +143,12 @@ publish the cleaned history in a fresh repository while keeping the original pri
 
 ## Draft release and installation checks
 
-1. Update the workspace version, document changes, and wait for CI on the intended
-   commit. Push a matching `v<version>` tag. CI verifies the tag/version match,
-   runs security and build checks, signs and notarizes the app, and creates a
+1. Update the workspace version and add `docs/releases/v<version>.md` with a
+   `# Hive <version> …` title and a `## What's new` section containing release highlights.
+   Hive embeds this section at compile time for its offline What's New card; keep
+   installation and maintainer instructions in subsequent level-two sections.
+   Wait for CI on the intended commit, then push a matching `v<version>` tag. CI
+   verifies the tag/version match, runs security and build checks, signs and notarizes the app, and creates a
    **draft prerelease** with the stapled ZIP, checksum and signed `appcast.xml`.
    Only the final release job has repository write permission and access to the
    Apple credentials and update-signing secret.
@@ -177,7 +180,7 @@ does not replace draft assets. CI and installation checks must pass before promo
 ## In-app updates
 
 Settings → Updates and Hive → Check for Updates use Sparkle 2. The packaged app
-checks daily and requires the user's confirmation to install; silent installation
+checks on launch and daily and requires the user's confirmation to install; silent installation
 is disabled because agent sessions may be running. `cargo run` has no embedded
 framework and shows a link to download the packaged application instead.
 

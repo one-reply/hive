@@ -5,6 +5,9 @@ use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{MainThreadMarker, msg_send};
 use objc2_foundation::{NSBundle, NSError, NSString};
 
+mod reminders;
+use reminders::Reminders;
+
 pub(crate) const RELEASES_URL: &str = "https://github.com/one-reply/hive/releases";
 
 /// Loading a framework touches disk, so the state entity runs this in the background.
@@ -27,13 +30,18 @@ pub(crate) fn load_framework() -> Result<Retained<NSBundle>, String> {
 
 pub(crate) struct Updater {
     controller: Retained<AnyObject>,
+    _reminders: Retained<Reminders>,
     _framework: Retained<NSBundle>,
     _main_thread: MainThreadMarker,
 }
 
 impl Updater {
-    pub(crate) fn new(framework: Retained<NSBundle>) -> Result<Self, String> {
+    pub(crate) fn new(
+        framework: Retained<NSBundle>,
+        reminders: async_channel::Sender<Option<String>>,
+    ) -> Result<Self, String> {
         let main_thread = MainThreadMarker::new().ok_or("The updater requires the main thread.")?;
+        let reminders = Reminders::new(reminders, main_thread);
         let class = AnyClass::get(c"SPUStandardUpdaterController")
             .ok_or("The embedded updater is missing SPUStandardUpdaterController.")?;
         // Signatures and ownership follow Sparkle's SPUStandardUpdaterController/SPUUpdater headers.
@@ -42,8 +50,8 @@ impl Updater {
             let allocated: Allocated<AnyObject> = msg_send![class, alloc];
             let controller: Retained<AnyObject> = msg_send![allocated,
                 initWithStartingUpdater: false,
-                updaterDelegate: Option::<&AnyObject>::None,
-                userDriverDelegate: Option::<&AnyObject>::None
+                updaterDelegate: &*reminders,
+                userDriverDelegate: &*reminders
             ];
             let updater: Retained<AnyObject> = msg_send![&*controller, updater];
             let mut error: Option<Retained<NSError>> = None;
@@ -59,8 +67,14 @@ impl Updater {
                     },
                 ));
             }
+            // Check on every launch, before Sparkle's first scheduled cycle, honoring opt-out.
+            let automatic: bool = msg_send![&*updater, automaticallyChecksForUpdates];
+            if automatic {
+                let _: () = msg_send![&*updater, checkForUpdatesInBackground];
+            }
             Ok(Self {
                 controller,
+                _reminders: reminders,
                 _framework: framework,
                 _main_thread: main_thread,
             })

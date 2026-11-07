@@ -26,6 +26,20 @@ pub(crate) struct SaveError(pub(crate) String);
 impl EventEmitter<SaveError> for Store {}
 
 impl Store {
+    pub(crate) fn take_release_notes(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.writer.is_none() || self.stopping {
+            return false;
+        }
+        if !self
+            .state
+            .mark_release_seen(hive_core::release_notes::VERSION)
+        {
+            return false;
+        }
+        self.commit(cx);
+        true
+    }
+
     pub(crate) fn set_files_settings(
         &mut self,
         settings: hive_core::settings::FilesSettings,

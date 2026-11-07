@@ -117,9 +117,18 @@ impl Workspace {
         let app = AppState::get(cx);
         let (store, projects, agents) =
             (app.store.clone(), app.projects.clone(), app.agents.clone());
+        let updates = app.updates.clone();
         let sidebar_width = px(store.read(cx).state.settings.sidebar_width());
         let git_width = px(store.read(cx).state.settings.git_panel_width());
         let git_open = store.read(cx).state.settings.git_panel_open;
+
+        let release_store = store.clone();
+        window.defer(cx, move |window, cx| {
+            crate::ui::update_available::sync(window, cx);
+            if release_store.update(cx, |store, cx| store.take_release_notes(cx)) {
+                crate::ui::release_notes::show(window, cx);
+            }
+        });
 
         if let Some(notice) = &store.read(cx).notice {
             let notice = notice.clone();
@@ -128,6 +137,9 @@ impl Workspace {
             });
         }
         let observers = vec![
+            cx.observe_in(&updates, window, |_, _, window, cx| {
+                crate::ui::update_available::sync(window, cx);
+            }),
             cx.subscribe_in(&store, window, |_, _, error: &SaveError, window, cx| {
                 window.push_notification(
                     Notification::error(error.0.clone()).title("Could not save state"),

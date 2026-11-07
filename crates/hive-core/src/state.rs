@@ -71,9 +71,20 @@ pub struct State {
     pub projects: Vec<ProjectRef>,
     /// Workspace layout and selection, restored without replaying commands.
     pub workspace: workspace::Workspace,
+    /// Installed version whose release highlights were last presented.
+    pub last_seen_release: Option<String>,
 }
 
 impl State {
+    /// Marks release highlights as presented; returns false on repeated launches.
+    pub fn mark_release_seen(&mut self, version: &str) -> bool {
+        if self.last_seen_release.as_deref() == Some(version) {
+            return false;
+        }
+        self.last_seen_release = Some(version.to_owned());
+        true
+    }
+
     /// Adds `project` unless its folder is already listed; returns whether it was added.
     /// A project without a custom color gets one no other project shows yet.
     pub fn add_project(&mut self, mut project: ProjectRef) -> bool {
@@ -159,6 +170,16 @@ pub fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_highlights_are_presented_once_per_installed_version() {
+        let mut state = State::default();
+        assert!(state.mark_release_seen("0.1.4"));
+        assert!(!state.mark_release_seen("0.1.4"));
+        assert!(state.mark_release_seen("0.1.5"));
+        assert!(!state.mark_release_seen("0.1.5"));
+        assert_eq!(state.last_seen_release.as_deref(), Some("0.1.5"));
+    }
 
     fn project(path: &str) -> ProjectRef {
         ProjectRef::new(PathBuf::from(path), Host::Local)
