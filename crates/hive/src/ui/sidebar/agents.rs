@@ -31,6 +31,7 @@ pub(super) struct AgentsSection {
 
 /// Where a card's agents live and where clicking one of them goes.
 pub(super) struct CardTarget<'a> {
+    pub(super) host: &'a Host,
     pub(super) project: &'a Path,
     pub(super) worktree: Option<&'a Path>,
     /// The card's own path: the worktree, or the project folder for a non-git project.
@@ -45,13 +46,14 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> AgentsSection {
         let key = ElementId::from(SharedString::from(format!(
-            "agents:{}",
+            "agents:{:?}:{}",
+            target.host,
             target.path.display()
         )));
         let live = AppState::get(cx)
             .agents
             .read(cx)
-            .sessions(target.path)
+            .sessions(target.host, target.path)
             .to_vec();
         // While the section shrinks away after the last agent quits, keep showing it.
         let shown = window.use_keyed_state((key.clone(), "shown"), cx, |_, _| Vec::new());
@@ -59,7 +61,10 @@ impl Sidebar {
             shown.update(cx, |shown, _| shown.clone_from(&live));
         }
         let sessions = shown.read(cx).clone();
-        let open = !live.is_empty() && self.agents_open.contains(target.path);
+        let open = !live.is_empty()
+            && self
+                .agents_open
+                .contains(&(target.host.clone(), target.path.to_path_buf()));
         let full = SECTION_TOP + STRIP_HEIGHT + SECTION_BOTTOM;
         let height = if live.is_empty() {
             px(0.)
@@ -96,7 +101,13 @@ impl Sidebar {
             .overflow_hidden()
             .opacity((height / full).min(1.))
             .pt(SECTION_TOP)
-            .child(self.render_strip(&sessions, target.path, &strip_hover, unfolded, cx))
+            .child(self.render_strip(
+                &sessions,
+                &(target.host.clone(), target.path.to_path_buf()),
+                &strip_hover,
+                unfolded,
+                cx,
+            ))
             .child(
                 v_flex()
                     // Clip rows before the bottom inset, even while the section animates.
@@ -117,9 +128,9 @@ impl Sidebar {
         }
     }
 
-    fn toggle_agents(&mut self, path: &Path, cx: &mut Context<Self>) {
+    fn toggle_agents(&mut self, path: &(Host, PathBuf), cx: &mut Context<Self>) {
         if !self.agents_open.remove(path) {
-            self.agents_open.insert(path.to_path_buf());
+            self.agents_open.insert(path.clone());
         }
         cx.notify();
     }
@@ -127,7 +138,7 @@ impl Sidebar {
     fn render_strip(
         &self,
         sessions: &[AgentSession],
-        path: &Path,
+        path: &(Host, PathBuf),
         hover: &Hover,
         unfolded: f32,
         cx: &mut Context<Self>,
@@ -167,11 +178,12 @@ impl Sidebar {
                         .child(format!("+{hidden}")),
                 )
             });
-        let path_buf = path.to_path_buf();
+        let path_buf = path.clone();
         h_flex()
             .id(SharedString::from(format!(
-                "agents-strip:{}",
-                path.display()
+                "agents-strip:{:?}:{}",
+                path.0,
+                path.1.display()
             )))
             .h(STRIP_HEIGHT)
             .flex_none()
@@ -221,6 +233,7 @@ fn render_session(
         target.project.to_path_buf(),
         target.worktree.map(Path::to_path_buf),
     );
+    let host = target.host.clone();
     let id = session.session;
     h_flex()
         .id(SharedString::from(format!("agent-session:{}", id.as_u64())))
@@ -237,7 +250,9 @@ fn render_session(
         .child(status_icon(session.status, cx))
         .child(logo(session.kind, cx))
         .child(div().flex_none().child(session.kind.name()))
-        .child(div().text_color(muted).child(if session.reported {
+        .child(div().text_color(muted).child(if !target.host.is_local() {
+            "Remote · status unavailable".to_owned()
+        } else if session.reported {
             session.status.label().to_owned()
         } else {
             format!("{} · estimated", session.status.label())
@@ -255,7 +270,9 @@ fn render_session(
         .on_click(move |_, _, cx| {
             // The card behind would otherwise run its own selection on top.
             cx.stop_propagation();
-            projects.update(cx, |p, cx| p.select(&project, worktree.as_deref(), cx));
+            projects.update(cx, |p, cx| {
+                p.select(&host, &project, worktree.as_deref(), cx)
+            });
             agents.update(cx, |agents, cx| agents.reveal(id, cx));
         })
 }

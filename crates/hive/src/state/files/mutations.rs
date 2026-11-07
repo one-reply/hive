@@ -16,14 +16,24 @@ impl FileOperation {
         }
     }
 
-    fn run(&self, target: &Target) -> Result<(), files::FileError> {
+    fn run(
+        &self,
+        target: &Target,
+        cancellation: &hive_core::command::Cancellation,
+    ) -> Result<(), files::FileError> {
         match self {
-            Self::CreateFile(path) => files::create_file(&target.host, &target.path, path),
-            Self::CreateDirectory(path) => {
-                files::create_directory(&target.host, &target.path, path)
+            Self::CreateFile(path) => {
+                files::Access::new(&target.host, cancellation).create_file(&target.path, path)
             }
-            Self::Move { from, to } => files::move_entry(&target.host, &target.path, from, to),
-            Self::Delete(path) => files::delete_entry(&target.host, &target.path, path),
+            Self::CreateDirectory(path) => {
+                files::Access::new(&target.host, cancellation).create_directory(&target.path, path)
+            }
+            Self::Move { from, to } => {
+                files::Access::new(&target.host, cancellation).move_entry(&target.path, from, to)
+            }
+            Self::Delete(path) => {
+                files::Access::new(&target.host, cancellation).delete_entry(&target.path, path)
+            }
         }
     }
 }
@@ -94,8 +104,8 @@ impl Files {
         });
         self._operation = Some(cx.spawn_in(window, async move |this, cx| {
             let (background_operation, background_target) = (operation.clone(), target.clone());
-            let result = cx.background_executor().spawn(async move {
-                background_operation.run(&background_target).map_err(|e| e.to_string())
+            let result = crate::state::file_io::run(cx.background_executor().clone(), move |cancellation| {
+                background_operation.run(&background_target, cancellation).map_err(|e| e.to_string())
             }).await;
             let mut warning = None;
             if result.is_ok() && let FileOperation::Move { from, to } = &operation {

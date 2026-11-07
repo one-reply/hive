@@ -6,7 +6,7 @@ use crate::host::Host;
 use crate::identity::{self, ProjectIdentity};
 use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod lenient;
 mod persistence;
@@ -15,6 +15,7 @@ pub use persistence::{LoadedState, Recovery, RecoveryCause, SCHEMA_VERSION, Stat
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct ProjectRef {
+    #[serde(with = "crate::path_encoding::persisted")]
     pub path: PathBuf,
     #[serde(default)]
     pub host: Host,
@@ -104,6 +105,27 @@ impl State {
         true
     }
 
+    /// Remove only this host's project and its workspace, leaving other hosts untouched.
+    pub fn remove_project(&mut self, host: &Host, path: &Path) -> bool {
+        let before = self.projects.len();
+        self.projects.retain(|p| p.host != *host || p.path != path);
+        if self.projects.len() == before {
+            return false;
+        }
+        self.workspace
+            .projects
+            .retain(|p| p.host != *host || p.project != path);
+        if self
+            .workspace
+            .selection
+            .as_ref()
+            .is_some_and(|s| s.host == *host && s.project == path)
+        {
+            self.workspace.selection = None;
+        }
+        true
+    }
+
     /// Moves `project` before another project, or to the end when `before` is `None`.
     /// Matches folders by path and host, preserves their colors, and returns whether order changed.
     /// Missing folders and drops that leave the order unchanged are ignored.
@@ -170,6 +192,66 @@ pub fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equal_paths_on_three_hosts_keep_independent_state_and_layouts() {
+        use super::workspace::{ProjectWorkspace, Selection};
+        let hosts = [
+            Host::Local,
+            Host::Ssh {
+                target: "home".into(),
+            },
+            Host::Ssh {
+                target: "other".into(),
+            },
+        ];
+        let mut state = State::default();
+        for host in &hosts {
+            assert!(state.add_project(ProjectRef::new("/project".into(), host.clone())));
+            assert!(!state.add_project(ProjectRef::new("/project".into(), host.clone())));
+            state.workspace.projects.push(ProjectWorkspace {
+                host: host.clone(),
+                project: "/project".into(),
+                worktree: None,
+                focused: 0,
+                layout: None,
+            });
+        }
+        state.workspace.selection = Some(Selection {
+            host: hosts[2].clone(),
+            project: "/project".into(),
+            worktree: None,
+        });
+        assert!(state.remove_project(&hosts[1], Path::new("/project")));
+        assert_eq!(state.projects.len(), 2);
+        assert_eq!(state.workspace.projects.len(), 2);
+        assert_eq!(state.workspace.selection.as_ref().unwrap().host, hosts[2]);
+        assert!(state.remove_project(&hosts[2], Path::new("/project")));
+        assert!(state.workspace.selection.is_none());
+        assert_eq!(state.projects[0].host, Host::Local);
+    }
+
+    #[test]
+    fn old_selection_defaults_to_local_and_byte_paths_roundtrip() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        let old: workspace::Selection =
+            serde_json::from_str(r#"{"project":"/project","future":true}"#).unwrap();
+        assert_eq!(old.host, Host::Local);
+        let mut state = State::default();
+        let path = PathBuf::from(OsString::from_vec(b"/project-\xff".to_vec()));
+        let host = Host::Ssh {
+            target: "home".into(),
+        };
+        state.add_project(ProjectRef::new(path.clone(), host.clone()));
+        state.workspace.selection = Some(workspace::Selection {
+            host,
+            project: path.clone(),
+            worktree: Some(path),
+        });
+        let loaded: State = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(loaded.projects, state.projects);
+        assert_eq!(loaded.workspace.selection, state.workspace.selection);
+    }
 
     #[test]
     fn release_highlights_are_presented_once_per_installed_version() {

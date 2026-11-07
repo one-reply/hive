@@ -6,6 +6,15 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = ["desktop"]
+desktop = ["dep:alacritty_terminal", "dep:rustix-openpty", "dep:polling", "dep:ureq", "dep:async-channel", "dep:security-framework"]
+remote-helper = []
+
+[[bin]]
+name = "hive-remote"
+required-features = ["remote-helper"]
+
 # No GPUI here, ever. This crate is the domain + CLI/HTTP adapters and doubles as the
 # wire/proto types for a future backend.
 
@@ -13,17 +22,17 @@ publish.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 shlex.workspace = true
-ureq.workspace = true
+ureq = { workspace = true, optional = true }
 base64.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
-alacritty_terminal.workspace = true
-rustix-openpty.workspace = true
+alacritty_terminal = { workspace = true, optional = true }
+rustix-openpty = { workspace = true, optional = true }
 libc.workspace = true
 image.workspace = true
 resvg.workspace = true
-async-channel.workspace = true
-polling.workspace = true
+async-channel = { workspace = true, optional = true }
+polling = { workspace = true, optional = true }
 rustix.workspace = true
 tracing.workspace = true
 tree-sitter.workspace = true
@@ -31,7 +40,7 @@ tree-sitter-javascript.workspace = true
 tree-sitter-typescript.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework.workspace = true
+security-framework = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

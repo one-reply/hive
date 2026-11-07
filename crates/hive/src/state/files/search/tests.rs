@@ -159,6 +159,7 @@ fn result_metadata_keeps_nonmatching_siblings_and_marks_symlinks_unsupported() {
         true,
         Some(index(&["src/main.rs"])),
         Arc::default(),
+        &hive_core::command::Cancellation::default(),
     )
     .unwrap();
     let siblings = &loaded.entries[Path::new("src")];
@@ -171,6 +172,7 @@ fn result_metadata_keeps_nonmatching_siblings_and_marks_symlinks_unsupported() {
             .unsupported
     );
     assert!(files::name_taken(
+        &Host::Local,
         siblings.iter().map(|entry| entry.path.as_path()),
         "OTHER.rs",
         None
@@ -187,6 +189,7 @@ fn missing_directory_returns_partial_results_and_an_error() {
         true,
         Some(index(&["good/main.rs", "gone/main.rs"])),
         Arc::default(),
+        &hive_core::command::Cancellation::default(),
     )
     .unwrap();
     assert!(loaded.entries.contains_key(Path::new("good")));
@@ -200,24 +203,58 @@ fn missing_directory_returns_partial_results_and_an_error() {
         path: fixture.0.path.join("absent"),
         ..fixture.0.clone()
     };
-    assert!(load(&missing_root, "main", true, None, Arc::default()).is_err());
+    assert!(
+        load(
+            &missing_root,
+            "main",
+            true,
+            None,
+            Arc::default(),
+            &hive_core::command::Cancellation::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn refreshed_index_follows_rename_and_delete() {
     let fixture = Fixture::new();
     fixture.write("src/old.rs");
-    let first = load(&fixture.0, ".rs", true, None, Arc::default()).unwrap();
+    let first = load(
+        &fixture.0,
+        ".rs",
+        true,
+        None,
+        Arc::default(),
+        &hive_core::command::Cancellation::default(),
+    )
+    .unwrap();
     assert!(first.index.paths.contains(&"src/old.rs".into()));
     fs::rename(
         fixture.0.path.join("src/old.rs"),
         fixture.0.path.join("src/new.rs"),
     )
     .unwrap();
-    let renamed = load(&fixture.0, ".rs", true, None, Arc::default()).unwrap();
+    let renamed = load(
+        &fixture.0,
+        ".rs",
+        true,
+        None,
+        Arc::default(),
+        &hive_core::command::Cancellation::default(),
+    )
+    .unwrap();
     assert_eq!(renamed.index.paths, [PathBuf::from("src/new.rs")]);
     fs::remove_file(fixture.0.path.join("src/new.rs")).unwrap();
-    let deleted = load(&fixture.0, ".rs", true, None, Arc::default()).unwrap();
+    let deleted = load(
+        &fixture.0,
+        ".rs",
+        true,
+        None,
+        Arc::default(),
+        &hive_core::command::Cancellation::default(),
+    )
+    .unwrap();
     assert!(deleted.index.paths.is_empty());
 }
 
@@ -233,6 +270,7 @@ fn cached_queries_share_listings_and_new_directories_leave_the_old_snapshot_unch
         true,
         Some(paths.clone()),
         Arc::default(),
+        &hive_core::command::Cancellation::default(),
     )
     .unwrap();
     let cached = first.entries;
@@ -242,6 +280,7 @@ fn cached_queries_share_listings_and_new_directories_leave_the_old_snapshot_unch
         true,
         Some(paths.clone()),
         cached.clone(),
+        &hive_core::command::Cancellation::default(),
     )
     .unwrap();
     assert!(Arc::ptr_eq(&cached, &repeated.entries));
@@ -251,10 +290,19 @@ fn cached_queries_share_listings_and_new_directories_leave_the_old_snapshot_unch
         true,
         Some(paths.clone()),
         cached.clone(),
+        &hive_core::command::Cancellation::default(),
     )
     .unwrap();
     assert!(Arc::ptr_eq(&cached, &empty.entries));
-    let extended = load(&fixture.0, "guide", true, Some(paths), cached.clone()).unwrap();
+    let extended = load(
+        &fixture.0,
+        "guide",
+        true,
+        Some(paths),
+        cached.clone(),
+        &hive_core::command::Cancellation::default(),
+    )
+    .unwrap();
     assert!(!Arc::ptr_eq(&cached, &extended.entries));
     assert!(!cached.contains_key(Path::new("docs")));
     assert!(extended.entries.contains_key(Path::new("docs")));
@@ -272,10 +320,19 @@ fn directory_read_failure_keeps_the_cached_snapshot_shared() {
         true,
         Some(paths.clone()),
         Arc::default(),
+        &hive_core::command::Cancellation::default(),
     )
     .unwrap();
     let cached = first.entries;
-    let failed = load(&fixture.0, "gone", true, Some(paths), cached.clone()).unwrap();
+    let failed = load(
+        &fixture.0,
+        "gone",
+        true,
+        Some(paths),
+        cached.clone(),
+        &hive_core::command::Cancellation::default(),
+    )
+    .unwrap();
     assert!(failed.error.is_some());
     assert!(Arc::ptr_eq(&cached, &failed.entries));
     assert!(!failed.entries.contains_key(Path::new("gone")));
@@ -287,7 +344,15 @@ fn large_directory_search_keeps_all_matching_rows() {
     for number in 0..2000 {
         fixture.write(&format!("large/file-{number:04}.txt"));
     }
-    let loaded = load(&fixture.0, "file-1", true, None, Arc::default()).unwrap();
+    let loaded = load(
+        &fixture.0,
+        "file-1",
+        true,
+        None,
+        Arc::default(),
+        &hive_core::command::Cancellation::default(),
+    )
+    .unwrap();
     assert_eq!(loaded.index.paths.len(), 2000);
     let mut tree = tree::build(&Source {
         entries: &loaded.entries,
@@ -318,6 +383,7 @@ fn search_expansion_does_not_change_the_ordinary_tree() {
         true,
         Some(index(&["src/deep/main.rs"])),
         Arc::default(),
+        &hive_core::command::Cancellation::default(),
     )
     .unwrap();
     let expanded = HashSet::from([PathBuf::from("src")]);

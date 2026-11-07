@@ -135,7 +135,7 @@ impl FilesPanel {
         let visible: Vec<_> = (0..)
             .map_while(|ix| tree.entry(ix))
             .filter(|entry| !entry.is_folder() && !entry.is_disabled())
-            .map(|entry| PathBuf::from(entry.item().id.as_ref()))
+            .map(|entry| tree::path(entry.item().id.as_ref()))
             .collect();
         // Read each sibling list once, rather than scanning it for every visible file.
         let directories: BTreeSet<_> = visible.iter().filter_map(|path| path.parent()).collect();
@@ -156,7 +156,7 @@ impl FilesPanel {
         let visible = self.selectable_paths(tree, cx);
         let cursor = tree
             .selected_item()
-            .map(|item| PathBuf::from(item.id.as_ref()));
+            .map(|item| tree::path(item.id.as_ref()));
         let target = self.files.read(cx).target.clone();
         self.selection.sync(target.as_ref(), &visible, cursor)
     }
@@ -171,11 +171,7 @@ impl FilesPanel {
         let tree = self.tree.clone();
         let visible = self.selectable_paths(tree.read(cx), cx);
         self.selection.click(path, gesture, &visible);
-        let id: Option<SharedString> = self
-            .selection
-            .cursor
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned().into());
+        let id: Option<SharedString> = self.selection.cursor.as_ref().map(|path| tree::key(path));
         tree.update(cx, |tree, cx| {
             tree.set_selected_index(id.and_then(|id| tree.index_of(&id)), cx);
             tree.focus(window, cx);

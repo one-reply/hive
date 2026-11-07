@@ -12,9 +12,10 @@ const INDEX_LIMIT: usize = 100_000;
 const COMMAND_LIMIT: usize = 32 * 1024 * 1024;
 
 /// One directory entry. Symlinks are listed but never followed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
     /// Worktree-relative path.
+    #[serde(with = "crate::path_encoding")]
     pub path: PathBuf,
     /// Whether this is a traversable directory.
     pub directory: bool,
@@ -23,9 +24,10 @@ pub struct Entry {
 }
 
 /// A bounded file list for Quick Open.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct FileIndex {
     /// Worktree-relative paths, sorted by name.
+    #[serde(with = "crate::path_encoding::many")]
     pub paths: Vec<PathBuf>,
     /// Whether more files exist beyond the index limit.
     pub truncated: bool,
@@ -33,6 +35,14 @@ pub struct FileIndex {
 
 /// Read one directory, excluding Git internals and Hive's in-flight atomic writes.
 pub fn list_directory(host: &Host, root: &Path, relative: &Path) -> Result<Vec<Entry>, FileError> {
+    if !host.is_local() {
+        return crate::remote::list_directory(
+            host,
+            root,
+            relative,
+            &crate::command::Cancellation::default(),
+        );
+    }
     let path = resolve(host, root, relative)?;
     let mut entries = Vec::new();
     for entry in fs::read_dir(&path).map_err(|e| io_error("list directory", &path, e))? {
@@ -60,6 +70,9 @@ pub fn list_directory(host: &Host, root: &Path, relative: &Path) -> Result<Vec<E
 
 /// Index tracked and non-ignored untracked files, or walk a non-Git directory.
 pub fn list_files(host: &Host, root: &Path) -> Result<FileIndex, FileError> {
+    if !host.is_local() {
+        return crate::remote::list_files(host, root, &crate::command::Cancellation::default());
+    }
     resolve(host, root, Path::new(""))?;
     let cancellation = command::Cancellation::default();
     let probe = command::run(

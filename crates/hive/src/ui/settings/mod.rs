@@ -10,6 +10,7 @@ mod shortcuts;
 mod terminal;
 mod updates;
 
+use hive_core::host::Host;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
@@ -56,8 +57,8 @@ pub fn open(cx: &mut App) {
 }
 
 /// Opens the settings window on the page of the project at `path`.
-pub fn open_project(path: &Path, cx: &mut App) {
-    open_at(Some(path.to_path_buf()), None, cx);
+pub fn open_project(host: &Host, path: &Path, cx: &mut App) {
+    open_at(Some((host.clone(), path.to_path_buf())), None, cx);
 }
 
 pub(crate) fn open_git(cx: &mut App) {
@@ -72,7 +73,7 @@ pub(crate) fn open_updates(cx: &mut App) {
     open_at(None, Some(Page::Updates), cx);
 }
 
-fn open_at(project: Option<PathBuf>, page: Option<Page>, cx: &mut App) {
+fn open_at(project: Option<(Host, PathBuf)>, page: Option<Page>, cx: &mut App) {
     if let Some(root) = settings_window(cx) {
         let shown = root.update(cx, |root, window, cx| {
             window.activate_window();
@@ -254,19 +255,22 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn show_project(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_project(&mut self, path: (Host, PathBuf), window: &mut Window, cx: &mut Context<Self>) {
         if self.shown_project(cx).is_some_and(|shown| shown == path) {
             return;
         }
         self.git.update(cx, |git, cx| git.save(cx));
         self.ai.update(cx, |ai, cx| ai.clear(window, cx));
-        self.view = View::Project(cx.new(|cx| ProjectPage::new(path, window, cx)));
+        self.view = View::Project(cx.new(|cx| ProjectPage::new(path.0, path.1, window, cx)));
         cx.notify();
     }
 
-    fn shown_project(&self, cx: &App) -> Option<PathBuf> {
+    fn shown_project(&self, cx: &App) -> Option<(Host, PathBuf)> {
         match &self.view {
-            View::Project(page) => Some(page.read(cx).path().to_path_buf()),
+            View::Project(page) => Some((
+                page.read(cx).host.clone(),
+                page.read(cx).path().to_path_buf(),
+            )),
             View::Page(_) => None,
         }
     }
@@ -281,7 +285,7 @@ impl SettingsWindow {
             .state
             .projects
             .iter()
-            .any(|project| project.path == path)
+            .any(|project| project.host == path.0 && project.path == path.1)
         {
             self.view = View::Page(Page::Appearance);
         }
@@ -373,7 +377,9 @@ impl SettingsWindow {
             .iter()
             .enumerate()
             .map(|(ix, project)| {
-                let selected = shown.as_deref() == Some(project.path.as_path());
+                let selected = shown
+                    .as_ref()
+                    .is_some_and(|(host, path)| *host == project.host && *path == project.path);
                 let badge = project_badge::render(
                     &project.identity,
                     &project.name,
@@ -382,7 +388,7 @@ impl SettingsWindow {
                 );
                 (
                     ix,
-                    project.path.clone(),
+                    (project.host.clone(), project.path.clone()),
                     project.name.clone(),
                     badge,
                     selected,
@@ -437,7 +443,7 @@ impl SettingsWindow {
                 let name = AppState::get(cx)
                     .projects
                     .read(cx)
-                    .project(path)
+                    .project(&project.read(cx).host, path)
                     .map(|project| project.name.clone())
                     .unwrap_or_default();
                 let path = path.display().to_string();

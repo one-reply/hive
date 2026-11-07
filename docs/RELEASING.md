@@ -11,6 +11,8 @@ or claim minimum macOS support solely from the binary's deployment target.
 
 Use an ARM64 Mac, rustup, Xcode 26 or newer selected with `xcode-select`, Python 3,
 and Git. The Rust toolchain and release-tool versions are pinned in the repository.
+Prepare the [Linux helpers](#linux-helpers) for this exact source revision before
+bundling a release.
 
 ```sh
 python3 scripts/install-release-tools.py target/release-tools
@@ -28,6 +30,27 @@ Also check that `cargo tree --locked -p hive-core | grep -i gpui` produces no ma
 The packager validates icons, arm64 architecture, bundle metadata, included notices,
 the code signature, ZIP integrity, and checksum. Artifacts are written to
 `target/release/bundle/` (or the configured Cargo target directory).
+
+### Linux helpers
+
+CI builds and tests `hive-core` without desktop features on native x86_64 and arm64
+Linux runners, then builds static musl `hive-remote` binaries. Download the
+`hive-remote-x86_64` and `hive-remote-aarch64` artifacts from the same successful
+CI run into `target/remote-builds/`, and package them on the Mac:
+
+```sh
+gh run download RUN_ID --name hive-remote-x86_64 --dir target/remote-builds/hive-remote-x86_64
+gh run download RUN_ID --name hive-remote-aarch64 --dir target/remote-builds/hive-remote-aarch64
+python3 scripts/package-remote.py \
+  --x86_64 target/remote-builds/hive-remote-x86_64/hive-remote \
+  --aarch64 target/remote-builds/hive-remote-aarch64/hive-remote
+```
+
+For native Linux builds, install `musl-tools` and the matching Rust musl target,
+then run the commands in the `Linux helper` CI job. The packager checks each ELF's
+architecture and absence of a dynamic loader, and writes a versioned SHA-256
+manifest to `target/remote/`. The Mac bundle includes both helpers and this manifest
+inside its signed resources. Never reuse binaries from another source revision.
 
 ## Developer ID and notarization
 

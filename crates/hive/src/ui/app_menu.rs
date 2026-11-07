@@ -5,7 +5,6 @@ use gpui_kit::component::input;
 use gpui_kit::*;
 
 use crate::app::AppState;
-use crate::state::store::Store;
 use crate::terminal::panel::{ClosePane, SplitDown, SplitRight};
 use crate::ui::settings::OpenSettings;
 use crate::ui::workspace::{NewTerminal, ToggleGitPanel, ToggleSidebar};
@@ -37,7 +36,9 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(|_: &AddProject, cx| {
-        Store::prompt_add_projects(AppState::get(cx).store.clone(), cx)
+        if let Some(handle) = cx.active_window() {
+            let _ = handle.update(cx, |_, window, cx| crate::ui::add_project::open(window, cx));
+        }
     });
     cx.on_action(|_: &ShowLogs, cx| cx.reveal_path(&hive_core::state::hive_dir().join("logs")));
     cx.on_action(|_: &ShowDataFolder, cx| cx.reveal_path(&hive_core::state::hive_dir()));

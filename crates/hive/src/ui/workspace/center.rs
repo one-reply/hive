@@ -113,9 +113,7 @@ impl Workspace {
                             .cursor_pointer()
                             .icon(IconName::FolderOpen)
                             .label("Add project")
-                            .on_click(|_, _, cx| {
-                                Store::prompt_add_projects(AppState::get(cx).store.clone(), cx)
-                            })
+                            .on_click(|_, window, cx| crate::ui::add_project::open(window, cx))
                             .smooth_hover(ButtonLook::Outline, &add_hover, cx),
                     )
                     .when(has_selection, |el| {

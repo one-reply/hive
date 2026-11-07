@@ -183,8 +183,8 @@ impl DestinationPicker {
             }),
             cx.subscribe(&tree, |this, _, event, cx| {
                 let (path, expanded) = match event {
-                    TreeEvent::Expanded(path) => (PathBuf::from(path.as_ref()), true),
-                    TreeEvent::Collapsed(path) => (PathBuf::from(path.as_ref()), false),
+                    TreeEvent::Expanded(path) => (tree::path(path.as_ref()), true),
+                    TreeEvent::Collapsed(path) => (tree::path(path.as_ref()), false),
                 };
                 this.destinations
                     .update(cx, |files, cx| files.set_expanded(path, expanded, cx));
@@ -236,7 +236,7 @@ impl DestinationPicker {
             .read(cx)
             .selected_entry()
             .filter(|e| !e.is_disabled())
-            .map(|e| PathBuf::from(e.item().id.as_ref()))
+            .map(|e| tree::path(e.item().id.as_ref()))
             .unwrap_or_default()
     }
 }

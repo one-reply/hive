@@ -3,8 +3,12 @@
 pub mod environment;
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::process::Command;
+use std::{
+    ffi::{OsStr, OsString},
+    os::unix::ffi::{OsStrExt, OsStringExt},
+    path::Path,
+};
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Debug, Default)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -33,19 +37,18 @@ impl Host {
                 cmd
             }
             Host::Ssh { target } => {
-                let mut script = String::new();
+                let mut script = OsString::new();
                 if let Some(dir) = cwd {
-                    script.push_str(&format!("cd {} && ", quote(&dir.to_string_lossy())));
+                    script.push("cd ");
+                    script.push(quote_path(dir));
+                    script.push(" && ");
                 }
-                script.push_str(&quote(program));
+                script.push(quote(program));
                 for arg in args {
-                    script.push(' ');
-                    script.push_str(&quote(arg));
+                    script.push(" ");
+                    script.push(quote(arg));
                 }
-                let mut cmd = Command::new("ssh");
-                // `--` keeps a target that starts with `-` from being read as an ssh option.
-                cmd.args(["-o", "BatchMode=yes", "--", target, &script]);
-                cmd
+                ssh(target, false, &script)
             }
         }
     }
@@ -53,6 +56,107 @@ impl Host {
     pub fn is_local(&self) -> bool {
         matches!(self, Host::Local)
     }
+
+    /// Reject command fragments: SSH destinations are one alias or user@host, never flags.
+    pub fn validate(&self) -> std::io::Result<()> {
+        if let Self::Ssh { target } = self
+            && (target.is_empty()
+                || target.starts_with('-')
+                || target.chars().any(|c| c.is_whitespace() || c.is_control()))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Enter one SSH alias or user@host, without options",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Open a remote login shell, or a CLI in that shell's environment, with a real PTY.
+    pub fn terminal_command(
+        &self,
+        cwd: &Path,
+        program: Option<(&str, &[&str])>,
+    ) -> std::io::Result<Command> {
+        self.validate()?;
+        let Self::Ssh { target } = self else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "SSH terminal requires a remote host",
+            ));
+        };
+        let action = match program {
+            Some((program, args)) => {
+                let mut action = format!("exec {}", quote(program));
+                for arg in args {
+                    action.push(' ');
+                    action.push_str(&quote(arg));
+                }
+                format!("exec \"${{SHELL:-/bin/sh}}\" -lc {}", quote(&action))
+            }
+            None => "exec \"${SHELL:-/bin/sh}\" -l".into(),
+        };
+        let mut script = OsString::from("cd ");
+        script.push(quote_path(cwd));
+        script.push(format!(" && {action}"));
+        Ok(ssh(target, true, &script))
+    }
+
+    /// Check a remote CLI in the login environment without starting the agent.
+    pub fn check_executable(&self, program: &str) -> Result<(), String> {
+        let action = format!("command -v {} >/dev/null", quote(program));
+        let script = format!("exec \"${{SHELL:-/bin/sh}}\" -lc {}", quote(&action));
+        let output = crate::command::run(
+            self.command("sh", &["-c", &script], None),
+            &[],
+            &crate::command::Cancellation::default(),
+            std::time::Duration::from_secs(15),
+            65536,
+        )
+        .map_err(|e| e.to_string())?;
+        if output.code == Some(0) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{program} is unavailable on {self:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ))
+        }
+    }
+}
+
+fn ssh(target: &str, interactive: bool, script: &OsStr) -> Command {
+    let mut command = Command::new("/usr/bin/ssh");
+    command.args([
+        if interactive { "-tt" } else { "-T" },
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
+        "--",
+        target,
+    ]);
+    command.arg(script);
+    command
+}
+
+fn quote_path(path: &Path) -> OsString {
+    let mut bytes = vec![b'\''];
+    for &byte in path.as_os_str().as_bytes() {
+        if byte == b'\'' {
+            bytes.extend_from_slice(b"'\\''");
+        } else {
+            bytes.push(byte);
+        }
+    }
+    bytes.push(b'\'');
+    OsString::from_vec(bytes)
 }
 
 /// POSIX single-quote escaping.
@@ -69,6 +173,57 @@ pub(crate) fn quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_cwd_keeps_non_utf8_bytes_and_quotes_metacharacters() {
+        let host = Host::Ssh {
+            target: "home".into(),
+        };
+        let path =
+            std::path::PathBuf::from(OsString::from_vec(b"/tmp/\xff'$(touch nope)".to_vec()));
+        for cmd in [
+            host.command("pwd", &[], Some(&path)),
+            host.terminal_command(&path, None).unwrap(),
+        ] {
+            let script = cmd.get_args().last().unwrap().as_bytes();
+            assert!(script.starts_with(b"cd '/tmp/\xff'\\''$(touch nope)' && "));
+            assert!(!script.windows(3).any(|bytes| bytes == [0xef, 0xbf, 0xbd]));
+        }
+    }
+
+    #[test]
+    fn remote_terminal_uses_remote_cwd_and_never_local_current_dir() {
+        let host = Host::Ssh {
+            target: "home".into(),
+        };
+        let command = host
+            .terminal_command(
+                Path::new("/srv/my app's code"),
+                Some(("codex", &["--model", "a b"])),
+            )
+            .unwrap();
+        assert!(command.get_current_dir().is_none());
+        let args: Vec<_> = command.get_args().map(|a| a.to_string_lossy()).collect();
+        assert_eq!(args[0], "-tt");
+        assert!(
+            args.last()
+                .unwrap()
+                .starts_with("cd '/srv/my app'\\''s code' && exec")
+        );
+        assert!(args.last().unwrap().contains("${SHELL:-/bin/sh}"));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("StrictHostKeyChecking=no"))
+        );
+        assert!(
+            Host::Ssh {
+                target: "home -A".into()
+            }
+            .validate()
+            .is_err()
+        );
+    }
 
     #[test]
     fn local_command_runs_in_the_login_environment() {
@@ -99,8 +254,11 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(cmd.get_program(), "ssh");
-        assert_eq!(args[4], "cd '/my dir' && git log '--format=%s it'\\''s'");
+        assert_eq!(cmd.get_program(), "/usr/bin/ssh");
+        assert_eq!(
+            args.last().unwrap(),
+            "cd '/my dir' && git log '--format=%s it'\\''s'"
+        );
     }
 
     #[test]
@@ -113,7 +271,8 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(args[2], "--");
-        assert_eq!(args[3], "-oProxyCommand=touch /tmp/pwned");
+        assert_eq!(args[args.len() - 3], "--");
+        assert_eq!(args[args.len() - 2], "-oProxyCommand=touch /tmp/pwned");
+        assert!(host.validate().is_err());
     }
 }

@@ -31,7 +31,7 @@ impl Workspace {
                 GitEvent::Activate(target) => this.activate_target(target, cx),
                 GitEvent::Terminal(target) => {
                     this.activate_target(target, cx);
-                    this.center(&target.project, window, cx).show_terminal(
+                    this.center(&(target.host.clone(), target.project.clone()), window, cx).show_terminal(
                         &target.path,
                         window,
                         cx,
@@ -45,9 +45,9 @@ impl Workspace {
                         return;
                     }
                     this.activate_target(target, cx);
-                    this.center(&target.project, window, cx).prepare_agent_draft(&target.path, *agent, prompt.clone(), window, cx);
+                    this.center(&(target.host.clone(), target.project.clone()), window, cx).prepare_agent_draft(&target.path, *agent, prompt.clone(), window, cx);
                     this.sync_active_worktrees(cx);
-                    this.save_center(&target.project, window, cx);
+                    this.save_center(&(target.host.clone(), target.project.clone()), window, cx);
                     cx.notify();
                 }
             },
@@ -77,21 +77,20 @@ impl Workspace {
                     && !p.visible_worktrees().any(|(_, w)| w.path == target.path)
             });
         if hidden {
-            AppState::get(cx)
-                .store
-                .clone()
-                .update(cx, |s, cx| s.toggle_worktree_filter(&target.project, cx));
+            AppState::get(cx).store.clone().update(cx, |s, cx| {
+                s.toggle_worktree_filter(&target.host, &target.project, cx)
+            });
         }
         self.last_selection = Some(target.path.clone());
-        self.shown = Some(target.project.clone());
+        self.shown = Some((target.host.clone(), target.project.clone()));
         self.projects.update(cx, |p, cx| {
-            p.select(&target.project, Some(&target.path), cx)
+            p.select(&target.host, &target.project, Some(&target.path), cx)
         });
     }
 
     fn open_diff(&mut self, request: DiffRequest, window: &mut Window, cx: &mut Context<Self>) {
         self.activate_target(&request.target, cx);
-        let project = request.target.project.clone();
+        let project = (request.target.host.clone(), request.target.project.clone());
         self.center(&project, window, cx)
             .show_diff(request, window, cx);
         cx.notify();

@@ -21,3 +21,5 @@ pub(crate) mod text_field;
 pub mod theme;
 mod update_available;
 pub mod workspace;
+
+pub(crate) mod add_project;

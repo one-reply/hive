@@ -248,8 +248,14 @@ impl ProjectCenter {
                 Some(panel_handle(panel))
             }
             Tab::Terminal { panes, active } => {
-                let panel =
-                    TerminalPanel::restore(panes, *active, self.dock.downgrade(), window, cx)?;
+                let panel = TerminalPanel::restore(
+                    &self.host,
+                    panes,
+                    *active,
+                    self.dock.downgrade(),
+                    window,
+                    cx,
+                )?;
                 self.terminals.push(panel.clone());
                 Some(panel_handle(panel))
             }

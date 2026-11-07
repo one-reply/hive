@@ -3,6 +3,7 @@
 //! Every terminal that starts in a worktree is watched. Once per `POLL_INTERVAL` one process
 //! table snapshot (in the background) tells which terminals run an agent in the foreground;
 //! their output timing tells whether it is working. The sidebar observes this entity.
+use hive_core::host::Host;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,12 +41,12 @@ pub(crate) enum AgentsEvent {
     /// Show and focus the pane of this session.
     Reveal(EntityId),
     Attention(EntityId, AgentStatus),
-    Launch(PathBuf, Option<Launch>),
+    Launch(Host, PathBuf, Option<Launch>),
 }
 
 pub(crate) struct Agents {
     watched: Vec<Watched>,
-    by_worktree: HashMap<PathBuf, Vec<AgentSession>>,
+    by_worktree: HashMap<(Host, PathBuf), Vec<AgentSession>>,
     /// The last poll failure, logged once instead of on every tick.
     last_error: Option<String>,
     endpoint: Option<PathBuf>,
@@ -63,6 +64,8 @@ struct Watched {
 /// What the background poll needs to know about one terminal.
 #[derive(Clone)]
 struct Probe {
+    host: Host,
+    launched_agent: Option<AgentKind>,
     worktree: PathBuf,
     shell_pid: u32,
     activity: Activity,
@@ -70,6 +73,7 @@ struct Probe {
 
 /// A terminal's agent as seen by the poll, before titles are attached on the UI thread.
 struct Sighting {
+    host: Host,
     id: EntityId,
     worktree: PathBuf,
     kind: AgentKind,
@@ -149,6 +153,8 @@ impl Agents {
     pub(crate) fn watch(
         &mut self,
         session: &Entity<TerminalSession>,
+        host: &Host,
+        launched_agent: Option<AgentKind>,
         worktree: &Path,
         terminal: &Terminal,
     ) {
@@ -160,6 +166,8 @@ impl Agents {
             session: session.downgrade(),
             id: session.entity_id(),
             probe: Probe {
+                host: host.clone(),
+                launched_agent,
                 worktree: worktree.to_path_buf(),
                 shell_pid: terminal.shell_pid(),
                 activity: terminal.activity(),
@@ -168,17 +176,20 @@ impl Agents {
     }
 
     /// Agents in terminals opened in `worktree`, in the order the terminals were opened.
-    pub(crate) fn sessions(&self, worktree: &Path) -> &[AgentSession] {
-        self.by_worktree.get(worktree).map_or(&[], Vec::as_slice)
+    pub(crate) fn sessions(&self, host: &Host, worktree: &Path) -> &[AgentSession] {
+        self.by_worktree
+            .get(&(host.clone(), worktree.to_path_buf()))
+            .map_or(&[], Vec::as_slice)
     }
 
     pub(crate) fn preferred_session(
         &self,
+        host: &Host,
         worktree: &Path,
         kind: AgentKind,
         cx: &App,
     ) -> Option<Entity<TerminalSession>> {
-        self.sessions(worktree)
+        self.sessions(host, worktree)
             .iter()
             .enumerate()
             .filter(|(_, session)| session.kind == kind)
@@ -217,18 +228,19 @@ impl Agents {
 
     pub(crate) fn start(
         &mut self,
+        host: Host,
         worktree: PathBuf,
         launch: Option<Launch>,
         cx: &mut Context<Self>,
     ) {
-        cx.emit(AgentsEvent::Launch(worktree, launch));
+        cx.emit(AgentsEvent::Launch(host, worktree, launch));
     }
 
     pub(crate) fn endpoint(&self) -> Option<PathBuf> {
         self.endpoint.clone()
     }
 
-    pub(crate) fn all(&self) -> impl Iterator<Item = (&PathBuf, &AgentSession)> {
+    pub(crate) fn all(&self) -> impl Iterator<Item = (&(Host, PathBuf), &AgentSession)> {
         self.by_worktree
             .iter()
             .flat_map(|(path, sessions)| sessions.iter().map(move |session| (path, session)))
@@ -296,7 +308,7 @@ impl Agents {
             .map(|sighting| (sighting.id, (sighting.kind, sighting.conversation.clone())))
             .collect();
         self.track_conversations(&seen, cx);
-        let mut by_worktree: HashMap<PathBuf, Vec<AgentSession>> = HashMap::new();
+        let mut by_worktree: HashMap<(Host, PathBuf), Vec<AgentSession>> = HashMap::new();
         for sighting in sightings {
             let title = self
                 .watched
@@ -310,7 +322,7 @@ impl Agents {
                 .and_then(|w| w.reported)
                 .filter(|_| sighting.kind == AgentKind::ClaudeCode);
             by_worktree
-                .entry(sighting.worktree)
+                .entry((sighting.host, sighting.worktree))
                 .or_default()
                 .push(AgentSession {
                     session: sighting.id,
@@ -330,19 +342,36 @@ impl Agents {
 
 /// Blocking: one process table snapshot resolves every terminal.
 fn look(probes: &[(EntityId, Probe)]) -> Result<Vec<Sighting>, String> {
-    let table = ProcessTable::snapshot().map_err(|error| error.to_string())?;
+    let table = probes
+        .iter()
+        .any(|(_, probe)| probe.host.is_local())
+        .then(ProcessTable::snapshot)
+        .transpose()
+        .map_err(|error| error.to_string())?;
     let now = Instant::now();
     let mut sightings: Vec<Sighting> = probes
         .iter()
         .filter_map(|(id, probe)| {
-            let kind = table.foreground_agent(probe.shell_pid)?;
-            let conversation =
-                conversation::discover(kind, &table.foreground_pids(probe.shell_pid));
+            let kind = if probe.host.is_local() {
+                table.as_ref()?.foreground_agent(probe.shell_pid)?
+            } else {
+                probe.launched_agent?
+            };
+            let conversation = if probe.host.is_local() {
+                conversation::discover(kind, &table.as_ref()?.foreground_pids(probe.shell_pid))
+            } else {
+                None
+            };
             Some(Sighting {
+                host: probe.host.clone(),
                 id: *id,
                 worktree: probe.worktree.clone(),
                 kind,
-                status: AgentStatus::of(&probe.activity, now),
+                status: if probe.host.is_local() {
+                    AgentStatus::of(&probe.activity, now)
+                } else {
+                    AgentStatus::Idle
+                },
                 conversation,
             })
         })

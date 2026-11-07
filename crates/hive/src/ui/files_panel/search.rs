@@ -35,13 +35,7 @@ pub(super) fn input(
 
 impl FilesPanel {
     pub(crate) fn focus_search(&self, window: &mut Window, cx: &mut App) {
-        if !self
-            .files
-            .read(cx)
-            .target
-            .as_ref()
-            .is_some_and(|target| target.host == hive_core::host::Host::Local)
-        {
+        if !self.files.read(cx).target.as_ref().is_some() {
             return;
         }
         self.search_input.update(cx, |input, cx| {

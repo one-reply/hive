@@ -84,8 +84,8 @@ impl FilesPanel {
             }),
             cx.subscribe(&tree, |this, _, event, cx| {
                 let (path, expanded) = match event {
-                    TreeEvent::Expanded(path) => (PathBuf::from(path.as_ref()), true),
-                    TreeEvent::Collapsed(path) => (PathBuf::from(path.as_ref()), false),
+                    TreeEvent::Expanded(path) => (tree::path(path.as_ref()), true),
+                    TreeEvent::Collapsed(path) => (tree::path(path.as_ref()), false),
                 };
                 this.files
                     .update(cx, |files, cx| files.set_expanded(path, expanded, cx));
@@ -196,7 +196,7 @@ impl FilesPanel {
             let Some(path) = reveal else {
                 return false;
             };
-            let id: SharedString = path.to_string_lossy().into_owned().into();
+            let id: SharedString = tree::key(&path);
             match tree.index_of(&id) {
                 Some(ix) => {
                     tree.set_selected_index(Some(ix), cx);
@@ -227,7 +227,7 @@ impl FilesPanel {
             .read(cx)
             .selected_entry()
             .filter(|e| !e.is_disabled())
-            .map(|e| PathBuf::from(e.item().id.as_ref()))
+            .map(|e| tree::path(e.item().id.as_ref()))
     }
 
     fn selected_is_folder(&self, cx: &App) -> bool {
@@ -270,9 +270,8 @@ impl Render for FilesPanel {
             .search_error()
             .map(str::to_owned)
             .or_else(|| state.error.clone());
-        let available = target
-            .as_ref()
-            .is_some_and(|t| t.host == hive_core::host::Host::Local);
+        let available = target.is_some();
+        let local = target.as_ref().is_some_and(|target| target.host.is_local());
         let loading = state.loading && (self.manual_refresh || tree.read(cx).entry(0).is_none());
         let busy = state.busy;
         let empty = !state.loading && !search_loading && tree.read(cx).entry(0).is_none();
@@ -436,15 +435,17 @@ impl Render for FilesPanel {
                                             }
                                         }),
                                 )
-                                .item(
-                                    PopupMenuItem::new("Reveal Worktree in Finder")
-                                        .disabled(root.is_none())
-                                        .on_click(move |_, _, cx| {
-                                            if let Some(root) = &root {
-                                                cx.reveal_path(root);
-                                            }
-                                        }),
-                                )
+                                .when(local, |menu| {
+                                    menu.item(
+                                        PopupMenuItem::new("Reveal Worktree in Finder")
+                                            .disabled(root.is_none())
+                                            .on_click(move |_, _, cx| {
+                                                if let Some(root) = &root {
+                                                    cx.reveal_path(root);
+                                                }
+                                            }),
+                                    )
+                                })
                                 .item(
                                     PopupMenuItem::new("Files Settings…")
                                         .on_click(|_, _, cx| crate::ui::settings::open_files(cx)),
@@ -522,7 +523,7 @@ impl Render for FilesPanel {
                         actions::menu(
                             menu,
                             context_panel.clone(),
-                            PathBuf::from(entry.item().id.as_ref()),
+                            tree::path(entry.item().id.as_ref()),
                             entry.is_disabled(),
                             cx,
                         )

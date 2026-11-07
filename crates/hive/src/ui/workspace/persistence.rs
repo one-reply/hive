@@ -3,8 +3,12 @@ use super::*;
 use hive_core::state::workspace::ProjectWorkspace;
 
 impl Workspace {
-    pub(super) fn saved_center(&self, project: &Path, cx: &App) -> Option<ProjectWorkspace> {
-        let host = &self.projects.read(cx).project(project)?.host;
+    pub(super) fn saved_center(
+        &self,
+        project: &(Host, PathBuf),
+        cx: &App,
+    ) -> Option<ProjectWorkspace> {
+        let host = &project.0;
         AppState::get(cx)
             .store
             .read(cx)
@@ -12,30 +16,27 @@ impl Workspace {
             .workspace
             .projects
             .iter()
-            .find(|saved| saved.project == project && &saved.host == host)
+            .find(|saved| saved.project == project.1 && &saved.host == host)
             .cloned()
     }
 
-    pub(super) fn save_center(&mut self, project: &Path, window: &Window, cx: &mut Context<Self>) {
-        let Some(host) = self
-            .projects
-            .read(cx)
-            .project(project)
-            .map(|p| p.host.clone())
-        else {
-            return;
-        };
+    pub(super) fn save_center(
+        &mut self,
+        project: &(Host, PathBuf),
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut saved = self
             .saved_center(project, cx)
             .unwrap_or_else(|| ProjectWorkspace {
-                project: project.to_owned(),
-                host,
+                project: project.1.clone(),
+                host: project.0.clone(),
                 worktree: None,
                 focused: 0,
                 layout: None,
             });
         if let Some((selected, cwd)) = self.selected_target(cx)
-            && selected == project
+            && &selected == project
         {
             saved.worktree = Some(cwd);
         }

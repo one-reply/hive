@@ -97,6 +97,14 @@ impl Decoded {
 
 /// Read a local regular image without bypassing the editor's worktree/path checks.
 pub fn read(host: &Host, root: &Path, relative: &Path) -> Result<Vec<u8>, FileError> {
+    if !host.is_local() {
+        return crate::remote::image(
+            host,
+            root,
+            relative,
+            &crate::command::Cancellation::default(),
+        );
+    }
     let path = resolve(host, root, relative)?;
     read_bytes(
         &path,

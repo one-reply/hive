@@ -316,7 +316,7 @@ impl FilesPanel {
         let parent = edit.parent();
         let path = hive_core::files::entry_path(parent, name).map_err(|e| e.to_string())?;
         let listed = self.files.read(cx).listed(parent);
-        if hive_core::files::name_taken(listed, name, edit.renaming()) {
+        if hive_core::files::name_taken(&edit.target.host, listed, name, edit.renaming()) {
             return Err(format!(
                 "A file or folder named {name} already exists in {}",
                 display_parent(parent)

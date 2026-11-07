@@ -5,7 +5,7 @@ use crate::git::{self, GitError};
 use crate::projects::{Head, Project, Worktree};
 use std::collections::HashSet;
 use std::hash::{BuildHasher as _, RandomState};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Pool for generated worktree names: plants bees forage on.
 const NAMES: &[&str] = &[
@@ -88,6 +88,17 @@ pub fn create(project: &Project, name: Option<&str>) -> Result<Worktree, Worktre
     create_from(project, name, None)
 }
 
+fn path_argument(path: &Path) -> Result<&str, WorktreeError> {
+    // shortcut: Git mutations take UTF-8 arguments; use OsStr when adding byte-path mutations.
+    path.to_str().ok_or_else(|| {
+        GitError::Invalid(
+            "Worktree mutations require a UTF-8 path; use Git in the terminal for this path."
+                .into(),
+        )
+        .into()
+    })
+}
+
 /// Blocking: creates a worktree from an explicit commit/ref, or the default base.
 pub fn create_from(
     project: &Project,
@@ -106,7 +117,7 @@ pub fn create_from(
         ),
     };
     let path = project.worktrees_dir().join(&name);
-    let path_arg = path.to_string_lossy();
+    let path_arg = path_argument(&path)?;
     git::run_mutation(
         &project.host,
         &project.path,
@@ -116,7 +127,7 @@ pub fn create_from(
             "--no-track",
             "-b",
             &name,
-            &path_arg,
+            path_arg,
             &base,
         ],
     )?;
@@ -139,12 +150,12 @@ pub fn remove(
             project: project.name.clone(),
         });
     }
-    let path_arg = worktree.path.to_string_lossy();
+    let path_arg = path_argument(&worktree.path)?;
     let mut args = vec!["worktree", "remove"];
     if removal == Removal::Force {
         args.push("--force");
     }
-    args.push(&path_arg);
+    args.push(path_arg);
     git::run_mutation(&project.host, &project.path, &args).map_err(|err| {
         if needs_force(err.stderr()) {
             WorktreeError::HasChanges {
@@ -275,6 +286,17 @@ mod tests {
     }
 
     #[test]
+    fn worktree_mutations_reject_lossy_path_arguments() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        let path = PathBuf::from(OsString::from_vec(b"/repo/\xff".to_vec()));
+        assert!(super::path_argument(&path).is_err());
+        assert_eq!(
+            super::path_argument(Path::new("/repo/世界")).unwrap(),
+            "/repo/世界"
+        );
+    }
+
+    #[test]
     fn only_a_missing_ref_falls_through_to_the_next_base() {
         assert_eq!(existing(Ok("main".into())).unwrap(), Some("main".into()));
         assert_eq!(existing(Err(failed(Some(1)))).unwrap(), None);
@@ -358,7 +380,7 @@ mod tests {
                 "init",
             ],
         );
-        let project = || scan(&ProjectRef::new(repo.clone(), Host::Local));
+        let project = || scan(&ProjectRef::new(repo.clone(), Host::Local)).unwrap();
 
         let created = create(&project(), Some("my task")).expect("created");
         assert_eq!(created.branch(), Some("my-task"));

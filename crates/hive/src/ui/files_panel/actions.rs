@@ -32,6 +32,10 @@ pub(super) fn menu(
         .decorations
         .get(&path)
         .is_some_and(|d| d.staged.is_some() || d.unstaged.is_some());
+    let local = files
+        .target
+        .as_ref()
+        .is_some_and(|target| target.host.is_local());
     let actions = [
         ("Open", EntryAction::Open, existing && !folder),
         ("Show Changes", EntryAction::Changes, changes),
@@ -53,6 +57,9 @@ pub(super) fn menu(
         ("Reveal in Finder", EntryAction::Reveal, existing),
     ];
     for (index, (label, action, enabled)) in actions.into_iter().enumerate() {
+        if matches!(action, EntryAction::Reveal) && !local {
+            continue;
+        }
         if [2, 7].contains(&index) {
             menu = menu.separator();
         }
@@ -110,7 +117,7 @@ impl FilesPanel {
             EntryAction::CopyAbsolute | EntryAction::Reveal => {
                 if let Some(target) = &self.files.read(cx).target {
                     let absolute = target.path.join(path);
-                    if matches!(action, EntryAction::Reveal) {
+                    if matches!(action, EntryAction::Reveal) && target.host.is_local() {
                         cx.reveal_path(&absolute);
                     } else {
                         cx.write_to_clipboard(ClipboardItem::new_string(

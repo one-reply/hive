@@ -72,12 +72,12 @@ pub struct Sidebar {
     projects: Entity<Projects>,
     store: Entity<Store>,
     /// Projects the user folded; everything else is expanded.
-    collapsed: HashSet<PathBuf>,
+    collapsed: HashSet<(Host, PathBuf)>,
     /// Projects folded or unfolded since launch: they animate, so the tree doesn't play
     /// its animations on startup.
-    toggled: HashSet<PathBuf>,
+    toggled: HashSet<(Host, PathBuf)>,
     /// Cards whose agents strip is unfolded into one row per session.
-    agents_open: HashSet<PathBuf>,
+    agents_open: HashSet<(Host, PathBuf)>,
     _observers: [Subscription; 3],
 }
 
@@ -103,15 +103,15 @@ impl Sidebar {
         }
     }
 
-    fn add_projects(&mut self, cx: &mut Context<Self>) {
-        Store::prompt_add_projects(self.store.clone(), cx);
+    fn add_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::ui::add_project::open(window, cx);
     }
 
-    fn toggle_collapsed(&mut self, path: &Path, cx: &mut Context<Self>) {
+    fn toggle_collapsed(&mut self, path: &(Host, PathBuf), cx: &mut Context<Self>) {
         if !self.collapsed.remove(path) {
-            self.collapsed.insert(path.to_path_buf());
+            self.collapsed.insert(path.clone());
         }
-        self.toggled.insert(path.to_path_buf());
+        self.toggled.insert(path.clone());
         cx.notify();
     }
 
@@ -123,8 +123,12 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let open = !self.collapsed.contains(&project.path);
-        let animate = self.toggled.contains(&project.path);
+        let open = !self
+            .collapsed
+            .contains(&(project.host.clone(), project.path.clone()));
+        let animate = self
+            .toggled
+            .contains(&(project.host.clone(), project.path.clone()));
         let header = self
             .render_header(ix, project, window, cx)
             .into_any_element();
@@ -142,7 +146,11 @@ impl Sidebar {
             .children(rows.into_iter().map(|(row, _)| row));
         let list = if animate {
             list.with_animation(
-                animation_id("project-list", &project.path, open),
+                animation_id(
+                    &format!("project-list:{:?}", project.host),
+                    &project.path,
+                    open,
+                ),
                 collapse_animation(),
                 move |list, t| list.h(height * openness(open, t)),
             )
@@ -161,9 +169,40 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> Vec<(AnyElement, Pixels)> {
         let mut rows = vec![];
+        if let Some(error) = self
+            .projects
+            .read(cx)
+            .errors
+            .get(&(project.host.clone(), project.path.clone()))
+            .cloned()
+        {
+            let hover = Hover::new(
+                SharedString::from(format!("scan-retry:{:?}:{:?}", project.host, project.path)),
+                window,
+                cx,
+            );
+            let projects = self.projects.clone();
+            rows.push((
+                Button::new(SharedString::from(format!(
+                    "retry:{:?}:{:?}",
+                    project.host, project.path
+                )))
+                .cursor_pointer()
+                .small()
+                .label("Scan failed · Retry")
+                .tooltip(error)
+                .on_click(move |_, _, cx| {
+                    projects.update(cx, |projects, cx| projects.rescan(cx).detach())
+                })
+                .smooth_hover(ButtonLook::Ghost, &hover, cx)
+                .into_any_element(),
+                CREATING_HEIGHT,
+            ));
+        }
         let host = host_label(&project.host);
         if project.worktrees.is_empty() {
             let target = CardTarget {
+                host: &project.host,
                 project: &project.path,
                 worktree: None,
                 path: &project.path,
@@ -175,14 +214,15 @@ impl Sidebar {
                 title: project.name.clone().into(),
                 meta: Some(Meta::Path(project.path.display().to_string().into())),
                 is_primary: false,
-                is_active: projects.is_active(&project.path),
-                is_selected: projects.is_selected(&project.path, None),
+                is_active: projects.is_active(&project.host, &project.path),
+                is_selected: projects.is_selected(&project.host, &project.path, None),
                 agents,
             };
             rows.push(self.render_card(project, None, folder, host.as_ref(), window, cx));
         }
         for (_, worktree) in project.visible_worktrees() {
             let target = CardTarget {
+                host: &project.host,
                 project: &project.path,
                 worktree: Some(&worktree.path),
                 path: &worktree.path,
@@ -191,7 +231,11 @@ impl Sidebar {
             let card = WorktreeCard::new(project, worktree, self.projects.read(cx), agents);
             rows.push(self.render_card(project, Some(worktree), card, host.as_ref(), window, cx));
         }
-        for _ in 0..self.projects.read(cx).creating_count(&project.path) {
+        for _ in 0..self
+            .projects
+            .read(cx)
+            .creating_count(&project.host, &project.path)
+        {
             rows.push((render_creating(cx).into_any_element(), CREATING_HEIGHT));
         }
         rows
@@ -207,12 +251,16 @@ impl Sidebar {
         let header_hover = Hover::new(("project", ix), window, cx);
         let new_worktree_hover = Hover::new(("new-worktree", ix), window, cx);
         let menu_open = window.use_keyed_state(
-            SharedString::from(format!("project-menu-open:{}", project.path.display())),
+            SharedString::from(format!(
+                "project-menu-open:{:?}:{:?}",
+                project.host, project.path
+            )),
             cx,
             |_, _| false,
         );
         let is_menu_open = *menu_open.read(cx);
         let path = project.path.clone();
+        let host = project.host.clone();
         // The gap before the buttons lives inside, so it collapses with them.
         let buttons = h_flex()
             .flex_none()
@@ -277,7 +325,9 @@ impl Sidebar {
                     .child(project.name.clone()),
             )
             .child(actions)
-            .on_click(cx.listener(move |this, _, _, cx| this.toggle_collapsed(&path, cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_collapsed(&(host.clone(), path.clone()), cx)
+            }))
     }
 
     /// The "…" menu of a project header.
@@ -289,6 +339,7 @@ impl Sidebar {
     ) -> impl IntoElement {
         let store = self.store.clone();
         let path = project.path.clone();
+        let host = project.host.clone();
         let hidden = project.hidden_worktree_count();
         let filter_label: SharedString = match project.filter {
             WorktreeFilter::Hive => format!("Show hidden worktrees ({hidden})").into(),
@@ -301,31 +352,37 @@ impl Sidebar {
             .xsmall()
             .icon(Lucide::Ellipsis)
             .dropdown_menu(move |menu, _, _| {
-                let (store, path) = (store.clone(), path.clone());
+                let (store, path, host) = (store.clone(), path.clone(), host.clone());
                 menu.item(
                     PopupMenuItem::new(filter_label.clone())
                         .disabled(!can_toggle)
                         .on_click({
-                            let (store, path) = (store.clone(), path.clone());
+                            let (store, path, host) = (store.clone(), path.clone(), host.clone());
                             move |_, _, cx| {
-                                store.update(cx, |s, cx| s.toggle_worktree_filter(&path, cx))
+                                store.update(cx, |s, cx| s.toggle_worktree_filter(&host, &path, cx))
                             }
                         }),
                 )
                 .item(copy_item("Copy Path", path.display().to_string()))
                 .item(PopupMenuItem::new("Project Settings").on_click({
                     let path = path.clone();
-                    move |_, _, cx| settings::open_project(&path, cx)
+                    let host = host.clone();
+                    move |_, _, cx| settings::open_project(&host, &path, cx)
                 }))
                 .separator()
                 .item(
                     PopupMenuItem::new("Remove Project").on_click(move |_, window, cx| {
-                        let (store, path) = (store.clone(), path.clone());
+                        let (store, path, host) = (store.clone(), path.clone(), host.clone());
                         crate::ui::editor_panel::close::guard(
-                            crate::ui::editor_panel::close::Scope::Project(path.clone()),
+                            crate::ui::editor_panel::close::Scope::Project(
+                                host.clone(),
+                                path.clone(),
+                            ),
                             window,
                             cx,
-                            move |_, cx| store.update(cx, |s, cx| s.remove_project(&path, cx)),
+                            move |_, cx| {
+                                store.update(cx, |s, cx| s.remove_project(&host, &path, cx))
+                            },
                         );
                     }),
                 )
@@ -393,14 +450,14 @@ impl Sidebar {
 
         let projects = self.projects.clone();
         let project_path = project.path.clone();
+        let project_host = project.host.clone();
         let worktree_path = worktree.map(|w| w.path.clone());
         let menu_target = worktree.map(|w| (project.clone(), w.clone()));
         // A stable channel retargets from the current opacity on rapid selection changes.
         let selection = transition(
             format!(
-                "worktree-selection:{}:{}",
-                project.path.display(),
-                card.path.display()
+                "worktree-selection:{:?}:{:?}:{:?}",
+                project.host, project.path, card.path
             ),
             if card.is_selected { 1.0_f32 } else { 0. },
             Transition::new(SELECTION_DURATION).ease(ease_in_out),
@@ -409,7 +466,11 @@ impl Sidebar {
         );
         let hover = HOVER_BACKGROUND_OPACITY
             + (SELECTED_BACKGROUND_OPACITY - HOVER_BACKGROUND_OPACITY) * selection;
-        let card_id = SharedString::from(format!("worktree:{}", card.path.display()));
+        let card_id = SharedString::from(format!(
+            "worktree:{:?}:{}",
+            project.host,
+            card.path.display()
+        ));
         let card_hover = Hover::new(card_id.clone(), window, cx);
         let element = v_flex()
             .id(card_id)
@@ -444,7 +505,7 @@ impl Sidebar {
             .children(card.agents.element)
             .on_click(move |_, _, cx| {
                 projects.update(cx, |p, cx| {
-                    p.select(&project_path, worktree_path.as_deref(), cx)
+                    p.select(&project_host, &project_path, worktree_path.as_deref(), cx)
                 })
             });
         let Some((project, worktree)) = menu_target else {
@@ -523,7 +584,9 @@ impl Render for Sidebar {
                                     .small()
                                     .icon(Lucide::FolderPlus)
                                     .tooltip("Add project")
-                                    .on_click(cx.listener(|this, _, _, cx| this.add_projects(cx)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.add_projects(window, cx)
+                                    }))
                                     .smooth_hover(ButtonLook::Ghost, &add_hover, cx),
                             ),
                     ),
@@ -583,8 +646,8 @@ impl WorktreeCard {
             title,
             meta,
             is_primary: project.is_primary(worktree),
-            is_active: projects.is_active(&worktree.path),
-            is_selected: projects.is_selected(&project.path, Some(&worktree.path)),
+            is_active: projects.is_active(&project.host, &worktree.path),
+            is_selected: projects.is_selected(&project.host, &project.path, Some(&worktree.path)),
             agents,
         }
     }
@@ -717,7 +780,10 @@ fn worktree_menu(
     } else {
         "Delete Worktree"
     };
-    let (project_path, worktree) = (project.path.clone(), worktree.clone());
+    let (project_path, worktree) = (
+        (project.host.clone(), project.path.clone()),
+        worktree.clone(),
+    );
     menu.item(copy_item("Copy Path", worktree.path.display().to_string()))
         .when_some(worktree.branch(), |menu, branch| {
             menu.item(copy_item("Copy Branch Name", branch.to_string()))
@@ -730,7 +796,10 @@ fn worktree_menu(
                     let (projects, project_path, worktree) =
                         (projects.clone(), project_path.clone(), worktree.clone());
                     crate::ui::editor_panel::close::guard(
-                        crate::ui::editor_panel::close::Scope::Worktree(worktree.path.clone()),
+                        crate::ui::editor_panel::close::Scope::Worktree(
+                            project_path.0.clone(),
+                            worktree.path.clone(),
+                        ),
                         window,
                         cx,
                         move |window, cx| {
@@ -743,7 +812,7 @@ fn worktree_menu(
 
 fn confirm_delete(
     projects: Entity<Projects>,
-    project: &Path,
+    project: &(Host, PathBuf),
     worktree: &Worktree,
     window: &mut Window,
     cx: &mut App,
@@ -753,7 +822,7 @@ fn confirm_delete(
         worktree.name()
     )
     .into();
-    let (project, worktree) = (project.to_path_buf(), worktree.clone());
+    let (project, worktree) = (project.clone(), worktree.clone());
     window.open_alert_dialog(cx, move |alert, _, _| {
         let (projects, project, worktree) = (projects.clone(), project.clone(), worktree.clone());
         alert
@@ -779,16 +848,16 @@ fn confirm_delete(
 /// Runs the removal; a worktree with changes asks again before forcing it.
 fn delete(
     projects: Entity<Projects>,
-    project: &Path,
+    project: &(Host, PathBuf),
     worktree: &Worktree,
     removal: Removal,
     window: &mut Window,
     cx: &mut App,
 ) {
     let task = projects.update(cx, |p, cx| {
-        p.delete_worktree(project, &worktree.path, removal, cx)
+        p.delete_worktree(&project.0, &project.1, &worktree.path, removal, cx)
     });
-    let (project, worktree) = (project.to_path_buf(), worktree.clone());
+    let (project, worktree) = (project.clone(), worktree.clone());
     window
         .spawn(cx, async move |cx| {
             let Err(err) = task.await else { return };
@@ -805,7 +874,7 @@ fn delete(
 
 fn confirm_force_delete(
     projects: Entity<Projects>,
-    project: &Path,
+    project: &(Host, PathBuf),
     worktree: &Worktree,
     window: &mut Window,
     cx: &mut App,
@@ -815,7 +884,7 @@ fn confirm_force_delete(
         worktree.name()
     )
     .into();
-    let (project, worktree) = (project.to_path_buf(), worktree.clone());
+    let (project, worktree) = (project.clone(), worktree.clone());
     window.open_alert_dialog(cx, move |alert, _, _| {
         let (projects, project, worktree) = (projects.clone(), project.clone(), worktree.clone());
         alert

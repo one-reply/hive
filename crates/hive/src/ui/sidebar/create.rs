@@ -60,6 +60,7 @@ impl RenderOnce for StartItem {
 struct CreateWorktree {
     projects: Entity<Projects>,
     project: PathBuf,
+    host: Host,
     name: Entity<InputState>,
     base: Entity<SelectState<SearchableVec<String>>>,
     agent: Entity<SelectState<SearchableVec<StartItem>>>,
@@ -73,6 +74,7 @@ impl CreateWorktree {
     fn new(
         projects: Entity<Projects>,
         project: PathBuf,
+        host: Host,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -99,7 +101,7 @@ impl CreateWorktree {
                 cx,
             )
         });
-        let task = projects.read(cx).bases(&project, cx);
+        let task = projects.read(cx).bases(&host, &project, cx);
         let load = cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -119,6 +121,7 @@ impl CreateWorktree {
         Self {
             projects,
             project,
+            host,
             name,
             base,
             agent,
@@ -151,7 +154,7 @@ impl CreateWorktree {
         self.busy = true;
         self.error = None;
         let task = self.projects.update(cx, |projects, cx| {
-            projects.create_worktree(&self.project, name, base, launch.clone(), cx)
+            projects.create_worktree(&self.host, &self.project, name, base, launch.clone(), cx)
         });
         self._create = Some(cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
@@ -161,11 +164,12 @@ impl CreateWorktree {
                     Ok(path) => {
                         window.close_dialog(cx);
                         let launch = launch.clone();
+                        let host = this.host.clone();
                         window.defer(cx, move |_, cx| {
                             AppState::get(cx)
                                 .agents
                                 .clone()
-                                .update(cx, |agents, cx| agents.start(path, launch, cx));
+                                .update(cx, |agents, cx| agents.start(host, path, launch, cx));
                         });
                     }
                     Err(error) => {
@@ -231,7 +235,15 @@ pub(super) fn open(
     cx: &mut App,
 ) {
     let title = format!("New worktree in {}", project.name);
-    let form = cx.new(|cx| CreateWorktree::new(projects, project.path.clone(), window, cx));
+    let form = cx.new(|cx| {
+        CreateWorktree::new(
+            projects,
+            project.path.clone(),
+            project.host.clone(),
+            window,
+            cx,
+        )
+    });
     let initial_focus = std::cell::Cell::new(true);
     window.open_dialog(cx, move |dialog, window, cx| {
         if initial_focus.replace(false) {

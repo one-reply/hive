@@ -7,6 +7,7 @@ use std::time::Duration;
 
 pub mod branches;
 pub mod changes;
+#[cfg(feature = "desktop")]
 pub mod commit_context;
 pub mod diff;
 pub mod history;
@@ -115,7 +116,7 @@ pub(crate) fn run_mutation(host: &Host, cwd: &Path, args: &[&str]) -> Result<Str
     )
 }
 
-fn bytes(
+pub(crate) fn bytes(
     host: &Host,
     cwd: &Path,
     args: &[&str],
@@ -168,6 +169,29 @@ fn invoke(
                 guidance: if mutation { "Outcome unknown. Refresh and inspect the index, History and remote before retrying; no automatic retry was made." } else { "Refresh to retry." },
             },
         })?;
+    finish(host, cwd, args, output, allow_exit_one, mutation)
+}
+
+fn finish(
+    host: &Host,
+    cwd: &Path,
+    args: &[&str],
+    output: command::Output,
+    allow_exit_one: bool,
+    mutation: bool,
+) -> Result<Vec<u8>, GitError> {
+    if mutation && !host.is_local() && output.code == Some(255) {
+        return Err(GitError::Interrupted {
+            command: args.join(" "),
+            host: host.clone(),
+            cwd: cwd.to_owned(),
+            source: command::Error::Io(std::io::Error::other(
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )),
+            mutation: true,
+            guidance: "SSH disconnected. Outcome unknown. Refresh and inspect the repository before retrying; nothing was retried.",
+        });
+    }
     if output.code != Some(0) && !(allow_exit_one && output.code == Some(1)) {
         return Err(GitError::Failed {
             command: args.join(" "),
@@ -190,4 +214,39 @@ fn text(bytes: &[u8]) -> Result<&str, GitError> {
     std::str::from_utf8(bytes).map_err(|_| {
         GitError::Invalid("Git returned non-UTF-8 content. Use the terminal for this file.".into())
     })
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    #[test]
+    fn ssh_disconnect_marks_writes_unknown_but_keeps_read_and_git_failures_distinct() {
+        let remote = Host::Ssh {
+            target: "home".into(),
+        };
+        let outcome = |host: &Host, mutation, code| {
+            finish(
+                host,
+                Path::new("/repo"),
+                &["operation"],
+                command::Output {
+                    code: Some(code),
+                    stdout: vec![],
+                    stderr: b"connection lost".to_vec(),
+                },
+                false,
+                mutation,
+            )
+            .unwrap_err()
+        };
+        assert!(outcome(&remote, true, 255).outcome_unknown());
+        for error in [
+            outcome(&remote, false, 255),
+            outcome(&remote, true, 1),
+            outcome(&Host::Local, true, 255),
+        ] {
+            assert!(!error.outcome_unknown());
+            assert!(matches!(error, GitError::Failed { .. }));
+        }
+    }
 }

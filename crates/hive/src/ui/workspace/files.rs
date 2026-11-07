@@ -67,7 +67,7 @@ impl Workspace {
         let documents = AppState::get(cx).documents.clone();
         let document = documents.update(cx, |documents, cx| documents.get(&request, window, cx));
         self.activate_target(&request.target, cx);
-        let project = request.target.project.clone();
+        let project = (request.target.host.clone(), request.target.project.clone());
         self.center(&project, window, cx)
             .show_file(request, window, cx);
         self.save_center(&project, window, cx);

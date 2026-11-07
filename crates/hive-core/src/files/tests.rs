@@ -228,3 +228,42 @@ fn same_relative_path_in_other_worktree_has_independent_recovery() {
         recovery::key(&Host::Local, &second.0, Path::new("a"))
     );
 }
+
+#[test]
+fn recovery_preserves_byte_paths_and_distinguishes_hosts_with_legacy_defaults() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let fixture = Fixture::new();
+    let dir = fixture.0.join("recovery");
+    let path = PathBuf::from(OsString::from_vec(b"notes-\xff.txt".to_vec()));
+    let base = Snapshot::parse(&path, b"original\r\n").unwrap();
+    for host in [
+        Host::Local,
+        Host::Ssh {
+            target: "home".into(),
+        },
+        Host::Ssh {
+            target: "other".into(),
+        },
+    ] {
+        let draft = recovery::Draft {
+            host,
+            project: "/remote".into(),
+            root: "/remote".into(),
+            path: path.clone(),
+            base: base.clone(),
+            text: "changed".into(),
+        };
+        recovery::write(&dir, &draft.key(), &draft).unwrap();
+    }
+    let (records, errors) = recovery::load(&dir);
+    assert!(errors.is_empty());
+    assert_eq!(records.len(), 3);
+    assert!(records.iter().all(|record| record.draft.path == path));
+    let mut old = serde_json::to_value(&records[0].draft).unwrap();
+    old.as_object_mut().unwrap().remove("host");
+    old["path"] = serde_json::json!("notes.txt");
+    old["future"] = serde_json::json!(true);
+    let old: recovery::Draft = serde_json::from_value(old).unwrap();
+    assert_eq!(old.host, Host::Local);
+    assert_eq!(old.path, Path::new("notes.txt"));
+}

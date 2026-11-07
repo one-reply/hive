@@ -46,7 +46,18 @@ impl TerminalPanel {
         let (title, body) = prompt_text(agents.len(), matches!(closing, Closing::Tab));
         let statuses: Vec<SharedString> = agents
             .iter()
-            .map(|agent| format!("{} · {}", agent.kind.name(), agent.status.label()).into())
+            .map(|agent| {
+                format!(
+                    "{} · {}",
+                    agent.kind.name(),
+                    if self.host.is_local() {
+                        agent.status.label()
+                    } else {
+                        "SSH"
+                    }
+                )
+                .into()
+            })
             .collect();
         let dont_ask = Rc::new(Cell::new(false));
         window.open_alert_dialog(cx, move |alert, _, _| {

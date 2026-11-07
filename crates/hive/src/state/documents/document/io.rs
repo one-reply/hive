@@ -47,9 +47,10 @@ impl Document {
         self.loading = true;
         let (target, path) = (self.target.clone(), self.path.clone());
         self._read = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { files::read(&target.host, &target.path, &path) })
+            let result =
+                crate::state::file_io::run(cx.background_executor().clone(), move |cancellation| {
+                    files::Access::new(&target.host, cancellation).read(&target.path, &path)
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.loading = false;
@@ -72,6 +73,7 @@ impl Document {
         match disk_update(self.base.as_ref(), text.as_deref(), &snapshot) {
             DiskUpdate::Reload => self.install(snapshot, window, cx),
             DiskUpdate::MatchesBuffer => {
+                self.error = None;
                 self.base = Some(snapshot);
                 self.dirty = false;
                 self.conflict = None;
@@ -80,6 +82,7 @@ impl Document {
                 cx.notify();
             }
             DiskUpdate::Conflict => {
+                self.error = None;
                 if self.conflict.as_ref() != Some(&snapshot) {
                     self.conflict = Some(snapshot);
                     cx.notify();
@@ -87,7 +90,10 @@ impl Document {
             }
             DiskUpdate::Unchanged => {
                 let changed = self.conflict.take().is_some();
-                let read_error = matches!(self.error, Some(DocumentError::Read(_)));
+                let read_error = matches!(
+                    self.error,
+                    Some(DocumentError::Read(_) | DocumentError::Save(_))
+                );
                 if read_error {
                     self.error = None;
                 }
@@ -122,6 +128,11 @@ impl Document {
             return receiver;
         }
         if self.content.is_raster()
+            || (!self.target.host.is_local()
+                && matches!(
+                    self.error,
+                    Some(DocumentError::Read(_) | DocumentError::Save(_))
+                ))
             || self.path_busy
             || self.base.is_none()
             || (self.conflict.is_some() && overwrite.is_none())
@@ -139,10 +150,10 @@ impl Document {
         self.error = None;
         let (target, path, text) = (self.target.clone(), self.path.clone(), self.text(cx));
         self._save = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    files::save(&target.host, &target.path, &path, &expected, &text)
+            let result =
+                crate::state::file_io::run(cx.background_executor().clone(), move |cancellation| {
+                    files::Access::new(&target.host, cancellation)
+                        .save(&target.path, &path, &expected, &text)
                         .map_err(|e| e.to_string())
                 })
                 .await;

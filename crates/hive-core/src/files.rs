@@ -1,4 +1,7 @@
 //! Bounded local document IO. Call these blocking operations off the UI thread.
+mod access;
+pub use access::Access;
+
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -12,11 +15,13 @@ pub mod images;
 mod language;
 mod listing;
 mod mutations;
+#[cfg(feature = "desktop")]
 pub mod tree;
 pub use mutations::{
     create_directory, create_file, delete_entry, entry_path, move_entry, name_taken, relocated_path,
 };
 pub mod recovery;
+#[cfg(feature = "desktop")]
 pub mod search;
 pub use language::{editor_language, is_dockerfile};
 pub use listing::{Entry, FileIndex, list_directory, list_files};
@@ -97,10 +102,22 @@ pub(super) fn unsupported(path: &Path, reason: &'static str) -> FileError {
 /// Exact bytes of the last disk version, including BOM and line endings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(deserialize_with = "snapshot_raw")]
     raw: String,
 }
 
+fn snapshot_raw<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let raw = String::deserialize(deserializer)?;
+    Snapshot::parse(Path::new("snapshot"), raw.as_bytes())
+        .map(|snapshot| snapshot.raw)
+        .map_err(serde::de::Error::custom)
+}
+
 impl Snapshot {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self.raw.as_bytes()
+    }
+
     /// Parse bounded UTF-8 source bytes, preserving their exact disk representation.
     pub fn parse(path: &Path, bytes: &[u8]) -> Result<Self, FileError> {
         if bytes.len() > MAX_FILE_BYTES {
@@ -179,6 +196,14 @@ pub fn resolve(host: &Host, root: &Path, relative: &Path) -> Result<PathBuf, Fil
 
 /// Read a regular UTF-8 document without lossy decoding or unbounded allocation.
 pub fn read(host: &Host, root: &Path, relative: &Path) -> Result<Snapshot, FileError> {
+    if !host.is_local() {
+        return crate::remote::read(
+            host,
+            root,
+            relative,
+            &crate::command::Cancellation::default(),
+        );
+    }
     let path = resolve(host, root, relative)?;
     read_path(&path)
 }
@@ -234,6 +259,16 @@ pub fn save(
     expected: &Snapshot,
     text: &str,
 ) -> Result<Snapshot, FileError> {
+    if !host.is_local() {
+        return crate::remote::save(
+            host,
+            root,
+            relative,
+            expected,
+            text,
+            &crate::command::Cancellation::default(),
+        );
+    }
     let path = resolve(host, root, relative)?;
     let raw = expected.encode(text);
     if raw.len() > MAX_FILE_BYTES || raw.contains('\0') {

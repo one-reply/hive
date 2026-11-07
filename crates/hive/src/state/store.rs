@@ -274,26 +274,14 @@ impl Store {
         }
     }
 
-    pub fn add_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if self.state.add_project(ProjectRef::new(path, Host::Local)) {
+    pub fn add_project(&mut self, host: Host, path: PathBuf, cx: &mut Context<Self>) {
+        if self.state.add_project(ProjectRef::new(path, host)) {
             self.commit(cx);
         }
     }
 
-    pub fn remove_project(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let before = self.state.projects.len();
-        self.state.projects.retain(|p| p.path != path);
-        if self.state.projects.len() != before {
-            self.state.workspace.projects.retain(|p| p.project != path);
-            if self
-                .state
-                .workspace
-                .selection
-                .as_ref()
-                .is_some_and(|s| s.project == path)
-            {
-                self.state.workspace.selection = None;
-            }
+    pub fn remove_project(&mut self, host: &Host, path: &Path, cx: &mut Context<Self>) {
+        if self.state.remove_project(host, path) {
             self.commit(cx);
         }
     }
@@ -310,8 +298,13 @@ impl Store {
     }
 
     /// Switches a project between listing only Hive's worktrees and listing all of them.
-    pub fn toggle_worktree_filter(&mut self, path: &Path, cx: &mut Context<Self>) {
-        if let Some(project) = self.state.projects.iter_mut().find(|p| p.path == path) {
+    pub fn toggle_worktree_filter(&mut self, host: &Host, path: &Path, cx: &mut Context<Self>) {
+        if let Some(project) = self
+            .state
+            .projects
+            .iter_mut()
+            .find(|p| p.host == *host && p.path == path)
+        {
             project.worktrees = project.worktrees.toggled();
             self.commit(cx);
         }
@@ -320,11 +313,17 @@ impl Store {
     /// Edits how a project presents itself; saves only when something changed.
     pub(crate) fn update_identity(
         &mut self,
+        host: &Host,
         path: &Path,
         edit: impl FnOnce(&mut ProjectIdentity),
         cx: &mut Context<Self>,
     ) {
-        let Some(project) = self.state.projects.iter_mut().find(|p| p.path == path) else {
+        let Some(project) = self
+            .state
+            .projects
+            .iter_mut()
+            .find(|p| p.host == *host && p.path == path)
+        else {
             return;
         };
         let before = project.identity.clone();
@@ -347,7 +346,7 @@ impl Store {
                 cx.update(|cx| {
                     store.update(cx, |store, cx| {
                         for path in paths {
-                            store.add_project(path, cx);
+                            store.add_project(Host::Local, path, cx);
                         }
                     })
                 });

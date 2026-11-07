@@ -235,6 +235,21 @@ mod tests {
     use crate::host::Host;
 
     #[test]
+    fn cancelled_command_never_spawns() {
+        let cancellation = Cancellation::default();
+        cancellation.cancel();
+        let result = run(
+            std::process::Command::new("hive-must-not-spawn"),
+            &[],
+            &cancellation,
+            Duration::ZERO,
+            1,
+        );
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert!(cancellation.group.lock().unwrap().is_none());
+    }
+
+    #[test]
     fn orphaned_pipe_holders_cannot_outlive_the_deadline() {
         let control = Cancellation::default();
         let began = Instant::now();

@@ -7,10 +7,15 @@ use std::path::{Path, PathBuf};
 /// Project and worktree selected in the sidebar.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Selection {
+    /// Host owning the selected project; absent in older snapshots means Local.
+    #[serde(default)]
+    pub host: Host,
     /// Project's registered path.
+    #[serde(with = "crate::path_encoding::persisted")]
     pub project: PathBuf,
     /// Selected worktree; absent for a plain folder.
     #[serde(default)]
+    #[serde(with = "crate::path_encoding::persisted::optional")]
     pub worktree: Option<PathBuf>,
 }
 
@@ -74,12 +79,14 @@ impl Workspace {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectWorkspace {
     /// Registered project path.
+    #[serde(with = "crate::path_encoding::persisted")]
     pub project: PathBuf,
     /// Host identity prevents restoring a local layout for a different host.
     #[serde(default)]
     pub host: Host,
     /// Worktree shown when this layout was saved.
     #[serde(default)]
+    #[serde(with = "crate::path_encoding::persisted::optional")]
     pub worktree: Option<PathBuf>,
     /// Focused tab's index in depth-first order across tab groups.
     #[serde(default)]
@@ -177,9 +184,11 @@ pub struct Tabs {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalPane {
     /// Directory in which the replacement shell starts.
+    #[serde(with = "crate::path_encoding::persisted")]
     pub directory: PathBuf,
     /// Original worktree association, retained even after a shell changes directory.
     #[serde(default)]
+    #[serde(with = "crate::path_encoding::persisted::optional")]
     pub worktree: Option<PathBuf>,
     /// The conversation the pane's agent ran at quit; restoration resumes it in this pane.
     #[serde(default, deserialize_with = "crate::agent::launch::deserialize_saved")]
@@ -193,8 +202,10 @@ pub enum Tab {
     /// A pinned file buffer; unsaved contents are stored separately in editor recovery.
     File {
         /// Worktree containing this file.
+        #[serde(with = "crate::path_encoding::persisted")]
         worktree: PathBuf,
         /// Worktree-relative path.
+        #[serde(with = "crate::path_encoding::persisted")]
         path: PathBuf,
         /// Zero-based UTF-16 cursor position.
         #[serde(default)]
@@ -214,6 +225,7 @@ pub enum Tab {
     /// A diff reloaded from Git rather than saved patch contents.
     Diff {
         /// Worktree containing the reviewed file.
+        #[serde(with = "crate::path_encoding::persisted")]
         worktree: PathBuf,
         /// Repository-relative file path.
         path: String,

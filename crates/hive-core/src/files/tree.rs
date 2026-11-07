@@ -6,9 +6,26 @@ use super::Entry;
 use super::decorations::Decoration;
 use crate::git::status::Change;
 use crate::settings::FilesSettings;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsString,
+    os::unix::ffi::{OsStrExt, OsStringExt},
+};
+
+/// Lossless string identity for tree widgets; independent of the displayed filename.
+pub fn path_key(path: &Path) -> String {
+    URL_SAFE_NO_PAD.encode(path.as_os_str().as_bytes())
+}
+
+/// Recover the original path from a tree key, including a disabled placeholder's suffix.
+pub fn path_from_key(key: &str) -> Result<PathBuf, base64::DecodeError> {
+    URL_SAFE_NO_PAD
+        .decode(key.trim_end_matches('/'))
+        .map(|bytes| PathBuf::from(OsString::from_vec(bytes)))
+}
 
 /// What a tree is built from.
 pub struct Source<'a> {
@@ -191,6 +208,26 @@ fn shown(source: &Source, entry: &Entry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tree_keys_keep_byte_paths_distinct_from_replacement_characters() {
+        let paths = [
+            PathBuf::new(),
+            PathBuf::from("папка/файл.rs"),
+            PathBuf::from("folder/�.rs"),
+            PathBuf::from(OsString::from_vec(b"folder/\xff.rs".to_vec())),
+            PathBuf::from(OsString::from_vec(b"folder/\xfe.rs".to_vec())),
+        ];
+        let keys: HashSet<_> = paths.iter().map(|path| path_key(path)).collect();
+        assert_eq!(keys.len(), paths.len());
+        for path in paths {
+            let key = path_key(&path);
+            assert!(!key.contains('/'));
+            assert_eq!(path_from_key(&key).unwrap(), path);
+            assert_eq!(path_from_key(&format!("{key}/")).unwrap(), path);
+        }
+        assert!(path_from_key("invalid!").is_err());
+    }
 
     fn entry(path: &str, directory: bool) -> Entry {
         Entry {

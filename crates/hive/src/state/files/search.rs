@@ -137,11 +137,7 @@ impl Files {
         if !self.search.can_start(self.busy) {
             return;
         }
-        let Some(target) = self
-            .target
-            .clone()
-            .filter(|target| target.host == hive_core::host::Host::Local)
-        else {
+        let Some(target) = self.target.clone() else {
             return;
         };
         let generation = self.search.generation;
@@ -153,9 +149,17 @@ impl Files {
         self.search.task = Some(cx.spawn(async move |this, cx| {
             let read_target = target.clone();
             let read_query = query.clone();
-            let result = cx
-                .background_executor()
-                .spawn(async move { load(&read_target, &read_query, show_hidden, index, entries) })
+            let result =
+                crate::state::file_io::run(cx.background_executor().clone(), move |cancellation| {
+                    load(
+                        &read_target,
+                        &read_query,
+                        show_hidden,
+                        index,
+                        entries,
+                        cancellation,
+                    )
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.target.as_ref() != Some(&target) || !this.search.accepts(generation) {
@@ -205,11 +209,14 @@ fn load(
     show_hidden: bool,
     index: Option<Arc<FileIndex>>,
     mut entries: Arc<BTreeMap<PathBuf, Vec<Entry>>>,
+    cancellation: &hive_core::command::Cancellation,
 ) -> Result<Loaded, String> {
     let index = match index {
         Some(index) => index,
         None => Arc::new(
-            files::list_files(&target.host, &target.path).map_err(|error| error.to_string())?,
+            files::Access::new(&target.host, cancellation)
+                .list_files(&target.path)
+                .map_err(|error| error.to_string())?,
         ),
     };
     let matches = search::find(&index.paths, query, show_hidden);
@@ -218,7 +225,9 @@ fn load(
         if entries.contains_key(&directory) {
             continue;
         }
-        match files::list_directory(&target.host, &target.path, &directory) {
+        match files::Access::new(&target.host, cancellation)
+            .list_directory(&target.path, &directory)
+        {
             Ok(listed) => {
                 Arc::make_mut(&mut entries).insert(directory, listed);
             }

@@ -9,6 +9,7 @@ const WIDTH: Pixels = px(600.);
 const HEIGHT: Pixels = px(420.);
 
 struct Destination {
+    host: Host,
     label: String,
     project: PathBuf,
     worktree: Option<PathBuf>,
@@ -30,6 +31,7 @@ impl Destinations {
         for project in &app.projects.read(cx).items {
             if !self.attention {
                 self.entries.push(Destination {
+                    host: project.host.clone(),
                     label: format!("Project · {}", project.name),
                     project: project.path.clone(),
                     worktree: project.worktrees.first().map(|w| w.path.clone()),
@@ -49,23 +51,27 @@ impl Destinations {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 if !self.attention && worktree.is_some() {
                     self.entries.push(Destination {
+                        host: project.host.clone(),
                         label: format!("{} / {name}", project.name),
                         project: project.path.clone(),
                         worktree: worktree.clone(),
                         session: None,
                     });
                 }
-                for session in agents.sessions(path) {
+                for session in agents.sessions(&project.host, path) {
                     if self.attention && !session.unread {
                         continue;
                     }
-                    let status = if session.reported {
+                    let status = if !project.host.is_local() {
+                        "SSH · status unavailable".to_owned()
+                    } else if session.reported {
                         session.status.label().to_owned()
                     } else {
                         format!("{} · estimated", session.status.label())
                     };
                     let title = session.title.as_deref().unwrap_or(session.kind.name());
                     self.entries.push(Destination {
+                        host: project.host.clone(),
                         label: format!("{} / {name} · {title} · {status}", project.name),
                         project: project.path.clone(),
                         worktree: worktree.clone(),
@@ -121,6 +127,7 @@ impl ListDelegate for Destinations {
             return;
         };
         let project = entry.project.clone();
+        let host = entry.host.clone();
         let worktree = entry.worktree.clone();
         let session = entry.session;
         window.close_dialog(cx);
@@ -129,7 +136,7 @@ impl ListDelegate for Destinations {
             let app = AppState::get(cx);
             let (projects, agents) = (app.projects.clone(), app.agents.clone());
             projects.update(cx, |projects, cx| {
-                projects.select(&project, worktree.as_deref(), cx)
+                projects.select(&host, &project, worktree.as_deref(), cx)
             });
             if let Some(session) = session {
                 agents.update(cx, |agents, cx| agents.reveal(session, cx));

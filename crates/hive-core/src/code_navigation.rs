@@ -28,9 +28,10 @@ use syntax::Dialect;
 const MAX_HOPS: usize = 8;
 
 /// Where an imported symbol is declared.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Definition {
     /// Declaring file, relative to the worktree root.
+    #[serde(with = "crate::path_encoding")]
     pub path: PathBuf,
     /// Zero-based line of the declaration's name.
     pub line: u32,

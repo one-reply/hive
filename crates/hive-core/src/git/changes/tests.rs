@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 mod commit_and_push;
+#[cfg(feature = "desktop")]
 mod commit_messages;
 mod line_stats;
 
