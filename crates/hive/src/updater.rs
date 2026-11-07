@@ -5,7 +5,7 @@ use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{MainThreadMarker, msg_send};
 use objc2_foundation::{NSBundle, NSError, NSString};
 
-pub(crate) const RELEASES_URL: &str = "https://github.com/vitaliits-stack/hive/releases";
+pub(crate) const RELEASES_URL: &str = "https://github.com/one-reply/hive/releases";
 
 /// Loading a framework touches disk, so the state entity runs this in the background.
 pub(crate) fn load_framework() -> Result<Retained<NSBundle>, String> {

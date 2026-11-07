@@ -27,7 +27,7 @@ editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-k
 
 There are **no published binary releases yet** as of November 6, 2026. Use the
 [source build](#build-and-run) below. Packaged downloads will appear on
-[GitHub Releases](https://github.com/vitaliits-stack/hive/releases) after release
+[GitHub Releases](https://github.com/one-reply/hive/releases) after release
 verification. See the [verification record](docs/RELEASE_CHECKS.md) for completed
 and pending checks.
 
@@ -101,7 +101,7 @@ xcode-select --install
 Then clone and run:
 
 ```sh
-git clone https://github.com/vitaliits-stack/hive.git
+git clone https://github.com/one-reply/hive.git
 cd hive
 cargo run --locked -p hive
 ```
