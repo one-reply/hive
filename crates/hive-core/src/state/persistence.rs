@@ -88,6 +88,7 @@ struct Sections {
     settings: Option<Value>,
     projects: Option<Value>,
     workspace: Option<Value>,
+    last_seen_release: Option<Value>,
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> StateError {
@@ -130,6 +131,7 @@ impl State {
             settings: section("settings", sections.settings, &mut lost),
             projects: projects(sections.projects, &mut lost),
             workspace: section("workspace", sections.workspace, &mut lost),
+            last_seen_release: section("last_seen_release", sections.last_seen_release, &mut lost),
         };
         let cause = if sections.version > SCHEMA_VERSION {
             tracing::warn!(
@@ -442,6 +444,42 @@ mod tests {
         assert_eq!(written["version"], Value::from(SCHEMA_VERSION));
         assert!(written.get("settings").is_some());
         assert!(State::load_from(&fixture.0).unwrap().recovery.is_none());
+    }
+
+    #[test]
+    fn release_marker_loads_old_state_and_survives_restart() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("state.json");
+        fs::write(
+            &path,
+            br#"{"version":1,"projects":[{"path":"/a"}],"future":true}"#,
+        )
+        .unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert!(loaded.recovery.is_none());
+        assert!(loaded.state.last_seen_release.is_none());
+        let mut state = loaded.state;
+        assert!(state.mark_release_seen("0.1.4"));
+        state.save_to(&path).unwrap();
+        let mut restored = State::load_from(&fixture.0).unwrap().state;
+        assert!(!restored.mark_release_seen("0.1.4"));
+        assert_eq!(restored.projects[0].path, Path::new("/a"));
+    }
+
+    #[test]
+    fn malformed_release_marker_preserves_other_state_and_original_bytes() {
+        let fixture = Fixture::new();
+        let original = br#"{"last_seen_release":42,"projects":[{"path":"/a"}]}"#;
+        fs::write(fixture.0.join("state.json"), original).unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert!(loaded.state.last_seen_release.is_none());
+        assert_eq!(loaded.state.projects[0].path, Path::new("/a"));
+        let recovery = loaded.recovery.unwrap();
+        assert_eq!(
+            recovery.cause,
+            RecoveryCause::Partial(vec!["last_seen_release".into()])
+        );
+        assert_eq!(fs::read(recovery.backup).unwrap(), original);
     }
 
     #[test]

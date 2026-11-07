@@ -13,6 +13,7 @@ pub mod identity;
 pub mod keychain;
 pub mod llm;
 pub mod projects;
+pub mod release_notes;
 pub mod settings;
 pub mod state;
 pub mod terminal;
