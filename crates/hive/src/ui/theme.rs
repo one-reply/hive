@@ -4,22 +4,19 @@
 use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::*;
-use hive_core::settings::{Scrollbars, Settings, ThemeChoice};
+use hive_core::settings::{DarkTheme, LightTheme, Scrollbars, Settings, ThemeChoice};
+use std::rc::Rc;
 
 use crate::app::AppState;
 
-/// The dock's tab bar in dark mode; the stock `#171717` reads too light next to the terminal.
-const DARK_TAB_BAR: u32 = 0x111111;
-
-/// The backdrop behind dialogs in dark mode. The stock 20% black is invisible on a near-black
-/// window, and the library's dialog shadow is fixed and just as faint, so dimming the content
-/// behind is what lifts a dialog off the page.
-const DARK_OVERLAY: u32 = 0x00000080;
+pub(crate) mod catalog;
 
 /// What `apply` last wrote to the global theme; other settings changes skip the reload.
 #[derive(Clone, PartialEq)]
 struct Appearance {
     theme: ThemeChoice,
+    light_theme: LightTheme,
+    dark_theme: DarkTheme,
     ui_font_size: f32,
     terminal_font_size: f32,
     ui_font_family: Option<SharedString>,
@@ -31,6 +28,8 @@ impl From<&Settings> for Appearance {
     fn from(settings: &Settings) -> Self {
         Self {
             theme: settings.theme,
+            light_theme: settings.light_theme(),
+            dark_theme: settings.dark_theme(),
             ui_font_size: settings.ui_font_size(),
             terminal_font_size: settings.terminal_font_size(),
             ui_font_family: settings.ui_font_family().map(SharedString::new),
@@ -64,7 +63,18 @@ pub fn sync_system_appearance(window: &mut Window, cx: &mut App) {
 }
 
 fn apply(appearance: &Appearance, window: Option<&mut Window>, cx: &mut App) {
-    apply_theme(appearance.theme, window, cx);
+    let system = window
+        .as_ref()
+        .map(|window| window.appearance())
+        .unwrap_or_else(|| cx.window_appearance());
+    let mode = resolved_mode(appearance.theme, system.into());
+    let definition = if mode.is_dark() {
+        catalog::dark(appearance.dark_theme)
+    } else {
+        catalog::light(appearance.light_theme)
+    };
+    let config = Rc::new(definition.config.clone());
+    Theme::update(cx, |theme| theme.apply_config(&config));
     // A theme reload keeps the previous families, so the defaults are written back explicitly;
     // the theme then swaps an uninstalled default monospace family for an installed one.
     let defaults = Theme::default();
@@ -76,23 +86,12 @@ fn apply(appearance: &Appearance, window: Option<&mut Window>, cx: &mut App) {
         .code_font_family
         .clone()
         .unwrap_or(defaults.mono_font_family);
-    // `Theme::change` reloads the theme file, which may carry its own sizes and syntax colors,
-    // so the user's sizes and Hive's palette go on top in a separate update. `font_size` is the rem every window scales from.
+    // User typography wins over palette defaults; `font_size` is every window's rem.
     Theme::update(cx, |theme| {
         theme.font_size = px(appearance.ui_font_size);
         theme.mono_font_size = px(appearance.terminal_font_size);
         theme.font_family = font_family;
         theme.mono_font_family = mono_font_family;
-        if theme.is_dark() {
-            theme.tab_bar = rgb(DARK_TAB_BAR).into();
-            theme.overlay = rgba(DARK_OVERLAY).into();
-        } else {
-            // The stock light sidebar is an off-white gray; Hive's light sidebars are white.
-            theme.sidebar = theme.background;
-        }
-        if let Some(highlight) = super::syntax_palette::highlight_theme(theme.is_dark()) {
-            theme.highlight_theme = highlight;
-        }
     });
     apply_scrollbars(appearance.scrollbars, cx);
 }
@@ -114,10 +113,50 @@ fn scrollbar_mode(scrollbars: Scrollbars) -> Option<ScrollbarMode> {
     }
 }
 
-fn apply_theme(theme: ThemeChoice, window: Option<&mut Window>, cx: &mut App) {
+fn resolved_mode(theme: ThemeChoice, system: ThemeMode) -> ThemeMode {
     match theme {
-        ThemeChoice::System => Theme::sync_system_appearance(window, cx),
-        ThemeChoice::Light => Theme::change(ThemeMode::Light, window, cx),
-        ThemeChoice::Dark => Theme::change(ThemeMode::Dark, window, cx),
+        ThemeChoice::System => system,
+        ThemeChoice::Light => ThemeMode::Light,
+        ThemeChoice::Dark => ThemeMode::Dark,
+    }
+}
+
+pub(crate) fn terminal_palette(cx: &App) -> catalog::TerminalPalette {
+    let theme = Theme::global(cx);
+    catalog::named(theme.theme_name())
+        .unwrap_or_else(|| {
+            if theme.is_dark() {
+                catalog::dark(DarkTheme::Hive)
+            } else {
+                catalog::light(LightTheme::Hive)
+            }
+        })
+        .terminal()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Appearance, resolved_mode};
+    use gpui_kit::component::theme::ThemeMode;
+    use hive_core::settings::{DarkTheme, LightTheme, Settings, ThemeChoice};
+
+    #[test]
+    fn only_system_follows_the_os_appearance() {
+        for system in [ThemeMode::Light, ThemeMode::Dark] {
+            assert_eq!(resolved_mode(ThemeChoice::System, system), system);
+            assert_eq!(resolved_mode(ThemeChoice::Light, system), ThemeMode::Light);
+            assert_eq!(resolved_mode(ThemeChoice::Dark, system), ThemeMode::Dark);
+        }
+    }
+
+    #[test]
+    fn appearance_observer_tracks_both_palette_choices() {
+        let mut settings = Settings::default();
+        let original = Appearance::from(&settings);
+        settings.set_light_theme(LightTheme::One);
+        assert!(Appearance::from(&settings) != original);
+        settings.set_light_theme(LightTheme::Hive);
+        settings.set_dark_theme(DarkTheme::Dracula);
+        assert!(Appearance::from(&settings) != original);
     }
 }

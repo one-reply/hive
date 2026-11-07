@@ -16,7 +16,6 @@ pub mod settings;
 pub mod sidebar;
 pub mod status_bar;
 pub(crate) mod syntax;
-pub(crate) mod syntax_palette;
 pub(crate) mod text_field;
 pub mod theme;
 mod update_available;

@@ -55,7 +55,7 @@ Older builds need one manual installation of a version that includes the updater
 | **Follow pull requests** | See PR and CI status on worktree cards, with links to the PR and failing checks, using your existing GitHub CLI sign-in. |
 | **Generate commit messages** | Use Codex, Claude Code, OpenCode, or an API provider to draft a message from staged changes. |
 | **Track usage** | View Claude Code, Codex, Cursor Agent, and Antigravity usage limits and reset times using existing CLI sign-ins. |
-| **Make it yours** | Choose system, light, or dark appearance; customize UI and code fonts, Files density and icons, and keyboard shortcuts. |
+| **Make it yours** | Choose from six built-in themes, with independent light and dark palettes and automatic system switching; customize UI and code fonts, Files density and icons, and keyboard shortcuts. |
 | **Keep Hive updated** | Check your installed version and install signed updates from Settings → Updates. |
 
 Hive recognizes **Claude Code, Codex, OpenCode, Antigravity, Gemini CLI, Cursor Agent,

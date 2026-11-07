@@ -1,21 +1,27 @@
 //! Appearance page: theme, fonts, UI font size and scrollbars.
 
-use gpui_kit::component::button::{Button, ButtonGroup};
+mod theme_picker;
+
+use gpui_kit::component::button::Button;
 use gpui_kit::component::searchable_list::SearchableVec;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
-use gpui_kit::component::{IndexPath, Selectable as _, Sizable as _, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, IndexPath, Selectable as _, Sizable as _, h_flex, v_flex,
+};
 use gpui_kit::*;
 use hive_core::settings::{
     Scrollbars, ThemeChoice, UI_FONT_SIZE_DEFAULT, UI_FONT_SIZE_MAX, UI_FONT_SIZE_MIN,
 };
 
-use super::{font_size_stepper, setting_row, setting_title};
+use super::{font_size_stepper, setting_title};
 use crate::app::AppState;
 use crate::state::store::Store;
+use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 
 /// The picker entry that clears the stored family.
 const DEFAULT_FONT: &str = "Default";
 const FONT_PICKER_WIDTH: Pixels = px(220.);
+const ROW_TITLE_MIN_WIDTH: Rems = rems(12.);
 
 type FontPicker = Entity<SelectState<SearchableVec<String>>>;
 
@@ -123,29 +129,29 @@ impl Render for AppearancePage {
         let (theme, font_size, scrollbars) =
             (settings.theme, settings.ui_font_size(), settings.scrollbars);
 
-        let themes =
-            choice_group("theme", &ThemeChoice::ALL, theme, ThemeChoice::label).on_click({
+        let themes = choice_group(
+            "theme",
+            ThemeChoice::ALL.map(|choice| (choice, choice.label())),
+            theme,
+            {
                 let store = store.clone();
-                move |clicked: &Vec<usize>, _, cx| {
-                    if let Some(theme) = clicked.first().and_then(|ix| ThemeChoice::ALL.get(*ix)) {
-                        store.update(cx, |store, cx| store.set_theme(*theme, cx));
-                    }
-                }
-            });
+                move |choice, cx| store.update(cx, |store, cx| store.set_theme(choice, cx))
+            },
+            window,
+            cx,
+        );
+        let palettes = theme_picker::render(&store, window, cx);
         let scrollbar_choices = choice_group(
             "scrollbars",
-            &Scrollbars::ALL,
+            Scrollbars::ALL.map(|choice| (choice, choice.label())),
             scrollbars,
-            Scrollbars::label,
-        )
-        .on_click({
-            let store = store.clone();
-            move |clicked: &Vec<usize>, _, cx| {
-                if let Some(choice) = clicked.first().and_then(|ix| Scrollbars::ALL.get(*ix)) {
-                    store.update(cx, |store, cx| store.set_scrollbars(*choice, cx));
-                }
-            }
-        });
+            {
+                let store = store.clone();
+                move |choice, cx| store.update(cx, |store, cx| store.set_scrollbars(choice, cx))
+            },
+            window,
+            cx,
+        );
         let font_size = font_size_stepper(
             "ui-font-size",
             font_size,
@@ -157,48 +163,66 @@ impl Render for AppearancePage {
         );
 
         v_flex()
-            .child(setting_row(
-                setting_title(
-                    "Theme",
-                    "Follow the system, or always use light or dark.",
-                    cx,
-                ),
-                themes,
-                cx,
-            ))
-            .child(setting_row(
-                setting_title("UI font", "Typeface of menus, panels and dialogs.", cx),
-                font_select(&self.ui_font, "UI font"),
-                cx,
-            ))
-            .child(setting_row(
-                setting_title(
-                    "UI font size",
-                    "Scales text and controls in every window.",
-                    cx,
-                ),
-                font_size,
-                cx,
-            ))
-            .child(setting_row(
-                setting_title(
-                    "Code font",
-                    "Monospace typeface of terminals, diffs and code.",
-                    cx,
-                ),
-                font_select(&self.code_font, "Code font"),
-                cx,
-            ))
-            .child(setting_row(
-                setting_title(
-                    "Scrollbars",
-                    "Follow macOS, or show while scrolling, on hover or always.",
-                    cx,
-                ),
-                scrollbar_choices,
-                cx,
-            ))
+            .tab_group()
+            .gap_6()
+            .child(
+                v_flex().gap_4()
+                    .child(appearance_row(
+                        setting_title("Appearance", "Follow your system, or choose a fixed mode.", cx),
+                        themes, cx,
+                    ))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                        .child("Choose a theme for each mode. System switches between them automatically."))
+                    .child(palettes),
+            )
+            .child(
+                v_flex().gap_1()
+                    .child(section_title("Fonts and sizing", cx))
+                    .child(appearance_row(
+                        setting_title("UI font", "Menus, panels and dialogs.", cx),
+                        font_select(&self.ui_font, "UI font"), cx,
+                    ))
+                    .child(appearance_row(
+                        setting_title("UI font size", "Scales text and controls in every window.", cx),
+                        font_size, cx,
+                    ))
+                    .child(appearance_row(
+                        setting_title("Code font", "Terminals, diffs and code.", cx),
+                        font_select(&self.code_font, "Code font"), cx,
+                    )),
+            )
+            .child(
+                v_flex().gap_1()
+                    .child(section_title("Scrollbars", cx))
+                    .child(appearance_row(
+                        setting_title("Show scrollbars", "Follow macOS, or choose when they appear.", cx),
+                        scrollbar_choices, cx,
+                    )),
+            )
     }
+}
+
+fn section_title(title: &'static str, cx: &App) -> Div {
+    div()
+        .text_sm()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(cx.theme().foreground)
+        .child(title)
+}
+
+// Flex wrapping keeps controls usable at the settings window's minimum width and at large rem sizes.
+fn appearance_row(title: Div, control: impl IntoElement, cx: &App) -> Div {
+    h_flex()
+        .flex_wrap()
+        .justify_between()
+        .items_center()
+        .gap_x_6()
+        .gap_y_3()
+        .py_3()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .child(title.flex_1().min_w(ROW_TITLE_MIN_WIDTH))
+        .child(div().flex_none().max_w_full().child(control))
 }
 
 fn font_select(picker: &FontPicker, label: &'static str) -> impl IntoElement {
@@ -209,22 +233,49 @@ fn font_select(picker: &FontPicker, label: &'static str) -> impl IntoElement {
         .search_placeholder("Search fonts")
 }
 
-/// A segmented control with one button per choice, the current one selected.
-fn choice_group<T: Copy + PartialEq>(
+/// Separate buttons retain native keyboard behavior inside the segmented surface.
+fn choice_group<T: Copy + PartialEq + 'static>(
     id: &'static str,
-    choices: &[T],
+    choices: impl IntoIterator<Item = (T, &'static str)>,
     current: T,
-    label: fn(T) -> &'static str,
-) -> ButtonGroup {
-    ButtonGroup::new(id)
-        .outline()
-        .small()
-        .children(choices.iter().map(|choice| {
-            Button::new(label(*choice))
+    set: impl Fn(T, &mut App) + Clone + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
+    let buttons: Vec<_> = choices
+        .into_iter()
+        .enumerate()
+        .map(|(ix, (choice, label))| {
+            let hover = Hover::new((id, ix), window, cx);
+            let set = set.clone();
+            let selected = choice == current;
+            Button::new((id, ix))
                 .cursor_pointer()
-                .label(label(*choice))
-                .selected(*choice == current)
-        }))
+                .small()
+                .label(label)
+                .selected(selected)
+                .toggled(selected)
+                .on_click(move |_, _, cx| set(choice, cx))
+                .smooth_hover(
+                    if selected {
+                        ButtonLook::Outline
+                    } else {
+                        ButtonLook::Ghost
+                    },
+                    &hover,
+                    cx,
+                )
+        })
+        .collect();
+    h_flex()
+        .flex_wrap()
+        .gap_1()
+        .p_1()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().muted)
+        .children(buttons)
 }
 
 #[cfg(test)]
