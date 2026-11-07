@@ -73,8 +73,6 @@ impl FilesPanel {
             }))
             .child(TextField::input(
                 Input::new(&self.search_input)
-                    .small()
-                    .h(px(SEARCH_HEIGHT))
                     .aria_label("Find file")
                     .prefix(
                         Icon::new(Lucide::Search)

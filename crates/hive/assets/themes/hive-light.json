@@ -4,7 +4,8 @@
   "colors": {
     "sidebar.background": "#ffffff",
     "background": "#ffffff",
-    "foreground": "#0a0a0a"
+    "foreground": "#0a0a0a",
+    "primary.foreground": "#fafafa"
   },
   "highlight": {
     "syntax": {

@@ -61,6 +61,15 @@ pub fn list(host: &Host, cwd: &Path) -> Result<Vec<Branch>, GitError> {
         .collect()
 }
 
+/// Display name of a full branch ref (`refs/remotes/origin/main` → `origin/main`); other
+/// refs and plain names are returned unchanged.
+pub fn short_name(reference: &str) -> &str {
+    reference
+        .strip_prefix("refs/heads/")
+        .or_else(|| reference.strip_prefix("refs/remotes/"))
+        .unwrap_or(reference)
+}
+
 /// Resolve a user-selected ref as a commit, never as an option or path.
 pub fn resolve(host: &Host, cwd: &Path, reference: &str) -> Result<String, GitError> {
     run(
@@ -244,4 +253,18 @@ fn validate_name(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {
         return Err(GitError::Invalid("Enter a literal Git branch name.".into()));
     }
     run(host, cwd, &["check-ref-format", "--branch", name]).map(drop)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_name;
+
+    #[test]
+    fn short_name_strips_branch_namespaces_only() {
+        assert_eq!(short_name("refs/remotes/origin/develop"), "origin/develop");
+        assert_eq!(short_name("refs/heads/feature/x"), "feature/x");
+        assert_eq!(short_name("refs/tags/v1"), "refs/tags/v1");
+        assert_eq!(short_name("main"), "main");
+        assert_eq!(short_name(""), "");
+    }
 }

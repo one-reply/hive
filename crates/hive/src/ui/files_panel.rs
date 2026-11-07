@@ -46,8 +46,6 @@ const LABEL_SIZE: f32 = 13.;
 const META_SIZE: f32 = 11.;
 const ICON_SIZE: f32 = 16.;
 const INDENT: f32 = 16.;
-/// Matches the library's `Input` large height so the search field reads as an input, not a chip.
-const SEARCH_HEIGHT: f32 = 44.;
 
 pub(crate) struct FilesPanel {
     pub files: Entity<Files>,

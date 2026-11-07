@@ -1,5 +1,5 @@
 //! One logo per `AgentKind`, shared by the sidebar agents strip, the new-worktree
-//! dialog and the Git settings picker.
+//! dialog, the Git settings picker and the default CLI agent picker.
 //! Vendors without a monochrome mark get a generic terminal glyph: a wrong logo is worse than none.
 use gpui_kit::{component::ActiveTheme as _, *};
 use hive_core::agent::AgentKind;

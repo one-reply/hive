@@ -3,9 +3,12 @@
   "mode": "dark",
   "colors": {
     "tab_bar.background": "#111111",
+    "sidebar.background": "#0a0a0a",
     "overlay": "#00000080",
     "background": "#0a0a0a",
-    "foreground": "#fafafa"
+    "foreground": "#fafafa",
+    "primary.foreground": "#171717",
+    "input.border": "#404040"
   },
   "highlight": {
     "syntax": {

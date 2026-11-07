@@ -27,8 +27,12 @@ impl GitPanel {
                     Button::new("compare-base")
                         .cursor_pointer()
                         .xsmall()
+                        .min_w_0()
                         .icon(Lucide::GitCompareArrows)
-                        .label(base.clone().unwrap_or_else(|| "Choose base…".into()))
+                        .label(base.as_deref().map_or_else(
+                            || "Choose base…".to_string(),
+                            |reference| hive_core::git::branches::short_name(reference).to_string(),
+                        ))
                         .dropdown_caret(true)
                         .tooltip("Compare against another branch")
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -38,9 +42,10 @@ impl GitPanel {
                 )
                 .child(
                     div()
+                        .flex_shrink_0()
                         .text_size(META_TEXT)
                         .text_color(muted)
-                        .child("… HEAD, committed only"),
+                        .child("→ HEAD · commits only"),
                 ),
         );
         if let Some(base) = base.clone() {
