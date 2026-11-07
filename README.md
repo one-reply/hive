@@ -25,7 +25,7 @@ editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-k
 
 ## Download
 
-[![Download for macOS — latest release](https://img.shields.io/github/v/release/one-reply/hive?include_prereleases&sort=semver&style=for-the-badge&logo=apple&logoColor=white&label=Download%20for%20macOS&color=6E56CF)](https://github.com/one-reply/hive/releases)
+[![Download for macOS — Apple Silicon](https://img.shields.io/badge/Download_for_macOS-Apple_Silicon-6E56CF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/one-reply/hive/releases)
 
 **Apple Silicon only.** The button opens GitHub Releases, where you can download
 the latest published release, including early previews, and its SHA-256 checksum.
