@@ -89,7 +89,7 @@ impl TerminalPanel {
                 move |this, _, window, cx| {
                     // The pane's own handlers must not see a click that just closed it.
                     cx.stop_propagation();
-                    this.close_pane(&view, window, cx)
+                    this.request_close_pane(view.clone(), window, cx)
                 }
             }))
             .smooth_hover(ButtonLook::Ghost, &close_hover, cx);

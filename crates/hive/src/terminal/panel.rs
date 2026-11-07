@@ -23,6 +23,7 @@ use crate::ui::workspace::{NewTerminal, right_sidebar_toggle};
 actions!(terminal_panel, [SplitRight, SplitDown, ClosePane]);
 
 mod agent_draft;
+mod close_guard;
 mod persistence;
 mod tiles;
 
@@ -287,7 +288,9 @@ impl Panel for TerminalPanel {
                         .icon(IconName::Close)
                         .xsmall()
                         .tooltip("Close terminal")
-                        .on_click(cx.listener(|this, _, window, cx| this.close(window, cx)))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.request_close_tab(window, cx)),
+                        )
                         .smooth_hover(ButtonLook::Ghost, &close_hover, cx),
                 )
             })
@@ -349,7 +352,7 @@ impl Render for TerminalPanel {
             )
             .on_action(cx.listener(|this, _: &ClosePane, window, cx| {
                 let active = this.active.clone();
-                this.close_pane(&active, window, cx)
+                this.request_close_pane(active, window, cx)
             }))
             .child(self.render_pane(&self.panes, window, cx))
     }

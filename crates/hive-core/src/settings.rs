@@ -119,6 +119,8 @@ pub struct Settings {
     pub files_selected: bool,
     /// Side-by-side diff instead of the default unified presentation.
     pub diff_split: bool,
+    /// Ask before closing a terminal pane or tab in which a CLI agent is running.
+    pub confirm_close_running_agent: bool,
     ui_font_size: f32,
     terminal_font_size: f32,
     /// Shortcuts the user reassigned: action name (`"workspace::NewTerminal"`) → keystrokes
@@ -142,6 +144,7 @@ impl Default for Settings {
             git_panel_open: true,
             files_selected: false,
             diff_split: false,
+            confirm_close_running_agent: true,
             ui_font_size: UI_FONT_SIZE_DEFAULT,
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             keybindings: BTreeMap::new(),
@@ -357,6 +360,17 @@ mod tests {
         assert_eq!(settings.git_panel_width(), 360.);
         assert!(settings.git_panel_open);
         assert!(!settings.diff_split);
+    }
+
+    #[test]
+    fn close_confirmation_defaults_on_and_round_trips() {
+        let settings: Settings = serde_json::from_str("{}").expect("valid json");
+        assert!(settings.confirm_close_running_agent);
+        let settings: Settings =
+            serde_json::from_str(r#"{"confirm_close_running_agent":false}"#).expect("valid json");
+        let saved = serde_json::to_string(&settings).expect("serializable");
+        let reloaded: Settings = serde_json::from_str(&saved).expect("valid json");
+        assert!(!reloaded.confirm_close_running_agent);
     }
 
     #[test]
