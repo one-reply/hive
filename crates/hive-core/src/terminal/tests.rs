@@ -219,3 +219,37 @@ fn shutdown_kills_hup_ignoring_session_jobs_but_leaves_another_session_alive() {
     drop(outsider);
     assert!(outsider_control.wait_until(Instant::now() + Duration::from_secs(3)));
 }
+
+fn screen_text(terminal: &Terminal) -> String {
+    terminal
+        .term()
+        .lock()
+        .renderable_content()
+        .display_iter
+        .map(|cell| cell.c)
+        .collect()
+}
+
+#[test]
+fn child_spawned_from_a_signal_blocking_thread_still_receives_resizes() {
+    // Executor threads block signals; the PTY child must not inherit that mask.
+    let mut terminal = std::thread::spawn(|| {
+        unsafe {
+            let mut blocked = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            libc::sigfillset(blocked.as_mut_ptr());
+            libc::pthread_sigmask(libc::SIG_SETMASK, blocked.as_ptr(), std::ptr::null_mut());
+        }
+        let mut command = std::process::Command::new("/bin/sh");
+        // Non-interactive: no job control, so `sleep` shares the foreground group with the trap.
+        command.args([
+            "-c",
+            "trap 'echo got-winch' WINCH; echo trap-set; while :; do sleep 0.05; done",
+        ]);
+        Terminal::spawn_command(command, None, TerminalSize::new(80, 24)).unwrap()
+    })
+    .join()
+    .unwrap();
+    wait_for(|| screen_text(&terminal).contains("trap-set"));
+    terminal.resize(TerminalSize::new(100, 30));
+    wait_for(|| screen_text(&terminal).contains("got-winch"));
+}
