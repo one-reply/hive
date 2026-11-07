@@ -28,6 +28,7 @@ impl TerminalPanel {
                         directory: view.read(cx).restore_directory(cx),
                         worktree: view.read(cx).cwd().map(Path::to_owned),
                         resume: view.read(cx).session().read(cx).resume.clone(),
+                        name: view.read(cx).session().read(cx).name.clone(),
                     },
                 }
             }
@@ -119,6 +120,10 @@ fn restore_panes(
                     }
                 }
             });
+            if value.name.is_some() {
+                let session = view.read(cx).session().clone();
+                session.update(cx, |session, cx| session.set_name(value.name.clone(), cx));
+            }
             views.push(view.clone());
             Some(PaneTree::Leaf(view))
         }

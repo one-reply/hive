@@ -59,6 +59,18 @@ impl Activity {
         )
     }
 
+    /// Whether the terminal received input (keystrokes, pastes, resizes) within `window`.
+    pub fn had_input_within(&self, window: Duration, now: Instant) -> bool {
+        match self.0.last_input.load(Ordering::Relaxed) {
+            NEVER => false,
+            millis => {
+                now.saturating_duration_since(self.0.origin)
+                    .saturating_sub(Duration::from_millis(millis - 1))
+                    <= window
+            }
+        }
+    }
+
     fn stamp(&self) -> u64 {
         let millis = u64::try_from(self.0.origin.elapsed().as_millis()).unwrap_or(u64::MAX - 1);
         millis + 1
@@ -125,5 +137,16 @@ mod tests {
         activity.record_input();
         activity.record_output();
         assert!(!activity.is_streaming(Instant::now()));
+    }
+
+    #[test]
+    fn recent_input_is_reported_until_the_window_passes() {
+        let activity = Activity::default();
+        let now = Instant::now();
+        assert!(!activity.had_input_within(Duration::from_secs(2), now));
+        activity.record_input();
+        let now = Instant::now();
+        assert!(activity.had_input_within(Duration::from_secs(2), now));
+        assert!(!activity.had_input_within(Duration::from_secs(2), now + Duration::from_secs(3)));
     }
 }

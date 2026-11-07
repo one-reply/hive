@@ -164,6 +164,7 @@ mod tests {
             reported: false,
             unread: false,
             title: None,
+            name: None,
         }
     }
 

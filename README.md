@@ -43,12 +43,13 @@ Older builds need one manual installation of a version that includes the updater
 | Workflow | What Hive provides |
 | --- | --- |
 | **Organize your work** | Add local or SSH Linux projects, create and remove Git worktrees, reorder projects, and customize their names, colors, and icons. |
-| **Start a task** | Create a worktree from a chosen base branch and launch a terminal, Claude Code, Codex, or OpenCode with **Create & Start**. |
+| **Start a task** | Create a worktree from a chosen base branch and launch a terminal, Claude Code, Codex, OpenCode, or Antigravity with **Create & Start**. |
 | **Run agents in terminals** | Use terminal tabs and split panes, with text selection, scrollback, and clipboard image paste. See running agents on their worktree cards. |
+| **Let agents work together** | Agents list each other, start a named helper in the next pane, and exchange messages with the `hive agent` command. |
 | **Edit files** | Browse and search with **Files / ⌘P**, use syntax highlighting and preview or pinned tabs, save with **⌘S**, and handle external changes and recovery drafts. |
 | **Manage files** | Create, rename, move, and delete files or folders; drag files between folders and see Git change badges in the tree. |
 | **Navigate your workspace** | Jump to a project, worktree, or agent with **⌘K**. Use **Needs attention** to find Claude sessions waiting for input or approval. |
-| **Pick up where you left off** | Restore selected worktrees, pinned files, terminal and diff tabs, split sizes, focus, and shell directories. Explicitly resume saved Claude Code and OpenCode conversations. |
+| **Pick up where you left off** | Restore selected worktrees, pinned files, terminal and diff tabs, split sizes, focus, and shell directories. Agent panes continue their Claude Code, Codex, OpenCode, or Antigravity conversation. |
 | **Review and commit** | Inspect unified or split diffs, stage files or hunks, compare branches, browse history, and commit, fetch, pull, or push. |
 | **Send feedback to agents** | Annotate diff lines and copy an editable review prompt. Turn a Git error into a draft in the appropriate agent terminal, ready for you to submit. |
 | **Follow pull requests** | See PR and CI status on worktree cards, with links to the PR and failing checks, using your existing GitHub CLI sign-in. |
@@ -57,8 +58,8 @@ Older builds need one manual installation of a version that includes the updater
 | **Make it yours** | Choose system, light, or dark appearance; customize UI and code fonts, Files density and icons, and keyboard shortcuts. |
 | **Keep Hive updated** | Check your installed version and install signed updates from Settings → Updates. |
 
-Hive recognizes **Claude Code, Codex, OpenCode, Gemini CLI, Cursor Agent, Copilot CLI,
-Qwen Code, Amp, Aider, and Droid** running in its local terminals. Install and sign
+Hive recognizes **Claude Code, Codex, OpenCode, Antigravity, Gemini CLI, Cursor Agent,
+Copilot CLI, Qwen Code, Amp, Aider, and Droid** running in its local terminals. Install and sign
 in to the agents you want to use separately, then launch them as you would in any
 terminal.
 
@@ -67,11 +68,11 @@ approval, turn completion, and failure states. Other agents, and Claude launched
 in a shell, use **estimated Working / Idle** based on terminal output. Handle
 approval prompts in the agent's own terminal.
 
-Restored terminals start fresh shells; running processes and scrollback are not
-restored. **Resume** starts a new agent tab when a saved Claude Code or OpenCode
-session ID is available. Codex conversation IDs are not captured yet. Shell
-directories are sampled once per second, so quitting immediately after `cd` may
-restore the previous directory.
+Restored terminals reopen in their last directories. A pane that was running Claude
+Code, Codex, OpenCode, or Antigravity starts that agent again and continues the same
+conversation; other processes and scrollback are not restored. Shell directories are
+sampled once per second, so quitting immediately after `cd` may restore the previous
+directory.
 
 ## A closer look
 
@@ -137,6 +138,30 @@ External edits are reloaded for clean files; unsaved files show a conflict inste
 of silently overwriting either version. **⌘-click** follows JavaScript/TypeScript
 imports to their definitions; **⌘⇧-click** opens them in an adjacent tab. A full
 language server and autocomplete are not included.
+
+### Agents working together
+
+Agents in Hive's local terminals can find each other and talk through the `hive`
+command, which Hive adds to each terminal's `PATH`:
+
+```sh
+hive agent list
+hive agent start reviewer --kind codex --prompt "Review the current diff"
+hive agent send reviewer "Also check the tests" --wait
+hive agent read reviewer --lines 40
+```
+
+`start` opens the agent in a pane beside the caller, or in a new tab with `--tab`,
+under a unique name. A message reaches the recipient's prompt wrapped in
+`<hive-message from="…">` together with the command to reply, so agents answer each
+other without you copying text between panes. `hive --skill` prints the full
+instructions for an agent; Claude Code started by Hive is pointed at them automatically.
+
+A message never answers a dialog for you. An agent waiting for approval refuses
+messages, and Enter is pressed only after the pasted text reaches the agent's prompt.
+Claude Code started by Hive receives messages at once; other agents receive them
+when their output pauses. SSH terminals cannot be reached yet, and Hive does not
+change any agent's permissions.
 
 ### Linux projects over SSH
 

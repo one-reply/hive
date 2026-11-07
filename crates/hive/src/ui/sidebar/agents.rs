@@ -249,6 +249,14 @@ fn render_session(
         .text_size(META_TEXT)
         .child(status_icon(session.status, cx))
         .child(logo(session.kind, cx))
+        .when_some(session.name.clone(), |row, name| {
+            row.child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(name),
+            )
+        })
         .child(div().flex_none().child(session.kind.name()))
         .child(div().text_color(muted).child(if !target.host.is_local() {
             "Remote · status unavailable".to_owned()

@@ -18,7 +18,12 @@ use hive_core::terminal::{Activity, Terminal};
 
 use crate::state::terminal_session::TerminalSession;
 
+mod api;
 mod conversations;
+mod endpoint;
+
+pub(crate) use api::SpawnRequest;
+pub(crate) use endpoint::{Endpoint, PaneEndpoint};
 
 /// Short enough that a spinner starts soon after the agent does, long enough that one `ps`
 /// per tick stays negligible.
@@ -35,6 +40,8 @@ pub(crate) struct AgentSession {
     pub(crate) unread: bool,
     /// The title the agent gave its terminal, usually its current task.
     pub(crate) title: Option<SharedString>,
+    /// The name `hive agent start` gave its pane.
+    pub(crate) name: Option<SharedString>,
 }
 
 pub(crate) enum AgentsEvent {
@@ -42,6 +49,9 @@ pub(crate) enum AgentsEvent {
     Reveal(EntityId),
     Attention(EntityId, AgentStatus),
     Launch(Host, PathBuf, Option<Launch>),
+    /// `hive agent start`: open a named agent beside the caller's pane; the workspace answers
+    /// with [`Agents::started`].
+    Spawn(SpawnRequest),
 }
 
 pub(crate) struct Agents {
@@ -49,8 +59,14 @@ pub(crate) struct Agents {
     by_worktree: HashMap<(Host, PathBuf), Vec<AgentSession>>,
     /// The last poll failure, logged once instead of on every tick.
     last_error: Option<String>,
-    endpoint: Option<PathBuf>,
+    endpoint: Option<PaneEndpoint>,
+    hooks: Option<Arc<hooks::Server>>,
+    /// `hive agent wait` and `send --wait` calls, answered when the agent settles.
+    waits: Vec<api::Waiting>,
+    /// `hive agent start` calls, answered once the new agent runs.
+    starts: Vec<api::Starting>,
     _poll: Task<()>,
+    _serve: Option<Task<()>>,
 }
 
 struct Watched {
@@ -85,54 +101,29 @@ struct Sighting {
 impl EventEmitter<AgentsEvent> for Agents {}
 
 impl Agents {
-    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+    /// `endpoint` is bound before the app state exists, so the first panes already get it.
+    pub(crate) fn new(endpoint: Option<Endpoint>, cx: &mut Context<Self>) -> Self {
         let poll = cx.spawn(async move |this, cx| {
-            let server = cx
-                .background_executor()
-                .spawn(async { hooks::Server::bind().map(Arc::new) })
-                .await;
-            let server = match server {
-                Ok(server) => {
-                    let path = server.path().to_owned();
-                    if this
-                        .update(cx, |this, _| this.endpoint = Some(path))
-                        .is_err()
-                    {
-                        return;
-                    }
-                    Some(server)
-                }
-                Err(error) => {
-                    tracing::error!(%error, "agent hooks unavailable; using estimated status");
-                    None
-                }
-            };
             loop {
                 cx.background_executor().timer(POLL_INTERVAL).await;
                 let Ok(probes) = this.update(cx, |this, cx| this.probes(cx)) else {
                     return;
                 };
-                let server = server.clone();
-                let (sightings, reports) = cx
+                let sightings = cx
                     .background_executor()
                     .spawn(async move {
-                        let reports = server.map(|server| server.drain()).transpose();
-                        let sightings = if probes.is_empty() {
+                        if probes.is_empty() {
                             Ok(Vec::new())
                         } else {
                             look(&probes)
-                        };
-                        (sightings, reports)
+                        }
                     })
                     .await;
                 if this
                     .update(cx, |this, cx| {
-                        match reports {
-                            Ok(Some(reports)) => this.apply_reports(reports, cx),
-                            Err(error) => tracing::warn!(%error, "could not read agent hooks"),
-                            _ => {}
-                        }
-                        this.apply(sightings, cx)
+                        this.refresh_reports(cx);
+                        this.apply(sightings, cx);
+                        this.settle_calls(cx);
                     })
                     .is_err()
                 {
@@ -140,12 +131,45 @@ impl Agents {
                 }
             }
         });
+        let (pane, hooks, calls) = match endpoint {
+            Some(endpoint) => (Some(endpoint.pane), Some(endpoint.hooks), endpoint.calls),
+            None => (None, None, None),
+        };
+        let serve = calls.map(|calls| {
+            cx.spawn(async move |this, cx| {
+                while let Ok(incoming) = calls.recv().await {
+                    if this
+                        .update(cx, |this, cx| this.handle(incoming, cx))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            })
+        });
         Self {
             watched: Vec::new(),
             by_worktree: HashMap::new(),
             last_error: None,
-            endpoint: None,
+            endpoint: pane,
+            hooks,
+            waits: Vec::new(),
+            starts: Vec::new(),
             _poll: poll,
+            _serve: serve,
+        }
+    }
+
+    /// Applies hook reports that arrived since the last call. The socket is nonblocking and
+    /// each pass is bounded, so this runs on the UI thread: every report is then applied in
+    /// arrival order, also when a message delivery asks for the freshest status.
+    pub(crate) fn refresh_reports(&mut self, cx: &mut Context<Self>) {
+        let Some(hooks) = &self.hooks else {
+            return;
+        };
+        match hooks.drain() {
+            Ok(reports) => self.apply_reports(reports, cx),
+            Err(error) => tracing::warn!(%error, "could not read agent hooks"),
         }
     }
 
@@ -236,7 +260,7 @@ impl Agents {
         cx.emit(AgentsEvent::Launch(host, worktree, launch));
     }
 
-    pub(crate) fn endpoint(&self) -> Option<PathBuf> {
+    pub(crate) fn endpoint(&self) -> Option<PaneEndpoint> {
         self.endpoint.clone()
     }
 
@@ -267,11 +291,14 @@ impl Agents {
             {
                 session.update(cx, |session, cx| session.set_resume(Some(id), cx));
             }
-            if let Some(status) = report.status
-                && update_status(&mut watched.reported, &mut watched.unread, status)
-            {
-                cx.emit(AgentsEvent::Attention(watched.id, status));
+            let Some(status) = report.status else {
+                continue;
+            };
+            let id = watched.id;
+            if update_status(&mut watched.reported, &mut watched.unread, status) {
+                cx.emit(AgentsEvent::Attention(id, status));
             }
+            self.note_status(id, status);
         }
     }
 
@@ -310,13 +337,18 @@ impl Agents {
         self.track_conversations(&seen, cx);
         let mut by_worktree: HashMap<(Host, PathBuf), Vec<AgentSession>> = HashMap::new();
         for sighting in sightings {
-            let title = self
+            let session = self
                 .watched
                 .iter()
                 .find(|watched| watched.id == sighting.id)
-                .and_then(|watched| watched.session.upgrade())
-                .and_then(|session| session.read(cx).title.clone())
-                .map(SharedString::from);
+                .and_then(|watched| watched.session.upgrade());
+            let (title, name) = session.map_or((None, None), |session| {
+                let session = session.read(cx);
+                (
+                    session.title.clone().map(SharedString::from),
+                    session.name.clone().map(SharedString::from),
+                )
+            });
             let watched = self.watched.iter().find(|w| w.id == sighting.id);
             let reported = watched
                 .and_then(|w| w.reported)
@@ -331,6 +363,7 @@ impl Agents {
                     reported: reported.is_some(),
                     unread: reported.is_some() && watched.is_some_and(|w| w.unread),
                     title,
+                    name,
                 });
         }
         if self.by_worktree != by_worktree {

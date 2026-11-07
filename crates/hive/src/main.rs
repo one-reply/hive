@@ -1,4 +1,5 @@
 mod app;
+mod cli;
 mod quit;
 mod state;
 mod terminal;
@@ -84,22 +85,10 @@ fn workspace_window(cx: &App) -> Option<WindowHandle<Root>> {
         })
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
-    if args.get(1).is_some_and(|a| a == "--agent-hook") {
-        if let (Some(endpoint), Some(terminal)) = (
-            args.get(2),
-            args.get(3)
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.parse().ok()),
-        ) && let Err(error) = hive_core::agent::hooks::forward(
-            std::path::Path::new(endpoint),
-            terminal,
-            std::io::stdin().lock(),
-        ) {
-            eprintln!("Hive hook: {error}");
-        }
-        return;
+    if let Some(code) = cli::run(&args) {
+        return code;
     }
     init_logging();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "hive starting");
@@ -125,7 +114,7 @@ fn main() {
         gpui_kit::init(cx);
         load_login_environment(cx);
         cx.spawn(async move |cx| {
-            let (loaded, recovery) = cx
+            let (loaded, recovery, endpoint) = cx
                 .background_executor()
                 .spawn(async {
                     let loaded = hive_core::state::State::load();
@@ -133,11 +122,13 @@ fn main() {
                     let recovery = hive_core::files::recovery::load(
                         &hive_core::state::hive_dir().join("editor-recovery"),
                     );
-                    (loaded, recovery)
+                    // Restored panes start with the window; they need the sockets already.
+                    let endpoint = state::agents::Endpoint::bind();
+                    (loaded, recovery, endpoint)
                 })
                 .await;
             cx.update(|cx| {
-                AppState::init(loaded, recovery, cx);
+                AppState::init(loaded, recovery, endpoint, cx);
                 ui::app_menu::init(cx);
                 ui::theme::init(cx);
                 ui::syntax::init();
@@ -150,4 +141,5 @@ fn main() {
         })
         .detach();
     });
+    std::process::ExitCode::SUCCESS
 }

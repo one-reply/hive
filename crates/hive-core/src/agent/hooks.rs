@@ -90,6 +90,11 @@ impl Server {
         &self.path
     }
 
+    /// The owner-only directory holding the endpoint; other per-instance sockets share it.
+    pub fn directory(&self) -> &Path {
+        self.path.parent().unwrap_or(&self.path)
+    }
+
     /// Blocking IO, but never waits for an event. Bounds work per polling pass.
     pub fn drain(&self) -> io::Result<Vec<Report>> {
         let mut reports = Vec::new();

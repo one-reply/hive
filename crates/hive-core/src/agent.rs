@@ -5,6 +5,7 @@
 //! its foreground process group (`tpgid`), and the command lines in that group name the agent.
 //! One `ps` snapshot serves every open terminal.
 
+pub mod api;
 pub mod conversation;
 pub mod draft;
 pub mod hooks;
@@ -88,7 +89,8 @@ impl AgentKind {
         }
     }
 
-    fn from_executable(name: &str) -> Option<Self> {
+    /// The agent whose executable is called `name`, as `hive agent start --kind` spells it.
+    pub fn from_executable(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| kind.executable() == name)
     }
 

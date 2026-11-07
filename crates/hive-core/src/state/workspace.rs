@@ -193,6 +193,13 @@ pub struct TerminalPane {
     /// The conversation the pane's agent ran at quit; restoration resumes it in this pane.
     #[serde(default, deserialize_with = "crate::agent::launch::deserialize_saved")]
     pub resume: Option<crate::agent::launch::ResumeSession>,
+    /// The name `hive agent start` gave the pane; other agents keep addressing it by name.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::agent::api::deserialize_name"
+    )]
+    pub name: Option<String>,
 }
 
 /// The two kinds of workspace tab Hive can restore.
@@ -405,6 +412,24 @@ mod tests {
     }
 
     #[test]
+    fn pane_names_round_trip_and_invalid_saved_names_are_dropped() {
+        let pane: TerminalPane =
+            serde_json::from_str(r#"{"directory":"/tmp","name":"reviewer"}"#).unwrap();
+        assert_eq!(pane.name.as_deref(), Some("reviewer"));
+        assert_eq!(
+            serde_json::from_str::<TerminalPane>(&serde_json::to_string(&pane).unwrap()).unwrap(),
+            pane
+        );
+        for name in [r#""--resume""#, r#""Not Valid""#, "42", "null"] {
+            let pane: TerminalPane =
+                serde_json::from_str(&format!(r#"{{"directory":"/tmp","name":{name}}}"#)).unwrap();
+            assert_eq!(pane.name, None, "{name}");
+        }
+        let unnamed: TerminalPane = serde_json::from_str(r#"{"directory":"/tmp"}"#).unwrap();
+        assert!(!serde_json::to_string(&unnamed).unwrap().contains("name"));
+    }
+
+    #[test]
     fn snapshot_round_trip_retains_empty_projects_and_diff_context() {
         let json = r#"{
             "selection":{"project":"/project","worktree":"/branch"},
@@ -442,6 +467,7 @@ mod tests {
                 directory: PathBuf::from(path),
                 worktree: Some("/project".into()),
                 resume: None,
+                name: None,
             },
         };
         let tab = Tab::Terminal {
