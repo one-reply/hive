@@ -1,6 +1,7 @@
 //! Where a project lives. Remote v1 is simply "the same command, run through `ssh`".
 
 pub mod environment;
+pub mod ssh_config;
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;

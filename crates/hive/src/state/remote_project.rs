@@ -3,8 +3,9 @@ use crate::app::AppState;
 use gpui_kit::*;
 use hive_core::{
     command::Cancellation,
-    host::Host,
+    host::{Host, ssh_config::SshHost},
     remote::{self, Directory},
+    state::home_dir,
 };
 use std::{path::PathBuf, sync::Arc};
 
@@ -148,6 +149,50 @@ impl RemoteProject {
     }
 }
 
+/// SSH hosts Add Project offers: targets of existing SSH projects first, as the likeliest
+/// next pick, then the remaining `~/.ssh/config` aliases. Reading the config is disk I/O,
+/// so it runs on the background executor.
+pub(crate) fn known_hosts(cx: &App) -> Task<Vec<SshHost>> {
+    let used: Vec<String> = AppState::get(cx)
+        .store
+        .read(cx)
+        .state
+        .projects
+        .iter()
+        .filter_map(|project| match &project.host {
+            Host::Ssh { target } => Some(target.clone()),
+            Host::Local => None,
+        })
+        .collect();
+    cx.background_executor().spawn(async move {
+        let config = home_dir()
+            .map(|home| hive_core::host::ssh_config::hosts(&home))
+            .unwrap_or_default();
+        merge_hosts(config, used)
+    })
+}
+
+fn merge_hosts(config: Vec<SshHost>, used: Vec<String>) -> Vec<SshHost> {
+    let mut hosts: Vec<SshHost> = Vec::with_capacity(config.len() + used.len());
+    for target in used {
+        if hosts.iter().any(|host| host.alias == target) {
+            continue;
+        }
+        let known = config.iter().find(|host| host.alias == target).cloned();
+        hosts.push(known.unwrap_or(SshHost {
+            alias: target,
+            hostname: None,
+            user: None,
+        }));
+    }
+    for host in config {
+        if !hosts.iter().any(|known| known.alias == host.alias) {
+            hosts.push(host);
+        }
+    }
+    hosts
+}
+
 impl Drop for RemoteProject {
     fn drop(&mut self) {
         self.cancellation.cancel();
@@ -156,7 +201,34 @@ impl Drop for RemoteProject {
 
 #[cfg(test)]
 mod tests {
-    use super::{Connection, Directory, Host, RemoteProject};
+    use super::{Connection, Directory, Host, RemoteProject, SshHost, merge_hosts};
+
+    fn host(alias: &str, hostname: Option<&str>) -> SshHost {
+        SshHost {
+            alias: alias.into(),
+            hostname: hostname.map(Into::into),
+            user: None,
+        }
+    }
+
+    #[test]
+    fn used_targets_come_first_once_and_keep_config_details() {
+        let config = vec![host("home", Some("10.0.0.2")), host("build", None)];
+        let used = vec!["build".into(), "me@box".into(), "build".into()];
+        assert_eq!(
+            merge_hosts(config, used),
+            [
+                host("build", None),
+                host("me@box", None),
+                host("home", Some("10.0.0.2"))
+            ]
+        );
+    }
+
+    #[test]
+    fn no_config_and_no_projects_offer_nothing() {
+        assert!(merge_hosts(Vec::new(), Vec::new()).is_empty());
+    }
     #[test]
     fn late_connection_cannot_replace_current_host_and_failed_browse_retains_folder() {
         let mut state = RemoteProject::new();

@@ -10,12 +10,12 @@ use crate::state::store::Store;
 use crate::ui::hover::{Hover, SmoothHoverBg as _};
 use crate::ui::theme::catalog::{self, TerminalPalette};
 
-const CARD_WIDTH: Rems = rems(10.5);
-const PREVIEW_HEIGHT: Rems = rems(4.5);
-const CARD_RADIUS: Pixels = px(12.);
+const CARD_WIDTH: Rems = rems(8.);
+const PREVIEW_HEIGHT: Rems = rems(2.75);
+const CARD_RADIUS: Pixels = px(10.);
 const PREVIEW_RADIUS: Pixels = px(6.);
-const TEXT_SAMPLE_WIDTH: Rems = rems(4.);
-const TEXT_SAMPLE_HEIGHT: Rems = rems(0.35);
+const TEXT_SAMPLE_WIDTH: Rems = rems(3.);
+const TEXT_SAMPLE_HEIGHT: Rems = rems(0.3);
 const SELECTED_OPACITY: f32 = 0.035;
 const HOVER_OPACITY: f32 = 0.065;
 const FOCUS_OPACITY: f32 = 0.12;
@@ -93,8 +93,8 @@ fn swatch(
         .w(CARD_WIDTH)
         .max_w_full()
         .flex_none()
-        .p_2()
-        .gap_2()
+        .p_1p5()
+        .gap_1p5()
         .border_2()
         .border_color(if selected { accent } else { theme.transparent })
         .rounded(CARD_RADIUS)
@@ -105,8 +105,8 @@ fn swatch(
                 .w_full()
                 .h(PREVIEW_HEIGHT)
                 .flex_none()
-                .p_3()
-                .gap_2()
+                .p_2p5()
+                .gap_1p5()
                 .rounded(PREVIEW_RADIUS)
                 .border_1()
                 .border_color(palette.foreground.opacity(PREVIEW_BORDER_OPACITY))
@@ -119,13 +119,13 @@ fn swatch(
                         .bg(palette.foreground),
                 )
                 .child(h_flex().gap_1p5().children(
-                    [4, 1, 2, 3, 5].map(|ix| div().size_2p5().rounded_full().bg(palette.ansi[ix])),
+                    [4, 1, 2, 3, 5].map(|ix| div().size_2().rounded_full().bg(palette.ansi[ix])),
                 )),
         )
         .child(
             h_flex()
                 .gap_1p5()
-                .text_sm()
+                .text_xs()
                 .text_color(if selected { fg } else { theme.muted_foreground })
                 .font_weight(if selected {
                     FontWeight::SEMIBOLD
@@ -133,8 +133,8 @@ fn swatch(
                     FontWeight::NORMAL
                 })
                 .child(div().flex_1().min_w_0().child(name))
-                .child(div().size_4().flex_none().when(selected, |el| {
-                    el.child(Icon::new(IconName::Check).size_4().text_color(accent))
+                .child(div().size_3p5().flex_none().when(selected, |el| {
+                    el.child(Icon::new(IconName::Check).size_3p5().text_color(accent))
                 })),
         )
         .on_click(move |_, _, cx| select(cx))
