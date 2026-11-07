@@ -127,6 +127,15 @@ impl Store {
         self.state.settings.diff_split = split;
         self.commit(cx);
     }
+    pub(crate) fn set_confirm_close_running_agent(
+        &mut self,
+        confirm: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.settings.confirm_close_running_agent = confirm;
+        self.commit(cx);
+    }
+
     pub(crate) fn set_files_selected(&mut self, files: bool, cx: &mut Context<Self>) {
         self.state.settings.files_selected = files;
         self.commit(cx);

@@ -375,18 +375,23 @@ fn render_close_button(
             move |_, window, cx| {
                 // Close by id without also selecting the tab underneath.
                 cx.stop_propagation();
-                if let Some(panel) = group
+                let panel = group
                     .panels()
                     .iter()
                     .find(|panel| panel.panel_id(cx) == panel_id)
-                    .and_then(|panel| {
-                        panel
-                            .view()
-                            .downcast::<crate::ui::editor_panel::EditorPanel>()
-                            .ok()
-                    })
+                    .map(|panel| panel.view());
+                if let Some(editor) = panel
+                    .clone()
+                    .and_then(|view| view.downcast::<crate::ui::editor_panel::EditorPanel>().ok())
                 {
-                    panel.update(cx, |panel, cx| panel.request_close(window, cx));
+                    editor.update(cx, |panel, cx| panel.request_close(window, cx));
+                    return;
+                }
+                if let Some(terminal) = panel.and_then(|view| {
+                    view.downcast::<crate::terminal::panel::TerminalPanel>()
+                        .ok()
+                }) {
+                    terminal.update(cx, |panel, cx| panel.request_close_tab(window, cx));
                     return;
                 }
                 group.close(panel_id, window, cx);
