@@ -152,18 +152,7 @@ impl Workspace {
             cx.subscribe_in(&agents, window, |this, _, event, window, cx| match event {
                 AgentsEvent::Reveal(session) => this.reveal_session(*session, window, cx),
                 AgentsEvent::Launch(host, path, launch) => {
-                    let project = this
-                        .projects
-                        .read(cx)
-                        .items
-                        .iter()
-                        .find(|project| {
-                            project.host == *host
-                                && (project.path == *path
-                                    || project.worktrees.iter().any(|w| w.path == *path))
-                        })
-                        .map(|p| (p.host.clone(), p.path.clone()));
-                    if let Some(project) = project {
+                    if let Some(project) = this.project_of(host, path, cx) {
                         this.shown = Some(project.clone());
                         this.center(&project, window, cx).open_agent(
                             path,
@@ -175,6 +164,27 @@ impl Workspace {
                         this.save_center(&project, window, cx);
                         cx.notify();
                     }
+                }
+                AgentsEvent::Spawn(request) => {
+                    let project = this.project_of(&request.host, &request.worktree, cx);
+                    let session = match project {
+                        Some(project) => {
+                            let shown = this.shown.as_ref() == Some(&project);
+                            let session = this
+                                .center(&project, window, cx)
+                                .spawn_agent(request, shown, window, cx);
+                            this.sync_active_worktrees(cx);
+                            this.save_center(&project, window, cx);
+                            cx.notify();
+                            Ok(session)
+                        }
+                        None => Err("The caller's project is no longer open in Hive".to_owned()),
+                    };
+                    let name = request.name.clone();
+                    AppState::get(cx)
+                        .agents
+                        .clone()
+                        .update(cx, |agents, _| agents.started(&name, session));
                 }
                 AgentsEvent::Attention(session, status) => {
                     let session = *session;
@@ -270,6 +280,23 @@ impl Workspace {
         self.sync_active_worktrees(cx);
         self.save_center(&project, window, cx);
         cx.notify();
+    }
+
+    /// The open project that is, or holds the worktree, `path` on `host`.
+    fn project_of(&self, host: &Host, path: &std::path::Path, cx: &App) -> Option<(Host, PathBuf)> {
+        self.projects
+            .read(cx)
+            .items
+            .iter()
+            .find(|project| {
+                project.host == *host
+                    && (project.path == path
+                        || project
+                            .worktrees
+                            .iter()
+                            .any(|worktree| worktree.path == path))
+            })
+            .map(|project| (project.host.clone(), project.path.clone()))
     }
 
     /// Shows the project, tab and pane running terminal `session`, wherever it is.

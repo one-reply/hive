@@ -1,30 +1,40 @@
 //! Antigravity's quota, from the Cloud Code `retrieveUserQuotaSummary` call that `agy` itself
-//! makes, with the Google session it saved. Shape as reverse-engineered by ai-usagebar.
+//! makes, with the Google session it saved and its Cloud Code project context.
 
 use super::{UsageError, UsageWindow, json_of, parse_time, post_text};
 use crate::keychain;
 use serde_json::Value;
 
-const QUOTA_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
-/// What Google answers with when the account's plan has no Antigravity quota.
-const SUBSCRIPTION_REQUIRED: &str = "SUBSCRIPTION_REQUIRED";
+const API_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:";
 
 pub(super) fn fetch() -> Result<Vec<UsageWindow>, UsageError> {
     let token = keychain::antigravity_access_token()?;
-    let (status, text) = post_text(
-        QUOTA_URL,
-        &[
-            ("Authorization", &format!("Bearer {token}")),
-            ("Accept", "application/json"),
-            ("User-Agent", "antigravity"),
-        ],
-        "{}",
+    let authorization = format!("Bearer {token}");
+    let headers = [
+        ("Authorization", authorization.as_str()),
+        ("Accept", "application/json"),
+        ("User-Agent", "antigravity"),
+    ];
+    fetch_quota(|method, body| post_text(&format!("{API_URL}{method}"), &headers, body))
+}
+
+fn fetch_quota(
+    mut post: impl FnMut(&str, &str) -> Result<(u16, String), UsageError>,
+) -> Result<Vec<UsageWindow>, UsageError> {
+    let (status, text) = post(
+        "loadCodeAssist",
+        r#"{"metadata":{"ideType":"ANTIGRAVITY"}}"#,
     )?;
-    if status == 403 && text.contains(SUBSCRIPTION_REQUIRED) {
-        return Err(UsageError::Http(
-            "this plan has no Antigravity quota".into(),
-        ));
-    }
+    let account = json_of(status, &text)?;
+    let project = account["cloudaicompanionProject"]
+        .as_str()
+        .filter(|project| !project.trim().is_empty())
+        .ok_or_else(|| {
+            UsageError::Json("Antigravity project unavailable; open `agy` to sign in".into())
+        })?;
+    // Without project, Google can return SUBSCRIPTION_REQUIRED even for an eligible account.
+    let body = serde_json::json!({ "project": project }).to_string();
+    let (status, text) = post("retrieveUserQuotaSummary", &body)?;
     let json = json_of(status, &text)?;
     Ok(parse(&json))
 }
@@ -104,6 +114,93 @@ mod tests {
         ]
       }
     }"#;
+
+    #[test]
+    fn resolves_the_account_project_before_requesting_quota() {
+        let mut calls = Vec::new();
+        let windows = fetch_quota(|method, body| {
+            calls.push(method.to_owned());
+            let body: Value = serde_json::from_str(body).unwrap();
+            match method {
+                "loadCodeAssist" => {
+                    assert_eq!(body["metadata"]["ideType"], "ANTIGRAVITY");
+                    Ok((
+                        200,
+                        r#"{"cloudaicompanionProject":"project-\"one","unknown":true}"#.into(),
+                    ))
+                }
+                "retrieveUserQuotaSummary" => {
+                    assert_eq!(body, serde_json::json!({"project": "project-\"one"}));
+                    Ok((200, QUOTA_JSON.into()))
+                }
+                _ => panic!("unexpected method"),
+            }
+        })
+        .unwrap();
+        assert_eq!(calls, ["loadCodeAssist", "retrieveUserQuotaSummary"]);
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].percent, 75.);
+    }
+
+    #[test]
+    fn missing_or_invalid_project_never_sends_an_unscoped_quota_request() {
+        for response in [
+            "{}",
+            r#"{"cloudaicompanionProject":null}"#,
+            r#"{"cloudaicompanionProject":123}"#,
+            r#"{"cloudaicompanionProject":"  "}"#,
+            "{",
+        ] {
+            let error = fetch_quota(|method, _| {
+                assert_eq!(method, "loadCodeAssist");
+                Ok((200, response.into()))
+            })
+            .unwrap_err();
+            assert!(matches!(error, UsageError::Json(_)));
+        }
+    }
+
+    #[test]
+    fn project_lookup_errors_stop_without_exposing_the_account() {
+        for status in [401, 403, 429, 500] {
+            let error = fetch_quota(|method, _| {
+                assert_eq!(method, "loadCodeAssist");
+                Ok((status, r#"{"account":"private-account-marker"}"#.into()))
+            })
+            .unwrap_err();
+            assert_eq!(error, UsageError::Http(format!("HTTP {status}")));
+        }
+        let error = fetch_quota(|_, _| Err(UsageError::Http("timeout".into()))).unwrap_err();
+        assert_eq!(error, UsageError::Http("timeout".into()));
+    }
+
+    #[test]
+    fn quota_denial_is_not_misreported_as_a_plan_without_quota() {
+        let error = fetch_quota(|method, _| match method {
+            "loadCodeAssist" => Ok((200, r#"{"cloudaicompanionProject":"project-one"}"#.into())),
+            _ => Ok((403, r#"{"error":{"details":[{"reason":"SUBSCRIPTION_REQUIRED"}],"message":"private-account-marker"}}"#.into())),
+        })
+        .unwrap_err();
+        assert_eq!(error, UsageError::Http("HTTP 403".into()));
+    }
+
+    #[test]
+    fn reads_the_live_project_scoped_weekly_summary() {
+        // Captured 2026-11-07; only public model labels and quota fields are retained.
+        let response = serde_json::json!({"groups": [{
+            "displayName": "Claude and GPT models",
+            "buckets": [{"displayName": "Weekly Limit Remaining", "window": "weekly",
+                "remainingFraction": 1, "resetTime": "2026-11-14T20:30:36Z"}]
+        }]});
+        let windows = parse(&response);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].label, "7d");
+        assert_eq!(windows[0].remaining_percent(), 100.);
+        assert_eq!(
+            windows[0].resets_at,
+            parse_time(&serde_json::json!("2026-11-14T20:30:36Z"))
+        );
+    }
 
     #[test]
     fn shows_the_most_used_bucket_of_each_window() {

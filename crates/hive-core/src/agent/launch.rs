@@ -204,7 +204,13 @@ impl Launch {
         if self.agent() == AgentKind::ClaudeCode
             && let Some(settings) = hook_settings
         {
-            args.extend(["--settings".into(), settings.into()]);
+            // Only local launches get hooks, and only they reach the `hive agent` socket.
+            args.extend([
+                "--settings".into(),
+                settings.into(),
+                "--append-system-prompt".into(),
+                super::api::SYSTEM_PROMPT.into(),
+            ]);
         }
         Ok(args)
     }
@@ -247,7 +253,14 @@ mod tests {
         let session = ResumeSession::new(AgentKind::ClaudeCode, "a1-b2").unwrap();
         assert_eq!(
             Launch::Resume(session).arguments(Some("{}")).unwrap(),
-            ["--resume", "a1-b2", "--settings", "{}"]
+            [
+                "--resume",
+                "a1-b2",
+                "--settings",
+                "{}",
+                "--append-system-prompt",
+                crate::agent::api::SYSTEM_PROMPT
+            ]
         );
         assert!(
             ResumeSession::new(AgentKind::ClaudeCode, "--dangerously-skip-permissions").is_none()

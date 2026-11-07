@@ -157,6 +157,12 @@ impl Terminal {
         Self::spawn_command(command, cwd, size)
     }
 
+    /// The command [`Terminal::spawn`] runs for the user's login shell in `cwd`, for callers
+    /// that add environment before [`Terminal::spawn_command`].
+    pub fn shell_command(cwd: Option<&Path>) -> Result<std::process::Command, TerminalError> {
+        process::command(cwd, None).map_err(TerminalError::Pty)
+    }
+
     /// Spawn a prepared Host command as the foreground process of a fresh PTY.
     pub fn spawn_command(
         command: std::process::Command,

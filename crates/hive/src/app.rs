@@ -34,13 +34,14 @@ impl AppState {
     pub fn init(
         loaded: Result<LoadedState, StateError>,
         recovery: (Vec<hive_core::files::recovery::Record>, Vec<String>),
+        endpoint: Option<crate::state::agents::Endpoint>,
         cx: &mut App,
     ) {
         let store = cx.new(|cx| Store::new(loaded, cx));
         let projects = cx.new(|cx| Projects::new(&store, cx));
         let usage = cx.new(Usage::new);
         let ai_providers = cx.new(AiProviders::new);
-        let agents = cx.new(Agents::new);
+        let agents = cx.new(|cx| Agents::new(endpoint, cx));
         let git = cx.new(|cx| Git::new(projects.clone(), cx));
         let documents =
             cx.new(|_| crate::state::documents::Documents::new(store.clone(), recovery));

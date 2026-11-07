@@ -14,6 +14,7 @@ use crate::state::git::DiffRequest;
 mod agent_draft;
 mod files;
 mod persistence;
+mod spawn;
 
 pub(super) struct ProjectCenter {
     pub(super) host: Host,

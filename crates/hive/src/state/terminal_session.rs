@@ -8,13 +8,15 @@ use std::time::Duration;
 
 use crate::app::AppState;
 use hive_core::agent::{
-    hooks,
+    api, hooks,
     launch::{Launch, ResumeSession},
 };
 
 mod draft;
+mod inbox;
 mod input;
 pub(crate) use draft::{AgentDraft, DraftStatus};
+pub(crate) use inbox::{Message, Recipient};
 use input::Input;
 
 pub(crate) enum SessionStatus {
@@ -44,6 +46,11 @@ pub(crate) struct TerminalSession {
     pub(crate) launched_agent: Option<hive_core::agent::AgentKind>,
     pub(crate) agent_draft: Option<AgentDraft>,
     draft_task: Option<Task<()>>,
+    /// The name `hive agent start` gave this pane; persisted with it.
+    pub(crate) name: Option<String>,
+    /// Messages from other agents, delivered one at a time.
+    inbox: VecDeque<Message>,
+    inbox_task: Option<Task<()>>,
     _start: Task<()>,
     _events: Option<Task<()>>,
     _directory: Option<Task<()>>,
@@ -94,24 +101,43 @@ impl TerminalSession {
                         .map_err(|e| e.to_string())?,
                 };
                 Terminal::spawn_command(command, cwd.as_deref(), TerminalSize::new(80, 24))
-            } else if let Some(launch) = launch {
-                let settings = endpoint
-                    .map(|endpoint| {
-                        std::env::current_exe()
-                            .map(|executable| hooks::settings(&executable, &endpoint, terminal_id))
-                    })
-                    .transpose()
-                    .map_err(|error| error.to_string())?;
-                let command = launch
-                    .command(
-                        cwd.as_deref()
-                            .ok_or("Choose a worktree before starting an agent")?,
-                        settings.as_deref(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                Terminal::spawn_command(command, cwd.as_deref(), TerminalSize::new(80, 24))
             } else {
-                Terminal::spawn(cwd.as_deref(), None, TerminalSize::new(80, 24))
+                let executable = std::env::current_exe()
+                    .inspect_err(
+                        |error| tracing::warn!(%error, "hooks and hive agent need the app path"),
+                    )
+                    .ok();
+                let mut command = match launch {
+                    Some(launch) => {
+                        let settings = endpoint.as_ref().zip(executable.as_ref()).map(
+                            |(endpoint, executable)| {
+                                hooks::settings(executable, &endpoint.hooks, terminal_id)
+                            },
+                        );
+                        launch
+                            .command(
+                                cwd.as_deref()
+                                    .ok_or("Choose a worktree before starting an agent")?,
+                                settings.as_deref(),
+                            )
+                            .map_err(|error| error.to_string())?
+                    }
+                    None => Terminal::shell_command(cwd.as_deref())
+                        .map_err(|error| error.to_string())?,
+                };
+                api::clear_environment(&mut command);
+                if let (Some(endpoint), Some(executable)) = (&endpoint, &executable)
+                    && let Some(socket) = &endpoint.api
+                {
+                    api::environment(
+                        &mut command,
+                        socket,
+                        terminal_id,
+                        endpoint.launcher.as_deref(),
+                        executable,
+                    );
+                }
+                Terminal::spawn_command(command, cwd.as_deref(), TerminalSize::new(80, 24))
             };
             if let Ok(terminal) = &result {
                 starting.register(terminal);
@@ -152,6 +178,7 @@ impl TerminalSession {
                                             this.pending_input.clear();
                                             this.paste_task = None;
                                             this.draft_task = None;
+                                            this.fail_inbox(cx);
                                             cx.emit(SessionEvent::Exited);
                                         }
                                         cx.notify();
@@ -186,6 +213,9 @@ impl TerminalSession {
             launched_agent,
             agent_draft: None,
             draft_task: None,
+            name: None,
+            inbox: VecDeque::new(),
+            inbox_task: None,
             _start: start,
             _events: None,
             _directory: None,
@@ -199,6 +229,15 @@ impl TerminalSession {
         if self.resume != resume {
             self.resume = resume;
             cx.emit(SessionEvent::DirectoryChanged);
+        }
+    }
+
+    /// Names the pane for `hive agent`; persisted with the tile like its conversation.
+    pub(crate) fn set_name(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        if self.name != name {
+            self.name = name;
+            cx.emit(SessionEvent::DirectoryChanged);
+            cx.notify();
         }
     }
 

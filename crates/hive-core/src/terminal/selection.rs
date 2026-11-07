@@ -1,4 +1,4 @@
-use super::{Column, Listener, Point, SelectionType, Side, Terminal};
+use super::{Column, Line, Listener, Point, SelectionType, Side, Terminal};
 use alacritty_terminal::grid::Dimensions as _;
 use alacritty_terminal::selection::Selection;
 use alacritty_terminal::term::{Term, viewport_to_point};
@@ -26,6 +26,23 @@ impl Terminal {
             .lock()
             .selection_to_string()
             .filter(|text| !text.is_empty())
+    }
+
+    /// The last `count` lines, scrollback included, as plain text without trailing blank
+    /// lines. Soft-wrapped lines stay joined, as in a selection.
+    pub fn last_lines(&self, count: usize) -> String {
+        if count == 0 {
+            return String::new();
+        }
+        let term = self.term.lock();
+        let bottom = term.bottommost_line();
+        let count = i32::try_from(count).unwrap_or(i32::MAX);
+        let top = Line(bottom.0.saturating_sub(count - 1)).max(term.topmost_line());
+        let text = term.bounds_to_string(
+            Point::new(top, Column(0)),
+            Point::new(bottom, term.last_column()),
+        );
+        text.trim_end().to_owned()
     }
 
     /// Clear the selection, returning whether one existed.
@@ -98,6 +115,17 @@ mod tests {
         terminal.start_selection(point(0, 0), Side::Left, SelectionType::Simple);
         terminal.update_selection(point(usize::MAX, usize::MAX), Side::Right);
         assert_eq!(terminal.selected_text().as_deref(), Some("first\nsecond"));
+    }
+
+    #[test]
+    fn last_lines_reach_into_scrollback_and_drop_trailing_blank_rows() {
+        let scrolled = terminal("first\r\nsecond\r\nthird\r\nfourth", 10, 3);
+        assert_eq!(scrolled.last_lines(2), "third\nfourth");
+        assert_eq!(scrolled.last_lines(3), "second\nthird\nfourth");
+        assert_eq!(scrolled.last_lines(100), "first\nsecond\nthird\nfourth");
+        assert_eq!(scrolled.last_lines(0), "");
+        let short = terminal("only", 10, 4);
+        assert_eq!(short.last_lines(4), "only");
     }
 
     #[test]
