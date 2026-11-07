@@ -1,9 +1,10 @@
 //! The conversation a running agent process owns, read from the CLI's own local state.
 //!
 //! Works for agents the user typed into a shell as well as ones Hive launched: Claude Code
-//! records `<config>/sessions/<pid>.json` for every interactive process, Codex holds
-//! `thread-writer-locks/<thread id>.lock` open while it writes a thread, and Antigravity
-//! keeps the latest conversation of each workspace in one cache file.
+//! records `<config>/sessions/<pid>.json` for every interactive process, Codex writes each
+//! thread to a rollout that names its directory and client, and Antigravity keeps the latest
+//! conversation of each workspace in one cache file.
+mod codex;
 mod process;
 
 use super::{AgentKind, launch::ResumeSession};
@@ -18,7 +19,6 @@ use std::{
 const CLAUDE_RECORD_LIMIT: u64 = 64 * 1024;
 /// One short entry per workspace; anything larger is not that cache.
 const ANTIGRAVITY_CACHE_LIMIT: u64 = 1024 * 1024;
-const CODEX_LOCK_DIRECTORY: &str = "thread-writer-locks";
 /// Documented at <https://antigravity.google/docs/cli/commands/resume>.
 const ANTIGRAVITY_CACHE: &str = ".gemini/antigravity-cli/cache/last_conversations.json";
 
@@ -30,13 +30,7 @@ pub fn discover(kind: AgentKind, pids: &[u32]) -> Option<ResumeSession> {
             let sessions = claude_config_directory()?.join("sessions");
             pids.iter().find_map(|&pid| claude_session(&sessions, pid))
         }
-        AgentKind::Codex => {
-            let paths: Vec<PathBuf> = pids
-                .iter()
-                .flat_map(|&pid| process::open_files(pid))
-                .collect();
-            codex_thread(&paths)
-        }
+        AgentKind::Codex => codex::discover(pids),
         AgentKind::Antigravity => {
             let cache = crate::state::home_dir()?.join(ANTIGRAVITY_CACHE);
             let started = pids
@@ -84,27 +78,23 @@ fn read_bounded(path: &Path, limit: u64) -> Option<Vec<u8>> {
     (bytes.len() as u64 <= limit).then_some(bytes)
 }
 
+/// The first line of `path`, only when it ends within `limit` bytes: an unterminated line is
+/// still being written or is not the expected file.
+fn read_bounded_line(path: &Path, limit: u64) -> Option<Vec<u8>> {
+    use std::io::{BufRead, Read};
+    let mut line = Vec::new();
+    std::io::BufReader::new(std::fs::File::open(path).ok()?.take(limit))
+        .read_until(b'\n', &mut line)
+        .ok()?;
+    line.ends_with(b"\n").then_some(line)
+}
+
 /// A record for another pid is a stale file left by a process whose pid was reused.
 fn parse_claude_record(bytes: &[u8], pid: u32) -> Option<ResumeSession> {
     let record: ClaudeRecord = serde_json::from_slice(bytes).ok()?;
     (record.pid == pid)
         .then(|| ResumeSession::new(AgentKind::ClaudeCode, &record.session_id))
         .flatten()
-}
-
-/// A Codex process also locks the threads of subagents it spawns. Thread ids are UUIDv7,
-/// so the smallest is the earliest thread: the conversation the user started or resumed.
-fn codex_thread(open_files: &[PathBuf]) -> Option<ResumeSession> {
-    open_files
-        .iter()
-        .filter(|path| {
-            path.parent()
-                .and_then(Path::file_name)
-                .is_some_and(|name| name == CODEX_LOCK_DIRECTORY)
-        })
-        .filter_map(|path| path.file_name()?.to_str()?.strip_suffix(".lock"))
-        .filter_map(|id| ResumeSession::new(AgentKind::Codex, id))
-        .min_by(|left, right| left.id().cmp(right.id()))
 }
 
 /// The cache names only the latest conversation of each workspace, not of each process, so
@@ -172,32 +162,6 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    #[test]
-    fn codex_thread_is_the_earliest_locked_thread() {
-        let locks = Path::new("/Users/me/.codex/thread-writer-locks");
-        let paths = [
-            PathBuf::from("/Users/me/.codex/logs_2.sqlite"),
-            locks.join(".coordination.lock"),
-            locks.join("01a1b1a0-a3d4-7833-ab5a-1e45ec49f814.lock"),
-            locks.join("01a1abef-96e9-7011-8064-bea0638f0ccb.lock"),
-            PathBuf::from("/tmp/elsewhere/01a1a000-0000-7000-8000-000000000000.lock"),
-        ];
-        let session = codex_thread(&paths).unwrap();
-        assert_eq!(session.agent(), AgentKind::Codex);
-        assert_eq!(session.id(), "01a1abef-96e9-7011-8064-bea0638f0ccb");
-    }
-
-    #[test]
-    fn codex_without_a_thread_lock_has_no_conversation() {
-        assert!(codex_thread(&[]).is_none());
-        assert!(
-            codex_thread(&[PathBuf::from(
-                "/Users/me/.codex/thread-writer-locks/$(touch x).lock"
-            )])
-            .is_none()
-        );
-    }
-
     /// The example from the Antigravity CLI documentation, plus an unrelated malformed entry.
     const ANTIGRAVITY_CACHE_SAMPLE: &str = r#"{
     "/usr/local/google/home/username/Develop/my-project": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -243,23 +207,6 @@ mod tests {
             antigravity_conversation(&directory.join("missing"), Path::new("/p"), written)
                 .is_none()
         );
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn codex_conversation_is_found_through_open_files() {
-        let directory = scratch("codex");
-        let path = directory.join(CODEX_LOCK_DIRECTORY);
-        std::fs::create_dir(&path).unwrap();
-        let held =
-            std::fs::File::create(path.join("01a1abef-96e9-7011-8064-bea0638f0ccb.lock")).unwrap();
-        assert_eq!(
-            discover(AgentKind::Codex, &[std::process::id()])
-                .as_ref()
-                .map(ResumeSession::id),
-            Some("01a1abef-96e9-7011-8064-bea0638f0ccb")
-        );
-        drop(held);
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

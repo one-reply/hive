@@ -29,6 +29,16 @@ pub(super) fn spawn(mut command: Command, size: WindowSize) -> io::Result<(Child
     // the session, attaches its controlling terminal and installs all three stdio fds.
     unsafe {
         command.pre_exec(move || {
+            // std inherits the spawning thread's signal mask, and Hive spawns from executor
+            // threads that block signals. A child that never unblocks them (Claude Code)
+            // would miss SIGWINCH for good and keep drawing at its startup size.
+            let mut unblocked = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            if libc::sigemptyset(unblocked.as_mut_ptr()) != 0
+                || libc::sigprocmask(libc::SIG_SETMASK, unblocked.as_ptr(), std::ptr::null_mut())
+                    != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
             for signal in [
                 libc::SIGCHLD,
                 libc::SIGHUP,
