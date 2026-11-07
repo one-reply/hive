@@ -197,8 +197,8 @@ For a local signed draft, put only the version's ZIP and checksum in a fresh dir
 
 ```sh
 target/sparkle/bin/generate_appcast --account dev.hive.Hive --maximum-deltas 0 \
-  --download-url-prefix "https://github.com/vitaliits-stack/hive/releases/download/v<version>/" \
-  --link "https://github.com/vitaliits-stack/hive/releases/tag/v<version>" <release-directory>
+  --download-url-prefix "https://github.com/one-reply/hive/releases/download/v<version>/" \
+  --link "https://github.com/one-reply/hive/releases/tag/v<version>" <release-directory>
 target/sparkle/bin/sign_update --account dev.hive.Hive --verify <release-directory>/appcast.xml
 ```
 

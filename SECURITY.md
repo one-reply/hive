@@ -3,7 +3,7 @@
 Only the latest published prerelease is supported. Hive is early software;
 reports are handled on a best-effort basis without a response-time guarantee.
 
-Please use [Report a vulnerability](https://github.com/vitaliits-stack/hive/security/advisories/new)
+Please use [Report a vulnerability](https://github.com/one-reply/hive/security/advisories/new)
 for security issues. Include the affected version, reproduction steps, impact,
 and a minimal example with synthetic data. Do not post credentials, private source,
 personal information, or vulnerability details in public issues.
