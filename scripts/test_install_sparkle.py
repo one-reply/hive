@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import io
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -38,6 +39,25 @@ class SparkleInstallTests(unittest.TestCase):
             installer.install(destination)
             self.assertEqual((destination / "Sparkle.framework/Sparkle").read_bytes(), b"test")
             self.assertTrue((destination / "Sparkle.framework/Sparkle").is_symlink())
+
+    def test_rejects_download_with_wrong_checksum_before_extraction(self):
+        def download(command, **kwargs):
+            Path(command[-1]).write_bytes(b"truncated archive")
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(installer.subprocess, "run", side_effect=download):
+            destination = Path(directory) / "sparkle"
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                installer.install(destination)
+            self.assertEqual(list(destination.iterdir()), [])
+
+    def test_propagates_failed_download_without_extracting(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(installer.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "gh")):
+            destination = Path(directory) / "sparkle"
+            with self.assertRaises(subprocess.CalledProcessError):
+                installer.install(destination)
+            self.assertEqual(list(destination.iterdir()), [])
 
 
 if __name__ == "__main__":
