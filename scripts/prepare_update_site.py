@@ -17,7 +17,7 @@ def latest_release(releases):
     for release in releases:
         tag = release.get("tag_name", "")
         version = re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", tag)
-        if release.get("draft", True) or not version:
+        if release.get("draft", True) or release.get("prerelease", True) or not version:
             continue
         archive = f"Hive-{tag[1:]}-macos-arm64.zip"
         assets = {asset.get("name") for asset in release.get("assets", [])

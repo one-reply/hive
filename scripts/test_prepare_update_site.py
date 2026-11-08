@@ -8,7 +8,7 @@ from prepare_update_site import latest_release, validate_feed
 def release(version, **fields):
     archive = f"Hive-{version}-macos-arm64.zip"
     return {
-        "tag_name": f"v{version}", "draft": False, "prerelease": True,
+        "tag_name": f"v{version}", "draft": False, "prerelease": False,
         "assets": [{"name": name, "state": "uploaded"}
                    for name in [archive, archive + ".sha256", "appcast.xml"]],
         **fields,
@@ -16,10 +16,10 @@ def release(version, **fields):
 
 
 class UpdateSiteTests(unittest.TestCase):
-    def test_selects_newest_numeric_version_including_published_previews(self):
+    def test_selects_newest_stable_numeric_version(self):
         self.assertEqual(latest_release([
             release("0.9.0"), release("0.10.0"), release("0.8.0"),
-            release("1.0.0", draft=True), release("2.0.0", assets=[]),
+            release("1.0.0", draft=True), release("4.0.0", prerelease=True), release("2.0.0", assets=[]),
             release("3.0.0", tag_name="../../../unexpected"), {},
         ]), "v0.10.0")
 

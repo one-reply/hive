@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      verify_release:
+        description: Sign and verify the main build without publishing a release
+        type: boolean
+        default: false
   schedule:
     - cron: '17 8 * * 1'
 
@@ -84,6 +89,8 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: macos-26
     timeout-minutes: 60
+    outputs:
+      release_tag: ${{ steps.version.outputs.tag }}
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -107,13 +114,16 @@ jobs:
             echo 'hive-core must not depend on GPUI' >&2
             exit 1
           fi
-      - name: Verify release tag
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Read version and verify release tag
+        id: version
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           version="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "hive"))')"
-          test "$RELEASE_TAG" = "v$version"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$RELEASE_TAG" = "v$version"
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
       - name: Install verified release tools
         env:
           GH_TOKEN: ${{ github.token }}
@@ -143,13 +153,18 @@ jobs:
           retention-days: 7
 
   release:
-    name: Draft release
-    if: startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'
+    name: Sign and publish release
+    if: >-
+      (startsWith(github.ref, 'refs/tags/') && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.verify_release)
     needs: [security, build]
     runs-on: macos-26
     timeout-minutes: 45
     permissions:
       contents: write
+      actions: write
+    env:
+      RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -164,7 +179,6 @@ jobs:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           HIVE_APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           HIVE_APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           : "${HIVE_APPLE_TEAM_ID:?Configure APPLE_TEAM_ID before creating a release tag}"
@@ -176,6 +190,7 @@ jobs:
           export HIVE_APPLE_API_KEY="$signing_dir/AuthKey.p8"
           trap 'rm -f "$HIVE_APPLE_API_KEY"' EXIT
           printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$HIVE_APPLE_API_KEY"
+          openssl pkey -in "$HIVE_APPLE_API_KEY" -check -noout
           archive="Hive-${RELEASE_TAG#v}-macos-arm64.zip"
           (cd release && shasum -a 256 -c "$archive.sha256")
           ditto -x -k "release/$archive" "$signing_dir/app"
@@ -191,7 +206,6 @@ jobs:
       - name: Sign update archive and feed
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-          RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_REPOSITORY: ${{ github.repository }}
         run: |
           test -n "$SPARKLE_PRIVATE_KEY"
@@ -200,11 +214,20 @@ jobs:
             --download-url-prefix "https://github.com/$RELEASE_REPOSITORY/releases/download/$RELEASE_TAG/" \
             --link "https://github.com/$RELEASE_REPOSITORY/releases/tag/$RELEASE_TAG" release
           test -s release/appcast.xml
-      - name: Create draft for manual installation checks
+      - name: Verify assets and publish stable release
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          HIVE_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          VERIFY_ONLY: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
-          gh release create "$RELEASE_TAG" release/* --verify-tag --draft \
-            --title "Hive ${RELEASE_TAG#v}" --notes-file "docs/releases/$RELEASE_TAG.md"
+          args=()
+          if [[ "$VERIFY_ONLY" == true ]]; then args+=(--verify-only); fi
+          python3 scripts/publish_release.py "$RELEASE_REPOSITORY" "$RELEASE_TAG" release "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: hive-signed-macos-arm64
+          path: release/*
+          if-no-files-found: error
+          retention-days: 7
