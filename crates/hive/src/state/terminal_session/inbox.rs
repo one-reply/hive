@@ -2,9 +2,10 @@
 //! submitted with Enter. Enter answers whatever the agent shows, so delivery makes sure the
 //! paste lands in the prompt and not in a dialog, where it would decide for the user.
 //!
-//! Claude Code started by Hive reports permission prompts through hooks before drawing them,
-//! so it gets messages at once, even while it works. For other agents Hive only sees output
-//! timing; a message waits for their output to pause and is submitted only if the paste
+//! Claude Code reports permission prompts (through hooks or OSC 7501) as it shows them and
+//! queues input typed during a turn, so it gets messages at once, even while it works. Other
+//! agents that report their state get a message once they stop working; agents that report
+//! nothing once their output pauses. Either way the message is submitted only if the paste
 //! visibly changed the screen.
 use super::*;
 use hive_core::agent::api::{ApiError, ErrorCode};
@@ -36,8 +37,10 @@ pub(crate) struct Message {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Recipient {
     pub(crate) status: Option<AgentStatus>,
-    /// Reported by the agent's hooks rather than estimated from output.
+    /// Reported by the agent itself (hooks, OSC 7501) rather than estimated from output.
     pub(crate) exact: bool,
+    /// The agent takes typed input during a turn and runs it next, as Claude Code does.
+    pub(crate) queues_input: bool,
     /// Claude Code started by Hive that has not reported yet: it may show a trust prompt.
     pub(crate) awaiting_report: bool,
 }
@@ -54,6 +57,12 @@ enum Step {
 }
 
 impl TerminalSession {
+    /// `hive agent interrupt`: Esc stops the agent's turn. The caller made sure it shows no
+    /// dialog, where Esc would answer for the user.
+    pub(crate) fn interrupt(&mut self, cx: &mut Context<Self>) {
+        self.enqueue_input(Input::Bytes(vec![0x1b]), cx);
+    }
+
     pub(crate) fn queue_message(&mut self, message: Message, cx: &mut Context<Self>) {
         self.inbox.push_back(message);
         if self.inbox_task.is_none() {
@@ -251,8 +260,8 @@ async fn deliver(
     }
 }
 
-/// Exact status lets a busy Claude Code queue the message; anything else waits for a pause
-/// and proves the paste reached a prompt.
+/// Exact status lets a busy Claude Code queue the message; anything else waits until the agent
+/// stops working (reported, or its output paused) and proves the paste reached a prompt.
 fn step(recipient: Recipient, streaming: bool, typing: bool) -> Step {
     match recipient.status {
         Some(AgentStatus::WaitingApproval) => {
@@ -273,8 +282,14 @@ fn step(recipient: Recipient, streaming: bool, typing: bool) -> Step {
         return Step::Retry("The user is typing in this pane");
     }
     // WaitingInput also covers Claude's question dialogs, which hooks do not tell apart.
-    if recipient.exact && recipient.status != Some(AgentStatus::WaitingInput) {
+    if recipient.exact
+        && recipient.queues_input
+        && recipient.status != Some(AgentStatus::WaitingInput)
+    {
         return Step::Paste { verify: false };
+    }
+    if recipient.exact && recipient.status == Some(AgentStatus::Working) {
+        return Step::Retry("The agent is working");
     }
     if streaming {
         return Step::Retry("The agent is busy; its output has not paused");
@@ -298,6 +313,7 @@ mod tests {
         Recipient {
             status: Some(status),
             exact,
+            queues_input: exact,
             awaiting_report: false,
         }
     }
@@ -341,6 +357,31 @@ mod tests {
     }
 
     #[test]
+    fn exact_agents_that_do_not_queue_input_wait_for_the_turn_and_verify_the_paste() {
+        let codex = |status| Recipient {
+            queues_input: false,
+            ..recipient(status, true)
+        };
+        assert!(matches!(
+            step(codex(AgentStatus::Working), false, false),
+            Step::Retry(_)
+        ));
+        assert_eq!(
+            step(codex(AgentStatus::Idle), false, false),
+            Step::Paste { verify: true }
+        );
+        // A reported Idle with output still streaming is not a pause yet.
+        assert!(matches!(
+            step(codex(AgentStatus::Idle), true, false),
+            Step::Retry(_)
+        ));
+        assert!(matches!(
+            step(codex(AgentStatus::WaitingApproval), false, false),
+            Step::Refuse(ErrorCode::AgentBlocked, _)
+        ));
+    }
+
+    #[test]
     fn startup_and_typing_users_hold_messages_back() {
         let starting = Recipient {
             awaiting_report: true,
@@ -354,6 +395,7 @@ mod tests {
         let unseen = Recipient {
             status: None,
             exact: false,
+            queues_input: false,
             awaiting_report: false,
         };
         assert!(matches!(step(unseen, false, false), Step::Retry(_)));

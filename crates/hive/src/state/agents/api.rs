@@ -1,4 +1,5 @@
-//! Answers `hive agent …` calls from the terminals: list, start, send, read and wait.
+//! Answers `hive agent …` calls from the terminals: list, start, send, read, wait and
+//! interrupt.
 //!
 //! Quick calls are answered at once. `wait` and `start` are kept until the poll sees the
 //! agent settle or appear; `send` is answered by the recipient's terminal once the message
@@ -39,6 +40,8 @@ pub(super) struct Waiting {
 pub(super) struct Starting {
     name: String,
     kind: AgentKind,
+    /// The caller, told later when its helper is blocked, fails or exits.
+    parent: EntityId,
     /// Set by the workspace once the pane exists.
     session: Option<WeakEntity<TerminalSession>>,
     /// The first task, already wrapped for the recipient.
@@ -70,6 +73,7 @@ impl Agents {
                 agents: self.infos(cx),
             }),
             Request::Read { target, lines } => self.read_terminal(&target, lines, cx),
+            Request::Interrupt { target } => self.interrupt(&target, cx),
             Request::Wait { target, timeout_ms } => match self.working_agent(&target, cx) {
                 Ok(Some(session)) => {
                     self.waits.push(Waiting {
@@ -117,10 +121,11 @@ impl Agents {
                 prompt,
                 timeout_ms,
             } => match self.start_named(from, &name, kind, tab, cx) {
-                Ok(sender) => {
+                Ok((parent, sender)) => {
                     self.starts.push(Starting {
                         name,
                         kind,
+                        parent,
                         session: None,
                         prompt: prompt.map(|prompt| protocol::envelope(&sender, &prompt)),
                         deadline: deadline(timeout_ms, protocol::START_TIMEOUT),
@@ -158,12 +163,11 @@ impl Agents {
         let watched = self.watched.iter().find(|watched| watched.id == session);
         let sighted = self.agent(session);
         let claude = sighted.is_some_and(|agent| agent.kind == AgentKind::ClaudeCode);
-        let reported = watched
-            .and_then(|watched| watched.reported)
-            .filter(|_| claude);
+        let reported = watched.and_then(|watched| watched.reported);
         Recipient {
             status: reported.or(sighted.map(|agent| agent.status)),
             exact: reported.is_some(),
+            queues_input: claude,
             awaiting_report: claude
                 && reported.is_none()
                 && self.hooks.is_some()
@@ -221,42 +225,50 @@ impl Agents {
     }
 
     fn settle_start(&mut self, start: Starting, now: Instant, cx: &mut Context<Self>) {
-        let failure =
-            |message: String| Outcome::Error(ApiError::new(ErrorCode::AgentGone, message));
-        let Some(weak) = start.session.clone() else {
-            if now >= start.deadline {
-                start.reply.reply(timed_out(&start.name));
-            } else {
+        let session = start.session.as_ref().map(WeakEntity::upgrade);
+        let info = session
+            .clone()
+            .flatten()
+            .and_then(|session| self.info(session.entity_id()).ok())
+            .filter(|info| info.kind == start.kind);
+        let pane = match &session {
+            None => Pane::Opening,
+            Some(None) => Pane::Closed,
+            Some(Some(session)) => match &session.read(cx).status {
+                SessionStatus::Failed(error) => Pane::Failed(error.clone()),
+                _ if session.read(cx).exited => Pane::Exited,
+                _ => Pane::Open {
+                    runs_agent: info.is_some(),
+                },
+            },
+        };
+        match start_verdict(&start.name, pane, now >= start.deadline) {
+            StartVerdict::Ready => {}
+            StartVerdict::Keep => {
                 self.starts.push(start);
+                return;
             }
+            StartVerdict::TimedOut => {
+                start.reply.reply(timed_out(&start.name));
+                return;
+            }
+            StartVerdict::Gone(message) => {
+                start
+                    .reply
+                    .reply(Outcome::Error(ApiError::new(ErrorCode::AgentGone, message)));
+                return;
+            }
+        }
+        let (Some(Some(session)), Some(info)) = (session, info) else {
             return;
         };
-        let Some(session) = weak.upgrade() else {
-            start
-                .reply
-                .reply(failure(format!("The pane of {} closed", start.name)));
-            return;
-        };
-        if let SessionStatus::Failed(error) = &session.read(cx).status {
-            start
-                .reply
-                .reply(failure(format!("{} could not start: {error}", start.name)));
-            return;
-        }
-        if session.read(cx).exited {
-            start.reply.reply(failure(format!("{} exited", start.name)));
-            return;
-        }
         let id = session.entity_id();
-        let info = self.info(id).ok().filter(|info| info.kind == start.kind);
-        let Some(info) = info else {
-            if now >= start.deadline {
-                start.reply.reply(timed_out(&start.name));
-            } else {
-                self.starts.push(start);
-            }
-            return;
-        };
+        if let Some(watched) = self.watched.iter_mut().find(|watched| watched.id == id) {
+            watched.helper = Some(Helper {
+                parent: start.parent,
+                name: start.name.clone(),
+            });
+        }
         let Some(prompt) = start.prompt else {
             start
                 .reply
@@ -359,7 +371,8 @@ impl Agents {
         Ok((found, info, envelope))
     }
 
-    /// Checks a `start` and asks the workspace to open the pane; returns the caller's label.
+    /// Checks a `start` and asks the workspace to open the pane; returns the caller's terminal
+    /// and label.
     fn start_named(
         &self,
         from: Option<u64>,
@@ -367,26 +380,9 @@ impl Agents {
         kind: AgentKind,
         tab: bool,
         cx: &mut Context<Self>,
-    ) -> Result<Address, ApiError> {
+    ) -> Result<(EntityId, Address), ApiError> {
         let sender = self.sender(from, cx)?;
-        if !protocol::valid_name(name) {
-            return Err(ApiError::new(
-                ErrorCode::InvalidName,
-                format!("{name:?} is not a valid agent name"),
-            ));
-        }
-        if !AGENTS.contains(&kind) {
-            return Err(ApiError::new(
-                ErrorCode::Unsupported,
-                format!("Hive cannot start {}", kind.name()),
-            ));
-        }
-        if self.name_taken(name, cx) {
-            return Err(ApiError::new(
-                ErrorCode::NameTaken,
-                format!("A pane is already named {name}; choose another name"),
-            ));
-        }
+        check_start(name, kind, self.name_taken(name, cx))?;
         let caller = self
             .watched
             .iter()
@@ -400,7 +396,18 @@ impl Agents {
             name: name.to_owned(),
             tab,
         }));
-        Ok(sender)
+        Ok((caller.id, sender))
+    }
+
+    /// `hive agent interrupt`: Esc, the key Claude Code and Codex stop a turn with.
+    fn interrupt(&self, target: &Address, cx: &mut Context<Self>) -> Result<Response, ApiError> {
+        let found = self.resolve(target, cx)?;
+        self.agent(found.id).ok_or_else(|| no_agent(target))?;
+        check_interrupt(target, self.recipient(found.id).status)?;
+        found
+            .session
+            .update(cx, |session, cx| session.interrupt(cx));
+        self.agent_response(target, cx)
     }
 
     /// The session to wait for, or `None` when its agent is not working and `wait` is
@@ -465,7 +472,7 @@ impl Agents {
         })
     }
 
-    fn live_session(&self, id: EntityId, cx: &App) -> Option<Entity<TerminalSession>> {
+    pub(super) fn live_session(&self, id: EntityId, cx: &App) -> Option<Entity<TerminalSession>> {
         self.watched
             .iter()
             .find(|watched| watched.id == id)
@@ -499,7 +506,7 @@ impl Agents {
     }
 
     /// The agent the last poll saw in `session`.
-    fn agent(&self, session: EntityId) -> Option<&AgentSession> {
+    pub(super) fn agent(&self, session: EntityId) -> Option<&AgentSession> {
         self.all()
             .map(|(_, agent)| agent)
             .find(|agent| agent.session == session)
@@ -557,6 +564,79 @@ fn settle(
     }
 }
 
+/// The pane of a kept `start`, as this tick finds it.
+#[derive(Debug, PartialEq)]
+enum Pane {
+    /// The workspace has not opened it yet.
+    Opening,
+    Closed,
+    Failed(String),
+    Exited,
+    Open {
+        /// The poll sees the requested agent in it.
+        runs_agent: bool,
+    },
+}
+
+/// What a kept `start` needs next.
+#[derive(Debug, PartialEq)]
+enum StartVerdict {
+    Keep,
+    Ready,
+    TimedOut,
+    Gone(String),
+}
+
+fn start_verdict(name: &str, pane: Pane, expired: bool) -> StartVerdict {
+    match pane {
+        Pane::Closed => StartVerdict::Gone(format!("The pane of {name} closed")),
+        Pane::Failed(error) => StartVerdict::Gone(format!("{name} could not start: {error}")),
+        Pane::Exited => StartVerdict::Gone(format!("{name} exited")),
+        Pane::Open { runs_agent: true } => StartVerdict::Ready,
+        Pane::Opening | Pane::Open { runs_agent: false } if expired => StartVerdict::TimedOut,
+        Pane::Opening | Pane::Open { runs_agent: false } => StartVerdict::Keep,
+    }
+}
+
+/// The rules a `start` must pass before a pane opens.
+fn check_start(name: &str, kind: AgentKind, taken: bool) -> Result<(), ApiError> {
+    if !protocol::valid_name(name) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidName,
+            format!("{name:?} is not a valid agent name"),
+        ));
+    }
+    if !AGENTS.contains(&kind) {
+        return Err(ApiError::new(
+            ErrorCode::Unsupported,
+            format!("Hive cannot start {}", kind.name()),
+        ));
+    }
+    if taken {
+        return Err(ApiError::new(
+            ErrorCode::NameTaken,
+            format!("A pane is already named {name}; choose another name"),
+        ));
+    }
+    Ok(())
+}
+
+/// Esc stops a running turn, but on a dialog it answers for the user, and an estimated idle
+/// agent may be showing one; so only a working agent is interrupted.
+fn check_interrupt(target: &Address, status: Option<AgentStatus>) -> Result<(), ApiError> {
+    match status {
+        Some(AgentStatus::Working) => Ok(()),
+        Some(AgentStatus::WaitingApproval | AgentStatus::WaitingInput) => Err(ApiError::new(
+            ErrorCode::AgentBlocked,
+            format!("{target} waits for the user in a dialog; Esc would answer it"),
+        )),
+        _ => Err(ApiError::new(
+            ErrorCode::NotReady,
+            format!("{target} is not working; there is nothing to interrupt"),
+        )),
+    }
+}
+
 fn deadline(timeout_ms: Option<u64>, default: Duration) -> Instant {
     Instant::now() + timeout_ms.map_or(default, Duration::from_millis)
 }
@@ -595,7 +675,78 @@ fn blocked(target: &Address) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentStatus, Verdict, settle};
+    use super::{
+        Address, AgentKind, AgentStatus, ErrorCode, Pane, StartVerdict, Verdict, check_interrupt,
+        check_start, settle, start_verdict,
+    };
+
+    #[test]
+    fn start_needs_a_valid_free_name_and_a_launchable_agent() {
+        assert!(check_start("reviewer", AgentKind::Codex, false).is_ok());
+        let code = |name, kind, taken| check_start(name, kind, taken).unwrap_err().code;
+        assert_eq!(
+            code("Reviewer", AgentKind::Codex, false),
+            ErrorCode::InvalidName
+        );
+        assert_eq!(code("7", AgentKind::Codex, false), ErrorCode::InvalidName);
+        assert_eq!(
+            code("reviewer", AgentKind::Aider, false),
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            code("reviewer", AgentKind::Codex, true),
+            ErrorCode::NameTaken
+        );
+    }
+
+    #[test]
+    fn a_kept_start_is_ready_once_its_agent_runs_and_fails_with_its_pane() {
+        let verdict = |pane, expired| start_verdict("helper", pane, expired);
+        assert_eq!(verdict(Pane::Opening, false), StartVerdict::Keep);
+        assert_eq!(
+            verdict(Pane::Open { runs_agent: false }, false),
+            StartVerdict::Keep
+        );
+        assert_eq!(
+            verdict(Pane::Open { runs_agent: true }, true),
+            StartVerdict::Ready
+        );
+        assert_eq!(verdict(Pane::Opening, true), StartVerdict::TimedOut);
+        assert_eq!(
+            verdict(Pane::Open { runs_agent: false }, true),
+            StartVerdict::TimedOut
+        );
+        assert_eq!(
+            verdict(Pane::Closed, false),
+            StartVerdict::Gone("The pane of helper closed".into())
+        );
+        assert_eq!(
+            verdict(Pane::Failed("codex: not found".into()), false),
+            StartVerdict::Gone("helper could not start: codex: not found".into())
+        );
+        assert_eq!(
+            verdict(Pane::Exited, false),
+            StartVerdict::Gone("helper exited".into())
+        );
+    }
+
+    #[test]
+    fn only_a_working_agent_is_interrupted_and_never_through_a_dialog() {
+        let target = Address::Name("helper".into());
+        assert!(check_interrupt(&target, Some(AgentStatus::Working)).is_ok());
+        for status in [AgentStatus::WaitingApproval, AgentStatus::WaitingInput] {
+            assert_eq!(
+                check_interrupt(&target, Some(status)).unwrap_err().code,
+                ErrorCode::AgentBlocked
+            );
+        }
+        for status in [Some(AgentStatus::Idle), Some(AgentStatus::Done), None] {
+            assert_eq!(
+                check_interrupt(&target, status).unwrap_err().code,
+                ErrorCode::NotReady
+            );
+        }
+    }
 
     #[test]
     fn plain_wait_answers_as_soon_as_the_agent_stops_working() {

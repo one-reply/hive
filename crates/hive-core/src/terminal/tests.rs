@@ -253,3 +253,21 @@ fn child_spawned_from_a_signal_blocking_thread_still_receives_resizes() {
     terminal.resize(TerminalSize::new(100, 30));
     wait_for(|| screen_text(&terminal).contains("got-winch"));
 }
+
+#[test]
+fn program_status_reports_are_collected_and_the_support_query_is_answered() {
+    use program_status::{Blocker, ProgramState};
+    let mut command = std::process::Command::new("/bin/sh");
+    // Raw input without echo, so the terminal's reply reaches `head` instead of the screen;
+    // `tr` keeps the echoed reply from being parsed as an escape sequence again.
+    command.args([
+        "-c",
+        r"stty -echo -icanon min 1; printf '\033]7501;state=blocked:kind=permission\033\\'; printf '\033]7501;?\007'; head -c 20 | tr '\033' E; echo; sleep 5",
+    ]);
+    let terminal = Terminal::spawn_command(command, None, TerminalSize::new(80, 24)).unwrap();
+    wait_for(|| screen_text(&terminal).contains("E]7501;?:states=idle"));
+    assert_eq!(
+        terminal.program_status().drain(),
+        vec![ProgramState::Blocked(Some(Blocker::Permission))]
+    );
+}

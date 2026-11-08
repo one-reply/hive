@@ -4,13 +4,14 @@ use hive_core::agent::AgentKind;
 use hive_core::agent::api::{self, Address, ApiError, Call, ErrorCode, Outcome, Request, Response};
 use hive_core::agent::launch::AGENTS;
 use std::ffi::OsString;
+use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
 /// Time for the app to answer after the request's own deadline passed.
 const ANSWER_GRACE: Duration = Duration::from_secs(5);
-/// `list` and `read` answer from memory.
+/// `list`, `read` and `interrupt` answer from memory.
 const QUICK_TIMEOUT: Duration = Duration::from_secs(10);
 
 const USAGE: &str = "\
@@ -20,16 +21,14 @@ Usage:
   hive agent send <target> <text> [--wait]
   hive agent wait <target>
   hive agent read <target> [--lines <n>]
+  hive agent interrupt <target>
 Every command accepts --timeout <seconds>. `hive --skill` explains how agents use them.";
 
 /// Runs a window-less mode named by `args`, or returns `None` to start the app.
 pub(crate) fn run(args: &[OsString]) -> Option<ExitCode> {
     match args.get(1)?.to_str()? {
         "--agent-hook" => Some(forward_hook(&args[2..])),
-        "--skill" => {
-            print!("{}", api::SKILL);
-            Some(ExitCode::SUCCESS)
-        }
+        "--skill" => Some(print(api::SKILL.trim_end())),
         "agent" => Some(agent(&args[2..])),
         _ => None,
     }
@@ -56,24 +55,15 @@ fn agent(args: &[OsString]) -> ExitCode {
         .map(|arg| arg.to_str().map(str::to_owned))
         .collect();
     let invocation = match args.as_deref().map(parse) {
-        Some(Ok(Parsed::Help)) => {
-            println!("{USAGE}");
-            return ExitCode::SUCCESS;
-        }
+        Some(Ok(Parsed::Help)) => return print(USAGE),
         Some(Ok(Parsed::Call(invocation))) => invocation,
         Some(Err(problem)) => return usage_error(&problem),
         None => return usage_error("arguments must be UTF-8"),
     };
     match call(invocation) {
-        Ok(Response::Text { text }) => {
-            println!("{text}");
-            ExitCode::SUCCESS
-        }
+        Ok(Response::Text { text }) => print(&text),
         Ok(response) => match serde_json::to_string(&response) {
-            Ok(line) => {
-                println!("{line}");
-                ExitCode::SUCCESS
-            }
+            Ok(line) => print(&line),
             Err(error) => failure(&ApiError::new(ErrorCode::Other, error.to_string())),
         },
         Err(error) => failure(&error),
@@ -112,6 +102,15 @@ fn call(invocation: Invocation) -> Result<Response, ApiError> {
     match outcome {
         Outcome::Result(response) => Ok(response),
         Outcome::Error(error) => Err(error),
+    }
+}
+
+/// Writes the answer and a newline. Agents pipe it into `head`, which stops reading early:
+/// that is not a failure, and `println!` would panic on it.
+fn print(text: &str) -> ExitCode {
+    match writeln!(std::io::stdout().lock(), "{text}") {
+        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => ExitCode::FAILURE,
+        _ => ExitCode::SUCCESS,
     }
 }
 
@@ -234,6 +233,13 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
                 lines,
             };
             (request, timeout(QUICK_TIMEOUT)?, &["--lines"])
+        }
+        "interrupt" => {
+            let [target] = positional(&words)?;
+            let request = Request::Interrupt {
+                target: address(&target)?,
+            };
+            (request, timeout(QUICK_TIMEOUT)?, &[])
         }
         other => return Err(format!("unknown command {other:?}")),
     };
@@ -420,6 +426,13 @@ mod tests {
                 timeout_ms: Some(600_000)
             }
         );
+        assert_eq!(
+            request(&["interrupt", "reviewer"]).request,
+            Request::Interrupt {
+                target: Address::Name("reviewer".into())
+            }
+        );
+        assert!(parse(&["interrupt".into(), "reviewer".into(), "--wait".into()]).is_err());
     }
 
     #[test]

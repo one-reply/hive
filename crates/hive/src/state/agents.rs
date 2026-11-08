@@ -1,8 +1,9 @@
 //! Coding agents running in Hive's terminals, grouped by the worktree each terminal opened in.
 //!
 //! Every terminal that starts in a worktree is watched. Once per `POLL_INTERVAL` one process
-//! table snapshot (in the background) tells which terminals run an agent in the foreground;
-//! their output timing tells whether it is working. The sidebar observes this entity.
+//! table snapshot (in the background) tells which terminals run an agent in the foreground.
+//! What the agent is doing comes from its own reports when it sends them (Claude Code hooks,
+//! OSC 7501), otherwise from its output timing. The sidebar observes this entity.
 use hive_core::host::Host;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -11,16 +12,19 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 use hive_core::agent::{
-    AgentKind, AgentStatus, ProcessTable, conversation, hooks,
+    AgentKind, AgentStatus, ProcessTable,
+    api::{self as protocol, HelperEvent},
+    conversation, hooks,
     launch::{Launch, ResumeSession},
 };
-use hive_core::terminal::{Activity, Terminal};
+use hive_core::terminal::{Activity, ProgramStatus, Terminal};
 
-use crate::state::terminal_session::TerminalSession;
+use crate::state::terminal_session::{Message, TerminalSession};
 
 mod api;
 mod conversations;
 mod endpoint;
+mod installed;
 
 pub(crate) use api::SpawnRequest;
 pub(crate) use endpoint::{Endpoint, PaneEndpoint};
@@ -65,6 +69,9 @@ pub(crate) struct Agents {
     waits: Vec<api::Waiting>,
     /// `hive agent start` calls, answered once the new agent runs.
     starts: Vec<api::Starting>,
+    /// Launchable agent CLIs found on this Mac at the last scan.
+    installed: Vec<AgentKind>,
+    _installed_scan: Task<()>,
     _poll: Task<()>,
     _serve: Option<Task<()>>,
 }
@@ -73,8 +80,23 @@ struct Watched {
     session: WeakEntity<TerminalSession>,
     id: EntityId,
     probe: Probe,
+    /// The terminal program's OSC 7501 reports, collected with the hook reports.
+    program: ProgramStatus,
+    /// The agent's own last report, from hooks or OSC 7501; it beats the output estimate.
     reported: Option<AgentStatus>,
+    /// The agent the last poll saw here. Another one, or none, means `reported` and `helper`
+    /// described an agent that is gone.
+    sighted: Option<AgentKind>,
     unread: bool,
+    helper: Option<Helper>,
+}
+
+/// An agent started by another one with `hive agent start`; its parent hears when it is
+/// blocked, fails or exits.
+#[derive(Clone)]
+struct Helper {
+    parent: EntityId,
+    name: String,
 }
 
 /// What the background poll needs to know about one terminal.
@@ -147,7 +169,7 @@ impl Agents {
                 }
             })
         });
-        Self {
+        let mut agents = Self {
             watched: Vec::new(),
             by_worktree: HashMap::new(),
             last_error: None,
@@ -155,21 +177,34 @@ impl Agents {
             hooks,
             waits: Vec::new(),
             starts: Vec::new(),
+            installed: Vec::new(),
+            _installed_scan: Task::ready(()),
             _poll: poll,
             _serve: serve,
-        }
+        };
+        agents.refresh_installed(cx);
+        agents
     }
 
     /// Applies hook reports that arrived since the last call. The socket is nonblocking and
     /// each pass is bounded, so this runs on the UI thread: every report is then applied in
     /// arrival order, also when a message delivery asks for the freshest status.
     pub(crate) fn refresh_reports(&mut self, cx: &mut Context<Self>) {
-        let Some(hooks) = &self.hooks else {
-            return;
-        };
-        match hooks.drain() {
-            Ok(reports) => self.apply_reports(reports, cx),
-            Err(error) => tracing::warn!(%error, "could not read agent hooks"),
+        if let Some(hooks) = &self.hooks {
+            match hooks.drain() {
+                Ok(reports) => self.apply_reports(reports, cx),
+                Err(error) => tracing::warn!(%error, "could not read agent hooks"),
+            }
+        }
+        let programs: Vec<_> = self
+            .watched
+            .iter()
+            .map(|watched| (watched.id, watched.program.drain()))
+            .collect();
+        for (id, states) in programs {
+            for state in states {
+                self.report_status(id, AgentStatus::from_report(state), cx);
+            }
         }
     }
 
@@ -185,8 +220,11 @@ impl Agents {
         self.watched
             .retain(|watched| watched.id != session.entity_id());
         self.watched.push(Watched {
+            program: terminal.program_status(),
             reported: None,
+            sighted: None,
             unread: false,
+            helper: None,
             session: session.downgrade(),
             id: session.entity_id(),
             probe: Probe {
@@ -291,29 +329,99 @@ impl Agents {
             {
                 session.update(cx, |session, cx| session.set_resume(Some(id), cx));
             }
-            let Some(status) = report.status else {
-                continue;
-            };
-            let id = watched.id;
-            if update_status(&mut watched.reported, &mut watched.unread, status) {
-                cx.emit(AgentsEvent::Attention(id, status));
+            if let Some(status) = report.status {
+                let id = watched.id;
+                self.report_status(id, Some(status), cx);
             }
-            self.note_status(id, status);
         }
     }
 
+    /// Applies a status the agent in terminal `id` reported itself; `None` withdraws it.
+    fn report_status(&mut self, id: EntityId, status: Option<AgentStatus>, cx: &mut Context<Self>) {
+        if self.live_session(id, cx).is_none() {
+            return;
+        }
+        let Some(watched) = self.watched.iter_mut().find(|watched| watched.id == id) else {
+            return;
+        };
+        let Some(status) = status else {
+            watched.reported = None;
+            return;
+        };
+        let previous = watched.reported;
+        if update_status(&mut watched.reported, &mut watched.unread, status) {
+            cx.emit(AgentsEvent::Attention(id, status));
+        }
+        let helper = watched.helper.clone();
+        self.note_status(id, status);
+        if let (Some(helper), Some(event)) = (helper, helper_event(previous, status)) {
+            self.tell_parent(&helper, event, cx);
+        }
+    }
+
+    /// Types the note about `helper` into its parent's prompt, if the parent still runs an
+    /// agent. Nobody waits for the outcome, so a failed delivery is only logged.
+    fn tell_parent(&self, helper: &Helper, event: HelperEvent, cx: &mut Context<Self>) {
+        let Some(session) = self.live_session(helper.parent, cx) else {
+            return;
+        };
+        let Some(parent) = self.agent(helper.parent) else {
+            return;
+        };
+        let message = Message {
+            agent: parent.kind,
+            text: protocol::helper_report(&helper.name, event),
+            // A busy parent takes the note only after its turn.
+            deadline: Instant::now() + protocol::WAIT_TIMEOUT,
+            done: Box::new(|result, _| {
+                if let Err(error) = result {
+                    tracing::info!(%error, "helper report not delivered");
+                }
+            }),
+        };
+        session.update(cx, |session, cx| session.queue_message(message, cx));
+    }
+
     /// Forgets closed terminals and returns what the poll needs for the rest.
-    fn probes(&mut self, cx: &App) -> Vec<(EntityId, Probe)> {
-        self.watched.retain(|watched| {
-            watched
-                .session
-                .upgrade()
-                .is_some_and(|session| !session.read(cx).exited)
-        });
+    fn probes(&mut self, cx: &mut Context<Self>) -> Vec<(EntityId, Probe)> {
+        let (closed, open): (Vec<_>, Vec<_>) = std::mem::take(&mut self.watched)
+            .into_iter()
+            .partition(|watched| {
+                watched
+                    .session
+                    .upgrade()
+                    .is_none_or(|session| session.read(cx).exited)
+            });
+        self.watched = open;
+        for watched in closed {
+            if let Some(helper) = watched.helper.filter(|_| watched.sighted.is_some()) {
+                self.tell_parent(&helper, HelperEvent::Exited, cx);
+            }
+        }
         self.watched
             .iter()
             .map(|watched| (watched.id, watched.probe.clone()))
             .collect()
+    }
+
+    /// Drops what belonged to an agent that left its terminal: its reports and its parent.
+    fn note_sightings(
+        &mut self,
+        seen: &HashMap<EntityId, (AgentKind, Option<ResumeSession>)>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut gone = Vec::new();
+        for watched in &mut self.watched {
+            let kind = seen.get(&watched.id).map(|(kind, _)| *kind);
+            if watched.sighted.is_some() && watched.sighted != kind {
+                watched.reported = None;
+                gone.extend(watched.helper.take());
+            }
+            watched.sighted = kind;
+        }
+        for helper in gone {
+            self.tell_parent(&helper, HelperEvent::Exited, cx);
+        }
     }
 
     fn apply(&mut self, sightings: Result<Vec<Sighting>, String>, cx: &mut Context<Self>) {
@@ -335,6 +443,7 @@ impl Agents {
             .map(|sighting| (sighting.id, (sighting.kind, sighting.conversation.clone())))
             .collect();
         self.track_conversations(&seen, cx);
+        self.note_sightings(&seen, cx);
         let mut by_worktree: HashMap<(Host, PathBuf), Vec<AgentSession>> = HashMap::new();
         for sighting in sightings {
             let session = self
@@ -350,9 +459,7 @@ impl Agents {
                 )
             });
             let watched = self.watched.iter().find(|w| w.id == sighting.id);
-            let reported = watched
-                .and_then(|w| w.reported)
-                .filter(|_| sighting.kind == AgentKind::ClaudeCode);
+            let reported = watched.and_then(|w| w.reported);
             by_worktree
                 .entry((sighting.host, sighting.worktree))
                 .or_default()
@@ -418,6 +525,22 @@ fn look(probes: &[(EntityId, Probe)]) -> Result<Vec<Sighting>, String> {
     Ok(sightings)
 }
 
+/// What a helper's parent hears about a reported status change. A question counts only in the
+/// middle of a turn: Claude Code also asks for input when it has sat idle after finishing.
+fn helper_event(previous: Option<AgentStatus>, status: AgentStatus) -> Option<HelperEvent> {
+    if previous == Some(status) {
+        return None;
+    }
+    match status {
+        AgentStatus::WaitingApproval => Some(HelperEvent::Blocked),
+        AgentStatus::WaitingInput if previous == Some(AgentStatus::Working) => {
+            Some(HelperEvent::Blocked)
+        }
+        AgentStatus::Failed => Some(HelperEvent::Failed),
+        _ => None,
+    }
+}
+
 fn update_status(
     current: &mut Option<AgentStatus>,
     unread: &mut bool,
@@ -433,7 +556,32 @@ fn update_status(
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentStatus, update_status};
+    use super::{AgentStatus, HelperEvent, helper_event, update_status};
+
+    #[test]
+    fn parents_hear_about_blocked_and_failed_helpers_once_but_not_finished_turns() {
+        use AgentStatus::*;
+        let working = Some(Working);
+        assert_eq!(
+            helper_event(working, WaitingApproval),
+            Some(HelperEvent::Blocked)
+        );
+        assert_eq!(
+            helper_event(None, WaitingApproval),
+            Some(HelperEvent::Blocked)
+        );
+        assert_eq!(helper_event(Some(WaitingApproval), WaitingApproval), None);
+        assert_eq!(
+            helper_event(working, WaitingInput),
+            Some(HelperEvent::Blocked)
+        );
+        assert_eq!(helper_event(Some(Done), WaitingInput), None);
+        assert_eq!(helper_event(working, Failed), Some(HelperEvent::Failed));
+        assert_eq!(helper_event(working, Done), None);
+        assert_eq!(helper_event(working, Idle), None);
+        assert_eq!(helper_event(Some(Idle), Working), None);
+    }
+
     #[test]
     fn repeated_reports_do_not_recreate_dismissed_attention() {
         let mut status = None;

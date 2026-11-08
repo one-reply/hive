@@ -112,6 +112,12 @@ impl TerminalPanel {
                         this.notify_group(cx);
                     }
                 }
+                TerminalViewEvent::StartAgent(agent) => {
+                    if let Some(worktree) = view.read(cx).cwd().map(Path::to_path_buf) {
+                        let launch = hive_core::agent::launch::Launch::New(*agent);
+                        this.split_agent(view.clone(), &worktree, launch, window, cx);
+                    }
+                }
             }),
             cx.on_focus(&focus_handle, window, move |this, _, cx| {
                 if let Some(view) = weak_view.upgrade() {

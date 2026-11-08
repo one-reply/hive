@@ -1,7 +1,10 @@
 //! One logo per `AgentKind`, shared by the sidebar agents strip, the new-worktree
 //! dialog, the Git settings picker and the default CLI agent picker.
 //! Vendors without a monochrome mark get a generic terminal glyph: a wrong logo is worse than none.
-use gpui_kit::{component::ActiveTheme as _, *};
+use gpui_kit::{
+    component::{ActiveTheme as _, Icon},
+    *,
+};
 use hive_core::agent::AgentKind;
 
 /// Anthropic's Claude orange; every other vendor uses the foreground color like the status bar.
@@ -28,4 +31,9 @@ pub(crate) fn color(kind: AgentKind, cx: &App) -> Hsla {
         AgentKind::ClaudeCode => rgb(CLAUDE_COLOR).into(),
         _ => cx.theme().sidebar_foreground,
     }
+}
+
+/// The logo as a menu or button icon, sized by its container.
+pub(crate) fn icon(kind: AgentKind, cx: &App) -> Icon {
+    Icon::default().data(svg(kind)).text_color(color(kind, cx))
 }

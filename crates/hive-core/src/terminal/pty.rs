@@ -1,5 +1,7 @@
 //! macOS PTY teardown. Keep the shell unreaped until all session signals are sent.
+use super::Listener;
 use super::events::Publisher;
+use super::program_status::{self, ProgramStatus, Scanner};
 use alacritty_terminal::event::{OnResize, WindowSize};
 use alacritty_terminal::tty::{ChildEvent, EventedPty, EventedReadWrite};
 use polling::os::kqueue::{PollerKqueueExt, Process, ProcessOps};
@@ -7,7 +9,7 @@ use polling::{Event, PollMode, Poller};
 use rustix::process::{self, Pid, Signal, WaitId, WaitIdOptions};
 use std::collections::HashSet;
 use std::fs::File;
-use std::io;
+use std::io::{self, Read};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -45,9 +47,36 @@ impl Completion {
     }
 }
 
+/// The PTY's output as alacritty reads it, with OSC 7501 reports picked out on the way: its
+/// parser would drop them. The support query is answered from here too, ahead of any reply the
+/// parser queues for the same chunk, which is the order a probing program expects.
+pub(super) struct StatusReader {
+    file: File,
+    scanner: Scanner,
+    status: ProgramStatus,
+    listener: Listener,
+}
+
+impl Read for StatusReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.file.read(buf)?;
+        let Self {
+            scanner,
+            status,
+            listener,
+            ..
+        } = self;
+        scanner.feed(&buf[..read], |signal| match signal {
+            program_status::Signal::Report(state) => status.push(state),
+            program_status::Signal::Query => listener.write(program_status::QUERY_REPLY.to_vec()),
+        });
+        Ok(read)
+    }
+}
+
 pub(super) struct ManagedPty {
     child: std::process::Child,
-    file: File,
+    reader: StatusReader,
     completion: Arc<Completion>,
     events: Publisher,
 }
@@ -58,10 +87,17 @@ impl ManagedPty {
         file: File,
         completion: Arc<Completion>,
         events: Publisher,
+        listener: Listener,
+        status: ProgramStatus,
     ) -> Self {
         Self {
             child,
-            file,
+            reader: StatusReader {
+                file,
+                scanner: Scanner::default(),
+                status,
+                listener,
+            },
             completion,
             events,
         }
@@ -112,7 +148,7 @@ impl ManagedPty {
 }
 
 impl EventedReadWrite for ManagedPty {
-    type Reader = File;
+    type Reader = StatusReader;
     type Writer = File;
 
     unsafe fn register(
@@ -124,14 +160,14 @@ impl EventedReadWrite for ManagedPty {
         event.key = PTY_READ_WRITE_TOKEN;
         // The file remains alive through EventLoop's deregistration.
         unsafe {
-            poll.add_with_mode(&self.file, event, mode)?;
+            poll.add_with_mode(&self.reader.file, event, mode)?;
         }
         if let Err(error) = poll.add_filter(
             self.process_filter(),
             PTY_CHILD_EVENT_TOKEN,
             PollMode::Oneshot,
         ) {
-            let _ = poll.delete(&self.file);
+            let _ = poll.delete(&self.reader.file);
             return Err(error);
         }
         Ok(())
@@ -144,20 +180,20 @@ impl EventedReadWrite for ManagedPty {
         mode: PollMode,
     ) -> io::Result<()> {
         event.key = PTY_READ_WRITE_TOKEN;
-        poll.modify_with_mode(&self.file, event, mode)
+        poll.modify_with_mode(&self.reader.file, event, mode)
     }
 
     fn deregister(&mut self, poll: &Arc<Poller>) -> io::Result<()> {
-        let file_result = poll.delete(&self.file);
+        let file_result = poll.delete(&self.reader.file);
         let process_result = poll.delete_filter(self.process_filter());
         file_result.and(process_result)
     }
 
-    fn reader(&mut self) -> &mut File {
-        &mut self.file
+    fn reader(&mut self) -> &mut StatusReader {
+        &mut self.reader
     }
     fn writer(&mut self) -> &mut File {
-        &mut self.file
+        &mut self.reader.file
     }
 }
 
@@ -176,7 +212,8 @@ impl EventedPty for ManagedPty {
 
 impl OnResize for ManagedPty {
     fn on_resize(&mut self, size: WindowSize) {
-        if let Err(error) = rustix::termios::tcsetwinsize(&self.file, super::process::winsize(size))
+        if let Err(error) =
+            rustix::termios::tcsetwinsize(&self.reader.file, super::process::winsize(size))
         {
             tracing::warn!(%error, "failed to resize PTY");
         }
@@ -188,7 +225,7 @@ impl Drop for ManagedPty {
         self.terminate_session();
         // Darwin can keep a killed child in tty drain after the reader stops consuming output.
         if let Err(error) =
-            rustix::termios::tcflush(&self.file, rustix::termios::QueueSelector::IOFlush)
+            rustix::termios::tcflush(&self.reader.file, rustix::termios::QueueSelector::IOFlush)
         {
             tracing::warn!(%error, "failed to flush closing PTY");
         }
