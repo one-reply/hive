@@ -6,6 +6,8 @@
 pub mod agent;
 pub mod code_navigation;
 pub mod command;
+pub mod completion;
+
 #[cfg(feature = "desktop")]
 pub mod commit_message;
 pub mod files;

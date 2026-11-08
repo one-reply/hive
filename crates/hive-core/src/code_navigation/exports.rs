@@ -56,6 +56,96 @@ pub(super) fn lookup(tree: &Tree, source: &str, imported: &Imported) -> Lookup {
     }
 }
 
+/// Every name `import { … }` can take from one module, before following `export *`.
+#[derive(Debug, Default)]
+pub(super) struct Names {
+    pub names: Vec<String>,
+    /// `export * from '…'` specifiers whose modules add more names.
+    pub star_sources: Vec<String>,
+}
+
+pub(super) fn names(tree: &Tree, source: &str) -> Names {
+    let mut names = Names::default();
+    for statement in named_children(tree.root_node()) {
+        match statement.kind() {
+            "export_statement" => statement_names(statement, source, &mut names),
+            "expression_statement" => commonjs_names(statement, source, &mut names.names),
+            _ => {}
+        }
+    }
+    names
+}
+
+fn statement_names(statement: Node<'_>, source: &str, names: &mut Names) {
+    if has_child_kind(statement, "default") {
+        return;
+    }
+    if let Some(declaration) = statement.child_by_field_name("declaration") {
+        let declared = declared_names(declaration).into_iter();
+        names
+            .names
+            .extend(declared.map(|node| text(node, source).to_owned()));
+        return;
+    }
+    if let Some(clause) = named_children(statement).find(|n| n.kind() == "export_clause") {
+        for part in named_children(clause).filter(|n| n.kind() == "export_specifier") {
+            let Some(name) = part.child_by_field_name("name") else {
+                continue;
+            };
+            let exported = name_value(part.child_by_field_name("alias").unwrap_or(name), source);
+            if exported != "default" {
+                names.names.push(exported);
+            }
+        }
+        return;
+    }
+    if let Some(namespace) = named_children(statement).find(|n| n.kind() == "namespace_export") {
+        names.names.extend(
+            named_children(namespace)
+                .next()
+                .map(|n| name_value(n, source)),
+        );
+        return;
+    }
+    let source_module = statement
+        .child_by_field_name("source")
+        .and_then(|s| super::syntax::string_value(s, source));
+    names.star_sources.extend(source_module);
+}
+
+/// `module.exports = { a, b: 1, c() {} }`, `module.exports.name = …`, `exports.name = …`.
+fn commonjs_names(statement: Node<'_>, source: &str, names: &mut Vec<String>) {
+    let Some(assignment) = named_children(statement).find(|n| n.kind() == "assignment_expression")
+    else {
+        return;
+    };
+    let (Some(left), Some(right)) = (
+        assignment.child_by_field_name("left"),
+        assignment.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+    let target = text(left, source);
+    if target == "module.exports" {
+        if right.kind() == "object" {
+            names.extend(named_children(right).filter_map(|property| {
+                let key = match property.kind() {
+                    "shorthand_property_identifier" => property,
+                    "pair" => property.child_by_field_name("key")?,
+                    "method_definition" => property.child_by_field_name("name")?,
+                    _ => return None,
+                };
+                Some(name_value(key, source))
+            }));
+        }
+        return;
+    }
+    let property = target
+        .strip_prefix("module.exports.")
+        .or_else(|| target.strip_prefix("exports."));
+    names.extend(property.map(str::to_owned));
+}
+
 fn export_statement(
     program: Node<'_>,
     statement: Node<'_>,

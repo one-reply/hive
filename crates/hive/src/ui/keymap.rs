@@ -25,6 +25,8 @@ pub(crate) const CONTEXT: &str = "Workspace";
 pub(crate) const COMMIT_CONTEXT: &str = "(SourceControl > Input) || SourceControl";
 /// Key context of a file's tab, an editor or a diff, which "Close file" closes.
 pub(crate) const FILE_TAB_CONTEXT: &str = "EditorPanel || DiffPanel";
+/// Key context of a focused code editor, gpui-component's `Input mode=editor`.
+pub(crate) const CODE_EDITOR_CONTEXT: &str = "Input && mode == editor";
 /// Key context of pane shortcuts: a focused terminal tab.
 pub(crate) const TERMINAL_CONTEXT: &str = "TerminalPanel";
 /// Key context of a focused terminal pane's own shortcuts.
@@ -84,7 +86,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 21] = [
+pub(crate) static SHORTCUTS: [Shortcut; 22] = [
     Shortcut {
         label: "Open file",
         default: "cmd-p",
@@ -98,6 +100,14 @@ pub(crate) static SHORTCUTS: [Shortcut; 21] = [
         category: Category::Workspace,
         context: "EditorPanel",
         action: || Box::new(SaveFile),
+    },
+    Shortcut {
+        label: "Show suggestions",
+        // VS Code's and Zed's key; macOS may keep it for switching input sources.
+        default: "ctrl-space",
+        category: Category::Workspace,
+        context: CODE_EDITOR_CONTEXT,
+        action: || Box::new(gpui_kit::component::input::ShowCompletions),
     },
     Shortcut {
         label: "Close file",
@@ -449,6 +459,27 @@ mod tests {
         assert!(predicate.eval(&contexts(&["Workspace", "SourceControl"])));
         assert!(!predicate.eval(&contexts(&["Workspace", "TerminalPanel"])));
         assert!(!predicate.eval(&contexts(&["Workspace", "Settings", "Input"])));
+    }
+
+    #[test]
+    fn suggestions_open_only_in_code_editors() {
+        use gpui_kit::{KeyBindingContextPredicate, KeyContext};
+        let predicate = KeyBindingContextPredicate::parse(super::CODE_EDITOR_CONTEXT)
+            .expect("code editor context");
+        let contexts = |names: &[&str]| {
+            names
+                .iter()
+                .map(|n| KeyContext::parse(n).expect("context"))
+                .collect::<Vec<_>>()
+        };
+        assert!(predicate.eval(&contexts(&[
+            "Workspace",
+            "EditorPanel",
+            "Input mode=editor"
+        ])));
+        assert!(!predicate.eval(&contexts(&["Workspace", "SourceControl", "Input"])));
+        assert!(!predicate.eval(&contexts(&["Workspace", "FileSearch", "Input"])));
+        assert!(!predicate.eval(&contexts(&["Workspace", "TerminalPanel", "Terminal"])));
     }
 
     fn keystroke(source: &'static str) -> Keystroke {

@@ -1,6 +1,6 @@
 //! Tree-sitter parsing and the node helpers shared by import and export lookup.
 use std::path::Path;
-use tree_sitter::{Node, Parser, Tree};
+use tree_sitter::{Node, Tree};
 
 /// Grammar used for a source file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,12 +32,7 @@ pub(super) fn parse(text: &str, dialect: Dialect) -> Option<Tree> {
         Dialect::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
         Dialect::Tsx => tree_sitter_typescript::LANGUAGE_TSX,
     };
-    let mut parser = Parser::new();
-    if let Err(error) = parser.set_language(&language.into()) {
-        tracing::warn!(?dialect, %error, "tree-sitter grammar is incompatible");
-        return None;
-    }
-    parser.parse(text, None)
+    crate::completion::parse(text, &language.into())
 }
 
 pub(super) fn text<'a>(node: Node<'_>, source: &'a str) -> &'a str {

@@ -8,6 +8,7 @@ use hive_core::projects::Target;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod completions;
 mod definitions;
 mod document;
 pub(crate) use document::{Content, Document, PreviewState, SvgMode};
@@ -134,8 +135,9 @@ impl Documents {
                     && r.draft.path == request.path
             })
             .map(|index| self.recovered.remove(index));
+        let (store, navigator) = (self.store.clone(), self.navigator.clone());
         let document =
-            cx.new(|cx| Document::new(request.clone(), recovered, self.store.clone(), window, cx));
+            cx.new(|cx| Document::new(request.clone(), recovered, store, navigator, window, cx));
         definitions::install(&document, cx.weak_entity(), self.navigator.clone(), cx);
         self.open.push(document.downgrade());
         document

@@ -279,3 +279,150 @@ fn line_column_counts_characters_not_bytes() {
     assert_eq!(line_column("а\nбв x", 8), (1, 3));
     assert_eq!(line_column("abc", 99), (0, 3));
 }
+
+impl Fixture {
+    /// Labels for a specifier typed in `file`, and where they replace it.
+    fn import_paths(&self, file: &str, typed: &str) -> (usize, Vec<String>) {
+        let paths = self
+            .navigator
+            .import_paths(&Host::Local, &self.root, Path::new(file), typed);
+        let labels = paths.items.into_iter().map(|item| item.label).collect();
+        (paths.from, labels)
+    }
+
+    fn export_names(&self, file: &str, specifier: &str, prefix: &str) -> Vec<String> {
+        self.navigator
+            .export_names(&self.root, Path::new(file), specifier, prefix)
+    }
+}
+
+fn labels(items: &[&str]) -> Vec<String> {
+    items.iter().map(|label| (*label).to_owned()).collect()
+}
+
+#[test]
+fn import_paths_list_folders_files_aliases_and_packages() {
+    let f = Fixture::new(&[
+        (
+            "package.json",
+            r##"{"imports":{"#utils":"./src/utils.js","#lib/*":"./src/lib/*.js"},
+                 "dependencies":{"react":"18","react-dom":"18"},"devDependencies":{"vitest":"1"}}"##,
+        ),
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        ),
+        ("src/app.ts", ""),
+        ("src/button.tsx", ""),
+        ("src/button.css", ""),
+        ("src/types.d.ts", ""),
+        ("src/legacy.mjs", ""),
+        ("src/.hidden.ts", ""),
+        ("src/components/card.ts", ""),
+    ]);
+    let file = "src/app.ts";
+    assert_eq!(
+        f.import_paths(file, "./"),
+        (
+            2,
+            labels(&["components", "button.css", "button", "legacy.mjs", "types"])
+        )
+    );
+    assert_eq!(
+        f.import_paths(file, "./BU"),
+        (2, labels(&["button.css", "button"]))
+    );
+    assert_eq!(
+        f.import_paths(file, "./components/"),
+        (13, labels(&["card"]))
+    );
+    assert_eq!(
+        f.import_paths(file, "../"),
+        (3, labels(&["src", "package.json", "tsconfig.json"]))
+    );
+    assert_eq!(f.import_paths(file, "@/comp"), (2, labels(&["components"])));
+    assert_eq!(
+        f.import_paths(file, ""),
+        (
+            0,
+            labels(&[
+                "./",
+                "../",
+                "#lib/",
+                "#utils",
+                "@/",
+                "react",
+                "react-dom",
+                "vitest"
+            ])
+        )
+    );
+    assert_eq!(
+        f.import_paths(file, "re"),
+        (0, labels(&["react", "react-dom"]))
+    );
+    assert_eq!(f.import_paths(file, "#"), (0, labels(&["#lib/", "#utils"])));
+    assert_eq!(
+        f.import_paths(file, "../../"),
+        (0, Vec::new()),
+        "never above the root"
+    );
+    assert_eq!(f.import_paths(file, "./missing/"), (10, Vec::new()));
+}
+
+#[test]
+fn es_module_packages_keep_javascript_extensions() {
+    let f = Fixture::new(&[
+        ("package.json", r#"{"type":"module","dependencies":[]}"#),
+        ("lib/a.js", ""),
+        ("lib/b.ts", ""),
+        ("main.js", ""),
+    ]);
+    assert_eq!(
+        f.import_paths("main.js", "./lib/"),
+        (6, labels(&["a.js", "b"]))
+    );
+    assert_eq!(
+        f.import_paths("main.js", ""),
+        (0, labels(&["./", "../"])),
+        "a malformed dependencies field adds nothing"
+    );
+}
+
+#[test]
+fn export_names_follow_star_exports_and_skip_defaults() {
+    let f = Fixture::new(&[
+        (
+            "src/index.ts",
+            "export * from './a';\nexport { b as bee, default as main } from './b';\nexport * as ns from './c';\nexport default function hidden() {}\n",
+        ),
+        (
+            "src/a.ts",
+            "export const alpha = 1, beta = 2;\nexport function gamma() {}\nexport interface Delta {}\nexport type Eps = 1;\nexport enum Zeta { A }\nexport class Eta {}\nexport * from './index';\n",
+        ),
+        ("src/b.ts", "export const b = 1;\nexport default b;\n"),
+        ("src/c.ts", ""),
+        (
+            "src/cjs.js",
+            "module.exports = { one, two: 2, three() {} };\nexports.four = 4;\nmodule.exports.five = 5;\n",
+        ),
+        ("src/app.ts", ""),
+    ]);
+    let file = "src/app.ts";
+    assert_eq!(
+        f.export_names(file, "./index", ""),
+        labels(&[
+            "Delta", "Eps", "Eta", "Zeta", "alpha", "bee", "beta", "gamma", "main", "ns"
+        ])
+    );
+    assert_eq!(
+        f.export_names(file, "./index", "e"),
+        labels(&["Eps", "Eta"])
+    );
+    assert_eq!(
+        f.export_names(file, "./cjs", ""),
+        labels(&["five", "four", "one", "three", "two"])
+    );
+    assert!(f.export_names(file, "./missing", "").is_empty());
+    assert!(f.export_names(file, "../../outside", "").is_empty());
+}

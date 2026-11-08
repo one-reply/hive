@@ -5,7 +5,7 @@
 //! the way Node and TypeScript do (relative paths, `package.json` `imports`, `tsconfig`
 //! `paths`, `node_modules`) and follows re-exports to the declaration. Only the few files on
 //! that chain are read, through the same bounded local IO as the editor. Blocking: call it
-//! from a background executor.
+//! from a background executor. The same rules list what an import can name, for completion.
 use crate::files::{self, FileError};
 use crate::host::Host;
 use std::collections::HashSet;
@@ -14,11 +14,14 @@ use std::path::{Path, PathBuf};
 
 mod config;
 mod exports;
+mod importable;
 mod imports;
 mod resolve;
 mod syntax;
 #[cfg(test)]
 mod tests;
+
+pub use importable::{ImportPath, ImportPathKind, ImportPaths};
 
 use exports::Export;
 use imports::Imported;
