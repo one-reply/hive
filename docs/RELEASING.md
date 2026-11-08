@@ -102,6 +102,13 @@ the checksum or update signatures from the ad-hoc input.
 
 For unattended GitHub releases, an authorized maintainer must configure:
 
+App Store Connect → Users and Access → Integrations → App Store Connect API must
+be enabled first. Only the **Account Holder** can request initial API access; an
+Admin cannot bypass a disabled Request Access button. After Apple grants access,
+create a team key authorized for cloud-managed Developer ID signing. Its `.p8`
+private key can only be downloaded once. See [Apple's API setup instructions](https://developer.apple.com/help/app-store-connect/get-started/app-store-connect-api/).
+
+
 | Setting | Value |
 | --- | --- |
 | Variable `APPLE_TEAM_ID` | Authorized ten-character Apple Developer team ID |
@@ -124,8 +131,10 @@ The existing `SPARKLE_PRIVATE_KEY` separately signs the final update archive and
 See [Apple's automation workflow](https://developer.apple.com/videos/play/wwdc2021/10204/)
 and [notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
 
-Before publishing, download the final draft ZIP through a browser and test first
-launch in a clean macOS profile, along with terminal, Keychain and Sparkle updates.
+Before pushing a release tag, test first launch in a clean macOS profile, along
+with terminal, Keychain and Sparkle updates. Record the completed checks and any
+limits in the version's release notes. The tag workflow publishes automatically
+after all automated checks and downloaded-asset verification pass.
 Do not move an existing protected tag or replace already published archive bytes;
 use a new version when changing the signing identity or notarization state.
 
@@ -165,41 +174,51 @@ If that material must remain private, use GitHub Support's cleanup process or
 publish the cleaned history in a fresh repository while keeping the original private. See
 [GitHub's removal guidance](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository).
 
-## Draft release and installation checks
+## Automatic stable releases and installation checks
 
 1. Update the workspace version and add `docs/releases/v<version>.md` with a
-   `# Hive <version> …` title and a `## What's new` section containing release highlights.
-   After an update Hive only names the new version and links to its GitHub release.
-   Wait for CI on the intended commit, then push a matching `v<version>` tag. CI
-   verifies the tag/version match, runs security and build checks, signs and notarizes the app, and creates a
-   **draft stable release** with the stapled ZIP, checksum and signed `appcast.xml`,
-   using `docs/releases/v<version>.md` as its release notes.
-   Only the final release job has repository write permission and access to the
-   Apple credentials and update-signing secret.
-2. Download that draft ZIP through a browser, rather than copying the local `.app`.
-   Verify the checksum, extract it, and install it in Applications. Use a separate
-   test account or Mac so existing projects, credentials and running agents are safe.
-3. With Gatekeeper enabled, record the actual first-launch behavior. A notarized
-   release must pass `xcrun stapler validate Hive.app` and `spctl --assess --type
-   execute --verbose=2 Hive.app`, and open without an unidentified-developer override.
-   Only legacy/local ad-hoc previews may need Privacy & Security → Open Anyway
-   following [Apple's guidance](https://support.apple.com/en-gb/102445). Do not use
-   that override as evidence that notarization worked or disable Gatekeeper globally.
-   A managed-device restriction is separate; document it.
-4. Test launch through Finder, terminal input and installed CLI discovery, worktree
-   creation/removal, diff/staging/commit in a disposable repository, settings after
-   restart, Keychain access/denial, and child-process cleanup on quit.
-5. Test a clean account without CLI sign-ins or API keys. Project, terminal and Git
-   workflows must work; usage and AI actions must explain missing credentials.
-6. Record exact macOS versions, build commit and completed checks in release notes.
-   Use only synthetic project data in public screenshots. Do not mark skipped tests
-   as passed. Keep the draft private if an installation gate is unresolved.
+   `# Hive <version> …` title and a `## What's new` section. Record the exact
+   checks performed and any unverified installation scenarios in those notes.
+2. Merge through the required security, Linux and macOS CI checks. Before tagging,
+   complete the applicable native checks in a disposable account or Mac: Finder
+   launch, terminal/CLI discovery, worktree and Git actions, settings after restart,
+   Keychain access/denial, process cleanup, and Sparkle install/relaunch.
+3. Push the matching `v<version>` tag. CI verifies the version, signs through
+   Xcode's Developer ID service, waits for Apple notarization, staples the app,
+   and signs the final archive and feed with Sparkle. Missing credentials or any
+   failed validation stop publication; there is no ad-hoc fallback.
+4. `scripts/publish_release.py` validates checksums, feed URL/version/length,
+   Sparkle signatures, app identity/update policy, arm64 architecture, Developer
+   ID team, hardened runtime, stapled ticket and Gatekeeper. It uploads a draft,
+   downloads it again, compares bytes and repeats verification, then publishes a
+   **stable Latest** release. It explicitly dispatches the update-feed workflow on
+   `main`; events created by `GITHUB_TOKEN` do not otherwise start another workflow.
+5. A rerun can resume a draft. An already published stable release is downloaded
+   and verified without replacing its assets or metadata; the feed dispatch is
+   retried. A published prerelease requires explicit promotion. Never move an
+   existing protected tag or silently replace a published ZIP.
 
-If hosted runners cannot start, a maintainer may build the exact tag locally with
-all the same checks and create a private draft for installation testing. Record the
-build provenance and failed runner allocation in its notes. Run `workflow_dispatch`
-on that tag when runners recover; the release job only runs on tag pushes, so this
-does not replace draft assets. CI and installation checks must pass before promotion.
+Only the signing/publishing job receives Apple credentials and the Sparkle private
+key, after successful build and security jobs. Its `actions: write` permission is
+used to dispatch the Pages workflow on `main`. PRs and ordinary main builds do not
+run this privileged job.
+
+To verify hosted signing before the next release, run:
+
+```sh
+gh workflow run ci.yml --ref main -f verify_release=true
+```
+
+This runs all checks, signs/notarizes the current main build and validates the final
+assets. It uploads `hive-signed-macos-arm64` as a CI artifact without creating,
+editing or publishing a release or changing the update feed. This mode only runs
+from `main`. It is the required proof that an Apple API key works on a hosted
+runner; successful local Xcode signing alone is not that proof.
+
+If hosted runners are unavailable, a maintainer may still build the exact tag
+locally with the same checks. Keep provenance and native-check results in the
+release notes. API-key failures must be fixed in configuration, never suppressed
+with `continue-on-error` or a successful no-op signing job.
 
 ## In-app updates
 
@@ -233,11 +252,14 @@ Upload the generated signed `appcast.xml` alongside the ZIP and checksum. Do not
 edit that XML after signing. Sparkle's Ed25519 signature is independent of Apple
 Developer ID/notarization; both must be verified for a distribution release.
 
-GitHub Pages uses **GitHub Actions** as its source. `Publish update feed` runs when
-a release is published, unpublished or deleted, or through `workflow_dispatch`.
-It copies the highest numeric `vMAJOR.MINOR.PATCH` release's signed appcast without
-changing its bytes. Published previews are included; drafts, incomplete uploads
-and non-numeric tags are excluded. Until the first signed release is published,
+GitHub Pages uses **GitHub Actions** as its source. Release events dispatch
+`Publish update feed` on `main`; only that main dispatch prepares and deploys the
+site, preserving the Pages environment's main-only policy. The CI publisher also
+dispatches it explicitly after publication. Manual `workflow_dispatch` remains
+available for recovery.
+It copies the highest numeric stable `vMAJOR.MINOR.PATCH` release's signed appcast
+without changing its bytes. Prereleases, drafts, incomplete uploads and
+non-numeric tags are excluded. Until the first signed release is published,
 the signed empty feed reports no updates. Downloads are public and clients need
 no GitHub token. The workflow has no access to the private signing key.
 
@@ -259,9 +281,9 @@ Reporting. Protect `main` with PRs and required `Security and licenses` and
 additional approvals while there is one maintainer. Verify settings after the
 visibility change, since availability varies between private and public repositories.
 
-Verify the repository and download links without signing in, then publish the draft
-as a stable release and mark it latest (`gh release edit v<version> --draft=false
---prerelease=false --latest`). Keep release notes explicit about the actual
-signing/notarization status and tested systems.
+The tag workflow publishes stable Latest releases automatically after verification.
+For a manually prepared and verified draft, use `gh release edit v<version>
+--draft=false --prerelease=false --latest`. Verify download links without signing
+in and keep release notes explicit about signing/notarization and tested systems.
 If a published build is faulty, mark it as withdrawn and publish a corrected version;
 do not silently replace a ZIP under an existing checksum or move a published tag.
