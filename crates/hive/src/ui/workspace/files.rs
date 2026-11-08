@@ -25,6 +25,15 @@ impl Workspace {
             .update(cx, |files, cx| files.set_visible(visible, cx));
         cx.notify();
     }
+
+    /// Selects the right sidebar's Files (`true`) or Git tab, opening the sidebar if closed.
+    pub(super) fn show_right_tab(&mut self, files: bool, cx: &mut Context<Self>) {
+        self.choose_files(files, cx);
+        if !self.git_open {
+            self.toggle_git(cx);
+        }
+    }
+
     pub(super) fn watch_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let selected = AppState::get(cx)
             .store

@@ -7,7 +7,9 @@ use gpui_kit::*;
 use crate::app::AppState;
 use crate::terminal::panel::{ClosePane, SplitDown, SplitRight};
 use crate::ui::settings::OpenSettings;
-use crate::ui::workspace::{NewTerminal, ToggleGitPanel, ToggleSidebar};
+use crate::ui::workspace::{
+    NewTerminal, ShowFilesPanel, ShowGitPanel, ToggleGitPanel, ToggleSidebar,
+};
 
 actions!(
     hive,
@@ -110,6 +112,8 @@ pub(crate) fn install(cx: &mut App) {
         Menu::new("View").items([
             MenuItem::action("Toggle Left Sidebar", ToggleSidebar),
             MenuItem::action("Toggle Right Sidebar", ToggleGitPanel),
+            MenuItem::action("Show Git", ShowGitPanel),
+            MenuItem::action("Show Files", ShowFilesPanel),
             MenuItem::separator(),
             MenuItem::action("Toggle Full Screen", ToggleFullScreen),
         ]),

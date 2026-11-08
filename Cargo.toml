@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/one-reply/hive"
@@ -13,6 +13,10 @@ publish = false
 hive-core = { path = "crates/hive-core" }
 
 gpui-kit = { version = "0.9", features = ["tree-sitter-languages"] }
+# Test-only: the GPUI gpui-kit pins, for `test-support` (TestAppContext, `#[gpui::test]`).
+# gpui-kit's own `test-support` names gpui-fast weakly, which still enters resolution and
+# conflicts on taffy, so the feature is turned on here directly.
+gpui-pre = "=0.3.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shlex = "2"

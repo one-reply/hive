@@ -212,11 +212,12 @@ impl Render for EditorPanel {
         if loading && !ready {
             body = body.child(gpui_kit::component::spinner::Spinner::new());
         }
-        body.child(
-            Editor::new(&editor)
-                .readonly(!ready)
-                .bordered(false)
-                .size_full(),
-        )
+        body.capture_action(suggestions::accept_on_tab(editor.clone()))
+            .child(
+                Editor::new(&editor)
+                    .readonly(!ready)
+                    .bordered(false)
+                    .size_full(),
+            )
     }
 }

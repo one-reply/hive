@@ -46,7 +46,14 @@ use project_center::ProjectCenter;
 // Bound in `ui::keymap`, where the user can reassign them.
 actions!(
     workspace,
-    [QuickSwitch, NewTerminal, ToggleSidebar, ToggleGitPanel]
+    [
+        QuickSwitch,
+        NewTerminal,
+        ToggleSidebar,
+        ToggleGitPanel,
+        ShowGitPanel,
+        ShowFilesPanel
+    ]
 );
 
 pub struct Workspace {
@@ -614,10 +621,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(
                 |this, _: &crate::ui::editor_panel::OpenFileSearch, window, cx| {
-                    this.choose_files(true, cx);
-                    if !this.git_open {
-                        this.toggle_git(cx);
-                    }
+                    this.show_right_tab(true, cx);
                     let panel = this.files_panel.clone();
                     window.defer(cx, move |window, cx| {
                         panel.update(cx, |panel, cx| panel.focus_search(window, cx))
@@ -629,6 +633,8 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(|this, _: &ToggleGitPanel, _, cx| this.toggle_git(cx)))
+            .on_action(cx.listener(|this, _: &ShowGitPanel, _, cx| this.show_right_tab(false, cx)))
+            .on_action(cx.listener(|this, _: &ShowFilesPanel, _, cx| this.show_right_tab(true, cx)))
             .bg(bg)
             .text_color(cx.theme().foreground)
             .child(body)

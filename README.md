@@ -28,9 +28,9 @@ editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-k
 
 **Apple Silicon only.** The button opens GitHub Releases, where you can download
 the latest stable release and its SHA-256 checksum.
-The current release is [Hive 1.0.0](https://github.com/one-reply/hive/releases/tag/v1.0.0),
+The current release is [Hive 1.0.1](https://github.com/one-reply/hive/releases/tag/v1.0.1),
 with a Developer ID signature and Apple notarization. See the
-[release notes](docs/releases/v1.0.0.md) for changes and the
+[release notes](docs/releases/v1.0.1.md) for changes and the
 [verification record](docs/RELEASE_CHECKS.md) for completed
 and pending checks.
 
@@ -40,9 +40,8 @@ before installing and restarting. Finish active agent sessions before restarting
 After updating, a compact notification links to the installed version’s release notes.
 Older builds need one manual installation of a version that includes the updater.
 
-Version **1.0.0** adds code completion for names in the open file and JS/TS imports,
-alongside the terminal performance improvements from 0.1.11. Suggestions run without
-an external language server; type-aware completion and automatic imports are not included.
+Version **1.0.1** adds Tab acceptance for code suggestions, a terminal context menu,
+direct Git/Files shortcuts, and a selection highlight for collapsed projects.
 
 ## What you can do today
 
@@ -145,7 +144,7 @@ of silently overwriting either version. **⌘-click** follows JavaScript/TypeScr
 imports to their definitions; **⌘⇧-click** opens them in an adjacent tab.
 
 Code completion suggests names from the open file and JS/TS imports. Press
-**⌃Space** to show suggestions, **Enter** to accept, or **Escape** to dismiss.
+**⌃Space** to show suggestions, **Tab** or **Enter** to accept, or **Escape** to dismiss.
 Disable it in **Settings → Files → Code completion**. Type-aware suggestions and
 automatic imports require a language server and are not included.
 
@@ -245,6 +244,8 @@ require the credentials described in [Releasing](docs/RELEASING.md#developer-id-
 | Close focused terminal pane, editor, or diff | ⌘W |
 | Toggle project sidebar | ⌘⇧\ |
 | Toggle right sidebar (Git / Files) | ⌘\ |
+| Show Git | ⌘⇧G |
+| Show Files | ⌘⇧E |
 | Commit staged changes, while focused in the Git panel | ⌘Enter |
 | Open settings | ⌘, |
 
