@@ -35,7 +35,12 @@ pub(crate) enum GitEvent {
     Activate(Target),
     Terminal(Target),
     AgentDraft(Target, hive_core::agent::AgentKind, String),
-    Refreshed(Target),
+    /// A status read finished; `changed` when the status differs from the last one or the
+    /// refresh was forced, so listeners that only follow the status can skip the rest.
+    Refreshed {
+        target: Target,
+        changed: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -388,7 +393,10 @@ impl Git {
                                 });
                             }
                         }
-                        cx.emit(GitEvent::Refreshed(target.clone()));
+                        cx.emit(GitEvent::Refreshed {
+                            target: target.clone(),
+                            changed: changed || force,
+                        });
                         if branch_changed {
                             this.projects.update(cx, |p, cx| p.rescan(cx)).detach();
                         }

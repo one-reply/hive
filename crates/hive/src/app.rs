@@ -46,8 +46,9 @@ impl AppState {
         let documents =
             cx.new(|_| crate::state::documents::Documents::new(store.clone(), recovery));
         let updates = cx.new(Updates::new);
-        let pull_requests =
-            cx.new(|cx| crate::state::pull_requests::PullRequests::new(projects.clone(), cx));
+        let pull_requests = cx.new(|cx| {
+            crate::state::pull_requests::PullRequests::new(projects.clone(), git.clone(), cx)
+        });
         let quit = cx.on_app_quit(|cx| {
             let deadline = Instant::now() + Duration::from_secs(3);
             let app = Self::get(cx);

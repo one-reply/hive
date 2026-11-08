@@ -26,7 +26,7 @@ impl Workspace {
             &git,
             window,
             |this, _, event, window, cx| match event {
-                GitEvent::Refreshed(_) => {}
+                GitEvent::Refreshed { .. } => {}
                 GitEvent::OpenDiff(request) => this.open_diff(request.clone(), window, cx),
                 GitEvent::Activate(target) => this.activate_target(target, cx),
                 GitEvent::Terminal(target) => {

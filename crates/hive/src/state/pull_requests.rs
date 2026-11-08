@@ -1,4 +1,5 @@
 //! Periodic PR cards, separate from the frequently refreshed local Git panel.
+use super::git::Git;
 use super::projects::Projects;
 use gpui_kit::*;
 use hive_core::{
@@ -22,7 +23,13 @@ pub(crate) struct PullRequests {
     _poll: Task<()>,
 }
 impl PullRequests {
-    pub(crate) fn new(projects: Entity<Projects>, cx: &mut Context<Self>) -> Self {
+    /// Polls only while the main window is active, like `Git`: nobody sees the cards
+    /// otherwise, and each check runs `gh` (over `ssh` for remote projects).
+    pub(crate) fn new(
+        projects: Entity<Projects>,
+        git: Entity<Git>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let poll = cx.spawn(async move |this, cx| {
             let mut attempted = HashMap::<(Host, PathBuf), (String, std::time::Instant)>::new();
             loop {
@@ -49,7 +56,8 @@ impl PullRequests {
                 attempted.retain(|(host, path), _| {
                     targets.iter().any(|(h, p, _)| h == host && p == path)
                 });
-                for (host, path, head) in targets {
+                let window_active = git.read_with(cx, |git, _| git.window_active);
+                for (host, path, head) in targets.into_iter().filter(|_| window_active) {
                     let key = (host.clone(), path.clone());
                     if attempted.get(&key).is_some_and(|(h, time)| {
                         *h == head && time.elapsed() < Duration::from_secs(60)

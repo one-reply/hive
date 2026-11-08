@@ -1,11 +1,14 @@
-//! Paints the terminal grid: cell backgrounds, glyphs (one shaped line per non-blank cell,
-//! which GPUI caches), decorations and the cursor. Also measures how many cells fit in the
-//! bounds and resizes the PTY to match.
+//! Paints the terminal grid: cell backgrounds, glyphs (one layout per non-blank cell, kept
+//! across frames by [`super::glyph_cache`]), decorations and the cursor. Also measures how many
+//! cells fit in the bounds and resizes the PTY to match.
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
 use hive_core::terminal::{Cell, Color, CursorShape, Flags, NamedColor, Point as GridPoint, Rgb};
 
+use std::sync::Arc;
+
+use super::glyph_cache::{self, CellText, Variant};
 use super::mouse::GridGeometry;
 use super::view::TerminalView;
 
@@ -36,7 +39,7 @@ impl IntoElement for TerminalElement {
 pub struct Prepaint {
     background: Hsla,
     rects: Vec<(Bounds<Pixels>, Hsla)>,
-    glyphs: Vec<(Point<Pixels>, ShapedLine)>,
+    glyphs: Vec<(Point<Pixels>, Arc<LineLayout>, DecorationRun)>,
     cursor: Option<(Bounds<Pixels>, Hsla, CursorShape)>,
     line_height: Pixels,
 }
@@ -194,7 +197,7 @@ impl Element for TerminalElement {
         });
 
         let mut rects = Vec::new();
-        let mut glyphs = Vec::new();
+        let mut cells = Vec::new();
         let mut cursor = None;
 
         let view = self.view.read(cx);
@@ -270,50 +273,42 @@ impl Element for TerminalElement {
                 rects.push((cell_bounds, bg));
             }
 
-            let c = cell.c;
-            if c == ' '
-                && cell.zerowidth().is_none()
-                && !flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT)
-            {
+            let Some(text) = glyph_cache::cell_text(cell) else {
                 continue;
-            }
-            let mut text = String::with_capacity(4);
-            text.push(c);
-            if let Some(zw) = cell.zerowidth() {
-                text.extend(zw);
-            }
-            let mut font = base_font.clone();
-            if flags.intersects(Flags::BOLD) {
-                font.weight = FontWeight::BOLD;
-            }
-            if flags.intersects(Flags::ITALIC) {
-                font.style = FontStyle::Italic;
-            }
-            let underline = flags
-                .intersects(Flags::ALL_UNDERLINES)
-                .then(|| UnderlineStyle {
-                    thickness: px(1.),
-                    color: Some(fg),
-                    wavy: flags.contains(Flags::UNDERCURL),
-                });
-            let strikethrough = flags
-                .contains(Flags::STRIKEOUT)
-                .then(|| StrikethroughStyle {
-                    thickness: px(1.),
-                    color: Some(fg),
-                });
+            };
+            let decoration = glyph_cache::decoration(flags, fg, text.len());
+            cells.push((origin, text, Variant::from(flags), decoration));
+        }
+        // Shaping happens after the grid is released, so the PTY reader never waits on it.
+        drop(term);
+
+        let shape = |text: &str, variant: Variant, decoration: &DecorationRun| {
             let run = TextRun {
                 len: text.len(),
-                font,
-                color: fg,
+                font: variant.font(&base_font),
+                color: decoration.color,
                 background_color: None,
-                underline,
-                strikethrough,
+                underline: decoration.underline,
+                strikethrough: decoration.strikethrough,
             };
-            let line = text_system.shape_line(SharedString::from(text), font_size, &[run], None);
-            glyphs.push((origin, line));
-        }
-        drop(term);
+            text_system.layout_line(text, font_size, &[run], None)
+        };
+        let glyphs = self.view.update(cx, |view, _| {
+            let cache = view.glyph_cache();
+            cache.begin_frame(&base_font.family, font_size);
+            cells
+                .into_iter()
+                .map(|(origin, text, variant, decoration)| {
+                    let layout = match &text {
+                        CellText::Char(c) => cache.get_or_shape(*c, variant, || {
+                            shape(c.encode_utf8(&mut [0; 4]), variant, &decoration)
+                        }),
+                        CellText::Cluster(text) => shape(text, variant, &decoration),
+                    };
+                    (origin, layout, decoration)
+                })
+                .collect()
+        });
 
         Prepaint {
             background: palette.bg,
@@ -363,8 +358,16 @@ impl Element for TerminalElement {
                 }
             }
             let line_height = prepaint.line_height;
-            for (origin, line) in prepaint.glyphs.drain(..) {
-                let _ = line.paint(origin, line_height, TextAlign::Left, None, window, cx);
+            for (origin, layout, decoration) in prepaint.glyphs.drain(..) {
+                let _ = layout.paint(
+                    origin,
+                    line_height,
+                    TextAlign::Left,
+                    None,
+                    std::slice::from_ref(&decoration),
+                    window,
+                    cx,
+                );
             }
         });
     }

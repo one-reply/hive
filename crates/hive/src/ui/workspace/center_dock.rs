@@ -229,8 +229,9 @@ impl CenterTabs {
     ) -> Tab {
         let panel = &group.panels()[ix];
         let panel_id = panel.panel_id(cx);
-        let accessible_name = PanelHandle::of(panel)
-            .and_then(|handle| handle.tab_name(cx))
+        let tab_name = PanelHandle::of(panel).and_then(|handle| handle.tab_name(cx));
+        let accessible_name = tab_name
+            .clone()
             .or_else(|| {
                 panel
                     .view()
@@ -246,7 +247,7 @@ impl CenterTabs {
                     .map(|p| p.read(cx).label(cx))
             })
             .unwrap_or_else(|| "Workspace tab".into());
-        let label = match PanelHandle::of(panel).and_then(|handle| handle.tab_name(cx)) {
+        let label = match tab_name {
             Some(name) => name.into_any_element(),
             None => panel_title(panel, window, cx),
         };
