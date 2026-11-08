@@ -87,6 +87,12 @@ pub(super) fn cell_text(cell: &Cell) -> Option<CellText> {
     }
 }
 
+/// Whether a cell draws lines besides its glyphs; those cells keep `LineLayout::paint`, which
+/// draws them, while plain cells share one layer.
+pub(super) fn has_lines(decoration: &DecorationRun) -> bool {
+    decoration.underline.is_some() || decoration.strikethrough.is_some()
+}
+
 /// The colour and decorations of one cell's glyph, as `shape_line` derives them from its run.
 pub(super) fn decoration(flags: Flags, fg: Hsla, len: usize) -> DecorationRun {
     DecorationRun {
@@ -250,6 +256,20 @@ mod tests {
         );
         let straight = decoration(Flags::DOUBLE_UNDERLINE, fg, 1);
         assert_eq!(straight.underline.map(|u| u.wavy), Some(false));
+    }
+
+    #[test]
+    fn only_underlined_or_struck_cells_have_lines() {
+        let fg = red();
+        assert!(!has_lines(&decoration(Flags::empty(), fg, 1)));
+        assert!(!has_lines(&decoration(
+            Flags::BOLD | Flags::ITALIC | Flags::INVERSE,
+            fg,
+            1
+        )));
+        assert!(has_lines(&decoration(Flags::UNDERLINE, fg, 1)));
+        assert!(has_lines(&decoration(Flags::UNDERCURL, fg, 1)));
+        assert!(has_lines(&decoration(Flags::STRIKEOUT, fg, 1)));
     }
 
     #[test]

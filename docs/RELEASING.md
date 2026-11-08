@@ -169,8 +169,7 @@ publish the cleaned history in a fresh repository while keeping the original pri
 
 1. Update the workspace version and add `docs/releases/v<version>.md` with a
    `# Hive <version> …` title and a `## What's new` section containing release highlights.
-   Hive embeds this section at compile time for its offline What's New card; keep
-   installation and maintainer instructions in subsequent level-two sections.
+   After an update Hive only names the new version and links to its GitHub release.
    Wait for CI on the intended commit, then push a matching `v<version>` tag. CI
    verifies the tag/version match, runs security and build checks, signs and notarizes the app, and creates a
    **draft prerelease** with the stapled ZIP, checksum and signed `appcast.xml`.

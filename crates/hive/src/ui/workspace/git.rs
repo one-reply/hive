@@ -209,9 +209,9 @@ impl Workspace {
             .border_color(border)
             .child(header)
             .child(div().flex_1().min_h_0().child(if selected_files {
-                self.files_panel.clone().into_any_element()
+                super::cached(&self.files_panel).into_any_element()
             } else {
-                self.git_panel.clone().into_any_element()
+                super::cached(&self.git_panel).into_any_element()
             }));
         // Right-aligned so the content's left edge moves while its right edge stays put.
         let outer = v_flex()

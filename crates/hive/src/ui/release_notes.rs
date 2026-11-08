@@ -3,8 +3,7 @@
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, WindowExt as _, notification::Notification, text::TextView,
-    v_flex,
+    ActiveTheme as _, Sizable as _, WindowExt as _, notification::Notification, v_flex,
 };
 use gpui_kit::*;
 use hive_core::release_notes;
@@ -12,13 +11,11 @@ use hive_core::release_notes;
 use crate::state::updates::Updates;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 
-const HIGHLIGHTS_MAX_HEIGHT: Pixels = px(200.);
-
 pub(crate) fn show(window: &mut Window, cx: &mut App) {
     window.push_notification(
         Notification::new()
             .id::<Updates>()
-            .title(format!("What's new in Hive {}", release_notes::VERSION))
+            .title(format!("Hive updated to {}", release_notes::VERSION))
             .placement(Anchor::BottomRight)
             .autohide(false)
             .content(|_, window, cx| {
@@ -28,19 +25,13 @@ pub(crate) fn show(window: &mut Window, cx: &mut App) {
                     .pt_2()
                     .child(
                         div()
-                            .id("release-highlights")
-                            .max_h(HIGHLIGHTS_MAX_HEIGHT)
-                            .overflow_y_scroll()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(TextView::markdown(
-                                "release-highlights-text",
-                                release_notes::highlights(),
-                            )),
+                            .child("See what changed in the release notes."),
                     )
                     .child(
                         Button::new("full-release-notes")
-                            .label("Full release notes")
+                            .label("Release notes")
                             .icon(Lucide::ExternalLink)
                             .small()
                             .cursor_pointer()

@@ -330,35 +330,29 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) {
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            window.paint_quad(fill(bounds, prepaint.background));
-            for (rect, color) in prepaint.rects.drain(..) {
-                window.paint_quad(fill(rect, color));
-            }
-            if let Some((rect, color, shape)) = prepaint.cursor.take() {
-                match shape {
-                    CursorShape::Block => window.paint_quad(fill(rect, color)),
-                    CursorShape::HollowBlock => {
-                        window.paint_quad(outline(rect, color, BorderStyle::Solid))
-                    }
-                    CursorShape::Underline => {
-                        let b = Bounds {
-                            origin: point(rect.origin.x, rect.bottom() - px(2.)),
-                            size: size(rect.size.width, px(2.)),
-                        };
-                        window.paint_quad(fill(b, color));
-                    }
-                    CursorShape::Beam => {
-                        let b = Bounds {
-                            origin: rect.origin,
-                            size: size(px(2.), rect.size.height),
-                        };
-                        window.paint_quad(fill(b, color));
-                    }
-                    CursorShape::Hidden => {}
+            // One layer per kind instead of one scene entry per quad and per cell: GPUI files
+            // every layer and every layer-less primitive in its bounds tree, which cost more
+            // than the rest of the terminal's paint on a busy screen.
+            window.paint_layer(bounds, |window| {
+                window.paint_quad(fill(bounds, prepaint.background));
+                for (rect, color) in prepaint.rects.drain(..) {
+                    window.paint_quad(fill(rect, color));
                 }
-            }
+                if let Some((rect, color, shape)) = prepaint.cursor.take() {
+                    paint_cursor(rect, color, shape, window);
+                }
+            });
             let line_height = prepaint.line_height;
-            for (origin, layout, decoration) in prepaint.glyphs.drain(..) {
+            let (plain, decorated): (Vec<_>, Vec<_>) = prepaint
+                .glyphs
+                .drain(..)
+                .partition(|(_, _, decoration)| !glyph_cache::has_lines(decoration));
+            window.paint_layer(bounds, |window| {
+                for (origin, layout, decoration) in &plain {
+                    paint_glyphs(*origin, layout, line_height, decoration.color, window);
+                }
+            });
+            for (origin, layout, decoration) in decorated {
                 let _ = layout.paint(
                     origin,
                     line_height,
@@ -370,5 +364,58 @@ impl Element for TerminalElement {
                 );
             }
         });
+    }
+}
+
+fn paint_cursor(rect: Bounds<Pixels>, color: Hsla, shape: CursorShape, window: &mut Window) {
+    match shape {
+        CursorShape::Block => window.paint_quad(fill(rect, color)),
+        CursorShape::HollowBlock => window.paint_quad(outline(rect, color, BorderStyle::Solid)),
+        CursorShape::Underline => {
+            let b = Bounds {
+                origin: point(rect.origin.x, rect.bottom() - px(2.)),
+                size: size(rect.size.width, px(2.)),
+            };
+            window.paint_quad(fill(b, color));
+        }
+        CursorShape::Beam => {
+            let b = Bounds {
+                origin: rect.origin,
+                size: size(px(2.), rect.size.height),
+            };
+            window.paint_quad(fill(b, color));
+        }
+        CursorShape::Hidden => {}
+    }
+}
+
+/// Paints an undecorated cell's glyphs where `LineLayout::paint` would, with the same
+/// arithmetic so positions match to the bit, minus the layer that call opens per cell.
+fn paint_glyphs(
+    origin: Point<Pixels>,
+    layout: &LineLayout,
+    line_height: Pixels,
+    color: Hsla,
+    window: &mut Window,
+) {
+    let padding_top = (line_height - layout.ascent - layout.descent) / 2.;
+    let baseline_offset = point(px(0.), padding_top + layout.ascent);
+    let mut glyph_origin = origin;
+    let mut previous = Point::default();
+    for run in &layout.runs {
+        for glyph in &run.glyphs {
+            glyph_origin.x += glyph.position.x - previous.x;
+            previous = glyph.position;
+            let at = glyph_origin + baseline_offset + point(px(0.), glyph.position.y);
+            let painted = if glyph.is_emoji {
+                window.paint_emoji(at, run.font_id, glyph.id, layout.font_size)
+            } else {
+                window.paint_glyph(at, run.font_id, glyph.id, layout.font_size, color)
+            };
+            // Like `LineLayout::paint`, a glyph the atlas rejects ends the cell.
+            if painted.is_err() {
+                return;
+            }
+        }
     }
 }
