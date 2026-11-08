@@ -27,6 +27,7 @@ with tempfile.TemporaryDirectory(prefix="hive-tools-") as temporary:
         archive = Path(temporary) / filename
         url = f"https://github.com/{repository}/releases/download/{version}/{filename}"
         subprocess.run(["curl", "--fail", "--location", "--silent", "--show-error", "--retry", "3",
+                        "--retry-all-errors", "--retry-max-time", "120",
                         url, "--output", str(archive)], check=True)
         if hashlib.sha256(archive.read_bytes()).hexdigest() != checksum:
             sys.exit(f"Checksum mismatch for {filename}")
