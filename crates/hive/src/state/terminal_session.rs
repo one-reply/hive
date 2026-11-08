@@ -161,10 +161,10 @@ impl TerminalSession {
                         }
                         if let Some(events) = terminal.events() {
                             this._events = Some(cx.spawn(async move |this, cx| {
-                                // Leading-edge throttle: the first update after a quiet spell
-                                // (an echoed key, an app's reply to the wheel) draws at once; a
-                                // burst then draws at most once per 16 ms, and the bounded(1)
-                                // channel hands the next `recv` the latest state.
+                                // No throttle: `notify` only marks the window dirty and GPUI
+                                // draws once per display refresh, so a burst still costs one
+                                // frame per refresh, and the bounded(1) channel hands each
+                                // `recv` the latest state.
                                 while let Ok(update) = events.recv().await {
                                     let alive = this.update(cx, |this, cx| {
                                         if this.title.as_deref() != update.title() {
@@ -185,9 +185,6 @@ impl TerminalSession {
                                     if !matches!(alive, Ok(true)) {
                                         break;
                                     }
-                                    cx.background_executor()
-                                        .timer(Duration::from_millis(16))
-                                        .await;
                                 }
                             }));
                         }

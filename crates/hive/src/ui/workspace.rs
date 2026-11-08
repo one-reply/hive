@@ -563,7 +563,7 @@ impl Render for Workspace {
                 .w(width)
                 .h_full()
                 .child(div().h(TAB_BAR_HEIGHT).flex_none())
-                .child(div().flex_1().min_h_0().child(self.sidebar.clone())),
+                .child(div().flex_1().min_h_0().child(cached(&self.sidebar))),
         );
         let center_el = v_flex()
             .flex_1()
@@ -634,6 +634,14 @@ impl Render for Workspace {
             .child(body)
             .child(self.status_bar.clone())
     }
+}
+
+/// A side panel that fills its slot and re-renders only when it notifies, not on every frame
+/// a terminal draws: a notify dirties the whole ancestor chain up to `Workspace`, which would
+/// otherwise rebuild the sidebar and the right panel too. Safe because each panel observes
+/// the entities it reads; theme changes refresh the window.
+fn cached<V: Render>(view: &Entity<V>) -> impl IntoElement {
+    view.clone().cached(StyleRefinement::default().size_full())
 }
 
 /// Drag payload of the sidebar resize handle; renders nothing under the pointer.

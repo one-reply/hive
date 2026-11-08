@@ -2,7 +2,7 @@
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, v_flex};
 use gpui_kit::*;
 
 use super::{setting_row, setting_title};
@@ -33,7 +33,6 @@ impl Render for UpdatesPage {
         let error = updates.error().map(str::to_owned);
         let check_hover = Hover::new("check-updates-hover", window, cx).enabled(available);
         let releases_hover = Hover::new("release-notes-hover", window, cx);
-        let highlights_hover = Hover::new("release-highlights-hover", window, cx);
         let muted = cx.theme().muted_foreground;
         v_flex()
             .gap_3()
@@ -64,24 +63,13 @@ impl Render for UpdatesPage {
                 })),
             )
             .child(setting_row(
-                setting_title("Release notes", "What's new and previous releases.", cx),
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("show-release-notes")
-                            .label("What's New")
-                            .cursor_pointer()
-                            .on_click(|_, window, cx| crate::ui::release_notes::show(window, cx))
-                            .smooth_hover(ButtonLook::Outline, &highlights_hover, cx),
-                    )
-                    .child(
-                        Button::new("open-releases")
-                            .label("View Releases")
-                            .icon(Lucide::ExternalLink)
-                            .cursor_pointer()
-                            .on_click(|_, _, cx| Updates::open_releases(cx))
-                            .smooth_hover(ButtonLook::Outline, &releases_hover, cx),
-                    ),
+                setting_title("Release notes", "Changes in every Hive release.", cx),
+                Button::new("open-releases")
+                    .label("View Releases")
+                    .icon(Lucide::ExternalLink)
+                    .cursor_pointer()
+                    .on_click(|_, _, cx| Updates::open_releases(cx))
+                    .smooth_hover(ButtonLook::Outline, &releases_hover, cx),
                 cx,
             ))
     }
