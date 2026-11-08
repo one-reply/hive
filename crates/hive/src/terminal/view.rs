@@ -6,7 +6,7 @@ use crate::state::terminal_session::{SessionEvent, SessionStatus, TerminalSessio
 use crate::ui::files_panel::DraggedFiles;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, notification::Notification};
-use gpui_kit::component::{Sizable as _, button::Button, v_flex};
+use gpui_kit::component::{Sizable as _, button::Button, menu::ContextMenuExt as _, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hive_core::agent::launch::{Launch, ResumeSession};
@@ -20,6 +20,7 @@ use super::mouse::GridGeometry;
 use crate::ui::keymap;
 
 mod draft;
+mod menu;
 
 pub enum TerminalViewEvent {
     TitleChanged,
@@ -382,6 +383,12 @@ impl Render for TerminalView {
                     .on_action(cx.listener(|this, _: &component::input::Copy, _, cx| this.copy(cx)))
                     .on_scroll(cx.listener(Self::scroll_wheel))
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+                    // Focus without stopping the event: the context menu opens on the same
+                    // press, and the panel makes the focused tile the one its actions target.
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, _, window, cx| this.focus_handle.focus(window, cx)),
+                    )
                     .on_mouse_move(cx.listener(Self::mouse_move))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
                     .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
@@ -396,7 +403,8 @@ impl Render for TerminalView {
                         SessionStatus::Ready(_) => {
                             TerminalElement::new(cx.entity(), focused).into_any_element()
                         }
-                    }),
+                    })
+                    .context_menu(self.context_menu()),
             )
     }
 }

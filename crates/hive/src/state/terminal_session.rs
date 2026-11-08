@@ -346,6 +346,10 @@ impl TerminalSession {
         }
     }
 
+    pub(crate) fn has_selection(&self) -> bool {
+        self.terminal().and_then(Terminal::selected_text).is_some()
+    }
+
     pub(crate) fn copy(&self, cx: &mut Context<Self>) {
         if let Some(text) = self.terminal().and_then(Terminal::selected_text) {
             cx.write_to_clipboard(ClipboardItem::new_string(text));

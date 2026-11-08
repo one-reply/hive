@@ -17,7 +17,9 @@ use crate::ui::files_panel::{
 };
 use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
-use crate::ui::workspace::{NewTerminal, QuickSwitch, ToggleGitPanel, ToggleSidebar};
+use crate::ui::workspace::{
+    NewTerminal, QuickSwitch, ShowFilesPanel, ShowGitPanel, ToggleGitPanel, ToggleSidebar,
+};
 
 /// Key context of window-wide shortcuts: the main window's root.
 pub(crate) const CONTEXT: &str = "Workspace";
@@ -86,7 +88,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 22] = [
+pub(crate) static SHORTCUTS: [Shortcut; 24] = [
     Shortcut {
         label: "Open file",
         default: "cmd-p",
@@ -136,6 +138,20 @@ pub(crate) static SHORTCUTS: [Shortcut; 22] = [
         category: Category::Workspace,
         context: CONTEXT,
         action: || Box::new(ToggleGitPanel),
+    },
+    Shortcut {
+        label: "Show Git",
+        default: "cmd-shift-g",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(ShowGitPanel),
+    },
+    Shortcut {
+        label: "Show Files",
+        default: "cmd-shift-e",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(ShowFilesPanel),
     },
     Shortcut {
         label: "Open settings",
@@ -581,6 +597,18 @@ mod tests {
             }
         }
         assert_eq!(seen, Category::ALL);
+    }
+
+    #[test]
+    fn no_default_is_taken_by_another_shortcut() {
+        for (ix, shortcut) in SHORTCUTS.iter().enumerate() {
+            let result = assign(ix, &keystroke(shortcut.default), &BTreeMap::new(), MAC);
+            assert!(
+                !matches!(result, Err(Rejection::TakenBy(_))),
+                "{}: {result:?}",
+                shortcut.label
+            );
+        }
     }
 
     #[test]

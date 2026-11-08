@@ -17,6 +17,7 @@ mod actions;
 pub(crate) mod close;
 mod image_preview;
 mod render;
+mod suggestions;
 
 actions!(editor, [SaveFile, CloseFile, OpenFileSearch]);
 

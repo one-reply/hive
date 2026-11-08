@@ -140,7 +140,7 @@ impl Sidebar {
             Instant::now(),
         );
         let header = self
-            .render_header(ix, project, window, cx)
+            .render_header(ix, project, open, window, cx)
             .into_any_element();
         let group = self.project_drop_target(Some(project)).child(header);
         if !open && !animate {
@@ -255,9 +255,30 @@ impl Sidebar {
         &self,
         ix: usize,
         project: &Project,
+        open: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // An open project shows its selected card; a folded one carries the highlight itself.
+        let holds_selection = self
+            .projects
+            .read(cx)
+            .selection()
+            .is_some_and(|(selected, _)| {
+                selected.host == project.host && selected.path == project.path
+            });
+        let highlight = transition(
+            format!("project-selection:{:?}:{:?}", project.host, project.path),
+            if holds_selection && !open {
+                1.0_f32
+            } else {
+                0.
+            },
+            Transition::new(SELECTION_DURATION).ease(ease_in_out),
+            window,
+            cx,
+        );
+        let fg = cx.theme().sidebar_foreground;
         let header_hover = Hover::new(("project", ix), window, cx);
         let new_worktree_hover = Hover::new(("new-worktree", ix), window, cx);
         let menu_open = window.use_keyed_state(
@@ -314,6 +335,7 @@ impl Sidebar {
             // Mirrors the folder icon's inset from the card's left edge.
             .pr_1p5()
             .rounded_md()
+            .bg(fg.opacity(SELECTED_BACKGROUND_OPACITY * highlight))
             .cursor_pointer()
             .on_drag(DraggedProject::new(project, ix), |drag, _, _, cx| {
                 cx.stop_propagation();
