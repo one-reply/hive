@@ -50,6 +50,8 @@ pub struct FilesSettings {
     /// Save a dirty editor buffer when keyboard focus leaves it, and on close
     /// instead of asking.
     pub save_on_focus_change: bool,
+    /// Suggest names from the open file and import paths while typing in the editor.
+    pub code_completion: bool,
     font_size: f32,
 }
 
@@ -63,6 +65,7 @@ impl Default for FilesSettings {
             show_hidden: true,
             show_ignored: true,
             save_on_focus_change: true,
+            code_completion: true,
             font_size: FILES_FONT_SIZE_DEFAULT,
         }
     }
@@ -106,9 +109,15 @@ mod tests {
         assert_eq!(future.font_size(), 20.);
         assert!(!future.show_hidden);
         assert!(future.save_on_focus_change);
+        assert!(
+            future.code_completion,
+            "settings saved before completion turn it on"
+        );
         let opted_out: FilesSettings =
-            serde_json::from_str(r#"{"save_on_focus_change":false}"#).unwrap();
+            serde_json::from_str(r#"{"save_on_focus_change":false,"code_completion":false}"#)
+                .unwrap();
         assert!(!opted_out.save_on_focus_change);
+        assert!(!opted_out.code_completion);
         let mut settings = FilesSettings::default();
         settings.set_font_size(f32::NAN);
         assert_eq!(settings.font_size(), FILES_FONT_SIZE_DEFAULT);

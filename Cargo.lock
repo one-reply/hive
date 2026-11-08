@@ -2803,7 +2803,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hive"
-version = "0.1.11"
+version = "1.0.0"
 dependencies = [
  "async-channel",
  "gpui-kit",
@@ -2816,11 +2816,12 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "tree-sitter",
 ]
 
 [[package]]
 name = "hive-core"
-version = "0.1.11"
+version = "1.0.0"
 dependencies = [
  "alacritty_terminal",
  "async-channel",

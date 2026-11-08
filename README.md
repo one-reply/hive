@@ -17,21 +17,21 @@ editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-k
 
 *Hive editing its own Rust source, with worktrees on the left and Files on the right.*
 
-> **Early development · macOS / Apple Silicon**
+> **Hive 1.0 · macOS / Apple Silicon**
 >
-> Hive is early software; features and interfaces are still evolving.
 > Intel Macs are unsupported.
 > Linux and Windows are planned.
 
 ## Download
 
-[![Download for macOS — Apple Silicon](https://img.shields.io/badge/Download_for_macOS-Apple_Silicon-6E56CF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/one-reply/hive/releases)
+[![Download for macOS — Apple Silicon](https://img.shields.io/badge/Download_for_macOS-Apple_Silicon-6E56CF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/one-reply/hive/releases/latest)
 
 **Apple Silicon only.** The button opens GitHub Releases, where you can download
-the latest published release, including early previews, and its SHA-256 checksum.
-The current preview is [Hive 0.1.11](https://github.com/one-reply/hive/releases/tag/v0.1.11),
+the latest stable release and its SHA-256 checksum.
+The current release is [Hive 1.0.0](https://github.com/one-reply/hive/releases/tag/v1.0.0),
 with a Developer ID signature and Apple notarization. See the
-[verification record](docs/RELEASE_CHECKS.md#hive-0111--november-8-2026) for completed
+[release notes](docs/releases/v1.0.0.md) for changes and the
+[verification record](docs/RELEASE_CHECKS.md) for completed
 and pending checks.
 
 Packaged builds from **0.1.1** include signed in-app updates. Open **Settings → Updates**
@@ -40,9 +40,9 @@ before installing and restarting. Finish active agent sessions before restarting
 After updating, a compact notification links to the installed version’s release notes.
 Older builds need one manual installation of a version that includes the updater.
 
-Version **0.1.11** reduces the work needed to draw busy terminals and keeps the side
-panels cached during terminal output. See the [release notes](docs/releases/v0.1.11.md)
-for changes and local performance measurements.
+Version **1.0.0** adds code completion for names in the open file and JS/TS imports,
+alongside the terminal performance improvements from 0.1.11. Suggestions run without
+an external language server; type-aware completion and automatic imports are not included.
 
 ## What you can do today
 
@@ -142,8 +142,12 @@ The editor supports local and remote UTF-8 files up to **1 MiB**, syntax highlig
 find/replace, explicit saves, and recovery of unsaved drafts after a restart.
 External edits are reloaded for clean files; unsaved files show a conflict instead
 of silently overwriting either version. **⌘-click** follows JavaScript/TypeScript
-imports to their definitions; **⌘⇧-click** opens them in an adjacent tab. A full
-language server and autocomplete are not included.
+imports to their definitions; **⌘⇧-click** opens them in an adjacent tab.
+
+Code completion suggests names from the open file and JS/TS imports. Press
+**⌃Space** to show suggestions, **Enter** to accept, or **Escape** to dismiss.
+Disable it in **Settings → Files → Code completion**. Type-aware suggestions and
+automatic imports require a language server and are not included.
 
 ### Agents working together
 
@@ -234,6 +238,7 @@ require the credentials described in [Releasing](docs/RELEASING.md#developer-id-
 | Switch project, worktree, or agent | ⌘K |
 | Find a file | ⌘P |
 | Save file | ⌘S |
+| Show code suggestions | ⌃Space |
 | New terminal | ⌘T |
 | Split terminal right | ⌘D |
 | Split terminal down | ⌘⇧D |

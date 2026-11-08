@@ -1,7 +1,10 @@
+use super::completions::Completions;
 use super::*;
-use gpui_kit::component::input::{EditorState, InputEvent, Position};
+use gpui_kit::component::input::{EditorState, InputEditsEvent, InputEvent, Position};
+use hive_core::code_navigation::Navigator;
 use hive_core::files::recovery::Draft;
 use hive_core::files::{self, Snapshot};
+use std::rc::Rc;
 use std::time::Duration;
 
 mod image;
@@ -26,6 +29,7 @@ pub(crate) struct Document {
     pub target: Target,
     pub path: PathBuf,
     pub editor: Entity<EditorState>,
+    completions: Rc<Completions>,
     pub content: Content,
     pub base: Option<Snapshot>,
     pub conflict: Option<Snapshot>,
@@ -55,19 +59,29 @@ impl Document {
         request: OpenFile,
         recovered: Option<Record>,
         store: Entity<Store>,
+        navigator: Arc<Navigator>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let language = files::editor_language(&request.path);
-        let editor = cx.new(|cx| EditorState::new(window, cx).language(language));
+        let completions = Completions::new(cx.weak_entity(), navigator);
+        let editor = cx.new(|cx| {
+            let mut editor = EditorState::new(window, cx).language(language);
+            editor.lsp_mut().completion_provider = Some(completions.clone());
+            editor
+        });
         let editor_focus = editor.read(cx).focus_handle(cx);
         let subscriptions = vec![
+            cx.subscribe(&editor, |this, _, event: &InputEditsEvent, _| {
+                this.completions.edit(event.edits());
+            }),
             cx.subscribe_in(&editor, window, |this, _, event, _, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.invalidate_image(cx);
                     this.pinned = true;
                     this.update_dirty(cx);
                     this.schedule_recovery(cx);
+                    this.completions.schedule_refresh(cx);
                     this.emit(DocumentEvent::Changed(this.target.clone()), cx);
                     cx.notify();
                 }
@@ -110,6 +124,7 @@ impl Document {
             target: request.target,
             path: request.path,
             editor,
+            completions,
             content,
             base: None,
             conflict: None,
@@ -142,6 +157,7 @@ impl Document {
                 document.flush_recovery(cx);
             }
         }
+        document.completions.schedule_refresh(cx);
         document.refresh(window, cx);
         document
     }
@@ -170,6 +186,10 @@ impl Document {
             .settings
             .files
             .save_on_focus_change
+    }
+
+    pub fn completes_code(&self, cx: &App) -> bool {
+        self.store.read(cx).state.settings.files.code_completion
     }
 
     fn should_poll(&self, cx: &App) -> bool {
@@ -297,6 +317,7 @@ impl Document {
         self.conflict = None;
         self.error = None;
         self.dirty = false;
+        self.completions.schedule_refresh(cx);
         self.apply_position(window, cx);
         if let Some(focus) = focus {
             focus.focus(window, cx);

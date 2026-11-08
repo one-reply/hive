@@ -23,6 +23,13 @@ pub(super) struct PackageJson {
     pub typings: Option<String>,
     pub module: Option<String>,
     pub main: Option<String>,
+    /// `"module"` makes `.js` files ES modules, which import each other with extensions.
+    /// Completion-only fields stay JSON values, so a malformed one never breaks resolution.
+    #[serde(rename = "type")]
+    pub module_type: Option<Value>,
+    pub dependencies: Option<Value>,
+    #[serde(rename = "devDependencies")]
+    pub dev_dependencies: Option<Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]

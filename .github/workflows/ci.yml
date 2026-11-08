@@ -143,7 +143,7 @@ jobs:
           retention-days: 7
 
   release:
-    name: Draft prerelease
+    name: Draft release
     if: startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'
     needs: [security, build]
     runs-on: macos-26
@@ -206,5 +206,5 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$RELEASE_TAG" release/* --verify-tag --draft --prerelease \
-            --title "Hive $RELEASE_TAG — early preview" --generate-notes
+          gh release create "$RELEASE_TAG" release/* --verify-tag --draft \
+            --title "Hive ${RELEASE_TAG#v}" --notes-file "docs/releases/$RELEASE_TAG.md"

@@ -54,15 +54,20 @@ impl<'a> Resolver<'a> {
         self.node_modules(directory, specifier)
     }
 
-    /// `compilerOptions.paths` and `baseUrl` of the nearest `tsconfig.json`/`jsconfig.json`.
-    fn tsconfig_paths(&self, directory: &Path, specifier: &str) -> Option<PathBuf> {
+    /// `compilerOptions.paths` and `baseUrl` that apply in `directory`, from the nearest
+    /// `tsconfig.json`/`jsconfig.json` and its `extends`.
+    pub fn options(&self, directory: &Path) -> Option<Options> {
         let (config, config_dir) = directory.ancestors().find_map(|ancestor| {
             CONFIG_NAMES.iter().find_map(|name| {
                 let config = self.configs.tsconfig(self.root, &ancestor.join(name))?;
                 Some((config, ancestor.to_path_buf()))
             })
         })?;
-        let options = self.effective_options(config, config_dir);
+        Some(self.effective_options(config, config_dir))
+    }
+
+    fn tsconfig_paths(&self, directory: &Path, specifier: &str) -> Option<PathBuf> {
+        let options = self.options(directory)?;
         if let Some((paths, paths_dir)) = &options.paths {
             let base = options.base_url.as_ref().unwrap_or(paths_dir);
             if let Some((pattern, captured)) =
@@ -220,23 +225,36 @@ impl<'a> Resolver<'a> {
     }
 
     fn is_file(&self, path: &Path) -> bool {
-        if path.as_os_str().is_empty() {
-            return false;
-        }
+        !path.as_os_str().is_empty() && self.metadata(path).is_some_and(|m| m.is_file())
+    }
+
+    /// The parsed `package.json` at `path`, relative to the worktree root.
+    pub fn package(&self, path: &Path) -> Option<std::sync::Arc<super::config::PackageJson>> {
+        self.configs.package(self.root, path)
+    }
+
+    /// A real directory inside the worktree; the empty path is the worktree itself.
+    pub fn is_directory(&self, path: &Path) -> bool {
+        self.metadata(path).is_some_and(|m| m.is_dir())
+    }
+
+    fn metadata(&self, path: &Path) -> Option<std::fs::Metadata> {
         files::resolve(&Host::Local, self.root, path)
             .ok()
             .and_then(|absolute| std::fs::symlink_metadata(absolute).ok())
-            .is_some_and(|metadata| metadata.is_file())
     }
 }
 
+/// The module-resolution settings of a `tsconfig.json` that `paths` and `baseUrl` lookups use.
 #[derive(Default)]
-struct Options {
-    base_url: Option<PathBuf>,
-    paths: Option<(std::collections::BTreeMap<String, Vec<String>>, PathBuf)>,
+pub(super) struct Options {
+    /// `baseUrl`, relative to the worktree root.
+    pub base_url: Option<PathBuf>,
+    /// `paths` patterns and the directory of the config that declares them.
+    pub paths: Option<(std::collections::BTreeMap<String, Vec<String>>, PathBuf)>,
 }
 
-fn is_relative(specifier: &str) -> bool {
+pub(super) fn is_relative(specifier: &str) -> bool {
     specifier == "."
         || specifier == ".."
         || specifier.starts_with("./")

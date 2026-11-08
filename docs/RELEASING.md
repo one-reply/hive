@@ -172,7 +172,8 @@ publish the cleaned history in a fresh repository while keeping the original pri
    After an update Hive only names the new version and links to its GitHub release.
    Wait for CI on the intended commit, then push a matching `v<version>` tag. CI
    verifies the tag/version match, runs security and build checks, signs and notarizes the app, and creates a
-   **draft prerelease** with the stapled ZIP, checksum and signed `appcast.xml`.
+   **draft stable release** with the stapled ZIP, checksum and signed `appcast.xml`,
+   using `docs/releases/v<version>.md` as its release notes.
    Only the final release job has repository write permission and access to the
    Apple credentials and update-signing secret.
 2. Download that draft ZIP through a browser, rather than copying the local `.app`.
@@ -259,7 +260,8 @@ additional approvals while there is one maintainer. Verify settings after the
 visibility change, since availability varies between private and public repositories.
 
 Verify the repository and download links without signing in, then publish the draft
-as a prerelease. Keep release notes explicit about the actual signing/notarization
-status and tested systems.
+as a stable release and mark it latest (`gh release edit v<version> --draft=false
+--prerelease=false --latest`). Keep release notes explicit about the actual
+signing/notarization status and tested systems.
 If a published build is faulty, mark it as withdrawn and publish a corrected version;
 do not silently replace a ZIP under an existing checksum or move a published tag.
