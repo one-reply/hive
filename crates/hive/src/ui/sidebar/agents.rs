@@ -262,10 +262,11 @@ fn render_session(
             )
         })
         .child(div().flex_none().child(session.kind.name()))
-        .child(div().text_color(muted).child(if !target.host.is_local() {
-            "Remote · status unavailable".to_owned()
-        } else if session.reported {
+        // A remote agent reaches the sidebar only through its own OSC 7501 reports.
+        .child(div().text_color(muted).child(if session.reported {
             session.status.label().to_owned()
+        } else if !target.host.is_local() {
+            "Remote · status unavailable".to_owned()
         } else {
             format!("{} · estimated", session.status.label())
         }))

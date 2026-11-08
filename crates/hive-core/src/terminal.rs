@@ -12,6 +12,7 @@ mod directory;
 mod events;
 pub mod paste;
 mod process;
+pub mod program_status;
 mod pty;
 mod scroll;
 mod selection;
@@ -19,6 +20,7 @@ pub use activity::Activity;
 pub use directory::working_directory;
 use events::Publisher;
 pub use events::TerminalUpdate;
+pub use program_status::ProgramStatus;
 use pty::{Completion, ManagedPty};
 pub use scroll::ScrollModifiers;
 
@@ -143,6 +145,7 @@ pub struct Terminal {
     cwd: Option<PathBuf>,
     shell_pid: u32,
     activity: Activity,
+    program_status: ProgramStatus,
     control: TerminalControl,
 }
 
@@ -185,7 +188,15 @@ impl Terminal {
 
         let (child, file) = process::spawn(command, window_size).map_err(TerminalError::Pty)?;
         let shell_pid = child.id();
-        let pty = ManagedPty::new(child, file, completion.clone(), events);
+        let program_status = ProgramStatus::default();
+        let pty = ManagedPty::new(
+            child,
+            file,
+            completion.clone(),
+            events,
+            listener.clone(),
+            program_status.clone(),
+        );
         let event_loop = EventLoop::new(term.clone(), listener.clone(), pty, false, false)
             .map_err(TerminalError::EventLoop)?;
         let sender = event_loop.channel();
@@ -205,6 +216,7 @@ impl Terminal {
             cwd: cwd.map(Path::to_path_buf),
             shell_pid,
             activity,
+            program_status,
             control,
         })
     }
@@ -236,6 +248,11 @@ impl Terminal {
     /// Output/input timing, for telling a busy program from an idle one.
     pub fn activity(&self) -> Activity {
         self.activity.clone()
+    }
+
+    /// What the terminal's program reported about itself through OSC 7501.
+    pub fn program_status(&self) -> ProgramStatus {
+        self.program_status.clone()
     }
 
     /// Send bytes to the shell's stdin.

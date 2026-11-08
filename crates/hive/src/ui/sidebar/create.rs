@@ -43,9 +43,7 @@ impl SearchableListItem for StartItem {
 impl RenderOnce for StartItem {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let icon = match self.0 {
-            Some(kind) => Icon::default()
-                .data(agent_logo::svg(kind))
-                .text_color(agent_logo::color(kind, cx)),
+            Some(kind) => agent_logo::icon(kind, cx),
             None => Icon::new(Lucide::SquareTerminal),
         };
         h_flex()

@@ -2,13 +2,13 @@
 
 use gpui_kit::component::v_flex;
 use gpui_kit::component::{
-    Icon, Side, Sizable as _,
+    Side, Sizable as _,
     button::Button,
     menu::{DropdownMenu as _, PopupMenuItem},
     switch::Switch,
 };
 use gpui_kit::*;
-use hive_core::agent::{AgentKind, launch::AGENTS};
+use hive_core::agent::launch::AGENTS;
 use hive_core::settings::{
     TERMINAL_FONT_SIZE_DEFAULT, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN,
 };
@@ -27,7 +27,7 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
     let picker = Button::new("default-cli-agent")
         .cursor_pointer()
         .small()
-        .icon(agent_icon(agent, cx))
+        .icon(agent_logo::icon(agent, cx))
         .label(agent.name())
         .dropdown_caret(true)
         .dropdown_menu(move |menu, _, cx| {
@@ -38,7 +38,7 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
                     let store = agent_store.clone();
                     menu.item(
                         PopupMenuItem::new(choice.name())
-                            .icon(agent_icon(choice, cx))
+                            .icon(agent_logo::icon(choice, cx))
                             .checked(choice == agent)
                             .on_click(move |_, _, cx| {
                                 store
@@ -74,10 +74,4 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
         stepper,
         cx,
     ))
-}
-
-fn agent_icon(kind: AgentKind, cx: &App) -> Icon {
-    Icon::default()
-        .data(agent_logo::svg(kind))
-        .text_color(agent_logo::color(kind, cx))
 }

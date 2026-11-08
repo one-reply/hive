@@ -37,21 +37,33 @@ fn init_logging() {
 /// terminal's. The lookup runs a login shell, so it stays off the UI thread, and commands that
 /// start before it answers keep the process environment.
 fn load_login_environment(cx: &mut App) {
-    cx.background_executor()
-        .spawn(async {
-            match hive_core::host::environment::load() {
-                Ok(environment) => {
-                    tracing::info!(
-                        variables = environment.len(),
-                        "login shell environment loaded"
-                    )
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .spawn(async {
+                match hive_core::host::environment::load() {
+                    Ok(environment) => {
+                        tracing::info!(
+                            variables = environment.len(),
+                            "login shell environment loaded"
+                        )
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "keeping the process environment for local commands")
+                    }
                 }
-                Err(error) => {
-                    tracing::warn!(%error, "keeping the process environment for local commands")
-                }
+            })
+            .await;
+        // A scan made before the login PATH arrived misses CLIs installed through it (nvm,
+        // ~/.opencode/bin). Before `AppState` exists, its own first scan comes later anyway.
+        cx.update(|cx| {
+            if let Some(app) = cx.try_global::<AppState>() {
+                app.agents
+                    .clone()
+                    .update(cx, |agents, cx| agents.refresh_installed(cx));
             }
-        })
-        .detach();
+        });
+    })
+    .detach();
 }
 
 fn open_main_window(cx: &mut App) {

@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use crate::command::{self, Cancellation};
 use crate::host::Host;
 use crate::terminal::Activity;
+use crate::terminal::program_status::{Blocker, ProgramState};
 
 /// `ps` normally answers in milliseconds; a wedged system must not stall the poll forever.
 const PS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -155,6 +156,21 @@ impl AgentStatus {
         } else {
             Self::Idle
         }
+    }
+
+    /// The status a program reported through OSC 7501; `None` when it withdrew its report.
+    /// A blocker of unknown kind counts as a permission prompt: Hive never types into a dialog
+    /// it cannot name, and Codex reports its approvals without a kind.
+    pub fn from_report(state: ProgramState) -> Option<Self> {
+        Some(match state {
+            ProgramState::Idle => Self::Idle,
+            ProgramState::Working => Self::Working,
+            ProgramState::Done => Self::Done,
+            ProgramState::Error => Self::Failed,
+            ProgramState::Blocked(Some(Blocker::Question | Blocker::Auth)) => Self::WaitingInput,
+            ProgramState::Blocked(Some(Blocker::Permission) | None) => Self::WaitingApproval,
+            ProgramState::Clear => return None,
+        })
     }
 }
 
@@ -311,6 +327,24 @@ mod tests {
 59100 59100 59100 node /Users/me/.nvm/versions/node/v24.14.0/bin/gemini
 garbage line
 ";
+
+    #[test]
+    fn reported_states_map_to_statuses_and_unnamed_blockers_are_approvals() {
+        let status = |state| AgentStatus::from_report(state);
+        assert_eq!(status(ProgramState::Working), Some(AgentStatus::Working));
+        assert_eq!(status(ProgramState::Idle), Some(AgentStatus::Idle));
+        assert_eq!(status(ProgramState::Done), Some(AgentStatus::Done));
+        assert_eq!(status(ProgramState::Error), Some(AgentStatus::Failed));
+        assert_eq!(status(ProgramState::Clear), None);
+        for (blocker, expected) in [
+            (Some(Blocker::Permission), AgentStatus::WaitingApproval),
+            (None, AgentStatus::WaitingApproval),
+            (Some(Blocker::Question), AgentStatus::WaitingInput),
+            (Some(Blocker::Auth), AgentStatus::WaitingInput),
+        ] {
+            assert_eq!(status(ProgramState::Blocked(blocker)), Some(expected));
+        }
+    }
 
     #[test]
     fn agent_in_the_foreground_is_found() {
