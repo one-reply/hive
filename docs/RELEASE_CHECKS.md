@@ -1,4 +1,32 @@
-# Initial preview verification
+# Release verification
+
+## Hive 0.1.11 — November 8, 2026
+
+Published [preview release](https://github.com/one-reply/hive/releases/tag/v0.1.11)
+from tag commit `749c72926db4fd94a1fd0333c5e20888abca6aed`, whose tree matches
+build commit `332a83bdb145f5474b337e9a23aaf5e23666a040` and successful
+[PR CI](https://github.com/one-reply/hive/actions/runs/42487237728).
+
+- Local fmt, Clippy with warnings denied, 463 Rust tests (3 existing opt-in tests
+  ignored), 15 Python tests, cargo-deny, core/GPUI boundary and Gitleaks passed.
+- Both bundled static Linux helpers came from the exact build commit's CI.
+- Built on macOS 27.2 (26B123), Apple Silicon. Developer ID team Lumorial Inc
+  (`CFB6956H48`), hardened runtime, Apple notarization, stapled ticket,
+  recursive codesign and Gatekeeper assessment passed.
+- Final ZIP checksum and Sparkle archive/feed signatures verified; GitHub's
+  uploaded asset digest matches the local ZIP. Local Xcode signing was used
+  because hosted Apple API credentials are unavailable.
+- Isolated startup logged 0.1.11 and handled missing CLI credentials. Terminal
+  fixture comparisons and CPU measurements are recorded in the release notes.
+
+Still unverified: browser/Finder installation in a clean macOS account, Keychain
+allow/deny there, full Sparkle install/relaunch, minimum macOS 12.0 runtime, and
+full native hover/keyboard/resize/selection coverage. Existing installations and
+active sessions were not replaced. These limits also apply to claims in the README.
+
+The records below describe earlier builds and retain their original verification status.
+
+## Initial preview verification
 
 Verification performed on 2026-11-04, macOS 27.2 (26B123), Apple Silicon.
 

@@ -29,14 +29,20 @@ editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-k
 
 **Apple Silicon only.** The button opens GitHub Releases, where you can download
 the latest published release, including early previews, and its SHA-256 checksum.
-Drafts are not public downloads; until the first release is published, use the
-[source build](#build-and-run). See the [verification record](docs/RELEASE_CHECKS.md)
-for completed and pending checks.
+The current preview is [Hive 0.1.11](https://github.com/one-reply/hive/releases/tag/v0.1.11),
+with a Developer ID signature and Apple notarization. See the
+[verification record](docs/RELEASE_CHECKS.md#hive-0111--november-8-2026) for completed
+and pending checks.
 
 Packaged builds from **0.1.1** include signed in-app updates. Open **Settings → Updates**
 or **Hive → Check for Updates…** to check manually. Hive also checks daily and asks
 before installing and restarting. Finish active agent sessions before restarting.
+After updating, a compact notification links to the installed version’s release notes.
 Older builds need one manual installation of a version that includes the updater.
+
+Version **0.1.11** reduces the work needed to draw busy terminals and keeps the side
+panels cached during terminal output. See the [release notes](docs/releases/v0.1.11.md)
+for changes and local performance measurements.
 
 ## What you can do today
 
@@ -260,7 +266,7 @@ Shortcuts can be changed in **Settings → Application → Shortcuts**.
 
 The immediate focus is a dependable daily workflow with several terminal agents:
 real-agent and notification testing, reliable restoration, and release verification.
-Next steps include automatic Codex conversation resume, persistent remote sessions,
+Next steps include persistent remote sessions and remote agent activity tracking,
 then Linux and Windows desktop support. These are not available in the current
 build. A separate structured agent chat UI is deferred.
 
