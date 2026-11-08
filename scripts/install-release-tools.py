@@ -25,9 +25,8 @@ destination.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix="hive-tools-") as temporary:
     for name, repository, version, filename, checksum in TOOLS:
         archive = Path(temporary) / filename
-        url = f"https://github.com/{repository}/releases/download/{version}/{filename}"
-        subprocess.run(["curl", "--fail", "--location", "--silent", "--show-error", "--retry", "3",
-                        url, "--output", str(archive)], check=True)
+        subprocess.run(["gh", "release", "download", version, "--repo", repository,
+                        "--pattern", filename, "--dir", temporary], check=True)
         if hashlib.sha256(archive.read_bytes()).hexdigest() != checksum:
             sys.exit(f"Checksum mismatch for {filename}")
         with tarfile.open(archive) as package:

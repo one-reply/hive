@@ -27,6 +27,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Install verified audit tools
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/install-release-tools.py "$RUNNER_TEMP/hive-tools"
           echo "$RUNNER_TEMP/hive-tools" >> "$GITHUB_PATH"
@@ -113,6 +115,8 @@ jobs:
           version="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "hive"))')"
           test "$RELEASE_TAG" = "v$version"
       - name: Install verified release tools
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/install-release-tools.py "$RUNNER_TEMP/hive-tools"
           echo "$RUNNER_TEMP/hive-tools" >> "$GITHUB_PATH"
@@ -123,6 +127,8 @@ jobs:
       - name: Package Linux helpers
         run: python3 scripts/package-remote.py --x86_64 target/remote-builds/hive-remote-x86_64/hive-remote --aarch64 target/remote-builds/hive-remote-aarch64/hive-remote
       - name: Build and validate ARM64 app and archive
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/install-sparkle.py target/sparkle
           python3 -m unittest discover -s scripts -p 'test_*.py'
@@ -179,6 +185,8 @@ jobs:
           mv "$signing_dir/$archive" "release/$archive"
           (cd release && shasum -a 256 "$archive" > "$archive.sha256" && shasum -a 256 -c "$archive.sha256")
       - name: Install verified Sparkle tools
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/install-sparkle.py target/sparkle
       - name: Sign update archive and feed
         env:

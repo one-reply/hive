@@ -107,7 +107,11 @@ impl Files {
                 }
             }),
             cx.subscribe(&git, |this, _, event, cx| {
-                if let GitEvent::Refreshed(target) = event
+                // An unchanged status leaves the listing to Files' own poll.
+                if let GitEvent::Refreshed {
+                    target,
+                    changed: true,
+                } = event
                     && this.target.as_ref() == Some(target)
                     && this.visible
                 {

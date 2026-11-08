@@ -25,7 +25,8 @@ pub(crate) struct GitDiff {
 impl GitDiff {
     pub fn new(request: DiffRequest, git: Entity<Git>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![cx.subscribe(&git, |this, git, event, cx| {
-            if let GitEvent::Refreshed(target) = event
+            // The patch is read on every refresh: content can change while the status does not.
+            if let GitEvent::Refreshed { target, .. } = event
                 && this.active
                 && git.read(cx).window_active
                 && target == &this.request.target

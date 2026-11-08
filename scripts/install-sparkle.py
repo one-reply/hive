@@ -17,8 +17,8 @@ def install(destination):
     with tempfile.TemporaryDirectory(prefix="hive-sparkle-") as temporary:
         archive = Path(temporary) / "Sparkle.tar.xz"
         subprocess.run([
-            "curl", "--fail", "--location", "--silent", "--show-error", "--retry", "3",
-            f"https://github.com/sparkle-project/Sparkle/releases/download/{VERSION}/Sparkle-{VERSION}.tar.xz",
+            "gh", "release", "download", VERSION, "--repo", "sparkle-project/Sparkle",
+            "--pattern", f"Sparkle-{VERSION}.tar.xz",
             "--output", str(archive),
         ], check=True)
         if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:

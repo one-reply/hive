@@ -14,6 +14,7 @@ use hive_core::host::Host;
 use hive_core::terminal::{ScrollModifiers, SelectionType};
 
 use super::element::TerminalElement;
+use super::glyph_cache::GlyphCache;
 use super::keys;
 use super::mouse::GridGeometry;
 use crate::ui::keymap;
@@ -36,6 +37,7 @@ pub struct TerminalView {
     /// Fractional scroll-wheel lines not yet applied.
     scroll_remainder: f32,
     grid: Option<GridGeometry>,
+    glyph_cache: GlyphCache,
     selecting: bool,
     _subscriptions: Vec<Subscription>,
     _session_subscriptions: Vec<Subscription>,
@@ -117,6 +119,7 @@ impl TerminalView {
             shell_after_exit: false,
             scroll_remainder: 0.,
             grid: None,
+            glyph_cache: GlyphCache::default(),
             selecting: false,
             _subscriptions: subscriptions,
         }
@@ -205,6 +208,10 @@ impl TerminalView {
             .and_then(Path::file_name)
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Terminal".into())
+    }
+
+    pub(super) fn glyph_cache(&mut self) -> &mut GlyphCache {
+        &mut self.glyph_cache
     }
 
     /// Called by the element once it knows how many cells fit.

@@ -57,7 +57,7 @@ impl Sidebar {
             .to_vec();
         // While the section shrinks away after the last agent quits, keep showing it.
         let shown = window.use_keyed_state((key.clone(), "shown"), cx, |_, _| Vec::new());
-        if !live.is_empty() {
+        if !live.is_empty() && *shown.read(cx) != live {
             shown.update(cx, |shown, _| shown.clone_from(&live));
         }
         let sessions = shown.read(cx).clone();
@@ -87,9 +87,13 @@ impl Sidebar {
             };
         }
         let strip_hover = Hover::new((key.clone(), "strip"), window, cx);
+        // Folded rows are clipped to nothing; building them would only keep their spinners
+        // asking for frames.
+        let rows_shown = height > full;
         // Keyed by session, so a row keeps its hover when another agent quits above it.
         let row_hovers: Vec<Hover> = sessions
             .iter()
+            .filter(|_| rows_shown)
             .map(|session| {
                 let id = format!("agent-row:{}:{}", target.path.display(), session.session);
                 Hover::new(SharedString::from(id), window, cx)

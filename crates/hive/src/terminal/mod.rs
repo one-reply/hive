@@ -3,6 +3,7 @@
 //! layout of its panes ([`pane_tree`]).
 
 pub mod element;
+mod glyph_cache;
 pub mod keys;
 mod mouse;
 pub mod pane_tree;

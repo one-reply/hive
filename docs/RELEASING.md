@@ -10,7 +10,8 @@ or claim minimum macOS support solely from the binary's deployment target.
 ## Build
 
 Use an ARM64 Mac, rustup, Xcode 26 or newer selected with `xcode-select`, Python 3,
-and Git. The Rust toolchain and release-tool versions are pinned in the repository.
+Git, and authenticated GitHub CLI (`gh auth login`). The Rust toolchain and
+release-tool versions are pinned in the repository.
 Prepare the [Linux helpers](#linux-helpers) for this exact source revision before
 bundling a release.
 

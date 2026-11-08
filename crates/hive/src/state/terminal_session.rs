@@ -161,13 +161,11 @@ impl TerminalSession {
                         }
                         if let Some(events) = terminal.events() {
                             this._events = Some(cx.spawn(async move |this, cx| {
-                                while let Ok(mut update) = events.recv().await {
-                                    cx.background_executor()
-                                        .timer(Duration::from_millis(16))
-                                        .await;
-                                    if let Ok(latest) = events.try_recv() {
-                                        update = latest;
-                                    }
+                                // Leading-edge throttle: the first update after a quiet spell
+                                // (an echoed key, an app's reply to the wheel) draws at once; a
+                                // burst then draws at most once per 16 ms, and the bounded(1)
+                                // channel hands the next `recv` the latest state.
+                                while let Ok(update) = events.recv().await {
                                     let alive = this.update(cx, |this, cx| {
                                         if this.title.as_deref() != update.title() {
                                             this.title = update.title().map(str::to_owned);
@@ -187,6 +185,9 @@ impl TerminalSession {
                                     if !matches!(alive, Ok(true)) {
                                         break;
                                     }
+                                    cx.background_executor()
+                                        .timer(Duration::from_millis(16))
+                                        .await;
                                 }
                             }));
                         }
@@ -312,11 +313,14 @@ impl TerminalSession {
         modifiers: ScrollModifiers,
         cx: &mut Context<Self>,
     ) {
-        if let Some(bytes) = self
-            .terminal()
-            .and_then(|terminal| terminal.scroll_wheel(lines, point, modifiers))
-        {
-            self.write_input(bytes, cx);
+        let Some(terminal) = self.terminal() else {
+            return;
+        };
+        match terminal.scroll_wheel(lines, point, modifiers) {
+            Some(bytes) => self.write_input(bytes, cx),
+            // History moved locally: draw on the next frame instead of waiting for the
+            // throttled terminal event, so the wheel tracks the display's refresh rate.
+            None => cx.notify(),
         }
     }
 
