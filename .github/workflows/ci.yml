@@ -27,6 +27,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Install verified audit tools
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/install-release-tools.py "$RUNNER_TEMP/hive-tools"
           echo "$RUNNER_TEMP/hive-tools" >> "$GITHUB_PATH"
@@ -113,6 +115,8 @@ jobs:
           version="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "hive"))')"
           test "$RELEASE_TAG" = "v$version"
       - name: Install verified release tools
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/install-release-tools.py "$RUNNER_TEMP/hive-tools"
           echo "$RUNNER_TEMP/hive-tools" >> "$GITHUB_PATH"
