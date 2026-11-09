@@ -47,6 +47,10 @@ fn argument_hint(agent: AgentKind) -> (&'static str, &'static str) {
             "-m anthropic/claude-haiku-5-5",
             "Optional: -m provider/model or -m provider/model#variant. Uses OpenCode's default model when empty; runs without your OpenCode config and tools.",
         ),
+        AgentKind::Antigravity => (
+            "--model gemini-3.8-flash-low --effort low",
+            "Optional: --model (see agy models), --effort low. Uses Antigravity's default model when empty; tool actions are denied.",
+        ),
         _ => ("", hive_core::commit_message::cli::UNSUPPORTED_GENERATOR),
     }
 }

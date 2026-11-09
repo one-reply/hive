@@ -320,6 +320,24 @@ mod tests {
         );
     }
     #[test]
+    fn antigravity_recipe_loads_and_round_trips_without_a_schema_change() {
+        let recipe: Recipe = serde_json::from_str(
+            r#"{"generator":{"kind":"cli","agent":"Antigravity","arguments":"--effort low","future":true},"future":true}"#,
+        ).unwrap();
+        assert_eq!(
+            recipe.generator(),
+            Some(&Generator::Cli {
+                agent: AgentKind::Antigravity,
+                arguments: "--effort low".into(),
+            })
+        );
+        assert!(recipe.is_configured());
+        assert_eq!(
+            serde_json::from_str::<Recipe>(&serde_json::to_string(&recipe).unwrap()).unwrap(),
+            recipe
+        );
+    }
+    #[test]
     fn final_messages_reject_empty_oversized_or_terminal_controls() {
         assert_eq!(
             message("  feat: change\n\nBody\n".into()).unwrap(),
