@@ -8,6 +8,7 @@ use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, ThemeStyled as _, h_flex, v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hive_core::usage::{self, Provider, UsageLevel, UsageWindow, Vendor};
 use std::time::Duration;
@@ -19,6 +20,8 @@ use crate::ui::settings;
 
 /// Width of the per-provider bar in the status bar.
 const BAR_WIDTH: Pixels = px(56.);
+const BAR_HEIGHT: Pixels = px(4.);
+const INACTIVE_ICON_OPACITY: f32 = 0.5;
 /// Width of the details card shown on hover.
 const CARD_WIDTH: Pixels = px(240.);
 /// The card should feel like a tooltip, not a deliberate hover.
@@ -95,25 +98,56 @@ fn set_card_hover(hover: &Entity<CardHover>, cx: &mut App, change: impl FnOnce(&
     });
 }
 
-/// Logo, name and a bar of what is left of the limit that will stop work first; every window
-/// shows on hover.
+/// Logo and a bar of what is left of the limit that will stop work first; the provider's name
+/// and every window show on hover.
 fn provider_item(ix: usize, provider: &Provider, window: &mut Window, cx: &mut App) -> AnyElement {
-    let title = vendor_title(provider.vendor);
-    if let Some(err) = &provider.error {
-        return title.child(err.to_string()).into_any_element();
-    }
-    let Some(binding) = usage::binding_window(&provider.windows) else {
-        return title.child("no data").into_any_element();
+    let binding = available_window(provider);
+    let summary = if let Some(binding) = binding {
+        Progress::new(("usage-bar", ix))
+            .with_size(BAR_HEIGHT)
+            .w(BAR_WIDTH)
+            .value(binding.remaining_percent() as f32)
+            .color(level_color(binding.level(), cx))
+            .into_any_element()
+    } else {
+        // An unavailable limit has no numeric value to announce as zero remaining.
+        div()
+            .w(BAR_WIDTH)
+            .h(BAR_HEIGHT)
+            .rounded(cx.theme().radius.min(BAR_HEIGHT / 2.))
+            .bg(cx.theme().muted)
+            .into_any_element()
     };
-    let bar = Progress::new(("usage-bar", ix))
-        .xsmall()
-        .w(BAR_WIDTH)
-        .value(binding.remaining_percent() as f32)
-        .color(level_color(binding.level(), cx));
     let hover = window.use_keyed_state(("usage-card-hover", ix), cx, |_, _| CardHover::default());
     let trigger = div()
         .id(("usage-trigger", ix))
-        .child(title.child(bar))
+        .role(Role::Group)
+        .aria_label(provider.vendor.name())
+        .when(binding.is_none(), |trigger| {
+            trigger.aria_description(
+                provider
+                    .error
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "no data".into()),
+            )
+        })
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    Icon::default()
+                        .data(logo_svg(provider.vendor))
+                        .xsmall()
+                        .when(binding.is_none(), |icon| {
+                            icon.text_color(
+                                cx.theme().muted_foreground.opacity(INACTIVE_ICON_OPACITY),
+                            )
+                        }),
+                )
+                .child(summary),
+        )
         .on_hover({
             let hover = hover.clone();
             move |hovered, _, cx| set_card_hover(&hover, cx, |h| h.trigger = *hovered)
@@ -153,18 +187,31 @@ fn provider_item(ix: usize, provider: &Provider, window: &mut Window, cx: &mut A
         .into_any_element()
 }
 
+fn available_window(provider: &Provider) -> Option<&UsageWindow> {
+    if provider.error.is_some() {
+        return None;
+    }
+    usage::binding_window(&provider.windows)
+}
+
 fn usage_card(provider: &Provider, cx: &App) -> Div {
-    v_flex()
+    let card = v_flex()
         .w(CARD_WIDTH)
         .gap_3()
-        .child(vendor_title(provider.vendor))
-        .children(
-            provider
-                .windows
-                .iter()
-                .enumerate()
-                .map(|(ix, w)| window_details(ix, w, cx)),
-        )
+        .child(vendor_title(provider.vendor));
+    if let Some(error) = &provider.error {
+        return card.child(error.to_string());
+    }
+    if provider.windows.is_empty() {
+        return card.child("no data");
+    }
+    card.children(
+        provider
+            .windows
+            .iter()
+            .enumerate()
+            .map(|(ix, w)| window_details(ix, w, cx)),
+    )
 }
 
 fn window_details(ix: usize, window: &UsageWindow, cx: &App) -> Div {
@@ -241,5 +288,39 @@ impl Render for StatusBarView {
                             .smooth_hover(ButtonLook::Ghost, &settings_hover, cx),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::available_window;
+    use hive_core::{
+        keychain::CredentialError,
+        usage::{Provider, UsageError, UsageWindow, Vendor},
+    };
+
+    #[test]
+    fn unavailable_limits_never_show_cached_usage() {
+        let mut provider = Provider {
+            vendor: Vendor::Antigravity,
+            windows: vec![UsageWindow {
+                label: "5h",
+                percent: 40.,
+                resets_at: None,
+            }],
+            error: None,
+        };
+        assert!(available_window(&provider).is_some());
+        for error in [
+            UsageError::Credentials(CredentialError::Expired("agy")),
+            UsageError::Http("offline".into()),
+        ] {
+            provider.error = Some(error);
+            assert!(available_window(&provider).is_none());
+        }
+        provider.error = None;
+        assert!(available_window(&provider).is_some());
+        provider.windows.clear();
+        assert!(available_window(&provider).is_none());
     }
 }

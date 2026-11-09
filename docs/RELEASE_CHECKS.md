@@ -1,5 +1,45 @@
 # Release verification
 
+## Hive 1.0.3 — November 9, 2026
+
+The [release notes](releases/v1.0.3.md) describe the changes and verification limits.
+The published release records the exact CI run, source revision, final archive
+checksum, Developer ID, notarization, and downloaded-asset checks.
+
+- Formatting, Clippy with warnings denied, 521 Rust tests (three existing opt-in
+  tests ignored), 26 Python tests, and the core/GPUI boundary passed locally.
+- Gitleaks passed on all Git refs and a clean snapshot of tracked and new source
+  files. cargo-deny passed licenses, advisories, and sources with the existing
+  documented maintenance exceptions.
+- Regression tests cover attention labels and search context, empty results,
+  unavailable usage with cached data, recovery, and keyboard dispatch across
+  normal, empty, and failed diffs.
+- Native checks in isolated development profiles covered notification status
+  colors, wrapping, search, arrow navigation, Enter to the correct session, and
+  clearing unread status; usage hover cards and accessibility descriptions; and
+  Command-W closing empty, failed, refreshed, and ordinary diffs and an editor.
+- The native app was built and exercised on macOS 27.2 (26B123), Apple Silicon.
+  The installed app and active user sessions were not replaced.
+
+Not reverified: a paid multi-agent turn, clean-account browser/Finder installation,
+Keychain allow/deny, the full Sparkle install/relaunch cycle, or runtime on minimum
+macOS 12.0. SSH notification context, missing usage data, and usage recovery have
+automated coverage rather than new live-session coverage.
+
+## README refresh — November 9, 2026
+
+All three `docs/images/hive-*.png` files are new, unretouched captures of the running
+1.0.3 development app in full screen (3456×2168). They show the Rust editor and
+Files tree, the staged diff and Git panel, and the New worktree agent picker.
+Full screen excludes the macOS sharing/control indicator. Each capture was checked
+for control overlays, private projects, and account details before publication.
+
+A separate app identity and `HIVE_DEV_DATA_DIR` isolated saved state. The demo used
+`git archive 774d865` of Hive's public source with disposable `attention-details`
+and `compact-limits` worktrees; the latter contained the current status-bar change.
+No agent prompts were submitted and no demo changes were pushed. These captures
+verify the UI presentation, not a clean-account installation of the signed release.
+
 ## Hive 0.1.11 — November 8, 2026
 
 Published [preview release](https://github.com/one-reply/hive/releases/tag/v0.1.11)
@@ -55,7 +95,7 @@ The QA build differs only in package identity, the state directory and Keychain
 service names. It protects the maintainer's existing data and credentials; it is
 not the distributed executable and does not replace the downloaded-release gate.
 The original public screenshot used this build and a disposable clone of Hive's
-own source. The current README screenshots are documented below.
+own source. The November 6 screenshots are documented below; the November 9 record supersedes them.
 
 The `v0.1.0` tag points to `91e6c9a06e809ce108b91a4f08145a484615c0d1`.
 Its [tag workflow](https://github.com/vitaliits-stack/hive/actions/runs/41894907955)
@@ -72,7 +112,7 @@ for macOS 11 from the Mach-O deployment target.
 
 ## README refresh — November 6, 2026
 
-The current README reflects the terminal-agent workflow, native editor and Files
+The November 6 README reflected the terminal-agent workflow, native editor and Files
 navigator, review feedback, PR/CI cards, supported usage providers, and restoration
 limits. The public Releases API returned no published releases on this date, so
 the download section directs readers to a source build.

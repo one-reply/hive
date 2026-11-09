@@ -21,6 +21,7 @@ use gpui_kit::*;
 use hive_core::git::diff::DiffSource;
 
 mod comments;
+mod message;
 
 pub(crate) struct DiffPanel {
     pub review: Entity<GitDiff>,
@@ -433,9 +434,14 @@ impl Render for DiffPanel {
                     ),
             );
         if let Some(error) = error {
-            content = content.child(div().p_3().text_color(cx.theme().danger).child(error));
+            content = content.child(
+                message::render(error, &self.focus_handle(cx)).text_color(cx.theme().danger),
+            );
         } else if patch.as_ref().is_some_and(|p| p.patch().is_empty()) {
-            content = content.child(div().p_3().child("No changes in this view."));
+            content = content.child(message::render(
+                "No changes in this view.",
+                &self.focus_handle(cx),
+            ));
         } else {
             if mutable && !partial {
                 content = content.child(

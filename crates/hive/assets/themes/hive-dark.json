@@ -6,6 +6,7 @@
     "sidebar.background": "#0a0a0a",
     "overlay": "#00000080",
     "background": "#0a0a0a",
+    "border": "#333333",
     "foreground": "#fafafa",
     "primary.foreground": "#171717",
     "input.border": "#404040"

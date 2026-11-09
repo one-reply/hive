@@ -3,7 +3,11 @@ use super::*;
 use gpui_kit::component::{
     IndexPath,
     list::{List, ListDelegate, ListItem, ListState},
+    tooltip::Tooltip,
 };
+
+mod attention;
+use attention::Attention;
 
 const WIDTH: Pixels = px(600.);
 const HEIGHT: Pixels = px(420.);
@@ -14,6 +18,7 @@ struct Destination {
     project: PathBuf,
     worktree: Option<PathBuf>,
     session: Option<EntityId>,
+    attention: Option<Attention>,
 }
 
 struct Destinations {
@@ -36,6 +41,7 @@ impl Destinations {
                     project: project.path.clone(),
                     worktree: project.worktrees.first().map(|w| w.path.clone()),
                     session: None,
+                    attention: None,
                 });
             }
             let paths: Vec<_> = if project.worktrees.is_empty() {
@@ -44,7 +50,7 @@ impl Destinations {
                 project
                     .worktrees
                     .iter()
-                    .map(|w| (&w.path, Some(w.path.clone())))
+                    .map(|w| (&w.path, Some(w)))
                     .collect()
             };
             for (path, worktree) in paths {
@@ -54,8 +60,9 @@ impl Destinations {
                         host: project.host.clone(),
                         label: format!("{} / {name}", project.name),
                         project: project.path.clone(),
-                        worktree: worktree.clone(),
+                        worktree: worktree.map(|w| w.path.clone()),
                         session: None,
+                        attention: None,
                     });
                 }
                 for session in agents.sessions(&project.host, path) {
@@ -70,12 +77,20 @@ impl Destinations {
                         format!("{} · estimated", session.status.label())
                     };
                     let title = session.title.as_deref().unwrap_or(session.kind.name());
+                    let attention = self
+                        .attention
+                        .then(|| Attention::new(project, worktree, session));
+                    let label = attention.as_ref().map_or_else(
+                        || format!("{} / {name} · {title} · {status}", project.name),
+                        Attention::label,
+                    );
                     self.entries.push(Destination {
                         host: project.host.clone(),
-                        label: format!("{} / {name} · {title} · {status}", project.name),
+                        label,
                         project: project.path.clone(),
-                        worktree: worktree.clone(),
+                        worktree: worktree.map(|w| w.path.clone()),
                         session: Some(session.session),
+                        attention,
                     });
                 }
             }
@@ -95,14 +110,19 @@ impl ListDelegate for Destinations {
         &mut self,
         ix: IndexPath,
         _: &mut Window,
-        _: &mut Context<ListState<Self>>,
+        cx: &mut Context<ListState<Self>>,
     ) -> Option<ListItem> {
         let entry = self.entries.get(ix.row)?;
-        Some(
-            ListItem::new(ix.row)
-                .accessibility_label(entry.label.clone())
-                .child(div().truncate().child(entry.label.clone())),
-        )
+        let item = ListItem::new(ix.row).accessibility_label(entry.label.clone());
+        let tooltip = entry.label.clone();
+        Some(match &entry.attention {
+            Some(attention) => item
+                .cursor_pointer()
+                .py_0()
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .child(attention.render(cx)),
+            None => item.child(div().truncate().child(entry.label.clone())),
+        })
     }
     fn set_selected_index(
         &mut self,
@@ -151,11 +171,9 @@ impl ListDelegate for Destinations {
         _: &mut Window,
         _: &mut Context<ListState<Self>>,
     ) -> impl IntoElement {
-        div().p_4().child(if self.attention {
-            "No agents need attention"
-        } else {
-            "No matching workspaces or agents"
-        })
+        div()
+            .p_4()
+            .child(empty_message(self.attention, &self.query))
     }
 }
 
@@ -196,10 +214,41 @@ pub(crate) fn open(attention: bool, window: &mut Window, cx: &mut App) {
                 "Go to workspace or agent"
             })
             .w(WIDTH)
-            .child(
-                List::new(&list)
-                    .h(HEIGHT)
-                    .search_placeholder("Search projects, worktrees, agents…"),
-            )
+            .child(List::new(&list).h(HEIGHT).search_placeholder(if attention {
+                "Search tasks, projects, branches, agents…"
+            } else {
+                "Search projects, worktrees, agents…"
+            }))
+            .when(attention, |dialog| {
+                dialog.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Select a notification to open its terminal."),
+                )
+            })
     });
+}
+
+fn empty_message(attention: bool, query: &str) -> &'static str {
+    match (attention, query.is_empty()) {
+        (true, true) => "No agents need attention",
+        (true, false) => "No matching notifications. Try another search.",
+        (false, _) => "No matching workspaces or agents",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::empty_message;
+
+    #[test]
+    fn empty_attention_distinguishes_a_search_from_no_notifications() {
+        assert_eq!(empty_message(true, ""), "No agents need attention");
+        assert_eq!(
+            empty_message(true, "missing"),
+            "No matching notifications. Try another search."
+        );
+        assert_eq!(empty_message(false, ""), "No matching workspaces or agents");
+    }
 }

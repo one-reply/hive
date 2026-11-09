@@ -28,9 +28,9 @@ editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-k
 
 **Apple Silicon only.** The button opens GitHub Releases, where you can download
 the latest stable release and its SHA-256 checksum.
-The current release is [Hive 1.0.2](https://github.com/one-reply/hive/releases/tag/v1.0.2),
+The current release is [Hive 1.0.3](https://github.com/one-reply/hive/releases/tag/v1.0.3),
 with a Developer ID signature and Apple notarization. See the
-[release notes](docs/releases/v1.0.2.md) for changes and the
+[release notes](docs/releases/v1.0.3.md) for changes and the
 [verification record](docs/RELEASE_CHECKS.md) for completed
 and pending checks.
 
@@ -40,8 +40,8 @@ before installing and restarting. Finish active agent sessions before restarting
 After updating, a compact notification links to the installed version’s release notes.
 Older builds need one manual installation of a version that includes the updater.
 
-Version **1.0.2** adds reported agent status, helper notifications, safe turn
-interruption, and launching installed agent CLIs from the terminal context menu.
+Version **1.0.3** adds clearer attention notifications and compact usage indicators,
+brightens Hive Dark dividers, and fixes **⌘W** for empty or failed Git diffs.
 
 ## What you can do today
 
@@ -53,13 +53,13 @@ interruption, and launching installed agent CLIs from the terminal context menu.
 | **Let agents work together** | Agents list each other, start a named helper in the next pane, and exchange messages with the `hive agent` command. |
 | **Edit files** | Browse and search with **Files / ⌘P**, use syntax highlighting and preview or pinned tabs, save with **⌘S**, and handle external changes and recovery drafts. |
 | **Manage files** | Create, rename, move, and delete files or folders; drag files between folders and see Git change badges in the tree. |
-| **Navigate your workspace** | Jump to a project, worktree, or agent with **⌘K**. Use **Needs attention** to find Claude sessions waiting for input or approval. |
+| **Navigate your workspace** | Jump to a project, worktree, or agent with **⌘K**. Use **Needs attention** to see the status, task, agent, project, and branch of sessions that need you. |
 | **Pick up where you left off** | Restore selected worktrees, pinned files, terminal and diff tabs, split sizes, focus, and shell directories. Agent panes continue their Claude Code, Codex, OpenCode, or Antigravity conversation. |
 | **Review and commit** | Inspect unified or split diffs, stage files or hunks, compare branches, browse history, and commit, fetch, pull, or push. |
 | **Send feedback to agents** | Annotate diff lines and copy an editable review prompt. Turn a Git error into a draft in the appropriate agent terminal, ready for you to submit. |
 | **Follow pull requests** | See PR and CI status on worktree cards, with links to the PR and failing checks, using your existing GitHub CLI sign-in. |
 | **Generate commit messages** | Use Codex, Claude Code, OpenCode, or an API provider to draft a message from staged changes. |
-| **Track usage** | View Claude Code, Codex, Cursor Agent, and Antigravity usage limits and reset times using existing CLI sign-ins. |
+| **Track usage** | View compact usage bars for Claude Code, Codex, Cursor Agent, and Antigravity. Hover for limits, reset times, or sign-in help; unavailable limits appear gray. |
 | **Make it yours** | Choose from six built-in themes, with independent light and dark palettes and automatic system switching; customize UI and code fonts, Files density and icons, and keyboard shortcuts. |
 | **Keep Hive updated** | Check your installed version and install signed updates from Settings → Updates. |
 
@@ -69,9 +69,10 @@ in to the agents you want to use separately, then launch them as you would in an
 terminal.
 
 Claude Code launched by Hive receives session-scoped hooks for working, input,
-approval, turn completion, and failure states. Other agents, and Claude launched manually
-in a shell, use **estimated Working / Idle** based on terminal output. Handle
-approval prompts in the agent's own terminal.
+approval, turn completion, and failure states. Agents that support the Program
+Status Protocol (OSC 7501) can report their status directly, including in SSH panes.
+Without hooks or status reports, local agents use **estimated Working / Idle** based
+on terminal output. Handle approval prompts in the agent's own terminal.
 
 Restored terminals reopen in their last directories. A pane that was running Claude
 Code, Codex, OpenCode, or Antigravity starts that agent again and continues the same
@@ -85,11 +86,12 @@ directory.
 
 *Review changes, stage individual hunks, and keep the worktree's Git context visible.*
 
-<img src="docs/images/hive-create-worktree.png" alt="Hive's New worktree dialog with task name, base branch, and agent choices" width="540" />
+![Hive's New worktree dialog with task name, base branch, and agent choices](docs/images/hive-create-worktree.png)
 
 *Create an isolated worktree and choose the terminal or agent that starts in it.*
 
-Screenshots use a development build and a disposable copy of Hive's public source.
+Screenshots show the 1.0.3 development build in full screen, using a disposable copy
+of Hive's public source. See the [capture record](docs/RELEASE_CHECKS.md#readme-refresh--november-9-2026).
 
 ## Build and run
 
@@ -129,6 +131,16 @@ For a release build, use `cargo run --locked --release -p hive`.
 Projects, terminals, and Git tools work without configuring an AI API key in Hive.
 Install and sign in to your preferred agent separately. Usage indicators read
 supported CLI sign-ins; PR/CI cards additionally require **`gh`** signed in to GitHub.
+
+### Attention and usage
+
+The bell opens **Needs attention**. Each entry shows why the session needs you,
+its task title, agent, project or worktree, and branch. SSH entries also identify
+the host. Search by any of that context, then press **Enter** to open the session.
+
+The bottom bar uses provider icons and usage bars. Hover to see every usage window
+and its reset time. A gray icon and empty gray bar mean usage is unavailable;
+the hover card explains the error or how to sign in.
 
 ### Files and editing
 
@@ -188,8 +200,8 @@ Hive does not copy your Mac's credentials or agent hooks there.
 Remote drafts stay on your Mac. Failed scans retain the last workspace, and an
 interrupted save requires checking the remote file before another write. SSH
 terminals have no tmux persistence or automatic agent restart: use **New SSH
-Session** after disconnecting. Remote activity/approval tracking and conversation
-Resume are not available. Uploading local files or clipboard images and port
+Session** after disconnecting. Reported agent status is supported through OSC 7501; remote process-based
+activity detection and conversation Resume are not available. Uploading local files or clipboard images and port
 forwarding are deferred. Creating or removing worktrees currently requires UTF-8
 paths; remote file operations also preserve non-UTF-8 Unix names.
 
