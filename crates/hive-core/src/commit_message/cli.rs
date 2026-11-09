@@ -1,5 +1,5 @@
 //! Discovery and bounded, non-interactive invocation of the supported local CLIs (Codex,
-//! Claude Code and OpenCode; the other `AgentKind`s are only recognized in terminals).
+//! Claude Code, OpenCode and Antigravity; the other `AgentKind`s are only recognized in terminals).
 use super::Error;
 use crate::{agent::AgentKind, host::Host};
 use serde::Deserialize;
@@ -9,10 +9,18 @@ mod process;
 pub use process::Cancellation;
 
 /// Shown when a saved recipe names an agent that only terminal detection knows.
-pub const UNSUPPORTED_GENERATOR: &str = "This agent cannot generate commit messages yet. Select Codex, Claude Code, OpenCode or an API provider.";
+pub const UNSUPPORTED_GENERATOR: &str = "This agent cannot generate commit messages yet. Select Codex, Claude Code, OpenCode, Antigravity or an API provider.";
 
 /// Supported commit CLIs, in picker order.
-pub const AGENTS: [AgentKind; 3] = [AgentKind::Codex, AgentKind::ClaudeCode, AgentKind::OpenCode];
+pub const AGENTS: [AgentKind; 4] = [
+    AgentKind::Codex,
+    AgentKind::ClaudeCode,
+    AgentKind::OpenCode,
+    AgentKind::Antigravity,
+];
+
+// Strict mode soft-denies tool actions in headless runs, even with user allow rules.
+const ANTIGRAVITY_SETTINGS: &str = r#"{"toolPermission":"strict","permissions":{"deny":["read_file(*)","write_file(*)","read_url(*)","execute_url(*)","command(*)","mcp(*)"]}}"#;
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 /// Deleting the throwaway OpenCode session is local bookkeeping; it must not hold a slot long.
@@ -42,10 +50,12 @@ pub fn arguments(agent: AgentKind, value: &str) -> Result<Vec<String>, Error> {
         let (flag, inline) = arg
             .split_once('=')
             .map_or((arg.as_str(), None), |(a, b)| (a, Some(b)));
-        let allowed = matches!(flag, "--model" | "-m")
+        let allowed = flag == "--model"
+            || (flag == "-m" && agent != AgentKind::Antigravity)
             || match agent {
                 AgentKind::Codex => matches!(flag, "-c" | "--config"),
                 AgentKind::ClaudeCode => matches!(flag, "--effort" | "--max-budget-usd"),
+                AgentKind::Antigravity => flag == "--effort",
                 _ => false,
             };
         if !allowed {
@@ -111,6 +121,16 @@ pub(super) fn generate(
             "--permission-mode",
             "dontAsk",
         ],
+        AgentKind::Antigravity => vec![
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--disable-slash-commands",
+            "--sandbox",
+            "--settings",
+            ANTIGRAVITY_SETTINGS,
+        ],
         AgentKind::OpenCode => return generate_opencode(&extra, &program, prompt, cancellation),
         _ => return Err(Error::Invalid(UNSUPPORTED_GENERATOR)),
     };
@@ -121,7 +141,15 @@ pub(super) fn generate(
         argv.push("-");
     }
     let command = cli_command(agent, &program, &argv, &directory);
-    let output = process::run(agent, command, prompt, cancellation, TIMEOUT)?;
+    let input = if agent == AgentKind::Antigravity {
+        format!(
+            "{}\n",
+            serde_json::json!({"event": "user", "message": {"content": prompt}})
+        )
+    } else {
+        prompt.to_owned()
+    };
+    let output = process::run(agent, command, &input, cancellation, TIMEOUT)?;
     parse(agent, &output)
 }
 
@@ -234,6 +262,11 @@ fn parse(agent: AgentKind, output: &[u8]) -> Result<String, Error> {
             .ok_or_else(invalid)
             .and_then(super::message);
     }
+    if agent == AgentKind::Antigravity {
+        return parse_antigravity(output)
+            .ok_or_else(invalid)
+            .and_then(super::message);
+    }
     let mut message = None;
     let mut completed = false;
     for line in output
@@ -258,6 +291,36 @@ fn parse(agent: AgentKind, output: &[u8]) -> Result<String, Error> {
         return Err(invalid());
     }
     super::message(message.ok_or_else(invalid)?)
+}
+
+#[derive(Deserialize)]
+struct AntigravityEvent {
+    event: String,
+    result: Option<AntigravityResult>,
+}
+
+#[derive(Deserialize)]
+struct AntigravityResult {
+    status: String,
+    response: String,
+}
+
+fn parse_antigravity(output: &[u8]) -> Option<String> {
+    let mut answer = None;
+    for line in output
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.iter().all(u8::is_ascii_whitespace))
+    {
+        let event: AntigravityEvent = serde_json::from_slice(line).ok()?;
+        if event.event == "result" {
+            let result = event.result?;
+            if result.status != "SUCCESS" || answer.is_some() {
+                return None;
+            }
+            answer = Some(result.response);
+        }
+    }
+    answer
 }
 
 /// The text of the message whose step stopped on its own. Earlier steps end in tool calls,

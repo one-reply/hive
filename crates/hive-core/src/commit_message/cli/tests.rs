@@ -180,12 +180,14 @@ fn opencode_runs_without_user_config_or_tool_permissions() {
 #[test]
 #[ignore = "uses installed CLI login and sends a synthetic prompt; opt-in only"]
 fn installed_cli_smoke() {
-    let name = std::env::var("HIVE_TEST_CLI").expect("set HIVE_TEST_CLI=codex, claude or opencode");
+    let name =
+        std::env::var("HIVE_TEST_CLI").expect("set HIVE_TEST_CLI=codex, claude, opencode or agy");
     let arguments = std::env::var("HIVE_TEST_CLI_ARGS").unwrap_or_default();
     let agent = match name.as_str() {
         "codex" => AgentKind::Codex,
         "claude" => AgentKind::ClaudeCode,
         "opencode" => AgentKind::OpenCode,
+        "agy" => AgentKind::Antigravity,
         _ => panic!("unknown HIVE_TEST_CLI"),
     };
     let message = generate(
@@ -199,4 +201,76 @@ fn installed_cli_smoke() {
         message.contains("docs: update synthetic fixture"),
         "{message:?}"
     );
+}
+
+// Captured agy 1.5.3 stream-json output; IDs, paths and response replaced with fixture text.
+const ANTIGRAVITY: &str = r#"{"event":"init","init":{"cwd":"/tmp/fixture"}}
+{"event":"step_update","step_update":{"state":"DONE","step_type":"agent_response","text_delta":"intermediate text"}}
+{"event":"result","result":{"conversation_id":"fixture","status":"SUCCESS","response":"docs: fixture\n","duration_seconds":1,"num_turns":1,"usage":{"input_tokens":1}}}
+"#;
+
+#[test]
+fn antigravity_is_a_generator_and_accepts_model_and_effort() {
+    assert!(AGENTS.contains(&AgentKind::Antigravity));
+    assert_eq!(
+        arguments(
+            AgentKind::Antigravity,
+            "--model gemini-3.8-flash-low --effort low"
+        )
+        .unwrap(),
+        ["--model", "gemini-3.8-flash-low", "--effort", "low"]
+    );
+    for value in [
+        "-m model",
+        "--settings {}",
+        "--continue",
+        "--agent custom",
+        "--mode auto",
+        "--print hi",
+        "--input-format text",
+        "--disable-slash-commands=false",
+    ] {
+        assert!(arguments(AgentKind::Antigravity, value).is_err(), "{value}");
+    }
+}
+
+#[test]
+fn antigravity_returns_only_the_successful_result() {
+    assert_eq!(
+        parse(AgentKind::Antigravity, ANTIGRAVITY.as_bytes()).unwrap(),
+        "docs: fixture"
+    );
+    for status in [
+        "ERROR",
+        "CANCELED",
+        "INTERRUPTED",
+        "INVALID",
+        "WAITING",
+        "RUNNING",
+        "FUTURE",
+    ] {
+        assert!(
+            parse(
+                AgentKind::Antigravity,
+                ANTIGRAVITY.replace("SUCCESS", status).as_bytes()
+            )
+            .is_err()
+        );
+    }
+    for output in [
+        "",
+        "{}",
+        "not json",
+        "{\"event\":\"result\",\"result\":{}}",
+        ANTIGRAVITY.lines().next().unwrap(),
+        &ANTIGRAVITY[..ANTIGRAVITY.len() / 2],
+        &ANTIGRAVITY.replace("docs: fixture\\n", ""),
+        &format!("{ANTIGRAVITY}{ANTIGRAVITY}"),
+        &format!("{ANTIGRAVITY}{{broken"),
+    ] {
+        assert!(
+            parse(AgentKind::Antigravity, output.as_bytes()).is_err(),
+            "{output}"
+        );
+    }
 }
