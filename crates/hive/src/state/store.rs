@@ -150,6 +150,11 @@ impl Store {
         self.commit(cx);
     }
 
+    pub(crate) fn set_agent_notifications(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.state.settings.agent_notifications = enabled;
+        self.commit(cx);
+    }
+
     pub(crate) fn set_files_selected(&mut self, files: bool, cx: &mut Context<Self>) {
         self.state.settings.files_selected = files;
         self.commit(cx);

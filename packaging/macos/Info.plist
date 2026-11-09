@@ -14,6 +14,7 @@
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <key>NSUserNotificationAlertStyle</key><string>alert</string>
     <key>SUFeedURL</key><string>https://one-reply.github.io/hive/appcast.xml</string>
     <key>SUPublicEDKey</key><string>05E4+KmBIahjSxiBxy73BKT39qhnA32NkZ6cHky70Ls=</string>
     <key>SUEnableAutomaticChecks</key><true/>

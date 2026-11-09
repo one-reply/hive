@@ -6,7 +6,7 @@ use gpui_kit::component::{
     tooltip::Tooltip,
 };
 
-mod attention;
+pub(super) mod attention;
 use attention::Attention;
 
 const WIDTH: Pixels = px(600.);

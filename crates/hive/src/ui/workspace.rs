@@ -21,7 +21,7 @@ use hive_core::host::Host;
 use hive_core::settings::clamp_sidebar_width;
 
 use crate::app::AppState;
-use crate::state::agents::AgentsEvent;
+use crate::state::agents::{AgentSession, AgentsEvent};
 use crate::state::projects::Projects;
 use crate::terminal::TerminalPanel;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
@@ -29,6 +29,9 @@ use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
 use crate::ui::{diff_panel::DiffPanel, git_panel::GitPanel};
 use crate::ui::{keymap, theme};
+use hive_core::agent::AgentStatus;
+use hive_core::projects::{Project, Worktree};
+use switcher::attention::Attention;
 
 mod center;
 mod center_dock;
@@ -112,6 +115,11 @@ const TITLE_INSET_DURATION: Duration = Duration::from_millis(200);
 /// Both sidebars slide open and closed at this pace.
 pub(super) const SIDEBAR_SLIDE_DURATION: Duration = Duration::from_millis(200);
 
+/// The id of agent `session`'s attention notification: a newer report replaces the older one.
+fn attention_notice_key(session: EntityId) -> (&'static str, u64) {
+    ("agent", session.as_u64())
+}
+
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.on_window_should_close(cx, |window, cx| {
@@ -194,13 +202,18 @@ impl Workspace {
                         .update(cx, |agents, _| agents.started(&name, session));
                 }
                 AgentsEvent::Attention(session, status) => {
+                    let app = AppState::get(cx);
+                    if !app.store.read(cx).state.settings.agent_notifications {
+                        return;
+                    }
                     let session = *session;
-                    let agents = AppState::get(cx).agents.clone();
+                    let agents = app.agents.clone();
+                    let (title, body) = this.attention_text(session, *status, cx);
                     window.push_notification(
-                        Notification::info(status.label())
-                            .title("Agent needs attention")
-                            .id1::<AgentsEvent>(("agent", session.as_u64()))
-                            .in_app_and_system()
+                        Notification::info(body)
+                            .title(title)
+                            .id1::<AgentsEvent>(attention_notice_key(session))
+                            .system()
                             .on_click(move |_, _, cx| {
                                 agents.update(cx, |agents, cx| agents.reveal(session, cx))
                             }),
@@ -308,6 +321,9 @@ impl Workspace {
 
     /// Shows the project, tab and pane running terminal `session`, wherever it is.
     fn reveal_session(&mut self, session: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        // The agent is seen now, however the user got here: its notification would only be stale.
+        window.remove_notification1::<AgentsEvent>(attention_notice_key(session), cx);
+        self.select_place_of(session, cx);
         let project = self.centers.iter_mut().find_map(|(project, center)| {
             center
                 .reveal_session(session, window, cx)
@@ -316,6 +332,49 @@ impl Workspace {
         if let Some(project) = project {
             self.shown = Some(project);
             cx.notify();
+        }
+    }
+
+    /// The open project, its listed worktree (none for a plain folder) and the agent of
+    /// terminal `session`.
+    fn place_of(
+        &self,
+        session: EntityId,
+        cx: &App,
+    ) -> Option<(Project, Option<Worktree>, AgentSession)> {
+        let agents = AppState::get(cx).agents.read(cx);
+        let ((host, path), agent) = agents.all().find(|(_, agent)| agent.session == session)?;
+        let (_, project) = self.project_of(host, path, cx)?;
+        let project = self.projects.read(cx).project(host, &project)?.clone();
+        let worktree = project.worktrees.iter().find(|w| w.path == *path).cloned();
+        Some((project, worktree, agent.clone()))
+    }
+
+    /// Selects the project and worktree of `session`, so the sidebar follows a reveal that did
+    /// not start there (a system notification). `last_selection` goes first: the selection's
+    /// `sync_selection` then keeps the revealed tab instead of showing the worktree's first one.
+    fn select_place_of(&mut self, session: EntityId, cx: &mut Context<Self>) {
+        let Some((project, worktree, _)) = self.place_of(session, cx) else {
+            return;
+        };
+        let worktree = worktree.map(|worktree| worktree.path);
+        self.last_selection = Some(worktree.clone().unwrap_or_else(|| project.path.clone()));
+        self.shown = Some((project.host.clone(), project.path.clone()));
+        self.projects.update(cx, |projects, cx| {
+            projects.select(&project.host, &project.path, worktree.as_deref(), cx)
+        });
+    }
+
+    /// Title and body of the notification that agent `session` reported `status`.
+    fn attention_text(&self, session: EntityId, status: AgentStatus, cx: &App) -> (String, String) {
+        match self.place_of(session, cx) {
+            Some((project, worktree, agent)) => {
+                Attention::new(&project, worktree.as_ref(), &agent).notification(status)
+            }
+            None => (
+                "Agent needs attention".to_owned(),
+                status.label().to_owned(),
+            ),
         }
     }
 

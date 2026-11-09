@@ -127,6 +127,8 @@ pub struct Settings {
     pub diff_split: bool,
     /// Ask before closing a terminal pane or tab in which a CLI agent is running.
     pub confirm_close_running_agent: bool,
+    /// Post a system notification when an agent needs input or approval, finishes or fails.
+    pub agent_notifications: bool,
     ui_font_size: f32,
     terminal_font_size: f32,
     /// Shortcuts the user reassigned: action name (`"workspace::NewTerminal"`) → keystrokes
@@ -153,6 +155,7 @@ impl Default for Settings {
             files_selected: false,
             diff_split: false,
             confirm_close_running_agent: true,
+            agent_notifications: true,
             ui_font_size: UI_FONT_SIZE_DEFAULT,
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             keybindings: BTreeMap::new(),
@@ -399,6 +402,17 @@ mod tests {
         let saved = serde_json::to_string(&settings).expect("serializable");
         let reloaded: Settings = serde_json::from_str(&saved).expect("valid json");
         assert!(!reloaded.confirm_close_running_agent);
+    }
+
+    #[test]
+    fn agent_notifications_default_on_and_round_trip() {
+        let settings: Settings = serde_json::from_str("{}").expect("valid json");
+        assert!(settings.agent_notifications);
+        let settings: Settings =
+            serde_json::from_str(r#"{"agent_notifications":false}"#).expect("valid json");
+        let saved = serde_json::to_string(&settings).expect("serializable");
+        let reloaded: Settings = serde_json::from_str(&saved).expect("valid json");
+        assert!(!reloaded.agent_notifications);
     }
 
     #[test]
