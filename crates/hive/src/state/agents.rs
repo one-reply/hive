@@ -525,22 +525,31 @@ fn look(probes: &[(EntityId, Probe)]) -> Result<Vec<Sighting>, String> {
     Ok(sightings)
 }
 
-/// What a helper's parent hears about a reported status change. A question counts only in the
-/// middle of a turn: Claude Code also asks for input when it has sat idle after finishing.
-fn helper_event(previous: Option<AgentStatus>, status: AgentStatus) -> Option<HelperEvent> {
-    if previous == Some(status) {
-        return None;
-    }
+/// Whether reaching `status` from `previous` is news for the user: a finished or failed turn,
+/// a permission prompt, or a question. A question counts only in the middle of a turn:
+/// Antigravity reports `blocked:auth` while it checks its sign-in on start, and Claude Code
+/// asks for input when it has sat idle after finishing.
+fn is_news(previous: Option<AgentStatus>, status: AgentStatus) -> bool {
     match status {
-        AgentStatus::WaitingApproval => Some(HelperEvent::Blocked),
-        AgentStatus::WaitingInput if previous == Some(AgentStatus::Working) => {
-            Some(HelperEvent::Blocked)
-        }
-        AgentStatus::Failed => Some(HelperEvent::Failed),
-        _ => None,
+        AgentStatus::WaitingInput => previous == Some(AgentStatus::Working),
+        AgentStatus::WaitingApproval | AgentStatus::Done | AgentStatus::Failed => true,
+        AgentStatus::Working | AgentStatus::Idle => false,
     }
 }
 
+/// What a helper's parent hears about a reported status change.
+fn helper_event(previous: Option<AgentStatus>, status: AgentStatus) -> Option<HelperEvent> {
+    if previous == Some(status) || !is_news(previous, status) {
+        return None;
+    }
+    match status {
+        AgentStatus::WaitingApproval | AgentStatus::WaitingInput => Some(HelperEvent::Blocked),
+        AgentStatus::Failed => Some(HelperEvent::Failed),
+        AgentStatus::Done | AgentStatus::Working | AgentStatus::Idle => None,
+    }
+}
+
+/// Records `status` and returns whether it is news worth a notification.
 fn update_status(
     current: &mut Option<AgentStatus>,
     unread: &mut bool,
@@ -549,9 +558,11 @@ fn update_status(
     if *current == Some(status) {
         return false;
     }
-    *current = Some(status);
-    *unread = status.needs_attention();
-    *unread
+    let news = is_news(current.replace(status), status);
+    // A status that is no news on its own, such as Claude's idle prompt after `Done`, keeps the
+    // mark of the turn the user has not looked at yet.
+    *unread = news || (*unread && status.needs_attention());
+    news
 }
 
 #[cfg(test)]
@@ -615,5 +626,53 @@ mod tests {
         ));
         assert!(update_status(&mut status, &mut unread, AgentStatus::Done));
         assert!(unread);
+    }
+
+    #[test]
+    fn a_sign_in_check_on_start_is_not_news() {
+        // Antigravity's start, as captured from `agy`: `blocked:kind=auth`, then `idle`.
+        let mut status = None;
+        let mut unread = false;
+        assert!(!update_status(
+            &mut status,
+            &mut unread,
+            AgentStatus::WaitingInput
+        ));
+        assert!(!unread);
+        assert!(!update_status(&mut status, &mut unread, AgentStatus::Idle));
+        assert!(!unread);
+    }
+
+    #[test]
+    fn a_question_in_the_middle_of_a_turn_is_news() {
+        let mut status = Some(AgentStatus::Working);
+        let mut unread = false;
+        assert!(update_status(
+            &mut status,
+            &mut unread,
+            AgentStatus::WaitingInput
+        ));
+        assert!(unread);
+    }
+
+    #[test]
+    fn an_idle_prompt_after_a_finished_turn_keeps_its_mark_without_news() {
+        let mut status = Some(AgentStatus::Working);
+        let mut unread = false;
+        assert!(update_status(&mut status, &mut unread, AgentStatus::Done));
+        assert!(!update_status(
+            &mut status,
+            &mut unread,
+            AgentStatus::WaitingInput
+        ));
+        assert!(unread);
+        unread = false;
+        assert!(!update_status(&mut status, &mut unread, AgentStatus::Idle));
+        assert!(!update_status(
+            &mut status,
+            &mut unread,
+            AgentStatus::WaitingInput
+        ));
+        assert!(!unread);
     }
 }
