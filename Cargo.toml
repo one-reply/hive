@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "1.0.4"
+version = "1.0.5"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/one-reply/hive"
@@ -43,3 +43,6 @@ lsp-types = "0.97"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSError", "NSString"] }
+# Already built for GPUI's notifications; Hive only reads its own permission.
+block2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotificationSettings", "UNUserNotificationCenter"] }

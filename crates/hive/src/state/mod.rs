@@ -7,6 +7,7 @@ pub(crate) mod documents;
 pub(crate) mod files;
 pub(crate) mod git;
 pub(crate) mod git_diff;
+pub(crate) mod notifications;
 pub mod projects;
 pub mod store;
 pub(crate) mod terminal_session;

@@ -109,3 +109,20 @@ fn deactivating_the_window_cancels_drag_autoscroll(cx: &mut TestAppContext) {
     assert_eq!(offset(&view, cx), stopped);
     cx.read(|cx| assert!(!view.read(cx).selection_scroll.is_active()));
 }
+
+#[gpui::test]
+fn exiting_the_session_stops_drag_autoscroll(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    start_drag(&view, cx);
+    tick(cx);
+    let stopped = offset(&view, cx);
+    cx.update(|_, cx| {
+        let session = view.read(cx).session.clone();
+        session.update(cx, |session, _| session.exited = true);
+    });
+    for _ in 0..8 {
+        tick(cx);
+    }
+    assert_eq!(offset(&view, cx), stopped);
+    cx.read(|cx| assert!(!view.read(cx).selection_scroll.is_active()));
+}

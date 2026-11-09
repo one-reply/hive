@@ -218,6 +218,8 @@ impl SettingsWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppState::get(cx);
         let (store, projects) = (state.store.clone(), state.projects.clone());
+        let notifications = state.notifications.clone();
+        notifications.update(cx, |notifications, cx| notifications.refresh(cx));
         Self {
             view: View::Page(Page::Appearance),
             appearance: cx.new(|cx| AppearancePage::new(window, cx)),
@@ -231,6 +233,13 @@ impl SettingsWindow {
                     cx.notify();
                 }),
                 cx.observe(&projects, |_, _, cx| cx.notify()),
+                cx.observe(&notifications, |_, _, cx| cx.notify()),
+                // The user allows notifications in System Settings and comes back here.
+                cx.observe_window_activation(window, move |_, window, cx| {
+                    if window.is_window_active() {
+                        notifications.update(cx, |notifications, cx| notifications.refresh(cx));
+                    }
+                }),
             ],
         }
     }

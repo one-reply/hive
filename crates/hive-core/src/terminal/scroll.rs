@@ -13,6 +13,22 @@ pub struct ScrollModifiers {
 }
 
 impl Terminal {
+    /// Wheel reports for drag autoscroll in applications that own their history.
+    /// Never falls back to arrow keys, which could edit a prompt or change a menu choice.
+    pub fn selection_scroll_input(&self, lines: i32, point: Point<usize>) -> Option<Vec<u8>> {
+        let term = self.term.lock();
+        if lines == 0 || !term.mode().intersects(TermMode::MOUSE_MODE) {
+            return None;
+        }
+        let point = Point::new(
+            point.line.min(term.screen_lines() - 1),
+            Column(point.column.0.min(term.columns() - 1)),
+        );
+        let button = if lines > 0 { 64 } else { 65 };
+        let bytes = wheel_report(*term.mode(), point, button)?;
+        Some(bytes.repeat((lines.unsigned_abs() as usize).min(term.screen_lines())))
+    }
+
     /// Scroll history or return wheel input for the caller's PTY input queue.
     /// Positive `lines` means up; `point` is a zero-based viewport cell.
     pub fn scroll_wheel(
@@ -101,6 +117,37 @@ mod tests {
             assert_eq!(
                 terminal.scroll_wheel(2, Point::new(2, Column(10)), ScrollModifiers::default()),
                 Some(b"\x1b[<64;11;3M\x1b[<64;11;3M".to_vec())
+            );
+        }
+    }
+
+    #[test]
+    fn selection_autoscroll_reports_wheels_even_after_application_redraw_clears_selection() {
+        let terminal = terminal_with_output("\x1b[?1049h\x1b[?1000h\x1b[?1006h");
+        let point = Point::new(2, Column(10));
+        assert_eq!(terminal.selected_text(), None);
+        assert_eq!(
+            terminal.selection_scroll_input(2, point),
+            Some(b"\x1b[<64;11;3M".repeat(2))
+        );
+        assert_eq!(
+            terminal.selection_scroll_input(-1, point),
+            Some(b"\x1b[<65;11;3M".to_vec())
+        );
+        assert_eq!(terminal.selection_scroll_input(0, point), None);
+        assert_eq!(
+            terminal.selection_scroll_input(i32::MIN, Point::new(usize::MAX, Column(usize::MAX))),
+            Some(b"\x1b[<65;300;4M".repeat(4))
+        );
+    }
+
+    #[test]
+    fn selection_autoscroll_never_sends_arrows_or_input_to_a_shell() {
+        for output in ["", "\x1b[?1049h", "\x1b[?1049h\x1b[?1000h\x1b[?1000l"] {
+            let terminal = terminal_with_output(output);
+            assert_eq!(
+                terminal.selection_scroll_input(1, Point::new(0, Column(0))),
+                None
             );
         }
     }

@@ -386,6 +386,16 @@ impl TerminalSession {
         side: Side,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.exited {
+            return false;
+        }
+        if let Some(terminal) = self.terminal()
+            && let Some(bytes) = terminal.selection_scroll_input(lines, point)
+        {
+            // Wheel reports must not clear the drag selection or jump to the bottom.
+            terminal.write(bytes);
+            return true;
+        }
         let changed = self
             .terminal()
             .is_some_and(|terminal| terminal.scroll_selection(lines, point, side));
