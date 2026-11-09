@@ -71,6 +71,12 @@ pub enum GitError {
 }
 
 impl GitError {
+    /// Whether Git reported that the working directory is outside a repository.
+    pub fn is_not_repository(&self) -> bool {
+        matches!(self, Self::Failed { code: Some(128), stderr, .. }
+            if stderr.contains("not a git repository"))
+    }
+
     /// Whether a command was interrupted after it could have changed the repository.
     pub fn outcome_unknown(&self) -> bool {
         match self {
@@ -219,6 +225,41 @@ fn text(bytes: &[u8]) -> Result<&str, GitError> {
 #[cfg(test)]
 mod transport_tests {
     use super::*;
+    #[test]
+    fn only_missing_repository_diagnostics_are_classified_as_absent() {
+        for host in [
+            Host::Local,
+            Host::Ssh {
+                target: "test".into(),
+            },
+        ] {
+            for (code, stderr, absent) in [
+                (
+                    128,
+                    "fatal: not a git repository (or any of the parent directories): .git",
+                    true,
+                ),
+                (
+                    128,
+                    "fatal: detected dubious ownership in repository",
+                    false,
+                ),
+                (255, "not a git repository", false),
+                (128, "Permission denied", false),
+            ] {
+                let error = GitError::Failed {
+                    command: "status".into(),
+                    host: host.clone(),
+                    cwd: "/repo".into(),
+                    code: Some(code),
+                    stderr: stderr.into(),
+                };
+                assert_eq!(error.is_not_repository(), absent);
+            }
+        }
+        assert!(!GitError::Invalid("not a git repository".into()).is_not_repository());
+    }
+
     #[test]
     fn ssh_disconnect_marks_writes_unknown_but_keeps_read_and_git_failures_distinct() {
         let remote = Host::Ssh {

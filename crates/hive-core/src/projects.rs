@@ -130,11 +130,7 @@ pub fn scan(project: &ProjectRef) -> Result<Project, git::GitError> {
         false,
     ) {
         Ok(output) => parse_worktrees(&output)?,
-        Err(git::GitError::Failed {
-            code: Some(128),
-            ref stderr,
-            ..
-        }) if stderr.contains("not a git repository") => Vec::new(),
+        Err(error) if error.is_not_repository() => Vec::new(),
         Err(error) => return Err(error),
     };
     Ok(Project {
