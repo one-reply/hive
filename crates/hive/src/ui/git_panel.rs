@@ -172,6 +172,14 @@ impl Render for GitPanel {
                     }
                 },
             ));
+        if state.has_no_repository() {
+            return panel.child(empty_state(
+                Lucide::GitBranch,
+                "Not a Git repository",
+                "Select another project and return after initializing Git.",
+                cx,
+            ));
+        }
         if !has_target {
             return panel.child(empty_state(
                 Lucide::GitBranch,

@@ -17,6 +17,14 @@ impl Workspace {
             .settings
             .files_selected;
         let git = AppState::get(cx).git.clone();
+        let mut absent = git.read(cx).has_no_repository();
+        self._observers.push(cx.observe(&git, move |_, git, cx| {
+            let current = git.read(cx).has_no_repository();
+            if current != absent {
+                absent = current;
+                cx.notify();
+            }
+        }));
         git.update(cx, |g, _| {
             g.panel_visible = self.git_open && !selected_files;
             g.files_visible = self.git_open && selected_files;
@@ -152,6 +160,7 @@ impl Workspace {
             .state
             .settings
             .files_selected;
+        let git_absent = AppState::get(cx).git.read(cx).has_no_repository();
         let width = self.git_width;
         let indicator_position = transition(
             "right-sidebar-tab-indicator",
@@ -176,9 +185,15 @@ impl Workspace {
                     .h_full()
                     .flex_none()
                     .child(
-                        render_right_tab("choose-git", Lucide::GitBranch, !selected_files, cx)
-                            .aria_label("Git")
-                            .on_click(cx.listener(|this, _, _, cx| this.choose_files(false, cx))),
+                        render_right_tab(
+                            "choose-git",
+                            Lucide::GitBranch,
+                            !selected_files && !git_absent,
+                            cx,
+                        )
+                        .when(git_absent, |tab| tab.cursor_default().opacity(0.5))
+                        .aria_label("Git")
+                        .on_click(cx.listener(|this, _, _, cx| this.choose_files(false, cx))),
                     )
                     .child(
                         render_right_tab("choose-files", Lucide::Folder, selected_files, cx)

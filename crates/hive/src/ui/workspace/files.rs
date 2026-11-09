@@ -3,6 +3,9 @@ use crate::state::documents::{DocumentEvent, OpenFile};
 
 impl Workspace {
     pub(super) fn choose_files(&mut self, selected: bool, cx: &mut Context<Self>) {
+        if !selected && AppState::get(cx).git.read(cx).has_no_repository() {
+            return;
+        }
         AppState::get(cx)
             .store
             .clone()

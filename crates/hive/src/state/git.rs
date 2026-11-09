@@ -62,7 +62,16 @@ pub(crate) enum FileChanges {
     StagedAndUnstaged,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Repository {
+    #[default]
+    Unknown,
+    Available,
+    Absent,
+}
+
 pub(crate) struct Git {
+    repository: Repository,
     pub target: Option<Target>,
     pub status: Option<Status>,
     pub branches: Vec<Branch>,
@@ -99,7 +108,7 @@ pub(crate) struct Git {
     pending_refresh: Option<bool>,
     refresh_generation: u64,
     _subscriptions: Vec<Subscription>,
-    _poll: Task<()>,
+    _poll: Option<Task<()>>,
     _refresh: Option<Task<()>>,
     _review: Option<Task<()>>,
     _synced_timeout: Option<Task<()>>,
@@ -129,24 +138,8 @@ impl Git {
 
     pub fn new(projects: Entity<Projects>, cx: &mut Context<Self>) -> Self {
         let observer = cx.observe(&projects, |this, _, cx| this.sync_target(cx));
-        let poll = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(2)).await;
-                if this
-                    .update(cx, |this, cx| {
-                        if this.window_active
-                            && (this.panel_visible || this.diff_visible || this.files_visible)
-                        {
-                            this.refresh(false, cx);
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
         Self {
+            repository: Repository::Unknown,
             target: None,
             status: None,
             branches: vec![],
@@ -183,11 +176,62 @@ impl Git {
             pending_refresh: None,
             refresh_generation: 0,
             _subscriptions: vec![observer],
-            _poll: poll,
+            _poll: None,
             _refresh: None,
             _review: None,
             _synced_timeout: None,
         }
+    }
+
+    pub(crate) fn has_no_repository(&self) -> bool {
+        self.repository == Repository::Absent
+    }
+
+    fn start_poll(&mut self, cx: &mut Context<Self>) {
+        if self._poll.is_some() || self.target.is_none() || self.has_no_repository() {
+            return;
+        }
+        self._poll = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+                if this
+                    .update(cx, |this, cx| {
+                        if this.window_active
+                            && (this.panel_visible || this.diff_visible || this.files_visible)
+                        {
+                            this.refresh(false, cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn stop_repository(&mut self, cx: &mut Context<Self>) {
+        self.repository = Repository::Absent;
+        self._poll = None;
+        self.pending_refresh = None;
+        self._review = None;
+        self.query_generation += 1;
+        self.review_loading = false;
+        self.status = None;
+        self.branches.clear();
+        self.remotes.clear();
+        self.remote = None;
+        self.upstream_remote = None;
+        self.base = None;
+        self.commits.clear();
+        self.history_more = false;
+        self.files.clear();
+        self.selected_commit = None;
+        if let Some(target) = &self.target {
+            self.failures.remove(target);
+        }
+        self.error = None;
+        cx.notify();
     }
 
     fn sync_target(&mut self, cx: &mut Context<Self>) {
@@ -195,6 +239,8 @@ impl Git {
         if target == self.target {
             return;
         }
+        self._poll = None;
+        self.repository = Repository::Unknown;
         self.target = target;
         self.sync_diff_visibility();
         self.status = None;
@@ -218,6 +264,7 @@ impl Git {
             .target
             .as_ref()
             .and_then(|t| self.failures.get(t).cloned());
+        self.start_poll(cx);
         self.refresh(true, cx);
         cx.notify();
     }
@@ -313,6 +360,9 @@ impl Git {
     }
 
     pub fn refresh(&mut self, force: bool, cx: &mut Context<Self>) {
+        if self.has_no_repository() {
+            return;
+        }
         if self.loading || self.target.as_ref().is_some_and(|t| self.busy.contains(t)) {
             self.pending_refresh = Some(self.pending_refresh.unwrap_or(false) || force);
             return;
@@ -369,6 +419,7 @@ impl Git {
                 this.loading = false;
                 match result {
                     Ok((status, metadata)) => {
+                        this.repository = Repository::Available;
                         let head_changed = this.status.as_ref().is_none_or(|s| s.oid != status.oid);
                         let branch_changed = this
                             .status
@@ -407,6 +458,7 @@ impl Git {
                             cx.notify();
                         }
                     }
+                    Err(error) if error.is_not_repository() => this.stop_repository(cx),
                     Err(error) => this.report(&target, error, cx),
                 }
                 if let Some(force) = this.pending_refresh.take() {
@@ -436,5 +488,70 @@ impl Git {
         if self.error.take().is_some() {
             cx.notify();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Git, Repository};
+    use crate::state::{projects::Projects, store::Store};
+    use gpui_kit as gpui;
+    use gpui_kit::{AppContext, TestAppContext};
+    use hive_core::{git::status::Status, host::Host, projects::Target, state::StateError};
+
+    #[gpui::test]
+    fn absent_repository_stops_queries_and_preserves_drafts(cx: &mut TestAppContext) {
+        let store = cx.new(|cx| {
+            Store::new(
+                Err(StateError::Io {
+                    operation: "test",
+                    path: "/unused".into(),
+                    source: std::io::Error::other("persistence disabled for test"),
+                }),
+                cx,
+            )
+        });
+        let projects = cx.new(|cx| Projects::new(&store, cx));
+        let git = cx.new(|cx| Git::new(projects, cx));
+        git.update(cx, |git, cx| {
+            let target = Target {
+                host: Host::Local,
+                project: "/unused".into(),
+                path: "/unused".into(),
+            };
+            git.target = Some(target.clone());
+            git.repository = Repository::Available;
+            git.status = Some(Status::default());
+            git.error = Some("old failure".into());
+            git.drafts.insert(target.clone(), "keep draft".into());
+            git.pending_refresh = Some(true);
+            git.start_poll(cx);
+            assert!(git._poll.is_some());
+
+            git.stop_repository(cx);
+            assert!(git.has_no_repository());
+            assert!(git._poll.is_none());
+            assert!(git.pending_refresh.is_none());
+            assert!(git.status.is_none());
+            assert!(git.error.is_none());
+            assert_eq!(git.draft(&target), "keep draft");
+            let generation = git.refresh_generation;
+            git.refresh(false, cx);
+            git.refresh(true, cx);
+            git.start_poll(cx);
+            assert_eq!(git.refresh_generation, generation);
+            assert!(git._refresh.is_none());
+            assert!(git._poll.is_none());
+
+            // Clearing the selection resets absence and leaves no polling task.
+            git.sync_target(cx);
+            assert!(!git.has_no_repository());
+            assert!(git.target.is_none());
+            assert!(git._poll.is_none());
+            git.target = Some(target);
+            git.start_poll(cx);
+            assert!(git._poll.is_some());
+            git._poll = None;
+        });
     }
 }

@@ -1,6 +1,9 @@
 //! The agents strip of a worktree card (Orca-style): an overall status, the agents' logos and a
 //! count of the rest. Clicking it unfolds one row per agent session; a row shows that agent's
 //! terminal pane. The strip grows in and out with the agents, so it never pops.
+#[cfg(test)]
+mod tests;
+
 use std::f32::consts::FRAC_PI_2;
 
 use hive_core::agent::{AgentKind, AgentStatus};
@@ -99,6 +102,10 @@ impl Sidebar {
                 Hover::new(SharedString::from(id), window, cx)
             })
             .collect();
+        let selected =
+            self.projects
+                .read(cx)
+                .is_selected(target.host, target.project, target.worktree);
         let element = v_flex()
             .h(height)
             .flex_none()
@@ -110,6 +117,7 @@ impl Sidebar {
                 &(target.host.clone(), target.path.to_path_buf()),
                 &strip_hover,
                 unfolded,
+                selected,
                 cx,
             ))
             .child(
@@ -145,6 +153,7 @@ impl Sidebar {
         path: &(Host, PathBuf),
         hover: &Hover,
         unfolded: f32,
+        selected: bool,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let fg = cx.theme().sidebar_foreground;
@@ -212,11 +221,13 @@ impl Sidebar {
                     .text_color(muted)
                     .rotate(radians(FRAC_PI_2 * unfolded)),
             )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                // The card behind would otherwise select the worktree.
-                cx.stop_propagation();
-                this.toggle_agents(&path_buf, cx);
-            }))
+            .when(selected, |strip| {
+                strip.on_click(cx.listener(move |this, _, _, cx| {
+                    // Inactive strips let the card select its worktree instead.
+                    cx.stop_propagation();
+                    this.toggle_agents(&path_buf, cx);
+                }))
+            })
     }
 }
 
