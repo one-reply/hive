@@ -21,6 +21,7 @@ impl TerminalPanel {
         pane: Entity<TerminalView>,
         worktree: &Path,
         launch: Launch,
+        axis: Axis,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<TerminalSession> {
@@ -36,7 +37,7 @@ impl TerminalPanel {
             )
         });
         let session = view.read(cx).session().clone();
-        self.insert_pane(view, Axis::Horizontal, window, cx);
+        self.insert_pane(view, axis, window, cx);
         session
     }
 }

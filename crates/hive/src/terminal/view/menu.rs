@@ -1,5 +1,5 @@
 //! Right-click menu of a tile: the same actions as ⌘C/⌘V and the Terminal app menu, plus the
-//! installed agent CLIs, each opened in a new pane beside this one.
+//! installed agent CLIs, launched here or below an occupied pane.
 use super::*;
 use crate::app::AppState;
 use crate::terminal::panel::{ClosePane, SplitDown, SplitRight};
@@ -55,8 +55,10 @@ impl TerminalView {
                         PopupMenuItem::new(agent.name())
                             .icon(agent_logo::icon(agent, cx))
                             .on_click(move |_, _, cx| {
-                                let start = TerminalViewEvent::StartAgent(agent);
-                                let _ = this.update(cx, |_, cx| cx.emit(start));
+                                let _ = this.update(cx, |this, cx| {
+                                    this.session
+                                        .update(cx, |session, cx| session.request_agent(agent, cx));
+                                });
                             }),
                     )
                 })

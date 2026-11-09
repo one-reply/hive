@@ -15,9 +15,11 @@ use hive_core::agent::{
 mod draft;
 mod inbox;
 mod input;
+mod launch;
 pub(crate) use draft::{AgentDraft, DraftStatus};
 pub(crate) use inbox::{Message, Recipient};
 use input::Input;
+pub(crate) use launch::AgentPlacement;
 
 pub(crate) enum SessionStatus {
     Starting,
@@ -30,6 +32,8 @@ pub(crate) enum SessionEvent {
     DirectoryChanged,
     Exited,
     PasteFailed(String),
+    StartAgent(hive_core::agent::AgentKind, AgentPlacement),
+    LaunchFailed(String),
 }
 
 pub(crate) struct TerminalSession {
@@ -56,11 +60,39 @@ pub(crate) struct TerminalSession {
     _directory: Option<Task<()>>,
     pending_input: VecDeque<Input>,
     paste_task: Option<Task<()>>,
+    launch_task: Option<Task<()>>,
 }
 
 impl EventEmitter<SessionEvent> for TerminalSession {}
 
 impl TerminalSession {
+    #[cfg(test)]
+    pub(crate) fn for_test(terminal: Terminal) -> Self {
+        Self {
+            host: Host::Local,
+            status: SessionStatus::Ready(terminal),
+            title: None,
+            exited: false,
+            directory: None,
+            worktree: None,
+            resume: None,
+            focused: false,
+            last_focused: None,
+            launched_agent: None,
+            agent_draft: None,
+            draft_task: None,
+            name: None,
+            inbox: VecDeque::new(),
+            inbox_task: None,
+            _start: Task::ready(()),
+            _events: None,
+            _directory: None,
+            pending_input: VecDeque::new(),
+            paste_task: None,
+            launch_task: None,
+        }
+    }
+
     pub(crate) fn new(
         host: Host,
         cwd: Option<PathBuf>,
@@ -219,6 +251,7 @@ impl TerminalSession {
             _directory: None,
             pending_input: VecDeque::new(),
             paste_task: None,
+            launch_task: None,
         }
     }
 
@@ -344,6 +377,22 @@ impl TerminalSession {
             terminal.update_selection(point, side);
             cx.notify();
         }
+    }
+
+    pub(crate) fn scroll_selection(
+        &mut self,
+        lines: i32,
+        point: Point<usize>,
+        side: Side,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let changed = self
+            .terminal()
+            .is_some_and(|terminal| terminal.scroll_selection(lines, point, side));
+        if changed {
+            cx.notify();
+        }
+        changed
     }
 
     pub(crate) fn has_selection(&self) -> bool {

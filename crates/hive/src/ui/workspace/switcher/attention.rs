@@ -15,7 +15,7 @@ const TITLE_HEIGHT: Rems = rems(2.5);
 const TITLE_LINES: usize = 2;
 const TITLE_LINE_HEIGHT: f32 = 1.25;
 
-pub(super) struct Attention {
+pub(in crate::ui::workspace) struct Attention {
     kind: AgentKind,
     status: AgentStatus,
     title: SharedString,
@@ -24,7 +24,7 @@ pub(super) struct Attention {
 }
 
 impl Attention {
-    pub(super) fn new(
+    pub(in crate::ui::workspace) fn new(
         project: &Project,
         worktree: Option<&Worktree>,
         session: &AgentSession,
@@ -59,6 +59,15 @@ impl Attention {
             agent: agent.into(),
             location: location.into(),
         }
+    }
+
+    /// Title and body of the system notification for this report. `status` comes from the
+    /// event itself: the listed session can still carry the previous poll's status.
+    pub(in crate::ui::workspace) fn notification(&self, status: AgentStatus) -> (String, String) {
+        (
+            format!("{} · {}", self.agent, self.location),
+            format!("{} · {}", status.label(), self.title),
+        )
     }
 
     pub(super) fn label(&self) -> String {
@@ -239,5 +248,21 @@ mod tests {
             assert_eq!(details.location, "omna-app · Detached HEAD");
             assert!(details.label().starts_with(status.label()));
         }
+    }
+
+    #[test]
+    fn notification_names_agent_and_place_and_uses_the_event_status() {
+        let project = project();
+        let worktree = Worktree {
+            path: project.path.clone(),
+            head: Head::Branch("develop".into()),
+        };
+        let details = Attention::new(&project, Some(&worktree), &session());
+        let (title, body) = details.notification(AgentStatus::Done);
+        assert_eq!(title, "Claude Code · omna-app · develop");
+        assert_eq!(
+            body,
+            "Response finished · Помилка збірки: node не знайдено для Pods"
+        );
     }
 }

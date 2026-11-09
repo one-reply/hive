@@ -30,9 +30,9 @@ editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-k
 
 **Apple Silicon only.** The button opens GitHub Releases, where you can download
 the latest stable release and its SHA-256 checksum.
-The current release is [Hive 1.0.3](https://github.com/one-reply/hive/releases/tag/v1.0.3),
+The current release is [Hive 1.0.4](https://github.com/one-reply/hive/releases/tag/v1.0.4),
 with a Developer ID signature and Apple notarization. See the
-[release notes](docs/releases/v1.0.3.md) for changes and the
+[release notes](docs/releases/v1.0.4.md) for changes and the
 [verification record](docs/RELEASE_CHECKS.md) for completed
 and pending checks.
 
@@ -42,8 +42,9 @@ before installing and restarting. Finish active agent sessions before restarting
 After updating, a compact notification links to the installed version’s release notes.
 Older builds need one manual installation of a version that includes the updater.
 
-Version **1.0.3** adds clearer attention notifications and compact usage indicators,
-brightens Hive Dark dividers, and fixes **⌘W** for empty or failed Git diffs.
+Version **1.0.4** moves agent attention alerts to macOS notifications that open the
+agent's project and pane, starts agents from the pane menu in place unless another agent
+already runs there, and scrolls terminal selections past the pane edges.
 
 ## What you can do today
 

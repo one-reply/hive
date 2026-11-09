@@ -329,6 +329,7 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        TerminalView::track_selection(&self.view, window);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             // One layer per kind instead of one scene entry per quad and per cell: GPUI files
             // every layer and every layer-less primitive in its bounds tree, which cost more

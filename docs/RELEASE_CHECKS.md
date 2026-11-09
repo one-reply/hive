@@ -1,5 +1,24 @@
 # Release verification
 
+## Hive 1.0.4 — November 9, 2026
+
+The [release notes](releases/v1.0.4.md) describe the changes and verification limits.
+The published release records the exact CI run, source revision, final archive
+checksum, Developer ID, notarization, and downloaded-asset checks.
+
+- Formatting, Clippy with warnings denied, 533 Rust tests (three existing opt-in
+  tests ignored), 26 Python tests, and the core/GPUI boundary passed locally.
+- cargo-deny passed licenses, advisories, and sources with the existing documented
+  maintenance exceptions. Gitleaks found no leaks in the changed and new source files.
+- Regression tests cover the agent notification setting's default and round trip,
+  notification title and body, agent placement from captured process tables, and
+  selection autoscroll through history and on alternate screens.
+
+Not reverified: posting and clicking a macOS notification in the packaged app, the
+default alert style on a fresh installation, a paid multi-agent turn, clean-account
+browser/Finder installation, Keychain allow/deny, the full Sparkle install/relaunch
+cycle, or runtime on minimum macOS 12.0.
+
 ## Hive 1.0.3 — November 9, 2026
 
 The [release notes](releases/v1.0.3.md) describe the changes and verification limits.

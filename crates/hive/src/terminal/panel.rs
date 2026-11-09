@@ -112,10 +112,25 @@ impl TerminalPanel {
                         this.notify_group(cx);
                     }
                 }
-                TerminalViewEvent::StartAgent(agent) => {
+                TerminalViewEvent::StartAgent(agent, placement) => {
                     if let Some(worktree) = view.read(cx).cwd().map(Path::to_path_buf) {
                         let launch = hive_core::agent::launch::Launch::New(*agent);
-                        this.split_agent(view.clone(), &worktree, launch, window, cx);
+                        match placement {
+                            crate::state::terminal_session::AgentPlacement::CurrentPane => {
+                                view.update(cx, |view, cx| view.start_agent(launch, window, cx));
+                                this.focus_pane(view.clone(), window, cx);
+                            }
+                            crate::state::terminal_session::AgentPlacement::Below => {
+                                this.split_agent(
+                                    view.clone(),
+                                    &worktree,
+                                    launch,
+                                    Axis::Vertical,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }
                     }
                 }
             }),

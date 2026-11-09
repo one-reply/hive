@@ -1,5 +1,6 @@
 use super::{Column, Line, Listener, Point, SelectionType, Side, Terminal};
 use alacritty_terminal::grid::Dimensions as _;
+use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::selection::Selection;
 use alacritty_terminal::term::{Term, viewport_to_point};
 
@@ -18,6 +19,30 @@ impl Terminal {
         if let Some(selection) = &mut term.selection {
             selection.update(point, side);
         }
+    }
+
+    /// Scroll history and extend the selection in the new viewport under one lock.
+    /// Positive `lines` means up. Returns whether the viewport moved; never sends PTY input.
+    pub fn scroll_selection(&self, lines: i32, point: Point<usize>, side: Side) -> bool {
+        let mut term = self.term.lock();
+        if lines == 0 || term.selection.is_none() {
+            return false;
+        }
+        let offset = term.grid().display_offset();
+        // Alacritty adds the delta as i32 before clamping it to the history.
+        let lines = lines.clamp(
+            -(offset as i32),
+            (term.grid().history_size() - offset) as i32,
+        );
+        term.scroll_display(Scroll::Delta(lines));
+        if term.grid().display_offset() == offset {
+            return false;
+        }
+        let point = grid_point(&term, point);
+        if let Some(selection) = &mut term.selection {
+            selection.update(point, side);
+        }
+        true
     }
 
     /// Selected text with terminal wrapping, wide characters and combining marks preserved.
@@ -137,5 +162,44 @@ mod tests {
         assert_eq!(second.selected_text(), None);
         first.start_selection(point(0, 7), Side::Left, SelectionType::Lines);
         assert_eq!(first.selected_text().as_deref(), Some("alpha beta\n"));
+    }
+
+    #[test]
+    fn autoscroll_extends_selection_up_and_down_through_history() {
+        let terminal = terminal("one\r\ntwo\r\nthree\r\nfour\r\nfive", 10, 2);
+        terminal.start_selection(point(1, 3), Side::Right, SelectionType::Simple);
+        assert!(terminal.scroll_selection(2, point(0, 0), Side::Left));
+        assert_eq!(
+            terminal.selected_text().as_deref(),
+            Some("two\nthree\nfour\nfive")
+        );
+        assert!(terminal.scroll_selection(i32::MAX, point(0, 0), Side::Left));
+        assert_eq!(
+            terminal.selected_text().as_deref(),
+            Some("one\ntwo\nthree\nfour\nfive")
+        );
+        assert!(!terminal.scroll_selection(1, point(0, 0), Side::Left));
+
+        terminal.start_selection(point(0, 0), Side::Left, SelectionType::Simple);
+        assert!(terminal.scroll_selection(-1, point(1, 4), Side::Right));
+        assert_eq!(terminal.selected_text().as_deref(), Some("one\ntwo\nthree"));
+        assert!(terminal.scroll_selection(i32::MIN, point(usize::MAX, usize::MAX), Side::Right));
+        assert_eq!(
+            terminal.selected_text().as_deref(),
+            Some("one\ntwo\nthree\nfour\nfive")
+        );
+        assert!(!terminal.scroll_selection(-1, point(1, 9), Side::Right));
+    }
+
+    #[test]
+    fn autoscroll_requires_selection_and_never_scrolls_an_alternate_screen() {
+        let terminal = terminal("one\r\ntwo\r\nthree", 10, 2);
+        assert!(!terminal.scroll_selection(1, point(0, 0), Side::Left));
+        assert_eq!(terminal.term.lock().grid().display_offset(), 0);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut *terminal.term.lock(), b"\x1b[?1049h\x1b[?1000h");
+        terminal.start_selection(point(1, 0), Side::Left, SelectionType::Simple);
+        assert!(!terminal.scroll_selection(1, point(0, 0), Side::Left));
+        assert_eq!(terminal.term.lock().grid().display_offset(), 0);
     }
 }
