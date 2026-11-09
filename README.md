@@ -13,6 +13,8 @@ Run agents in separate Git worktrees, edit their changes, and review and commit
 without leaving your workspace. Hive brings projects, terminals, a native code
 editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-kit`.
 
+- [Hive](https://github.com/one-reply/hive) - Autonomous multi-agent orchestration framework for automated development workflows.
+
 ![Hive's native Rust editor, Files navigator, and worktree sidebar](docs/images/hive-editor.png)
 
 *Hive editing its own Rust source, with worktrees on the left and Files on the right.*
