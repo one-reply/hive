@@ -110,7 +110,7 @@ fn restore_panes(
             let directory = Some(value.directory.as_path());
             let view = cx.new(|cx| {
                 if !host.is_local() {
-                    TerminalView::on_host(host, (worktree, directory), None, false, window, cx)
+                    TerminalView::on_host(host, (worktree, directory), None, true, window, cx)
                 } else {
                     match value.resume.clone() {
                         Some(resume) => {
