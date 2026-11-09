@@ -28,8 +28,14 @@ impl ProjectCenter {
         let session = match caller {
             Some((panel, pane)) => {
                 let session = panel.update(cx, |panel, cx| {
-                    let session =
-                        panel.split_agent(pane.clone(), &request.worktree, launch, window, cx);
+                    let session = panel.split_agent(
+                        pane.clone(),
+                        &request.worktree,
+                        launch,
+                        Axis::Horizontal,
+                        window,
+                        cx,
+                    );
                     // The caller stays the tab's active pane, as if nothing moved under it.
                     panel.focus_pane(pane, window, cx);
                     session

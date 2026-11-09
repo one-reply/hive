@@ -64,7 +64,14 @@ impl ProjectCenter {
         let session = if let Some((panel, pane)) = recent {
             self.select(&panel, window, cx);
             panel.update(cx, |panel, cx| {
-                panel.split_agent(pane, worktree, Launch::New(agent), window, cx)
+                panel.split_agent(
+                    pane,
+                    worktree,
+                    Launch::New(agent),
+                    Axis::Horizontal,
+                    window,
+                    cx,
+                )
             })
         } else {
             let panel = TerminalPanel::open_with_launch(

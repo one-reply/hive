@@ -65,6 +65,8 @@ impl TerminalSession {
     }
 
     pub(super) fn enqueue_input(&mut self, input: Input, cx: &mut Context<Self>) {
+        // Typing after the menu request invalidates its foreground snapshot.
+        self.launch_task = None;
         if self.exited || self.terminal().is_none() {
             return;
         }

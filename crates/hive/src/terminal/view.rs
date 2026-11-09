@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::state::terminal_session::{SessionEvent, SessionStatus, TerminalSession};
+use crate::state::terminal_session::{
+    AgentPlacement, SessionEvent, SessionStatus, TerminalSession,
+};
 use crate::ui::files_panel::DraggedFiles;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, notification::Notification};
@@ -22,27 +24,31 @@ use crate::ui::keymap;
 
 mod draft;
 mod menu;
+mod selection;
+mod session;
 
-pub enum TerminalViewEvent {
+pub(crate) enum TerminalViewEvent {
     TitleChanged,
     DirectoryChanged,
     Exited,
-    /// Open this agent in a new pane beside this one, in the same worktree.
-    StartAgent(AgentKind),
+    StartAgent(AgentKind, AgentPlacement),
 }
 
 pub struct TerminalView {
     session: Entity<TerminalSession>,
     focus_handle: FocusHandle,
     cwd: Option<PathBuf>,
-    /// A conversation resumed on restore hands its tile back to a shell when the agent ends,
-    /// including a resume the CLI rejects, instead of closing the tile.
+    /// Restored and in-place agents hand their tile back to a shell when they exit.
     shell_after_exit: bool,
+    /// Keep the original shell and its scrollback alive during an in-place agent launch.
+    shell: Option<Entity<TerminalSession>>,
     /// Fractional scroll-wheel lines not yet applied.
     scroll_remainder: f32,
     grid: Option<GridGeometry>,
     glyph_cache: GlyphCache,
     selecting: bool,
+    selection_scroll: gpui_kit::base::AutoScroll,
+    selection_scroll_remainder: f32,
     _subscriptions: Vec<Subscription>,
     _session_subscriptions: Vec<Subscription>,
 }
@@ -101,6 +107,15 @@ impl TerminalView {
                 cx,
             )
         });
+        Self::with_session(session, cwd, window, cx)
+    }
+
+    fn with_session(
+        session: Entity<TerminalSession>,
+        cwd: Option<&Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.on_focus(&focus_handle, window, |this, _, cx| {
@@ -109,10 +124,15 @@ impl TerminalView {
                 cx.notify();
             }),
             cx.on_blur(&focus_handle, window, |this, _, cx| {
-                this.selecting = false;
+                this.stop_selection();
                 this.session
                     .update(cx, |session, _| session.set_focused(false));
                 cx.notify();
+            }),
+            cx.observe_window_activation(window, |this, window, _| {
+                if !window.is_window_active() {
+                    this.stop_selection();
+                }
             }),
         ];
         Self {
@@ -121,52 +141,15 @@ impl TerminalView {
             focus_handle,
             cwd: cwd.map(Path::to_path_buf),
             shell_after_exit: false,
+            shell: None,
             scroll_remainder: 0.,
             grid: None,
             glyph_cache: GlyphCache::default(),
             selecting: false,
+            selection_scroll: gpui_kit::base::AutoScroll::default(),
+            selection_scroll_remainder: 0.,
             _subscriptions: subscriptions,
         }
-    }
-
-    fn subscribe_session(
-        session: &Entity<TerminalSession>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Vec<Subscription> {
-        vec![
-            cx.observe(session, |_, _, cx| cx.notify()),
-            cx.subscribe_in(session, window, |this, _, event, window, cx| match event {
-                SessionEvent::TitleChanged => cx.emit(TerminalViewEvent::TitleChanged),
-                SessionEvent::DirectoryChanged => cx.emit(TerminalViewEvent::DirectoryChanged),
-                SessionEvent::Exited if this.shell_after_exit => this.continue_in_shell(window, cx),
-                SessionEvent::Exited => cx.emit(TerminalViewEvent::Exited),
-                SessionEvent::PasteFailed(error) => window.push_notification(
-                    Notification::error(error.clone()).title("Could not paste image"),
-                    cx,
-                ),
-            }),
-        ]
-    }
-
-    /// Replaces the ended agent with a shell in its last directory, keeping the tile in place.
-    fn continue_in_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.shell_after_exit = false;
-        let directory = self.restore_directory(cx);
-        let worktree = self.cwd.clone();
-        let focused = self.focus_handle.is_focused(window);
-        let host = self.session.read(cx).host.clone();
-        let session = cx.new(|cx| {
-            let mut session = TerminalSession::new(host, Some(directory), worktree, None, true, cx);
-            session.set_focused(focused);
-            session
-        });
-        self._session_subscriptions = Self::subscribe_session(&session, window, cx);
-        self.session = session;
-        self.selecting = false;
-        // The saved tile no longer holds a conversation to resume.
-        cx.emit(TerminalViewEvent::DirectoryChanged);
-        cx.notify();
     }
 
     pub(crate) fn session(&self) -> &Entity<TerminalSession> {
@@ -225,45 +208,6 @@ impl TerminalView {
             .update(cx, |session, _| session.resize(grid.cols, grid.rows));
     }
 
-    fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_handle.focus(window, cx);
-        let Some(grid) = self.grid else { return };
-        let (point, side) = grid.cell_at(event.position);
-        let kind = match event.click_count {
-            2 => SelectionType::Semantic,
-            3.. => SelectionType::Lines,
-            _ => SelectionType::Simple,
-        };
-        self.selecting = true;
-        self.session.update(cx, |session, cx| {
-            session.start_selection(point, side, kind, cx)
-        });
-        cx.stop_propagation();
-    }
-
-    fn extend_selection(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        if !self.selecting {
-            return;
-        }
-        let Some(grid) = self.grid else { return };
-        let (point, side) = grid.cell_at(position);
-        self.session
-            .update(cx, |session, cx| session.update_selection(point, side, cx));
-    }
-
-    fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if event.dragging() {
-            self.extend_selection(event.position, cx);
-        } else {
-            self.selecting = false;
-        }
-    }
-
-    fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.extend_selection(event.position, cx);
-        self.selecting = false;
-    }
-
     fn copy(&self, cx: &mut Context<Self>) {
         self.session.update(cx, |session, cx| session.copy(cx));
     }
@@ -280,11 +224,13 @@ impl TerminalView {
             false
         });
         if handled {
+            self.stop_selection();
             cx.stop_propagation();
         }
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
+        self.stop_selection();
         self.session.update(cx, |session, cx| session.paste(cx));
     }
 
@@ -343,15 +289,21 @@ impl Render for TerminalView {
         let disconnected = !host.is_local()
             && (self.session.read(cx).exited
                 || matches!(self.session.read(cx).status, SessionStatus::Failed(_)));
+        let launch_failed = self.shell.is_some()
+            && matches!(self.session.read(cx).status, SessionStatus::Failed(_));
         let reconnect_hover = Hover::new("ssh-reconnect", window, cx);
         v_flex()
             .size_full()
             .children(draft)
-            .when(disconnected, |body| {
+            .when(disconnected || launch_failed, |body| {
                 body.child(
                     Button::new("ssh-reconnect")
                         .cursor_pointer()
-                        .label("New SSH session")
+                        .label(if launch_failed {
+                            "Return to shell"
+                        } else {
+                            "New SSH session"
+                        })
                         .small()
                         .on_click(
                             cx.listener(|this, _, window, cx| this.continue_in_shell(window, cx)),
@@ -387,9 +339,6 @@ impl Render for TerminalView {
                     .on_scroll(cx.listener(Self::scroll_wheel))
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                     .on_mouse_down(MouseButton::Right, cx.listener(Self::context_mouse_down))
-                    .on_mouse_move(cx.listener(Self::mouse_move))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
-                    .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
                     .child(match &self.session.read(cx).status {
                         SessionStatus::Starting => {
                             div().p_4().child("Starting terminal…").into_any_element()
