@@ -3,7 +3,7 @@
 //! The terminal's shell knows nothing about agents, and the agents print no marker we could
 //! rely on, so detection reads the process table: the shell's controlling terminal reports
 //! its foreground process group (`tpgid`), and the command lines in that group name the agent.
-//! One `ps` snapshot serves every open terminal.
+//! One process table snapshot serves every open terminal.
 
 pub mod api;
 pub mod conversation;
@@ -69,7 +69,8 @@ impl AgentKind {
         }
     }
 
-    /// Name of the executable the vendor installs; what `ps` shows and what PATH lookup uses.
+    /// Name of the executable the vendor installs; what the process table shows and what PATH
+    /// lookup uses.
     pub fn executable(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude",
@@ -91,8 +92,8 @@ impl AgentKind {
         Self::ALL.into_iter().find(|kind| kind.executable() == name)
     }
 
-    /// The agent a command line runs, if any. `ps` joins argv with spaces, so a path with a
-    /// space spills into the next word; that word still ends in the executable name.
+    /// The agent a command line runs, if any. The process table joins argv with spaces, so a
+    /// path with a space spills into the next word; that word still ends in the executable name.
     fn from_command(args: &str) -> Option<Self> {
         let mut words = args.split_whitespace();
         let first = words.next()?;

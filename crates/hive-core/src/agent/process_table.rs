@@ -1,23 +1,14 @@
 //! The local process table, reduced to what resolves a terminal's foreground job.
-use super::AgentKind;
-use crate::command::{self, Cancellation};
-use crate::host::Host;
-use std::time::Duration;
+mod kernel;
 
-/// `ps` normally answers in milliseconds; a wedged system must not stall the poll forever.
-const PS_TIMEOUT: Duration = Duration::from_secs(5);
-/// Enough for thousands of processes with long command lines.
-const PS_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
+use super::AgentKind;
 
 /// Failure to read the process table.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
-    /// `ps` could not be started, timed out or printed more than the budget.
-    #[error("failed to run ps: {0}")]
-    Run(#[source] command::Error),
-    /// `ps` ran and exited non-zero.
-    #[error("ps exited with {code:?}: {stderr}")]
-    Failed { code: Option<i32>, stderr: String },
+    /// The kernel refused the process list or returned one that cannot be read.
+    #[error("failed to read the process table: {0}")]
+    ProcessList(#[source] std::io::Error),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,22 +29,8 @@ pub struct ProcessTable {
 impl ProcessTable {
     /// Reads the local process table. Blocking: run it off the UI thread.
     pub fn snapshot() -> Result<Self, AgentError> {
-        let ps = Host::Local.command("/bin/ps", &["-ax", "-o", "pid=,pgid=,tpgid=,args="], None);
-        let output = command::run(
-            ps,
-            &[],
-            &Cancellation::default(),
-            PS_TIMEOUT,
-            PS_OUTPUT_LIMIT,
-        )
-        .map_err(AgentError::Run)?;
-        if output.code != Some(0) {
-            return Err(AgentError::Failed {
-                code: output.code,
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            });
-        }
-        Ok(Self::parse(&String::from_utf8_lossy(&output.stdout)))
+        let processes = kernel::processes().map_err(AgentError::ProcessList)?;
+        Ok(Self { processes })
     }
 
     /// Every process id in the snapshot.
@@ -61,7 +38,8 @@ impl ProcessTable {
         self.processes.iter().map(|process| process.pid)
     }
 
-    /// Parses `ps -o pid=,pgid=,tpgid=,args=` output; malformed lines are skipped.
+    /// A table from `ps -o pid=,pgid=,tpgid=,args=` text, the form captured samples come in;
+    /// malformed lines are skipped.
     pub fn parse(output: &str) -> Self {
         let processes = output.lines().filter_map(parse_line).collect();
         Self { processes }
@@ -273,7 +251,7 @@ garbage line
 
     #[test]
     fn live_snapshot_parses() {
-        let table = ProcessTable::snapshot().expect("ps runs on macOS");
+        let table = ProcessTable::snapshot().expect("the kernel lists processes");
         assert!(table.processes.iter().any(|p| p.pid == 1));
     }
 }
