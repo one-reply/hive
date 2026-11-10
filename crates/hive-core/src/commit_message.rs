@@ -7,7 +7,8 @@ use crate::{agent::AgentKind, git, host::Host, llm};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Largest rendered prompt accepted by any commit generator.
+/// Largest rendered prompt accepted by any commit generator. A staged patch that does not fit
+/// is summarized by `git::commit_context` instead of failing the generation.
 pub const PROMPT_LIMIT: usize = 256 * 1024;
 /// Largest final message accepted by the composer.
 pub const MESSAGE_LIMIT: usize = 8 * 1024;
@@ -63,7 +64,7 @@ pub const VARIABLES: [(&str, &str); 4] = [
     ("{stagedFiles}", "Staged filenames and change types"),
     (
         "{stagedPatch}",
-        "Staged diff; binary files include metadata only",
+        "Staged diff; binary files include metadata only. A diff larger than the prompt becomes a diffstat plus the file patches that fit",
     ),
 ];
 

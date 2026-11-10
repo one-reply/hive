@@ -1,14 +1,29 @@
 //! Staged-only context with a content identity, including binary index entries.
+mod staged_patch;
+
 use super::{GitError, READ_LIMIT, bytes, status};
-use crate::{commit_message::PROMPT_LIMIT, host::Host};
-use std::path::Path;
+use crate::host::Host;
+use staged_patch::StagedPatch;
+use std::{borrow::Cow, path::Path};
+
+const STAGED_DIFF: [&str; 8] = [
+    "diff",
+    "--cached",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-color",
+    "--no-renames",
+    // Wide enough that Git never abbreviates a path; the change graph stays short.
+    "--stat=1000",
+    "--stat-graph-width=10",
+];
 
 /// A consistent snapshot of the staged changes supplied to a commit generator.
 pub struct Context {
     identity: Identity,
     branch: String,
     files: String,
-    patch: String,
+    patch: StagedPatch,
 }
 
 #[derive(PartialEq, Eq)]
@@ -74,27 +89,7 @@ impl Context {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let raw = bytes(
-            host,
-            cwd,
-            &[
-                "diff",
-                "--cached",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-color",
-                "--patch",
-                "--no-renames",
-            ],
-            None,
-            PROMPT_LIMIT,
-            false,
-        )?;
-        let patch = String::from_utf8(raw).map_err(|_| {
-            GitError::Invalid(
-                "The staged patch is not UTF-8. Generate this message manually.".into(),
-            )
-        })?;
+        let patch = staged_patch(host, cwd)?;
         let context = Self {
             branch: status.branch.unwrap_or_else(|| "detached HEAD".into()),
             identity,
@@ -116,13 +111,39 @@ impl Context {
     pub fn files(&self) -> &str {
         &self.files
     }
-    /// Exact textual staged diff; binary payloads are omitted by Git.
-    pub fn patch(&self) -> &str {
-        &self.patch
+    /// Exact textual staged diff when it fits `budget` bytes; binary payloads are omitted by
+    /// Git. A larger diff becomes its diffstat, the complete file patches that fit and the names
+    /// of the files left out, so no file is ever shown in part.
+    pub fn patch_within(&self, budget: usize) -> Cow<'_, str> {
+        self.patch.within(budget)
     }
     /// Checks HEAD, branch and all index object IDs; working-tree edits do not invalidate it.
     pub fn is_current(&self, host: &Host, cwd: &Path) -> Result<bool, GitError> {
         let status = status::read(host, cwd)?;
         Ok(!status.has_conflicts() && self.identity == identity(host, cwd, &status)?)
     }
+}
+
+fn staged_patch(host: &Host, cwd: &Path) -> Result<StagedPatch, GitError> {
+    let mut args = STAGED_DIFF.to_vec();
+    args.push("--patch");
+    match bytes(host, cwd, &args, None, READ_LIMIT, false) {
+        Ok(raw) => Ok(StagedPatch::from_stat_and_patch(utf8(raw)?)),
+        // The diffstat stays small however large the patch is, so it still describes the change.
+        Err(GitError::TooLarge(_)) => Ok(StagedPatch::from_stat(utf8(bytes(
+            host,
+            cwd,
+            &STAGED_DIFF,
+            None,
+            READ_LIMIT,
+            false,
+        )?)?)),
+        Err(error) => Err(error),
+    }
+}
+
+fn utf8(raw: Vec<u8>) -> Result<String, GitError> {
+    String::from_utf8(raw).map_err(|_| {
+        GitError::Invalid("The staged patch is not UTF-8. Generate this message manually.".into())
+    })
 }

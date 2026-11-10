@@ -1,5 +1,5 @@
 use super::*;
-use crate::git::commit_context::Context;
+use crate::{commit_message::PROMPT_LIMIT, git::commit_context::Context};
 
 #[test]
 fn staged_context_excludes_unstaged_and_untracked_and_detects_new_index() {
@@ -11,8 +11,8 @@ fn staged_context_excludes_unstaged_and_untracked_and_detects_new_index() {
     repo.write("file", "unstaged private text\n");
     repo.write("untracked", "untracked private text");
     let context = Context::read(&Host::Local, &repo.0).unwrap();
-    assert!(context.patch().contains("staged text"));
-    assert!(!context.patch().contains("private"));
+    assert!(context.patch_within(usize::MAX).contains("staged text"));
+    assert!(!context.patch_within(usize::MAX).contains("private"));
     assert!(!context.files().contains("untracked"));
     repo.write("file", "another working edit");
     assert!(context.is_current(&Host::Local, &repo.0).unwrap());
@@ -34,8 +34,12 @@ fn binary_renames_deletions_and_unusual_paths_have_context_without_binary_payloa
     assert!(context.files().contains("Renamed"));
     assert!(context.files().contains("Deleted"));
     assert!(context.files().contains("new\\nім’я"));
-    assert!(context.patch().contains("Binary files"));
-    assert!(!context.patch().contains("secret-binary-payload"));
+    assert!(context.patch_within(usize::MAX).contains("Binary files"));
+    assert!(
+        !context
+            .patch_within(usize::MAX)
+            .contains("secret-binary-payload")
+    );
     std::fs::write(repo.0.join("binary"), b"\0changed-binary-payload").unwrap();
     repo.git(&["add", "binary"]);
     assert!(!context.is_current(&Host::Local, &repo.0).unwrap());
@@ -71,12 +75,35 @@ fn unborn_detached_empty_conflicted_and_changed_head_are_handled() {
 }
 
 #[test]
-fn oversized_patch_is_not_silently_truncated() {
+fn oversized_file_patch_is_omitted_by_name_and_smaller_patches_stay_complete() {
     let repo = Repo::new();
-    repo.write("large", &"x\n".repeat(crate::commit_message::PROMPT_LIMIT));
-    repo.git(&["add", "large"]);
-    assert!(matches!(
-        Context::read(&Host::Local, &repo.0),
-        Err(GitError::TooLarge(_))
-    ));
+    repo.write("small.rs", "fn small() {}\n");
+    repo.write("generated.lock", &"x\n".repeat(PROMPT_LIMIT));
+    repo.git(&["add", "-A"]);
+    let context = Context::read(&Host::Local, &repo.0).unwrap();
+    let complete = context.patch_within(usize::MAX);
+    assert!(complete.len() > PROMPT_LIMIT);
+    assert!(complete.starts_with("diff --git a/generated.lock b/generated.lock\n"));
+    let patch = context.patch_within(PROMPT_LIMIT);
+    assert!(patch.len() <= PROMPT_LIMIT);
+    assert!(patch.contains(" generated.lock | "));
+    assert!(patch.contains("2 files changed"));
+    assert!(patch.contains("\na/generated.lock b/generated.lock\n"));
+    assert!(!patch.contains("+x\n"));
+    assert!(patch.ends_with("+++ b/small.rs\n@@ -0,0 +1 @@\n+fn small() {}\n"));
+    assert!(context.is_current(&Host::Local, &repo.0).unwrap());
+}
+
+#[test]
+fn patch_beyond_the_read_limit_keeps_only_its_diffstat() {
+    let repo = Repo::new();
+    repo.write("small.rs", "fn small() {}\n");
+    repo.write("huge.txt", &"x\n".repeat(crate::git::READ_LIMIT / 2));
+    repo.git(&["add", "-A"]);
+    let context = Context::read(&Host::Local, &repo.0).unwrap();
+    let patch = context.patch_within(usize::MAX);
+    assert!(patch.contains(" huge.txt | "));
+    assert!(patch.contains(" small.rs | "));
+    assert!(patch.contains("2 files changed"));
+    assert!(!patch.contains("diff --git"));
 }
