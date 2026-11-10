@@ -249,13 +249,17 @@ pub fn parse_codex(json: &Value) -> Vec<UsageWindow> {
         .collect()
 }
 
-/// Accepts unix seconds (number) or an RFC 3339 string.
+/// Accepts unix seconds (number) or an RFC 3339 string. A time too far ahead to represent is
+/// dropped like a malformed one: the value comes from a server response.
 fn parse_time(v: &Value) -> Option<SystemTime> {
-    if let Some(secs) = v.as_u64() {
-        return Some(UNIX_EPOCH + Duration::from_secs(secs));
-    }
-    let dt = chrono::DateTime::parse_from_rfc3339(v.as_str()?).ok()?;
-    Some(UNIX_EPOCH + Duration::from_secs(dt.timestamp().max(0) as u64))
+    let secs = match v.as_u64() {
+        Some(secs) => secs,
+        None => {
+            let time = chrono::DateTime::parse_from_rfc3339(v.as_str()?).ok()?;
+            time.timestamp().max(0) as u64
+        }
+    };
+    UNIX_EPOCH.checked_add(Duration::from_secs(secs))
 }
 
 /// "31m", "12h 3m", "5d 14h" until `t`; "now" if already passed.
@@ -322,6 +326,26 @@ pub fn binding_window(windows: &[UsageWindow]) -> Option<&UsageWindow> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn reset_time_is_read_from_unix_seconds_or_rfc_3339() {
+        let expected = Some(UNIX_EPOCH + Duration::from_secs(1_762_000_000));
+        assert_eq!(parse_time(&json!(1_762_000_000u64)), expected);
+        assert_eq!(parse_time(&json!("2025-11-01T12:26:40Z")), expected);
+        assert_eq!(parse_time(&json!("soon")), None);
+        assert_eq!(parse_time(&json!(null)), None);
+    }
+
+    #[test]
+    fn reset_time_beyond_the_clock_range_is_dropped_instead_of_panicking() {
+        assert_eq!(parse_time(&json!(u64::MAX)), None);
+        let codex = json!({"rate_limit": {"primary_window": {
+            "used_percent": 12.0, "limit_window_seconds": 18000, "reset_at": u64::MAX
+        }}});
+        let windows = parse_codex(&codex);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].resets_at, None);
+    }
 
     fn window(percent: f64, resets_in_secs: Option<u64>) -> UsageWindow {
         UsageWindow {

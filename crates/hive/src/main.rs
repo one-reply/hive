@@ -34,6 +34,17 @@ fn init_logging() {
     }
 }
 
+/// A panic inside a GPUI task aborts the process, and stderr leads nowhere when Hive is started
+/// from Finder: without this the log would not say why Hive disappeared.
+fn log_panics() {
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::error!(%panic, %backtrace, "hive panicked");
+        report(panic);
+    }));
+}
+
 /// Launched from Finder, Hive inherits launchd's minimal `PATH`; git hooks and CLIs need the
 /// terminal's. The lookup runs a login shell, so it stays off the UI thread, and commands that
 /// start before it answers keep the process environment.
@@ -104,6 +115,7 @@ fn main() -> std::process::ExitCode {
         return code;
     }
     init_logging();
+    log_panics();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "hive starting");
 
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
