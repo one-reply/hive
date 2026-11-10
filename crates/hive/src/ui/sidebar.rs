@@ -35,6 +35,7 @@ use crate::app::AppState;
 use crate::state::projects::Projects;
 use crate::state::store::Store;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
+use crate::ui::stepped_spinner::SteppedSpinner;
 use crate::ui::{project_badge, settings};
 
 /// Status dot of a worktree with an open terminal (Tailwind emerald-500, as in Orca).
@@ -82,6 +83,8 @@ pub struct Sidebar {
     toggled: HashMap<(Host, PathBuf), Instant>,
     /// Cards whose agents strip is unfolded into one row per session.
     agents_open: HashSet<(Host, PathBuf)>,
+    /// Turns the Working indicators of visible agents; idle while none is on screen.
+    working: SteppedSpinner,
     _observers: [Subscription; 3],
 }
 
@@ -103,6 +106,7 @@ impl Sidebar {
             collapsed: HashSet::new(),
             toggled: HashMap::new(),
             agents_open: HashSet::new(),
+            working: SteppedSpinner::new(cx),
             _observers: observers,
         }
     }
@@ -563,6 +567,8 @@ impl Render for Sidebar {
             .enumerate()
             .map(|(ix, project)| self.render_project(ix, project, window, cx))
             .collect();
+        // Every Working indicator is built by now: folded projects and rows build none.
+        self.working.keep_ticking(cx);
         let add_hover = Hover::new("add-project", window, cx);
         let attention_hover = Hover::new("needs-attention", window, cx);
         let attention = AppState::get(cx)

@@ -62,6 +62,7 @@ fn inactive_strip_selects_card_then_active_strip_only_toggles_agents(cx: &mut Te
         collapsed: HashSet::new(),
         toggled: HashMap::new(),
         agents_open: HashSet::new(),
+        working: crate::ui::stepped_spinner::SteppedSpinner::new(cx),
         _observers: [
             cx.observe(&store, |_, _, _| {}),
             cx.observe(&store, |_, _, _| {}),
