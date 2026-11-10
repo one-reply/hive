@@ -410,7 +410,7 @@ pub(super) fn confirm(
     confirm_at(git, target, action, confirmation, window, cx);
 }
 
-fn confirm_at(
+pub(super) fn confirm_at(
     git: Entity<Git>,
     target: Target,
     action: Action,

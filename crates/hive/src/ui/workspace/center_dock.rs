@@ -246,6 +246,13 @@ impl CenterTabs {
                     .ok()
                     .map(|p| p.read(cx).label(cx))
             })
+            .or_else(|| {
+                panel
+                    .view()
+                    .downcast::<crate::ui::conflict_panel::ConflictPanel>()
+                    .ok()
+                    .map(|p| p.read(cx).label(cx))
+            })
             .unwrap_or_else(|| "Workspace tab".into());
         let label = match tab_name {
             Some(name) => name.into_any_element(),

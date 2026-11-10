@@ -218,6 +218,7 @@ mod tests {
             submodule: false,
             staged_stats: None,
             unstaged_stats: None,
+            conflict: None,
         });
         assert_eq!(staged_count(&status), 0);
         assert_eq!(

@@ -1,38 +1,67 @@
 use super::*;
+use crate::state::git::{ConflictRequest, DiffRequest};
+use hive_core::git::{
+    diff::DiffSource,
+    status::{self, Change, FileChange},
+};
+use hive_core::projects::Target;
+
+/// What "Show changes" opens for a document.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Changes {
+    /// One diff per side of the index that differs; empty when the file is unchanged.
+    Diffs(Vec<DiffRequest>),
+    /// The file is unmerged, which has no two-sided diff.
+    Conflict(ConflictRequest),
+}
+
+impl Changes {
+    fn of(target: &Target, file: Option<FileChange>) -> Self {
+        let Some(file) = file else {
+            return Self::Diffs(Vec::new());
+        };
+        if file.conflict.is_some() {
+            return Self::Conflict(ConflictRequest {
+                target: target.clone(),
+                path: file.path,
+            });
+        }
+        let mut sources = Vec::new();
+        if let Some(change) = file.unstaged {
+            sources.push(if change == Change::Untracked {
+                DiffSource::Untracked
+            } else {
+                DiffSource::WorkingTree
+            });
+        }
+        if file.staged.is_some() {
+            sources.push(DiffSource::Staged);
+        }
+        Self::Diffs(
+            sources
+                .into_iter()
+                .map(|source| DiffRequest {
+                    target: target.clone(),
+                    path: file.path.clone(),
+                    old_path: file.old_path.clone(),
+                    source,
+                    whole_file_only: file.submodule,
+                })
+                .collect(),
+        )
+    }
+}
 
 impl Document {
-    pub fn changes(&self, cx: &App) -> Task<Result<Vec<crate::state::git::DiffRequest>, String>> {
+    pub fn changes(&self, cx: &App) -> Task<Result<Changes, String>> {
         let (target, path) = (
             self.target.clone(),
             self.path.to_string_lossy().into_owned(),
         );
         cx.background_executor().spawn(async move {
-            use hive_core::git::{diff::DiffSource, status};
             let status = status::read(&target.host, &target.path).map_err(|e| e.to_string())?;
-            let mut requests = Vec::new();
-            if let Some(file) = status.files.into_iter().find(|file| file.path == path) {
-                let mut sources = Vec::new();
-                if let Some(change) = file.unstaged {
-                    sources.push(if change == status::Change::Untracked {
-                        DiffSource::Untracked
-                    } else {
-                        DiffSource::WorkingTree
-                    });
-                }
-                if file.staged.is_some() {
-                    sources.push(DiffSource::Staged);
-                }
-                for source in sources {
-                    requests.push(crate::state::git::DiffRequest {
-                        target: target.clone(),
-                        path: file.path.clone(),
-                        old_path: file.old_path.clone(),
-                        source,
-                        whole_file_only: file.submodule,
-                    });
-                }
-            }
-            Ok(requests)
+            let file = status.files.into_iter().find(|file| file.path == path);
+            Ok(Changes::of(&target, file))
         })
     }
 
@@ -211,8 +240,62 @@ fn disk_update(base: Option<&Snapshot>, dirty_text: Option<&str>, disk: &Snapsho
 
 #[cfg(test)]
 mod tests {
-    use super::{DiskUpdate, Snapshot, disk_update};
+    use super::{Changes, DiskUpdate, Snapshot, disk_update};
+    use hive_core::git::conflicts::Conflict;
+    use hive_core::git::diff::DiffSource;
+    use hive_core::git::status::{Change, FileChange};
+    use hive_core::{host::Host, projects::Target};
     use std::path::Path;
+
+    #[test]
+    fn show_changes_opens_a_diff_per_changed_side_or_the_resolver() {
+        let target = Target {
+            host: Host::Local,
+            project: "/repo".into(),
+            path: "/repo".into(),
+        };
+        let file = |staged, unstaged, conflict| FileChange {
+            path: "src/a.rs".into(),
+            old_path: None,
+            staged,
+            unstaged,
+            submodule: false,
+            conflict,
+            staged_stats: None,
+            unstaged_stats: None,
+        };
+        let sources = |changes: Changes| match changes {
+            Changes::Diffs(requests) => requests
+                .into_iter()
+                .map(|request| request.source)
+                .collect::<Vec<_>>(),
+            Changes::Conflict(_) => panic!("expected diffs"),
+        };
+        assert!(sources(Changes::of(&target, None)).is_empty());
+        let both = file(Some(Change::Modified), Some(Change::Modified), None);
+        assert_eq!(
+            sources(Changes::of(&target, Some(both))),
+            [DiffSource::WorkingTree, DiffSource::Staged]
+        );
+        let untracked = file(None, Some(Change::Untracked), None);
+        assert_eq!(
+            sources(Changes::of(&target, Some(untracked))),
+            [DiffSource::Untracked]
+        );
+        // Git reports an unmerged file as changed on both sides; neither has a plain diff.
+        let unmerged = file(
+            Some(Change::Conflicted),
+            Some(Change::Conflicted),
+            Some(Conflict::BothModified),
+        );
+        let Changes::Conflict(request) = Changes::of(&target, Some(unmerged)) else {
+            panic!("expected the resolver");
+        };
+        assert_eq!(
+            (request.target, request.path.as_str()),
+            (target, "src/a.rs")
+        );
+    }
 
     #[test]
     fn disk_refresh_preserves_unsaved_svg_and_recognizes_external_save() {

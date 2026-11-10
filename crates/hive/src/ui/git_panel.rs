@@ -31,6 +31,7 @@ mod error;
 mod file_row;
 mod files;
 mod header;
+mod operation;
 mod review;
 
 actions!(source_control, [CommitChanges]);
@@ -155,6 +156,7 @@ impl Render for GitPanel {
             Section::History => state.selected_commit.is_some() && !state.files.is_empty(),
         };
         let changes = status.as_ref().map(|s| s.files.len()).unwrap_or(0);
+        let banner = operation::Banner::new(state.operation(), state.conflicted_paths().len());
         let panel = v_flex()
             .size_full()
             .min_w_0()
@@ -191,6 +193,9 @@ impl Render for GitPanel {
         panel
             .child(self.header(window, cx))
             .when_some(error, |p, error| p.child(self.error(error, window, cx)))
+            .when_some(banner, |p, banner| {
+                p.child(self.operation(banner, window, cx))
+            })
             .child(div().px_2().child(self.tabs(section, changes)))
             .when(has_files, |p| {
                 p.child(

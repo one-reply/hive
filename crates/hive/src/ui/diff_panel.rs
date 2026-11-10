@@ -7,7 +7,7 @@ use crate::{
         git_diff::GitDiff,
         store::Store,
     },
-    ui::{editor_panel::CloseFile, workspace::right_sidebar_toggle},
+    ui::{editor_panel::CloseFile, tab_message, workspace::right_sidebar_toggle},
 };
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::button::Button;
@@ -21,7 +21,6 @@ use gpui_kit::*;
 use hive_core::git::diff::DiffSource;
 
 mod comments;
-mod message;
 
 pub(crate) struct DiffPanel {
     pub review: Entity<GitDiff>,
@@ -435,10 +434,10 @@ impl Render for DiffPanel {
             );
         if let Some(error) = error {
             content = content.child(
-                message::render(error, &self.focus_handle(cx)).text_color(cx.theme().danger),
+                tab_message::render(error, &self.focus_handle(cx)).text_color(cx.theme().danger),
             );
         } else if patch.as_ref().is_some_and(|p| p.patch().is_empty()) {
-            content = content.child(message::render(
+            content = content.child(tab_message::render(
                 "No changes in this view.",
                 &self.focus_handle(cx),
             ));

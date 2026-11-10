@@ -1,8 +1,10 @@
+//! The body of a diff or conflict tab that has no widget to show.
 use gpui_kit::{
     Div, FocusHandle, InteractiveElement as _, ParentElement as _, SharedString, Styled as _, div,
 };
 
-pub(super) fn render(message: impl Into<SharedString>, focus: &FocusHandle) -> Div {
+/// A message shown in place of a tab's Diff widget.
+pub(crate) fn render(message: impl Into<SharedString>, focus: &FocusHandle) -> Div {
     // The Diff widget is absent here, but its focus must still route the tab's shortcuts.
     div().track_focus(focus).p_3().child(message.into())
 }

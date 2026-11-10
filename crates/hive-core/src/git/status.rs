@@ -1,5 +1,5 @@
 //! Machine-readable worktree status, including independent index and working tree changes.
-use super::{GitError, READ_LIMIT, bytes, numstat, text};
+use super::{GitError, READ_LIMIT, bytes, conflicts::Conflict, numstat, text};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -39,6 +39,9 @@ pub struct FileChange {
     pub unstaged: Option<Change>,
     /// Submodule changes cannot be staged by text hunk.
     pub submodule: bool,
+    /// How the two sides disagree, for an unmerged path.
+    #[serde(default)]
+    pub conflict: Option<Conflict>,
     /// HEAD-to-index or immutable review line counts; None when binary or unavailable.
     #[serde(default)]
     pub staged_stats: Option<LineStats>,
@@ -114,12 +117,12 @@ fn change(code: u8) -> Result<Option<Change>, GitError> {
         b'C' => Some(Change::Copied),
         b'T' => Some(Change::TypeChanged),
         b'U' => Some(Change::Conflicted),
-        _ => {
-            return Err(GitError::Invalid(
-                "Unknown Git status; refresh or inspect it in the terminal.".into(),
-            ));
-        }
+        _ => return Err(unknown()),
     })
+}
+
+fn unknown() -> GitError {
+    GitError::Invalid("Unknown Git status; refresh or inspect it in the terminal.".into())
 }
 
 fn parse(raw: &[u8]) -> Result<Status, GitError> {
@@ -163,6 +166,7 @@ fn parse(raw: &[u8]) -> Result<Status, GitError> {
                 staged: None,
                 unstaged: Some(Change::Untracked),
                 submodule: false,
+                conflict: None,
                 staged_stats: None,
                 unstaged_stats: None,
             });
@@ -184,20 +188,26 @@ fn parse(raw: &[u8]) -> Result<Status, GitError> {
         } else {
             None
         };
+        let conflict = if kind == b'u' {
+            Some(Conflict::from_code([xy[0], xy[1]]).ok_or_else(unknown)?)
+        } else {
+            None
+        };
         result.files.push(FileChange {
             path: fields[count - 1].into(),
             old_path,
-            staged: if kind == b'u' {
+            staged: if conflict.is_some() {
                 Some(Change::Conflicted)
             } else {
                 change(xy[0])?
             },
-            unstaged: if kind == b'u' {
+            unstaged: if conflict.is_some() {
                 Some(Change::Conflicted)
             } else {
                 change(xy[1])?
             },
             submodule: fields[2].starts_with('S'),
+            conflict,
             staged_stats: None,
             unstaged_stats: None,
         });
@@ -226,5 +236,42 @@ mod tests {
         assert_eq!(s.files[1].old_path.as_deref(), Some("original"));
         assert_eq!(s.files[2].unstaged, Some(Change::Untracked));
         assert!(parse(b"1 broken\0").is_err());
+    }
+
+    #[test]
+    fn unmerged_records_keep_how_the_sides_disagree() {
+        // Captured from `git status --porcelain=v2 -z` during merges; OIDs shortened.
+        let record = |code: &str, path: &str| {
+            format!("u {code} N... 100644 100644 100644 100644 abc def 123 {path}\0")
+        };
+        let cases = [
+            ("UU", Conflict::BothModified),
+            ("AA", Conflict::BothAdded),
+            ("DD", Conflict::BothDeleted),
+            ("AU", Conflict::AddedByUs),
+            ("UA", Conflict::AddedByThem),
+            ("DU", Conflict::DeletedByUs),
+            ("UD", Conflict::DeletedByThem),
+        ];
+        for (code, expected) in cases {
+            let status = parse(record(code, "dir/a b.txt").as_bytes()).expect(code);
+            let file = &status.files[0];
+            assert_eq!(file.path, "dir/a b.txt");
+            assert_eq!(file.conflict, Some(expected), "{code}");
+            assert_eq!(file.staged, Some(Change::Conflicted));
+            assert_eq!(file.unstaged, Some(Change::Conflicted));
+            assert!(status.has_conflicts());
+        }
+        assert!(parse(record("UX", "a").as_bytes()).is_err());
+        assert!(parse(b"u UU N... 100644 truncated\0").is_err());
+    }
+
+    #[test]
+    fn file_change_without_conflict_field_still_loads() {
+        let old =
+            r#"{"path":"a","old_path":null,"staged":"Modified","unstaged":null,"submodule":false}"#;
+        let file: FileChange = serde_json::from_str(old).expect("previous shape");
+        assert_eq!(file.conflict, None);
+        assert_eq!(file.staged, Some(Change::Modified));
     }
 }

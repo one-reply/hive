@@ -11,6 +11,7 @@ mod image;
 mod io;
 mod relocation;
 pub(crate) use image::{Content, PreviewState, SvgMode};
+pub(crate) use io::Changes;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum DocumentError {

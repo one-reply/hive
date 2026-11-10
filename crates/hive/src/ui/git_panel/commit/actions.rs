@@ -220,6 +220,7 @@ mod tests {
             submodule: false,
             staged_stats: None,
             unstaged_stats: None,
+            conflict: None,
         });
         assert_eq!(Mode::for_status(Some(&status)), Mode::Commit);
         status.oid = Some("committed".into());

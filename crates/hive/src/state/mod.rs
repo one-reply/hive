@@ -6,6 +6,7 @@ pub(crate) mod ai_providers;
 pub(crate) mod documents;
 pub(crate) mod files;
 pub(crate) mod git;
+pub(crate) mod git_conflict;
 pub(crate) mod git_diff;
 pub(crate) mod notifications;
 pub mod projects;

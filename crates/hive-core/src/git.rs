@@ -9,6 +9,7 @@ pub mod branches;
 pub mod changes;
 #[cfg(feature = "desktop")]
 pub mod commit_context;
+pub mod conflicts;
 pub mod diff;
 pub mod history;
 mod numstat;
@@ -156,12 +157,22 @@ fn invoke(
     let mut command = match host {
         Host::Local => host.command("git", args, Some(cwd)),
         Host::Ssh { .. } => {
-            let mut remote = vec!["GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "git"];
+            let mut remote = vec![
+                "GIT_TERMINAL_PROMPT=0",
+                "GIT_EDITOR=true",
+                "LC_ALL=C",
+                "git",
+            ];
             remote.extend_from_slice(args);
             host.command("env", &remote, Some(cwd))
         }
     };
-    command.env("GIT_TERMINAL_PROMPT", "0").env("LC_ALL", "C");
+    // Nothing here has a terminal: an editor Git opened would only hold the command until
+    // its deadline. The variable outranks `core.editor`, so configuration cannot bring it back.
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_EDITOR", "true")
+        .env("LC_ALL", "C");
     let timeout = if mutation {
         MUTATION_TIMEOUT
     } else {

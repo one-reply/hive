@@ -1,4 +1,4 @@
-//! One project's center: its own dock of terminal and diff tabs. A center stays alive while
+//! One project's center: its own dock of terminal, editor, diff and conflict tabs. A center stays alive while
 //! another project is shown, so switching projects in the sidebar switches whole tab sets.
 use std::cell::Cell;
 use std::path::Path;
@@ -9,7 +9,7 @@ use gpui_kit::component::dock::{BasePanelView, DockEvent, Panel};
 
 use super::center_dock::CenterDock;
 use super::*;
-use crate::state::git::DiffRequest;
+use crate::state::git::{ConflictRequest, DiffRequest};
 
 mod agent_draft;
 mod files;
@@ -22,6 +22,9 @@ pub(super) struct ProjectCenter {
     /// Tabs we opened; pruned when the dock no longer holds them.
     terminals: Vec<Entity<TerminalPanel>>,
     diffs: Vec<Entity<DiffPanel>>,
+    /// Resolver tabs; left out of the saved layout because a conflict does not outlive its
+    /// merge.
+    conflicts: Vec<Entity<ConflictPanel>>,
     editors: Vec<Entity<crate::ui::editor_panel::EditorPanel>>,
     /// Space the tab bar leaves free at its left end, shared with the dock's renderer.
     tab_inset: Rc<Cell<Pixels>>,
@@ -62,6 +65,7 @@ impl ProjectCenter {
             dock,
             terminals: Vec::new(),
             diffs: Vec::new(),
+            conflicts: Vec::new(),
             editors: Vec::new(),
             tab_inset,
             _observer: observer,
@@ -81,7 +85,10 @@ impl ProjectCenter {
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.terminals.is_empty() && self.diffs.is_empty() && self.editors.is_empty()
+        self.terminals.is_empty()
+            && self.diffs.is_empty()
+            && self.conflicts.is_empty()
+            && self.editors.is_empty()
     }
 
     /// Forgets panels the dock has already removed.
@@ -90,6 +97,8 @@ impl ProjectCenter {
         self.terminals
             .retain(|panel| dock.panel(PanelId::from(panel.entity_id())).is_some());
         self.diffs
+            .retain(|panel| dock.panel(PanelId::from(panel.entity_id())).is_some());
+        self.conflicts
             .retain(|panel| dock.panel(PanelId::from(panel.entity_id())).is_some());
         self.editors
             .retain(|panel| dock.panel(PanelId::from(panel.entity_id())).is_some());
@@ -194,6 +203,29 @@ impl ProjectCenter {
         self.sync_alone(cx);
     }
 
+    /// Activates the resolver tab for `request`, or opens one.
+    pub(super) fn show_conflict(
+        &mut self,
+        request: ConflictRequest,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.prune(cx);
+        let existing = self
+            .conflicts
+            .iter()
+            .find(|panel| panel.read(cx).conflict.read(cx).request == request)
+            .cloned();
+        if let Some(panel) = existing {
+            self.select(&panel, window, cx);
+            return;
+        }
+        let panel = cx.new(|cx| ConflictPanel::new(request, self.dock.downgrade(), window, cx));
+        self.add(panel_handle(panel.clone()), window, cx);
+        self.conflicts.push(panel);
+        self.sync_alone(cx);
+    }
+
     fn select<P: Panel>(&self, panel: &Entity<P>, window: &mut Window, cx: &mut App) {
         let id = PanelId::from(panel.entity_id());
         self.dock
@@ -209,7 +241,9 @@ impl ProjectCenter {
     /// Tells every tab whether it is the only one, so the last tab can draw its own close
     /// button (the tab bar hides it then).
     fn sync_alone(&self, cx: &mut App) {
-        let alone = self.terminals.len() + self.diffs.len() + self.editors.len() == 1;
+        let alone =
+            self.terminals.len() + self.diffs.len() + self.conflicts.len() + self.editors.len()
+                == 1;
         for panel in &self.editors {
             panel.update(cx, |panel, cx| panel.set_alone(alone, cx));
         }
@@ -217,6 +251,9 @@ impl ProjectCenter {
             panel.update(cx, |panel, cx| panel.set_alone(alone, cx));
         }
         for panel in &self.diffs {
+            panel.update(cx, |panel, cx| panel.set_alone(alone, cx));
+        }
+        for panel in &self.conflicts {
             panel.update(cx, |panel, cx| panel.set_alone(alone, cx));
         }
     }

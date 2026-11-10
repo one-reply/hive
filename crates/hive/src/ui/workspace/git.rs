@@ -1,6 +1,6 @@
-//! Workspace integration for source control and diff tabs.
+//! Workspace integration for source control, diff and conflict tabs.
 use super::*;
-use crate::state::git::{DiffRequest, GitEvent};
+use crate::state::git::{ConflictRequest, DiffRequest, GitEvent};
 use gpui_kit::base::motion::{Transition, transition};
 use hive_core::projects::Target;
 use hive_core::settings::clamp_git_panel_width;
@@ -36,6 +36,9 @@ impl Workspace {
             |this, _, event, window, cx| match event {
                 GitEvent::Refreshed { .. } => {}
                 GitEvent::OpenDiff(request) => this.open_diff(request.clone(), window, cx),
+                GitEvent::OpenConflict(request) => {
+                    this.open_conflict(request.clone(), window, cx)
+                }
                 GitEvent::Activate(target) => this.activate_target(target, cx),
                 GitEvent::Terminal(target) => {
                     this.activate_target(target, cx);
@@ -101,6 +104,19 @@ impl Workspace {
         let project = (request.target.host.clone(), request.target.project.clone());
         self.center(&project, window, cx)
             .show_diff(request, window, cx);
+        cx.notify();
+    }
+
+    fn open_conflict(
+        &mut self,
+        request: ConflictRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.activate_target(&request.target, cx);
+        let project = (request.target.host.clone(), request.target.project.clone());
+        self.center(&project, window, cx)
+            .show_conflict(request, window, cx);
         cx.notify();
     }
 

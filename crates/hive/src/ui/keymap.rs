@@ -25,8 +25,9 @@ use crate::ui::workspace::{
 pub(crate) const CONTEXT: &str = "Workspace";
 // Match the input dispatch node too, where Textarea binds its own Cmd-Enter.
 pub(crate) const COMMIT_CONTEXT: &str = "(SourceControl > Input) || SourceControl";
-/// Key context of a file's tab, an editor or a diff, which "Close file" closes.
-pub(crate) const FILE_TAB_CONTEXT: &str = "EditorPanel || DiffPanel";
+/// Key context of a file's tab (an editor, a diff or a conflict resolver), which "Close file"
+/// closes.
+pub(crate) const FILE_TAB_CONTEXT: &str = "EditorPanel || DiffPanel || ConflictPanel";
 /// Key context of a focused code editor, gpui-component's `Input mode=editor`.
 pub(crate) const CODE_EDITOR_CONTEXT: &str = "Input && mode == editor";
 /// Key context of pane shortcuts: a focused terminal tab.
@@ -444,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn close_file_matches_editor_and_diff_tabs_only() {
+    fn close_file_matches_file_tabs_only() {
         use gpui_kit::{KeyBindingContextPredicate, KeyContext};
         let predicate =
             KeyBindingContextPredicate::parse(super::FILE_TAB_CONTEXT).expect("file tab context");
@@ -456,6 +457,7 @@ mod tests {
         };
         assert!(predicate.eval(&contexts(&["Workspace", "EditorPanel"])));
         assert!(predicate.eval(&contexts(&["Workspace", "DiffPanel"])));
+        assert!(predicate.eval(&contexts(&["Workspace", "ConflictPanel"])));
         assert!(!predicate.eval(&contexts(&["Workspace", "TerminalPanel", "Terminal"])));
         assert!(!predicate.eval(&contexts(&["Workspace", "FilesPanel", "Tree"])));
     }

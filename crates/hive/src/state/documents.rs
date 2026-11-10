@@ -11,7 +11,7 @@ use std::sync::Arc;
 mod completions;
 mod definitions;
 mod document;
-pub(crate) use document::{Content, Document, PreviewState, SvgMode};
+pub(crate) use document::{Changes, Content, Document, PreviewState, SvgMode};
 
 #[derive(Clone)]
 pub(crate) struct OpenFile {
