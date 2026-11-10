@@ -1,5 +1,6 @@
 use super::*;
 use crate::state::documents::{DocumentEvent, OpenFile};
+use crate::state::files::SearchMode;
 
 impl Workspace {
     pub(super) fn choose_files(&mut self, selected: bool, cx: &mut Context<Self>) {
@@ -35,6 +36,20 @@ impl Workspace {
         if !self.git_open {
             self.toggle_git(cx);
         }
+    }
+
+    /// ⌘P and ⌘⇧F: the Files tab with its search field in `mode`, text selected.
+    pub(super) fn open_file_search(
+        &mut self,
+        mode: SearchMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_right_tab(true, cx);
+        let panel = self.files_panel.clone();
+        window.defer(cx, move |window, cx| {
+            panel.update(cx, |panel, cx| panel.open_search(mode, window, cx))
+        });
     }
 
     pub(super) fn watch_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -86,8 +101,7 @@ impl Workspace {
         if preview {
             let panel = self.files_panel.clone();
             window.defer(cx, move |window, cx| {
-                let tree = panel.read(cx).tree().clone();
-                tree.update(cx, |tree, cx| tree.focus(window, cx));
+                panel.update(cx, |panel, cx| panel.focus_list(window, cx))
             });
         }
         drop(document);

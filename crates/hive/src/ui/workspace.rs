@@ -22,6 +22,7 @@ use hive_core::settings::clamp_sidebar_width;
 
 use crate::app::AppState;
 use crate::state::agents::{AgentSession, AgentsEvent};
+use crate::state::files::SearchMode;
 use crate::state::projects::Projects;
 use crate::terminal::TerminalPanel;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
@@ -680,11 +681,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(
                 |this, _: &crate::ui::editor_panel::OpenFileSearch, window, cx| {
-                    this.show_right_tab(true, cx);
-                    let panel = this.files_panel.clone();
-                    window.defer(cx, move |window, cx| {
-                        panel.update(cx, |panel, cx| panel.focus_search(window, cx))
-                    });
+                    this.open_file_search(SearchMode::Names, window, cx)
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::ui::editor_panel::SearchInFiles, window, cx| {
+                    this.open_file_search(SearchMode::Content, window, cx)
                 },
             ))
             .on_action(
@@ -693,7 +695,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(|this, _: &ToggleGitPanel, _, cx| this.toggle_git(cx)))
             .on_action(cx.listener(|this, _: &ShowGitPanel, _, cx| this.show_right_tab(false, cx)))
-            .on_action(cx.listener(|this, _: &ShowFilesPanel, _, cx| this.show_right_tab(true, cx)))
+            .on_action(cx.listener(|this, _: &ShowFilesPanel, _, cx| {
+                // Show Files means the tree, as Explorer does: leave content search behind.
+                let files = this.files_panel.read(cx).files.clone();
+                files.update(cx, |files, cx| files.set_search_mode(SearchMode::Names, cx));
+                this.show_right_tab(true, cx)
+            }))
             .bg(bg)
             .text_color(cx.theme().foreground)
             .child(body)

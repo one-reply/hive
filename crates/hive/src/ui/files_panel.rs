@@ -1,6 +1,6 @@
 use crate::{
     app::AppState,
-    state::files::{Files, FilesEvent},
+    state::files::{Files, FilesEvent, SearchMode},
     ui::hover::{ButtonLook, Hover, SmoothButton as _},
 };
 use gpui_kit::component::{
@@ -21,6 +21,7 @@ use std::{
 };
 
 mod actions;
+mod content;
 mod editing;
 mod icons;
 mod motion;
@@ -54,6 +55,7 @@ pub(crate) struct FilesPanel {
     synced_generation: Option<u64>,
     selection: selection::Selection,
     search_input: Entity<gpui_kit::component::input::InputState>,
+    content: content::Results,
     filtered_tree: bool,
     edit: Option<Edit>,
     manual_refresh: bool,
@@ -91,6 +93,7 @@ impl FilesPanel {
             cx.observe_in(&files, window, |this, files, window, cx| {
                 this.sync_search_input(window, cx);
                 this.sync_tree(cx);
+                this.sync_content(cx);
                 let state = files.read(cx);
                 if !state.loading {
                     this.manual_refresh = false;
@@ -148,6 +151,7 @@ impl FilesPanel {
             synced_generation: None,
             selection: selection::Selection::default(),
             search_input,
+            content: content::Results::new(cx),
             filtered_tree: false,
             edit: None,
             manual_refresh: false,
@@ -261,6 +265,8 @@ impl Render for FilesPanel {
             .map(|t| t.path.display().to_string())
             .unwrap_or_default();
         let settings = state.settings.clone();
+        let content_mode = state.search_mode() == SearchMode::Content;
+        let picker = state.destination_for().is_some();
         let searching = !state.search_query().is_empty();
         let search_loading = state.search_loading();
         let truncated = state.search_truncated();
@@ -354,7 +360,10 @@ impl Render for FilesPanel {
                             .tooltip("Refresh files and Git status")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.manual_refresh = true;
-                                this.files.update(cx, |files, cx| files.refresh_all(cx));
+                                this.files.update(cx, |files, cx| {
+                                    files.refresh_all(cx);
+                                    files.rerun_content_search(cx);
+                                });
                             }))
                             .smooth_hover(ButtonLook::Ghost, &refresh_hover, cx),
                     )
@@ -451,7 +460,13 @@ impl Render for FilesPanel {
                             }),
                     ),
             )
-            .child(self.search_field(available, cx));
+            .when(!picker, |body| body.child(self.mode_switch(cx)))
+            .child(self.search_field(available, window, cx));
+        if content_mode && target.is_some() {
+            return body
+                .child(self.render_content_status(cx))
+                .child(self.render_results(cx));
+        }
         if self.selection.count() > 1 {
             let label = format!("{} files selected", self.selection.count());
             body = body.child(

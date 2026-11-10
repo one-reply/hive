@@ -69,16 +69,20 @@ pub fn list_directory(host: &Host, root: &Path, relative: &Path) -> Result<Vec<E
 }
 
 /// Index tracked and non-ignored untracked files, or walk a non-Git directory.
-pub fn list_files(host: &Host, root: &Path) -> Result<FileIndex, FileError> {
+/// Cancelling stops the Git commands or the walk with `FileError::Listing`.
+pub fn list_files(
+    host: &Host,
+    root: &Path,
+    cancellation: &command::Cancellation,
+) -> Result<FileIndex, FileError> {
     if !host.is_local() {
-        return crate::remote::list_files(host, root, &crate::command::Cancellation::default());
+        return crate::remote::list_files(host, root, cancellation);
     }
     resolve(host, root, Path::new(""))?;
-    let cancellation = command::Cancellation::default();
     let probe = command::run(
         host.command("git", &["rev-parse", "--show-toplevel"], Some(root)),
         &[],
-        &cancellation,
+        cancellation,
         Duration::from_secs(10),
         COMMAND_LIMIT,
     )
@@ -100,7 +104,7 @@ pub fn list_files(host: &Host, root: &Path) -> Result<FileIndex, FileError> {
                 Some(root),
             ),
             &[],
-            &cancellation,
+            cancellation,
             Duration::from_secs(15),
             COMMAND_LIMIT,
         )
@@ -135,6 +139,12 @@ pub fn list_files(host: &Host, root: &Path) -> Result<FileIndex, FileError> {
     let mut result = FileIndex::default();
     let mut pending = vec![PathBuf::new()];
     while let Some(directory) = pending.pop() {
+        if cancellation.is_cancelled() {
+            return Err(FileError::Listing {
+                path: root.into(),
+                message: command::Error::Cancelled.to_string(),
+            });
+        }
         for entry in list_directory(host, root, &directory)? {
             if entry.directory {
                 pending.push(entry.path);

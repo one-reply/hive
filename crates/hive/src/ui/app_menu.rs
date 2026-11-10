@@ -93,6 +93,7 @@ pub(crate) fn install(cx: &mut App) {
         ]),
         Menu::new("File").items([
             MenuItem::action("Open File…", crate::ui::editor_panel::OpenFileSearch),
+            MenuItem::action("Search in Files…", crate::ui::editor_panel::SearchInFiles),
             MenuItem::action("Save File", crate::ui::editor_panel::SaveFile),
             MenuItem::action("Close File", crate::ui::editor_panel::CloseFile),
             MenuItem::action("Add Project…", AddProject),
