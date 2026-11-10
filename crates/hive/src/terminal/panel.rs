@@ -44,7 +44,7 @@ mod tiles;
 const PANE_CLOSE_INSET: Pixels = px(6.);
 /// The focused pane among several glows inward from its edges: this far, and this strong at
 /// the edge itself (a blurred inset shadow shows about half its color there).
-const FOCUS_GLOW_DEPTH: Pixels = px(18.);
+const FOCUS_GLOW_DEPTH: Pixels = px(4.);
 const FOCUS_GLOW_OPACITY: f32 = 0.32;
 const FOCUS_GLOW_DURATION: std::time::Duration = std::time::Duration::from_millis(160);
 
