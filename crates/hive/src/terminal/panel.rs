@@ -1,6 +1,7 @@
 //! A dock tab holding a tree of terminal panes (Orca-style tiles), with "+" (new tab) and
-//! "split" toolbar buttons and ⌘D / ⌘⇧D / ⌘W for splitting and closing the active pane.
-//! All three are reassignable, so their bindings live in `ui::keymap`.
+//! "split" toolbar buttons, ⌘D / ⌘⇧D / ⌘W for splitting and closing the active pane and
+//! ⌘←/→/↑/↓ for moving focus to the pane on that side. All of them are reassignable, so
+//! their bindings live in `ui::keymap`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use gpui_kit::component::{ActiveTheme as _, IconName, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::pane_tree::PaneTree;
+use super::pane_tree::{Direction, PaneTree};
 use super::view::{TerminalView, TerminalViewEvent};
 use crate::app::AppState;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
@@ -21,7 +22,18 @@ use crate::ui::keymap;
 use crate::ui::workspace::{NewTerminal, right_sidebar_toggle};
 use hive_core::host::Host;
 
-actions!(terminal_panel, [SplitRight, SplitDown, ClosePane]);
+actions!(
+    terminal_panel,
+    [
+        SplitRight,
+        SplitDown,
+        ClosePane,
+        FocusPaneLeft,
+        FocusPaneRight,
+        FocusPaneUp,
+        FocusPaneDown
+    ]
+);
 
 mod agent_draft;
 mod close_guard;
@@ -30,6 +42,11 @@ mod tiles;
 
 /// Gap between a pane's top-right corner and its hover close button.
 const PANE_CLOSE_INSET: Pixels = px(6.);
+/// The focused pane among several glows inward from its edges: this far, and this strong at
+/// the edge itself (a blurred inset shadow shows about half its color there).
+const FOCUS_GLOW_DEPTH: Pixels = px(18.);
+const FOCUS_GLOW_OPACITY: f32 = 0.32;
+const FOCUS_GLOW_DURATION: std::time::Duration = std::time::Duration::from_millis(160);
 
 pub struct TerminalPanel {
     host: Host,
@@ -188,6 +205,35 @@ impl TerminalPanel {
         self.focus_active(window, cx);
         self.notify_group(cx);
         self.layout_changed(cx);
+    }
+
+    /// Moves focus to the pane next to the active one on the `direction` side; at the edge of
+    /// the tab it stays where it is.
+    fn focus_neighbor(
+        &mut self,
+        direction: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let sizes = |split: &PaneTree<Entity<TerminalView>>| self.split_sizes_of(split);
+        let Some(neighbor) = self
+            .panes
+            .neighbor(&self.active, direction, &sizes)
+            .cloned()
+        else {
+            return;
+        };
+        self.focus_pane(neighbor, window, cx);
+    }
+
+    /// The sizes the user dragged a split's children to; `None` until a split is resized.
+    fn split_sizes_of(&self, split: &PaneTree<Entity<TerminalView>>) -> Option<Vec<f32>> {
+        let PaneTree::Split { axis, children } = split else {
+            return None;
+        };
+        self.split_sizes
+            .get(&Self::split_id(split, *axis, children.len()))
+            .cloned()
     }
 
     /// Split the active pane: a new shell in the same cwd lands after it along `axis`.
@@ -395,6 +441,18 @@ impl Render for TerminalPanel {
             .on_action(cx.listener(|this, _: &ClosePane, window, cx| {
                 let active = this.active.clone();
                 this.request_close_pane(active, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneLeft, window, cx| {
+                this.focus_neighbor(Direction::Left, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneRight, window, cx| {
+                this.focus_neighbor(Direction::Right, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneUp, window, cx| {
+                this.focus_neighbor(Direction::Up, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneDown, window, cx| {
+                this.focus_neighbor(Direction::Down, window, cx)
             }))
             .child(self.render_pane(&self.panes, window, cx))
     }
