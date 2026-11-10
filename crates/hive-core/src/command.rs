@@ -1,18 +1,26 @@
 //! Bounded command IO, deadlines and cancellation shared by CLI adapters.
 use rustix::{
+    event::{PollFd, PollFlags, Timespec, poll},
     fs::{OFlags, fcntl_getfl, fcntl_setfl},
     process::{self, Pid, Signal, WaitId, WaitIdOptions},
 };
 use std::{
     io::{self, Read, Write},
     os::{fd::AsFd, unix::process::CommandExt},
-    process::{Child, Command, Stdio},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
+
+/// How long a silent command is left alone before cancellation and the deadline are checked
+/// again. Output, a writable stdin and a closed pipe all end the wait at once.
+const WAIT_SLICE: Duration = Duration::from_millis(25);
+/// First recheck of a child that closed its pipes but cannot be reaped yet; the wait doubles
+/// up to `WAIT_SLICE` for one that lingers.
+const EXIT_RECHECK: Duration = Duration::from_millis(1);
 
 /// Failure while supervising a command. Adapters add command, host and path context.
 #[derive(Debug, thiserror::Error)]
@@ -99,12 +107,19 @@ fn nonblocking(fd: &impl AsFd) -> io::Result<()> {
     fcntl_setfl(fd, fcntl_getfl(fd)? | OFlags::NONBLOCK).map_err(Into::into)
 }
 
-fn drain(reader: &mut impl Read, output: &mut Vec<u8>, limit: usize) -> Result<bool, Error> {
+/// Reads what `stream` has ready and closes it at end of file, so it stops being waited on.
+fn drain(stream: &mut Option<impl Read>, output: &mut Vec<u8>, limit: usize) -> Result<(), Error> {
+    let Some(reader) = stream else {
+        return Ok(());
+    };
     let mut buffer = [0; 8192];
     // Bound each pass so a noisy child cannot starve cancellation or the deadline.
     for _ in 0..64 {
         match reader.read(&mut buffer) {
-            Ok(0) => return Ok(true),
+            Ok(0) => {
+                *stream = None;
+                break;
+            }
             Ok(count) => {
                 if output.len() + count > limit {
                     return Err(Error::TooLarge(limit));
@@ -116,7 +131,44 @@ fn drain(reader: &mut impl Read, output: &mut Vec<u8>, limit: usize) -> Result<b
             Err(e) => return Err(Error::Io(e)),
         }
     }
-    Ok(false)
+    Ok(())
+}
+
+/// The child's pipes that are still open.
+struct Pipes {
+    stdin: Option<ChildStdin>,
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+}
+
+impl Pipes {
+    /// Sleeps until a pipe can make progress or `limit` passes. Returns early on a signal;
+    /// the caller loops anyway.
+    fn wait(&self, limit: Duration) -> io::Result<()> {
+        let mut pipes: Vec<PollFd<'_>> = Vec::with_capacity(3);
+        if let Some(stdin) = &self.stdin {
+            pipes.push(PollFd::new(stdin, PollFlags::OUT));
+        }
+        if let Some(stdout) = &self.stdout {
+            pipes.push(PollFd::new(stdout, PollFlags::IN));
+        }
+        if let Some(stderr) = &self.stderr {
+            pipes.push(PollFd::new(stderr, PollFlags::IN));
+        }
+        // A slice of milliseconds always fits; the fallback only keeps this infallible.
+        let timeout = Timespec::try_from(limit).unwrap_or(Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        });
+        match poll(&mut pipes, Some(&timeout)) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn output_closed(&self) -> bool {
+        self.stdout.is_none() && self.stderr.is_none()
+    }
 }
 
 /// Blocking: service stdin and both output pipes until EOF, cancellation or the deadline.
@@ -150,24 +202,28 @@ pub fn run(
         cancellation,
         exited: false,
     };
-    let mut stdin = running.child.stdin.take();
-    let mut stdout = running.child.stdout.take().expect("stdout is piped");
-    let mut stderr = running.child.stderr.take().expect("stderr is piped");
-    nonblocking(stdin.as_ref().expect("stdin is piped")).map_err(io_error)?;
-    nonblocking(&stdout).map_err(io_error)?;
-    nonblocking(&stderr).map_err(io_error)?;
+    let mut pipes = Pipes {
+        stdin: running.child.stdin.take(),
+        stdout: running.child.stdout.take(),
+        stderr: running.child.stderr.take(),
+    };
+    nonblocking(pipes.stdin.as_ref().expect("stdin is piped")).map_err(io_error)?;
+    nonblocking(pipes.stdout.as_ref().expect("stdout is piped")).map_err(io_error)?;
+    nonblocking(pipes.stderr.as_ref().expect("stderr is piped")).map_err(io_error)?;
     let (mut output, mut errors, mut written) = (Vec::new(), Vec::new(), 0);
     let deadline = Instant::now() + timeout;
+    let mut exit_recheck = EXIT_RECHECK;
     loop {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        if Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             return Err(Error::TimedOut);
         }
-        let output_done = drain(&mut stdout, &mut output, limit)?;
-        let errors_done = drain(&mut stderr, &mut errors, limit)?;
-        if let Some(pipe) = &mut stdin {
+        drain(&mut pipes.stdout, &mut output, limit)?;
+        drain(&mut pipes.stderr, &mut errors, limit)?;
+        if let Some(pipe) = &mut pipes.stdin {
             match pipe.write(&input[written..]) {
                 Ok(count) => written += count,
                 Err(e)
@@ -176,12 +232,12 @@ pub fn run(
                         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
                     ) => {}
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                    stdin = None;
+                    pipes.stdin = None;
                 }
                 Err(e) => return Err(io_error(e)),
             }
             if written == input.len() {
-                stdin = None;
+                pipes.stdin = None;
             }
         }
         let exited = process::waitid(
@@ -191,8 +247,7 @@ pub fn run(
         .map_err(|e| io_error(e.into()))?;
         if let Some(status) = exited
             && (status.exited() || status.killed() || status.dumped())
-            && output_done
-            && errors_done
+            && pipes.output_closed()
         {
             running.exited = true;
             return Ok(Output {
@@ -201,7 +256,13 @@ pub fn run(
                 stderr: errors,
             });
         }
-        std::thread::sleep(Duration::from_millis(2));
+        if pipes.output_closed() {
+            // Nothing announces that a child became reapable, so look again shortly.
+            std::thread::sleep(exit_recheck.min(remaining));
+            exit_recheck = (exit_recheck * 2).min(WAIT_SLICE);
+        } else {
+            pipes.wait(WAIT_SLICE.min(remaining)).map_err(io_error)?;
+        }
     }
 }
 
@@ -278,5 +339,74 @@ mod tests {
         .unwrap();
         assert_eq!(output.stdout, bytes);
         assert_eq!(output.code, Some(0));
+    }
+
+    fn shell(script: &str, input: &[u8], limit: usize) -> Result<Output, Error> {
+        run(
+            Host::Local.command("/bin/sh", &["-c", script], None),
+            input,
+            &Cancellation::default(),
+            Duration::from_secs(10),
+            limit,
+        )
+    }
+
+    #[test]
+    fn stdout_and_stderr_are_collected_separately_with_the_exit_code() {
+        let output = shell("printf out; printf err >&2; exit 3", b"", 1024).unwrap();
+        assert_eq!(output.stdout, b"out");
+        assert_eq!(output.stderr, b"err");
+        assert_eq!(output.code, Some(3));
+    }
+
+    #[test]
+    fn output_written_after_a_silent_pause_is_collected() {
+        let output = shell("sleep 0.1; printf late", b"", 1024).unwrap();
+        assert_eq!(output.stdout, b"late");
+        assert_eq!(output.code, Some(0));
+    }
+
+    #[test]
+    fn child_that_closes_its_output_early_still_reports_its_exit_code() {
+        let output = shell("exec >&- 2>&-; sleep 0.1; exit 7", b"", 1024).unwrap();
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.code, Some(7));
+    }
+
+    #[test]
+    fn input_the_child_never_reads_does_not_fail_the_command() {
+        let input = vec![b'x'; 256 * 1024];
+        let output = shell("exec <&-; printf done", &input, 1024).unwrap();
+        assert_eq!(output.stdout, b"done");
+        assert_eq!(output.code, Some(0));
+    }
+
+    #[test]
+    fn output_beyond_the_limit_is_rejected() {
+        let result = shell("printf 12345", b"", 4);
+        assert!(matches!(result, Err(Error::TooLarge(4))));
+    }
+
+    #[test]
+    fn cancelling_a_running_command_returns_cancelled() {
+        let control = Cancellation::default();
+        let result = std::thread::scope(|scope| {
+            let running = scope.spawn(|| {
+                run(
+                    Host::Local.command("/bin/sleep", &["30"], None),
+                    b"",
+                    &control,
+                    Duration::from_secs(30),
+                    1024,
+                )
+            });
+            while control.group.lock().unwrap().is_none() {
+                std::thread::yield_now();
+            }
+            control.cancel();
+            running.join().unwrap()
+        });
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert!(control.group.lock().unwrap().is_none());
     }
 }
