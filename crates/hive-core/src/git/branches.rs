@@ -1,12 +1,8 @@
 //! Branch discovery and conservative checkout operations.
-use super::{GitError, READ_LIMIT, READ_TIMEOUT, bytes, run, status, text};
-use crate::command::{self, Cancellation};
+use super::{GitError, READ_LIMIT, bytes, conflicts, run, status, text};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-
-/// `test -e` prints nothing; the bound only guards against a misbehaving remote shell.
-const INSPECT_OUTPUT_LIMIT: usize = 64 * 1024;
 
 /// A local or remote-tracking branch with its worktree occupancy.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,72 +112,10 @@ pub fn require_clean(host: &Host, cwd: &Path) -> Result<(), GitError> {
     if !status::read(host, cwd)?.is_clean() {
         return Err(GitError::Invalid("Commit your staged, unstaged and untracked changes before switching branches or pulling.".into()));
     }
-    // These paths also work for linked worktrees, whose .git is a file.
-    for marker in ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
-        match run(host, cwd, &["rev-parse", "--verify", "--quiet", marker]) {
-            Ok(_) => {
-                return Err(GitError::Invalid(
-                    "Finish the current merge, rebase or cherry-pick in the terminal first.".into(),
-                ));
-            }
-            Err(GitError::Failed { code: Some(1), .. }) => {}
-            Err(error) => return Err(error),
-        }
-    }
-    let paths = ["rebase-merge", "rebase-apply", "sequencer"];
-    for marker in paths {
-        let path = run(host, cwd, &["rev-parse", "--git-path", marker])?;
-        let exists = match host {
-            Host::Local => {
-                let path = Path::new(&path);
-                let path = if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    cwd.join(path)
-                };
-                path.try_exists().map_err(|source| GitError::Spawn {
-                    command: format!("inspect {marker}"),
-                    host: host.clone(),
-                    source,
-                })?
-            }
-            Host::Ssh { .. } => {
-                let command = format!("inspect {marker}");
-                let output = command::run(
-                    host.command("test", &["-e", &path], Some(cwd)),
-                    &[],
-                    &Cancellation::default(),
-                    READ_TIMEOUT,
-                    INSPECT_OUTPUT_LIMIT,
-                )
-                .map_err(|source| GitError::Interrupted {
-                    command: command.clone(),
-                    host: host.clone(),
-                    cwd: cwd.into(),
-                    source,
-                    mutation: false,
-                    guidance: "Refresh to retry.",
-                })?;
-                match output.code {
-                    Some(0) => true,
-                    Some(1) => false,
-                    code => {
-                        return Err(GitError::Failed {
-                            command,
-                            host: host.clone(),
-                            cwd: cwd.into(),
-                            code,
-                            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                        });
-                    }
-                }
-            }
-        };
-        if exists {
-            return Err(GitError::Invalid(
-                "Finish the current Git operation in the terminal first.".into(),
-            ));
-        }
+    if conflicts::operation(host, cwd)?.is_some() || conflicts::has_sequence(host, cwd)? {
+        return Err(GitError::Invalid(
+            "Finish or abort the current merge, rebase or cherry-pick first.".into(),
+        ));
     }
     Ok(())
 }

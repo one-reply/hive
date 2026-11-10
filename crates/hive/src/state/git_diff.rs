@@ -124,6 +124,15 @@ fn changed_display(
     if previous == Some(patch) {
         return Ok(None);
     }
+    // Git describes an unmerged file with a combined diff, which has no two-sided display.
+    if ["diff --cc ", "diff --combined "]
+        .iter()
+        .any(|header| patch.patch().starts_with(header))
+    {
+        return Err(
+            "This file has merge conflicts. Open it from Conflicts in the Git panel.".into(),
+        );
+    }
     let files = DiffFile::parse(patch.patch())
         .map_err(|e| format!("Cannot display this patch: {e}. Open it in the terminal."))?;
     Ok(Some(files))
@@ -200,5 +209,50 @@ mod tests {
         );
         // Refresh clears the previous patch on I/O failure, so recovery must parse again.
         assert!(changed_display(&read(), None).unwrap().is_some());
+    }
+
+    #[test]
+    fn unmerged_file_points_to_its_resolver_instead_of_a_parser_error() {
+        let fixture = Fixture(
+            std::env::temp_dir().join(format!("hive-diff-conflict-{}", std::process::id())),
+        );
+        fs::create_dir(&fixture.0).unwrap();
+        let git = |args: &[&str]| {
+            Host::Local
+                .command("git", args, Some(&fixture.0))
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "Hive Test")
+                .env("GIT_AUTHOR_EMAIL", "hive@example.invalid")
+                .env("GIT_COMMITTER_NAME", "Hive Test")
+                .env("GIT_COMMITTER_EMAIL", "hive@example.invalid")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        let commit = |content: &str| {
+            fs::write(fixture.0.join("sample.txt"), content).unwrap();
+            assert!(git(&["add", "-A"]));
+            assert!(git(&["commit", "-q", "-m", "fixture"]));
+        };
+        assert!(git(&["init", "-q", "-b", "main", "--template="]));
+        commit("base\n");
+        assert!(git(&["checkout", "-q", "-b", "feature"]));
+        commit("feature\n");
+        assert!(git(&["checkout", "-q", "main"]));
+        commit("main\n");
+        assert!(!git(&["merge", "feature"]));
+        let patch = diff::read(
+            &Host::Local,
+            &fixture.0,
+            "sample.txt",
+            &DiffSource::WorkingTree,
+            None,
+        )
+        .unwrap();
+        assert!(patch.patch().starts_with("diff --cc "));
+        let error = changed_display(&patch, None).err().expect("no display");
+        assert!(error.contains("merge conflicts"), "{error}");
     }
 }

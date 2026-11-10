@@ -96,6 +96,7 @@ mod tests {
             submodule: false,
             staged_stats: None,
             unstaged_stats: None,
+            conflict: None,
         };
         let values = collect(&[
             file("src/a.rs", Some(Change::Added), Some(Change::Modified)),

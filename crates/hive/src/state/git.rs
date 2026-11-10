@@ -13,12 +13,14 @@ use hive_core::projects::Target;
 use std::collections::HashMap;
 use std::time::Duration;
 
+mod conflicts;
 mod generation;
 mod mutations;
 mod remote;
 mod review;
 mod verification;
 
+pub(crate) use conflicts::{ConflictRequest, ConflictState};
 pub(crate) use remote::RemoteOperation;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -32,6 +34,7 @@ pub(crate) struct DiffRequest {
 
 pub(crate) enum GitEvent {
     OpenDiff(DiffRequest),
+    OpenConflict(ConflictRequest),
     Activate(Target),
     Terminal(Target),
     AgentDraft(Target, hive_core::agent::AgentKind, String),
@@ -74,6 +77,8 @@ pub(crate) struct Git {
     repository: Repository,
     pub target: Option<Target>,
     pub status: Option<Status>,
+    /// The unfinished operation of `target`, as of the last refresh that looked for one.
+    operation: Option<git::conflicts::Operation>,
     pub branches: Vec<Branch>,
     pub remotes: Vec<String>,
     pub remote: Option<String>,
@@ -142,6 +147,7 @@ impl Git {
             repository: Repository::Unknown,
             target: None,
             status: None,
+            operation: None,
             branches: vec![],
             remotes: vec![],
             remote: None,
@@ -218,6 +224,7 @@ impl Git {
         self.query_generation += 1;
         self.review_loading = false;
         self.status = None;
+        self.operation = None;
         self.branches.clear();
         self.remotes.clear();
         self.remote = None;
@@ -244,6 +251,7 @@ impl Git {
         self.target = target;
         self.sync_diff_visibility();
         self.status = None;
+        self.operation = None;
         self.branches.clear();
         self.remotes.clear();
         self.remote = None;
@@ -347,7 +355,11 @@ impl Git {
         let prompt = hive_core::agent::draft::git_error(&target.path, error);
         cx.emit(GitEvent::AgentDraft(target, agent, prompt));
     }
+    /// Opens the review of `file`; an unmerged file has no diff and opens its resolver.
     pub fn open_diff(&self, file: &FileChange, source: DiffSource, cx: &mut Context<Self>) {
+        if file.conflict.is_some() {
+            return self.open_conflict(&file.path, cx);
+        }
         if let Some(target) = &self.target {
             cx.emit(GitEvent::OpenDiff(DiffRequest {
                 target: target.clone(),
@@ -378,6 +390,8 @@ impl Git {
         self.refresh_generation += 1;
         let generation = self.refresh_generation;
         let with_stats = self.panel_visible || self.diff_visible;
+        let previous = self.status.clone();
+        let known_operation = self.operation;
         self._refresh = Some(cx.spawn(async move |this, cx| {
             let query_target = target.clone();
             let result = cx
@@ -409,7 +423,21 @@ impl Git {
                     } else {
                         None
                     };
-                    Ok::<_, git::GitError>((status, metadata))
+                    let operation = if conflicts::inspects_operation(
+                        force,
+                        previous.as_ref(),
+                        &status,
+                        known_operation,
+                    ) {
+                        // The file list is still worth showing when only this probe fails.
+                        git::conflicts::operation(&t.host, &t.path).unwrap_or_else(|error| {
+                            tracing::warn!(path = ?t.path, %error, "operation probe failed");
+                            known_operation
+                        })
+                    } else {
+                        None
+                    };
+                    Ok::<_, git::GitError>((status, metadata, operation))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -418,8 +446,10 @@ impl Git {
                 }
                 this.loading = false;
                 match result {
-                    Ok((status, metadata)) => {
+                    Ok((status, metadata, operation)) => {
                         this.repository = Repository::Available;
+                        let operation_changed = this.operation != operation;
+                        this.operation = operation;
                         let head_changed = this.status.as_ref().is_none_or(|s| s.oid != status.oid);
                         let branch_changed = this
                             .status
@@ -454,7 +484,7 @@ impl Git {
                         if (head_changed || force) && with_stats {
                             this.load_review(false, cx);
                         }
-                        if changed || force || head_changed {
+                        if changed || force || head_changed || operation_changed {
                             cx.notify();
                         }
                     }

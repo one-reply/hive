@@ -1,5 +1,7 @@
 //! Explicit index, commit and remote operations. No force, implicit staging or automatic stash.
-use super::{GitError, READ_LIMIT, branches, bytes_mutation, diff, run, run_mutation, status};
+use super::{
+    GitError, READ_LIMIT, branches, bytes_mutation, conflicts, diff, run, run_mutation, status,
+};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -39,6 +41,13 @@ pub enum Action {
     Pull,
     /// Push to the configured upstream or explicitly publish to a remote.
     Push { remote: String, publish: bool },
+    /// Resolve one unmerged path with a whole side, replacing the working file; the caller
+    /// must have confirmed the loss of its content.
+    ResolveWith { path: String, side: conflicts::Side },
+    /// Abandon the unfinished merge, rebase, cherry-pick or revert.
+    AbortOperation,
+    /// Conclude the unfinished operation once every conflict is resolved.
+    ContinueOperation,
 }
 
 /// What a fetch, pull or push changed, for a short confirmation once it finishes.
@@ -121,7 +130,12 @@ fn remote_exists(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {
     Ok(())
 }
 
-fn paths(host: &Host, cwd: &Path, args: &[&str], paths: &[String]) -> Result<(), GitError> {
+pub(super) fn paths(
+    host: &Host,
+    cwd: &Path,
+    args: &[&str],
+    paths: &[String],
+) -> Result<(), GitError> {
     if paths.is_empty() {
         return Ok(());
     }
@@ -213,6 +227,9 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<Option<Synced
         Action::CreateBranch { name, base, track } => {
             branches::create(host, cwd, name, base, *track)
         }
+        Action::ResolveWith { path, side } => conflicts::resolve_with(host, cwd, path, *side),
+        Action::AbortOperation => conflicts::abort(host, cwd),
+        Action::ContinueOperation => conflicts::continue_operation(host, cwd),
     };
     local.map(|()| None)
 }
@@ -293,7 +310,7 @@ fn commit(host: &Host, cwd: &Path, message: &str) -> Result<(), GitError> {
     }
     if status::read(host, cwd)?.has_conflicts() {
         return Err(GitError::Invalid(
-            "Resolve conflicts in the terminal before committing.".into(),
+            "Resolve conflicts before committing.".into(),
         ));
     }
     bytes_mutation(

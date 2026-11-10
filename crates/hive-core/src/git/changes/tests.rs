@@ -10,6 +10,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 mod commit_and_push;
 #[cfg(feature = "desktop")]
 mod commit_messages;
+mod conflicts;
 mod line_stats;
 
 struct Repo(PathBuf);

@@ -1,6 +1,8 @@
 //! File rows with a stable, animated trailing action slot.
 use super::*;
+use crate::ui::conflict_panel::sides;
 use gpui_kit::base::motion::{Transition, transition};
+use hive_core::git::conflicts::Side;
 use std::time::Duration;
 
 const ACTION_TRANSITION_DURATION: Duration = Duration::from_millis(160);
@@ -32,6 +34,22 @@ fn status_badge(change: Option<Change>, cx: &App) -> impl IntoElement {
         .items_center()
         .justify_center()
         .child(code)
+}
+
+/// One icon action of a row's trailing slot.
+fn action_button(
+    id: impl Into<ElementId>,
+    icon: Lucide,
+    tooltip: impl Into<SharedString>,
+) -> Button {
+    Button::new(id)
+        .cursor_pointer()
+        .xsmall()
+        .w(ACTION_WIDTH)
+        .h(ROW_HEIGHT)
+        .rounded_none()
+        .icon(icon)
+        .tooltip(tooltip)
 }
 
 /// Directory in muted text, file name in full color.
@@ -98,6 +116,8 @@ impl GitPanel {
         let row_hover = Hover::new(row_key.clone(), window, cx);
         let discard_hover = Hover::new((row_key.clone(), "discard"), window, cx).enabled(!busy);
         let stage_hover = Hover::new((row_key.clone(), "stage"), window, cx).enabled(!busy);
+        let side_hovers = ["file-use-current", "file-use-incoming"]
+            .map(|id| Hover::new((row_key.clone(), id), window, cx).enabled(!busy));
         let focus = window
             .use_keyed_state((row_key, "focus"), cx, |_, cx| cx.focus_handle())
             .read(cx)
@@ -122,14 +142,7 @@ impl GitPanel {
         let open_path = file.path.clone();
         let target = self.git.read(cx).target.clone();
         actions = actions.child(
-            Button::new(("file-open", index))
-                .cursor_pointer()
-                .xsmall()
-                .w(ACTION_WIDTH)
-                .h(ROW_HEIGHT)
-                .rounded_none()
-                .icon(Lucide::FileCode)
-                .tooltip("Open file")
+            action_button(("file-open", index), Lucide::FileCode, "Open file")
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
                     if let Some(target) = target.clone() {
@@ -155,14 +168,11 @@ impl GitPanel {
         if can_discard {
             let path = file.path.clone();
             actions = actions.child(
-                Button::new(("file-discard", index))
-                    .cursor_pointer()
-                    .xsmall()
-                    .w(ACTION_WIDTH)
-                    .h(ROW_HEIGHT)
-                    .rounded_none()
-                    .icon(if untracked { Lucide::Trash } else { Lucide::Undo2 })
-                    .tooltip(if untracked { "Delete file" } else { "Discard unstaged changes" })
+                action_button(
+                    ("file-discard", index),
+                    if untracked { Lucide::Trash } else { Lucide::Undo2 },
+                    if untracked { "Delete file" } else { "Discard unstaged changes" },
+                )
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if !show_actions {
@@ -209,26 +219,61 @@ impl GitPanel {
                 Action::Stage(paths)
             };
             actions = actions.child(
-                Button::new(("file-stage", index))
-                    .cursor_pointer()
-                    .xsmall()
-                    .w(ACTION_WIDTH)
-                    .h(ROW_HEIGHT)
-                    .rounded_none()
-                    .icon(if staged { Lucide::Minus } else { Lucide::Plus })
-                    .tooltip(if staged { "Unstage file" } else { "Stage file" })
+                action_button(
+                    ("file-stage", index),
+                    if staged { Lucide::Minus } else { Lucide::Plus },
+                    if staged { "Unstage file" } else { "Stage file" },
+                )
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !show_actions {
+                        return;
+                    }
+                    // The row behind would otherwise open the diff too.
+                    cx.stop_propagation();
+                    this.git.update(cx, |g, cx| g.perform(action.clone(), cx))
+                }))
+                .smooth_hover(ButtonLook::Ghost, &stage_hover, cx),
+            );
+        }
+        let sides = if conflicted {
+            sides::choices(file.conflict)
+        } else {
+            &[]
+        };
+        for &side in sides {
+            let (kind, path) = (file.conflict, file.path.clone());
+            let (id, icon, hover) = match side {
+                Side::Ours => ("file-use-current", Lucide::ArrowLeftToLine, &side_hovers[0]),
+                Side::Theirs => (
+                    "file-use-incoming",
+                    Lucide::ArrowRightToLine,
+                    &side_hovers[1],
+                ),
+            };
+            let icon = if kind.is_some_and(|kind| !kind.has(side)) {
+                Lucide::Trash
+            } else {
+                icon
+            };
+            actions = actions.child(
+                action_button((id, index), icon, sides::tooltip(kind, side))
                     .disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         if !show_actions {
                             return;
                         }
-                        // The row behind would otherwise open the diff too.
+                        // The row behind would otherwise open the resolver too.
                         cx.stop_propagation();
-                        this.git.update(cx, |g, cx| g.perform(action.clone(), cx))
+                        let git = this.git.clone();
+                        if let Some(target) = git.read(cx).target.clone() {
+                            sides::take(git, target, &path, kind, side, window, cx);
+                        }
                     }))
-                    .smooth_hover(ButtonLook::Ghost, &stage_hover, cx),
+                    .smooth_hover(ButtonLook::Ghost, hover, cx),
             );
         }
+        let action_count = 1 + usize::from(can_discard) + usize::from(can_act) + sides.len();
         let (selected, open_source) = (file.clone(), source);
         h_flex()
             .id(row_id)
@@ -252,16 +297,7 @@ impl GitPanel {
                     .track_focus(&focus)
                     .tab_index(0)
                     .tab_stop(false)
-                    .min_w(
-                        ACTION_WIDTH
-                            * if can_discard {
-                                3.
-                            } else if can_act {
-                                2.
-                            } else {
-                                1.
-                            },
-                    )
+                    .min_w(ACTION_WIDTH * action_count as f32)
                     .child(
                         h_flex()
                             .h_full()

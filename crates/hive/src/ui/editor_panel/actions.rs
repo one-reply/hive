@@ -1,5 +1,5 @@
 use super::*;
-use crate::state::git::GitEvent;
+use crate::state::{documents::Changes, git::GitEvent};
 use gpui_kit::component::input::EditorState;
 use gpui_kit::component::{WindowExt as _, dialog::DialogButtonProps, notification::Notification};
 
@@ -86,13 +86,17 @@ impl EditorPanel {
         cx.spawn_in(window, async move |_, cx| {
             let result = task.await;
             let _ = cx.update(|window, cx| match result {
-                Ok(requests) if requests.is_empty() => window.push_notification(
+                Ok(Changes::Conflict(request)) => AppState::get(cx)
+                    .git
+                    .clone()
+                    .update(cx, |_, cx| cx.emit(GitEvent::OpenConflict(request))),
+                Ok(Changes::Diffs(requests)) if requests.is_empty() => window.push_notification(
                     Notification::info(
                         "No changes on disk. Save the buffer to include your edits.",
                     ),
                     cx,
                 ),
-                Ok(requests) => {
+                Ok(Changes::Diffs(requests)) => {
                     let git = AppState::get(cx).git.clone();
                     if requests.len() == 1 || !choose {
                         git.update(cx, |_, cx| cx.emit(GitEvent::OpenDiff(requests[0].clone())));

@@ -27,7 +27,7 @@ use crate::terminal::TerminalPanel;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
-use crate::ui::{diff_panel::DiffPanel, git_panel::GitPanel};
+use crate::ui::{conflict_panel::ConflictPanel, diff_panel::DiffPanel, git_panel::GitPanel};
 use crate::ui::{keymap, theme};
 use hive_core::agent::AgentStatus;
 use hive_core::projects::{Project, Worktree};

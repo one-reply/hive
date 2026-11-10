@@ -155,6 +155,7 @@ fn files(host: &Host, cwd: &Path, mut args: Vec<String>) -> Result<Vec<FileChang
         result.push(FileChange {
             staged_stats: counts.get(&path).copied(),
             unstaged_stats: None,
+            conflict: None,
             path,
             old_path,
             staged: Some(change),
