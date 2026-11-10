@@ -101,9 +101,10 @@ impl GitDiff {
                         }
                     }
                     Err(error) => {
-                        tracing::warn!(path = %this.request.path, %error, "diff preview failed");
                         this.patch = None;
+                        // The refresh repeats every two seconds; one line per distinct failure.
                         if this.error.as_ref() != Some(&error) {
+                            tracing::warn!(path = %this.request.path, %error, "diff preview failed");
                             this.error = Some(error);
                             cx.notify();
                         }

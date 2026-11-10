@@ -32,7 +32,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts", "raster-images"] }
 async-channel = "2.5"
 polling = "3.11"
-rustix = { version = "1.1", default-features = false, features = ["std", "process", "termios", "fs"] }
+rustix = { version = "1.1", default-features = false, features = ["std", "process", "termios", "fs", "event"] }
 tracing = "0.1"
 # Parsers already built by gpui-kit's highlighter; reused by hive-core import navigation.
 tree-sitter = "0.26"

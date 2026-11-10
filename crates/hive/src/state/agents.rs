@@ -29,8 +29,8 @@ mod installed;
 pub(crate) use api::SpawnRequest;
 pub(crate) use endpoint::{Endpoint, PaneEndpoint};
 
-/// Short enough that a spinner starts soon after the agent does, long enough that one `ps`
-/// per tick stays negligible.
+/// Short enough that a spinner starts soon after the agent does, long enough that one process
+/// table snapshot per tick stays negligible.
 const POLL_INTERVAL: Duration = Duration::from_millis(800);
 
 /// One agent in one terminal pane.
