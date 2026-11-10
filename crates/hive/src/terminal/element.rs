@@ -216,7 +216,8 @@ impl Element for TerminalElement {
         } else {
             CursorShape::HollowBlock
         };
-        let cursor_visible = content.cursor.shape != CursorShape::Hidden;
+        let cursor_opacity = view.cursor_opacity();
+        let cursor_visible = content.cursor.shape != CursorShape::Hidden && cursor_opacity > 0.;
 
         for indexed in display_iter {
             let cell: &Cell = indexed.cell;
@@ -264,9 +265,13 @@ impl Element for TerminalElement {
                 && cursor_point == Some(GridPoint::new(row, hive_core::terminal::Column(col)));
             if at_cursor {
                 if matches!(cursor_shape, CursorShape::Block) {
-                    fg = bg;
+                    fg = fg.blend(bg.opacity(cursor_opacity));
                 }
-                cursor = Some((cell_bounds, palette.cursor, cursor_shape));
+                cursor = Some((
+                    cell_bounds,
+                    palette.cursor.opacity(cursor_opacity),
+                    cursor_shape,
+                ));
             }
 
             if bg != palette.bg {

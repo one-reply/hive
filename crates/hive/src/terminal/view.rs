@@ -22,6 +22,7 @@ use super::keys;
 use super::mouse::GridGeometry;
 use crate::ui::keymap;
 
+mod cursor;
 mod draft;
 mod menu;
 mod selection;
@@ -46,6 +47,9 @@ pub struct TerminalView {
     scroll_remainder: f32,
     grid: Option<GridGeometry>,
     glyph_cache: GlyphCache,
+    /// Blink steps since the cursor was last lit by input or a focus change.
+    cursor_step: usize,
+    cursor_tick: Option<Task<()>>,
     selecting: bool,
     selection_scroll: gpui_kit::base::AutoScroll,
     selection_scroll_remainder: f32,
@@ -119,17 +123,20 @@ impl TerminalView {
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.on_focus(&focus_handle, window, |this, _, cx| {
+                this.restart_cursor_blink(cx);
                 this.session
                     .update(cx, |session, _| session.set_focused(true));
                 cx.notify();
             }),
             cx.on_blur(&focus_handle, window, |this, _, cx| {
+                this.restart_cursor_blink(cx);
                 this.stop_selection();
                 this.session
                     .update(cx, |session, _| session.set_focused(false));
                 cx.notify();
             }),
-            cx.observe_window_activation(window, |this, window, _| {
+            cx.observe_window_activation(window, |this, window, cx| {
+                this.restart_cursor_blink(cx);
                 if !window.is_window_active() {
                     this.stop_selection();
                 }
@@ -145,6 +152,8 @@ impl TerminalView {
             scroll_remainder: 0.,
             grid: None,
             glyph_cache: GlyphCache::default(),
+            cursor_step: 0,
+            cursor_tick: None,
             selecting: false,
             selection_scroll: gpui_kit::base::AutoScroll::default(),
             selection_scroll_remainder: 0.,
@@ -224,12 +233,14 @@ impl TerminalView {
             false
         });
         if handled {
+            self.restart_cursor_blink(cx);
             self.stop_selection();
             cx.stop_propagation();
         }
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
+        self.restart_cursor_blink(cx);
         self.stop_selection();
         self.session.update(cx, |session, cx| session.paste(cx));
     }
@@ -239,7 +250,10 @@ impl TerminalView {
             session.insert_file_references(&drag.target, &drag.paths, cx)
         });
         match result {
-            Ok(()) => self.focus_handle.focus(window, cx),
+            Ok(()) => {
+                self.restart_cursor_blink(cx);
+                self.focus_handle.focus(window, cx);
+            }
             Err(error) => {
                 tracing::warn!(%error, "could not insert dropped file reference");
                 window.push_notification(
@@ -282,6 +296,7 @@ impl Focusable for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
+        self.sync_cursor_blink(focused && window.is_window_active(), cx);
         let host = self.session.read(cx).host.clone();
         let bg = cx.theme().background;
         let draft = self.render_agent_draft(window, cx);
