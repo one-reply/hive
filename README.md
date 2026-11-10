@@ -256,6 +256,7 @@ require the credentials described in [Releasing](docs/RELEASING.md#developer-id-
 | New terminal | ⌘T |
 | Split terminal right | ⌘D |
 | Split terminal down | ⌘⇧D |
+| Focus the terminal pane on that side | ⌘← ⌘→ ⌘↑ ⌘↓ |
 | Close focused terminal pane, editor, or diff | ⌘W |
 | Toggle project sidebar | ⌘⇧\ |
 | Toggle right sidebar (Git / Files) | ⌘\ |
