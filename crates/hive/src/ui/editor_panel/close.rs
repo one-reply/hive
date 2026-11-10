@@ -143,9 +143,9 @@ pub(crate) fn all(
     guard(Scope::All, window, cx, complete);
 }
 
-pub(crate) fn quit(window: &mut Window, cx: &mut App) {
-    guard_result(Scope::All, window, cx, |approved, _, cx| {
-        crate::quit::reply(approved, cx)
+pub(crate) fn quit(request: crate::quit::Request, window: &mut Window, cx: &mut App) {
+    guard_result(Scope::All, window, cx, move |approved, _, cx| {
+        request.reply(approved, cx)
     });
 }
 

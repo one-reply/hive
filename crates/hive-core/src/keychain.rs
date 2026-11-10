@@ -256,7 +256,8 @@ fn jwt_claim(jwt: &str, claim: &str) -> Option<String> {
 /// The JWT's `exp` claim.
 fn jwt_expiry(jwt: &str) -> Option<SystemTime> {
     let seconds = jwt_payload(jwt)?["exp"].as_u64()?;
-    Some(UNIX_EPOCH + Duration::from_secs(seconds))
+    // The token is a file on disk: an absurd expiry must not take the app down.
+    UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
 }
 
 fn jwt_payload(jwt: &str) -> Option<Value> {
@@ -302,6 +303,14 @@ mod tests {
     fn jwt(payload: &str) -> String {
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
         format!("h.{payload}.s")
+    }
+
+    #[test]
+    fn token_expiry_beyond_the_clock_range_is_ignored_instead_of_panicking() {
+        let token = jwt(r#"{"sub":"auth0|u","exp":18446744073709551615}"#);
+        assert_eq!(jwt_expiry(&token), None);
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        assert_eq!(cursor_session_from(token, now).unwrap().user_id, "u");
     }
 
     #[test]

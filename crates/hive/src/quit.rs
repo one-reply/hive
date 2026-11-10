@@ -54,18 +54,20 @@ pub(crate) fn init(cx: &mut App) -> Result<Task<()>, &'static str> {
     }
     Ok(cx.spawn(async move |cx| {
         while receiver.recv().await.is_ok() {
+            let request = Request(());
             cx.update(|cx| {
-                if let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied()) {
-                    if window
-                        .update(cx, |_, window, cx| {
-                            crate::ui::editor_panel::close::quit(window, cx)
-                        })
-                        .is_err()
-                    {
-                        reply(false, cx);
-                    }
-                } else {
-                    reply(true, cx);
+                let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied())
+                else {
+                    return request.reply(true, cx);
+                };
+                // A window that closed meanwhile drops the request, which cancels this quit.
+                if window
+                    .update(cx, |_, window, cx| {
+                        crate::ui::editor_panel::close::quit(request, window, cx)
+                    })
+                    .is_err()
+                {
+                    tracing::debug!("quit request cancelled: its window is gone");
                 }
             });
         }
@@ -89,12 +91,24 @@ extern "C-unwind" fn should_terminate(_: *mut AnyObject, _: Sel, _: *mut AnyObje
     0 // NSTerminateCancel
 }
 
-pub(crate) fn reply(approved: bool, cx: &mut App) {
-    PENDING.store(false, Ordering::SeqCst);
-    if approved {
-        APPROVED.store(true, Ordering::SeqCst);
-        // GPUI's platform.quit schedules termination after App/Window leases are released.
-        cx.quit();
+/// One pending quit, handed to whoever decides it. Dropping it unanswered cancels the quit
+/// and lets the next one through: the save prompt and the save run in tasks tied to a window,
+/// and a window closed under them would otherwise leave every later quit refused.
+pub(crate) struct Request(());
+
+impl Request {
+    pub(crate) fn reply(self, approved: bool, cx: &mut App) {
+        if approved {
+            APPROVED.store(true, Ordering::SeqCst);
+            // GPUI's platform.quit schedules termination after App/Window leases are released.
+            cx.quit();
+        }
+    }
+}
+
+impl Drop for Request {
+    fn drop(&mut self) {
+        PENDING.store(false, Ordering::SeqCst);
     }
 }
 
@@ -102,7 +116,7 @@ pub(crate) fn reply(approved: bool, cx: &mut App) {
 mod tests {
     use super::*;
     #[test]
-    fn native_quit_waits_and_coalesces_repeated_requests() {
+    fn native_quit_waits_coalesces_repeated_requests_and_survives_a_dropped_one() {
         let (sender, receiver) = async_channel::bounded(1);
         REQUESTS.set(sender).unwrap();
         for _ in 0..3 {
@@ -126,6 +140,17 @@ mod tests {
             0
         );
         assert!(receiver.is_empty());
+        // A request dropped without an answer lets the next quit ask again.
+        drop(Request(()));
+        assert_eq!(
+            should_terminate(
+                std::ptr::null_mut(),
+                sel!(applicationShouldTerminate:),
+                std::ptr::null_mut()
+            ),
+            0
+        );
+        receiver.try_recv().unwrap();
         APPROVED.store(true, Ordering::SeqCst);
         assert_eq!(
             should_terminate(

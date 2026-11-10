@@ -126,12 +126,9 @@ impl Sidebar {
                     .h((height - full).max(px(0.)))
                     .flex_none()
                     .overflow_hidden()
-                    .children(
-                        sessions
-                            .iter()
-                            .zip(row_hovers)
-                            .map(|(session, hover)| render_session(session, &target, &hover, cx)),
-                    ),
+                    .children(sessions.iter().zip(row_hovers).map(|(session, hover)| {
+                        render_session(session, &target, &hover, &self.working, cx)
+                    })),
             )
             .into_any_element();
         AgentsSection {
@@ -176,7 +173,7 @@ impl Sidebar {
             .items_center()
             .rounded_md()
             .bg(fg.opacity(PILL_BACKGROUND_OPACITY))
-            .child(status_icon(status, cx))
+            .child(status_icon(status, &self.working, cx))
             .children(
                 sessions
                     .iter()
@@ -236,6 +233,7 @@ fn render_session(
     session: &AgentSession,
     target: &CardTarget,
     hover: &Hover,
+    working: &SteppedSpinner,
     cx: &mut Context<Sidebar>,
 ) -> Stateful<Div> {
     let fg = cx.theme().sidebar_foreground;
@@ -262,7 +260,7 @@ fn render_session(
         .hover_bg(hover, fg.opacity(0.), fg.opacity(STRIP_HOVER_OPACITY))
         .cursor_pointer()
         .text_size(META_TEXT)
-        .child(status_icon(session.status, cx))
+        .child(status_icon(session.status, working, cx))
         .child(logo(session.kind, cx))
         .when_some(session.name.clone(), |row, name| {
             row.child(
@@ -301,12 +299,14 @@ fn render_session(
         })
 }
 
-fn status_icon(status: AgentStatus, cx: &App) -> AnyElement {
+/// An agent works for minutes, so its indicator steps: a per-frame spinner would redraw the
+/// window at display rate the whole time.
+fn status_icon(status: AgentStatus, working: &SteppedSpinner, cx: &App) -> AnyElement {
     match status {
-        AgentStatus::Working => Spinner::new()
-            .icon(IconName::LoaderCircle)
-            .color(rgb(ACTIVE_COLOR).into())
-            .xsmall()
+        AgentStatus::Working => working
+            .icon(cx)
+            .size_3()
+            .text_color(rgb(ACTIVE_COLOR))
             .into_any_element(),
         AgentStatus::WaitingInput | AgentStatus::WaitingApproval => Icon::new(Lucide::CircleAlert)
             .size_3()
