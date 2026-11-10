@@ -1,5 +1,6 @@
 //! Resizable terminal tiles and their close controls.
 use super::*;
+use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
 
 impl TerminalPanel {
@@ -58,8 +59,9 @@ impl TerminalPanel {
         }
     }
 
-    /// One pane. Among split panes, hovering one fades in a close button in its top-right
-    /// corner; a lone pane is closed with its tab instead.
+    /// One pane. Among split panes, the focused one glows inward from its edges and hovering
+    /// one fades in a close button in its top-right corner; a lone pane has nothing to be told
+    /// apart from and is closed with its tab instead.
     fn render_leaf(
         &self,
         view: &Entity<TerminalView>,
@@ -76,9 +78,18 @@ impl TerminalPanel {
             return pane.into_any_element();
         }
         let hover = Hover::new(pane_id.clone(), window, cx);
-        let close_hover = Hover::new((ElementId::from(pane_id), "close"), window, cx);
+        let close_hover = Hover::new((ElementId::from(pane_id.clone()), "close"), window, cx);
+        let focused = view.read(cx).focus_handle().is_focused(window);
+        let glow = transition(
+            (ElementId::from(pane_id), "focus-glow"),
+            if focused { 1. } else { 0. },
+            Transition::new(FOCUS_GLOW_DURATION).ease(ease_in_out),
+            window,
+            cx,
+        );
         let theme = cx.theme();
         let (background, border) = (theme.background, theme.border);
+        let glow_color = focus_glow_color(theme.foreground, glow);
         let close = Button::new(("close-pane", view.entity_id()))
             .cursor_pointer()
             .xsmall()
@@ -94,6 +105,15 @@ impl TerminalPanel {
             }))
             .smooth_hover(ButtonLook::Ghost, &close_hover, cx);
         pane.on_hover(hover.listener())
+            .when(glow > 0., |pane| {
+                // Drawn over the terminal, which paints its own opaque background; it has no
+                // listeners, so the terminal under it still gets the pointer.
+                pane.child(div().absolute().inset_0().shadow(vec![
+                    BoxShadow::new(px(0.), px(0.), glow_color)
+                        .blur_radius(FOCUS_GLOW_DEPTH)
+                        .inset(),
+                ]))
+            })
             // An invisible button must not catch clicks meant for the terminal.
             .when(hover.progress() > 0., |pane| {
                 pane.child(
@@ -110,5 +130,36 @@ impl TerminalPanel {
                 )
             })
             .into_any_element()
+    }
+}
+
+/// The glow of the focused pane, `strength` of the way in. The theme's text color is light
+/// on a dark theme and dark on a light one, which is the contrast a glow over the terminal
+/// background needs.
+fn focus_glow_color(foreground: Hsla, strength: f32) -> Hsla {
+    foreground.opacity(FOCUS_GLOW_OPACITY * strength.clamp(0., 1.))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FOCUS_GLOW_OPACITY, focus_glow_color};
+    use gpui_kit::{black, white};
+
+    #[test]
+    fn glow_takes_the_text_color_so_it_contrasts_with_either_theme() {
+        let dark_theme = focus_glow_color(white(), 1.);
+        let light_theme = focus_glow_color(black(), 1.);
+        assert_eq!(dark_theme.l, 1.);
+        assert_eq!(light_theme.l, 0.);
+        assert_eq!(dark_theme.a, FOCUS_GLOW_OPACITY);
+        assert_eq!(light_theme.a, FOCUS_GLOW_OPACITY);
+    }
+
+    #[test]
+    fn glow_fades_with_its_strength_and_never_exceeds_its_ceiling() {
+        assert_eq!(focus_glow_color(white(), 0.).a, 0.);
+        assert_eq!(focus_glow_color(white(), 0.5).a, FOCUS_GLOW_OPACITY / 2.);
+        assert_eq!(focus_glow_color(white(), 3.).a, FOCUS_GLOW_OPACITY);
+        assert_eq!(focus_glow_color(white(), -1.).a, 0.);
     }
 }

@@ -8,7 +8,9 @@ use gpui_kit::*;
 use hive_core::settings::Settings;
 
 use crate::app::AppState;
-use crate::terminal::panel::{ClosePane, SplitDown, SplitRight};
+use crate::terminal::panel::{
+    ClosePane, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, SplitDown, SplitRight,
+};
 use crate::terminal::view::{Copy, Paste};
 use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
 use crate::ui::editor_panel::{CloseFile, OpenFileSearch, SaveFile};
@@ -30,6 +32,8 @@ pub(crate) const COMMIT_CONTEXT: &str = "(SourceControl > Input) || SourceContro
 pub(crate) const FILE_TAB_CONTEXT: &str = "EditorPanel || DiffPanel || ConflictPanel";
 /// Key context of a focused code editor, gpui-component's `Input mode=editor`.
 pub(crate) const CODE_EDITOR_CONTEXT: &str = "Input && mode == editor";
+/// Key context of the Files tree while no file name is being edited.
+pub(crate) const FILES_TREE_CONTEXT: &str = "(FilesPanel > Tree) && !Input";
 /// Key context of pane shortcuts: a focused terminal tab.
 pub(crate) const TERMINAL_CONTEXT: &str = "TerminalPanel";
 /// Key context of a focused terminal pane's own shortcuts.
@@ -63,6 +67,25 @@ impl Category {
     }
 }
 
+/// A part of the window a shortcut is confined to. Focus is in one of them at a time, so
+/// shortcuts of different areas can share keys: ⌘W closes a file or a pane, ⌘↓ opens the
+/// selected file or moves to the pane below.
+#[derive(PartialEq, Eq)]
+enum FocusArea {
+    FileTab,
+    Terminal,
+    FilesTree,
+}
+
+fn focus_area(context: &str) -> Option<FocusArea> {
+    match context {
+        "EditorPanel" | FILE_TAB_CONTEXT => Some(FocusArea::FileTab),
+        TERMINAL_CONTEXT | TERMINAL_VIEW_CONTEXT => Some(FocusArea::Terminal),
+        FILES_TREE_CONTEXT => Some(FocusArea::FilesTree),
+        _ => None,
+    }
+}
+
 /// An action the user can reassign.
 pub(crate) struct Shortcut {
     pub label: &'static str,
@@ -89,7 +112,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 24] = [
+pub(crate) static SHORTCUTS: [Shortcut; 28] = [
     Shortcut {
         label: "Open file",
         default: "cmd-p",
@@ -212,6 +235,34 @@ pub(crate) static SHORTCUTS: [Shortcut; 24] = [
         action: || Box::new(ClosePane),
     },
     Shortcut {
+        label: "Focus pane on the left",
+        default: "cmd-left",
+        category: Category::Terminal,
+        context: TERMINAL_CONTEXT,
+        action: || Box::new(FocusPaneLeft),
+    },
+    Shortcut {
+        label: "Focus pane on the right",
+        default: "cmd-right",
+        category: Category::Terminal,
+        context: TERMINAL_CONTEXT,
+        action: || Box::new(FocusPaneRight),
+    },
+    Shortcut {
+        label: "Focus pane above",
+        default: "cmd-up",
+        category: Category::Terminal,
+        context: TERMINAL_CONTEXT,
+        action: || Box::new(FocusPaneUp),
+    },
+    Shortcut {
+        label: "Focus pane below",
+        default: "cmd-down",
+        category: Category::Terminal,
+        context: TERMINAL_CONTEXT,
+        action: || Box::new(FocusPaneDown),
+    },
+    Shortcut {
         label: "Copy from terminal",
         default: "cmd-c",
         category: Category::Terminal,
@@ -237,21 +288,21 @@ pub(crate) static SHORTCUTS: [Shortcut; 24] = [
         // VS Code's macOS keys: Enter renames the selected entry, Cmd-Down opens it.
         default: "cmd-down",
         category: Category::Files,
-        context: "(FilesPanel > Tree) && !Input",
+        context: FILES_TREE_CONTEXT,
         action: || Box::new(OpenSelectedFile),
     },
     Shortcut {
         label: "Rename file",
         default: "enter",
         category: Category::Files,
-        context: "(FilesPanel > Tree) && !Input",
+        context: FILES_TREE_CONTEXT,
         action: || Box::new(RenameSelectedFile),
     },
     Shortcut {
         label: "Delete file permanently",
         default: "cmd-backspace",
         category: Category::Files,
-        context: "(FilesPanel > Tree) && !Input",
+        context: FILES_TREE_CONTEXT,
         action: || Box::new(DeleteSelectedFile),
     },
     Shortcut {
@@ -390,12 +441,12 @@ pub(crate) fn assign(
         let current = keybindings
             .get(shortcut.name())
             .map_or(shortcut.default, String::as_str);
-        let is_file = |context| matches!(context, "EditorPanel" | FILE_TAB_CONTEXT);
-        let is_terminal = |context| matches!(context, TERMINAL_CONTEXT | TERMINAL_VIEW_CONTEXT);
-        let (theirs, ours) = (shortcut.context, SHORTCUTS[ix].context);
-        let editor_terminal =
-            (is_file(theirs) && is_terminal(ours)) || (is_file(ours) && is_terminal(theirs));
-        *other != ix && !editor_terminal && normalize(current) == keys
+        let areas = (
+            focus_area(shortcut.context),
+            focus_area(SHORTCUTS[ix].context),
+        );
+        let apart = matches!(areas, (Some(theirs), Some(ours)) if theirs != ours);
+        *other != ix && !apart && normalize(current) == keys
     });
     if let Some((_, shortcut)) = taken {
         return Err(Rejection::TakenBy(shortcut.label));
@@ -654,6 +705,94 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn files_tree_and_terminal_can_share_arrow_keys_but_panes_cannot_share_them() {
+        let none = BTreeMap::new();
+        assert_eq!(
+            assign(
+                shortcut("Focus pane below"),
+                &keystroke("cmd-down"),
+                &none,
+                MAC
+            ),
+            Ok(Assignment::Default)
+        );
+        assert_eq!(
+            assign(
+                shortcut("Open selected file"),
+                &keystroke("cmd-down"),
+                &none,
+                MAC
+            ),
+            Ok(Assignment::Default)
+        );
+        assert_eq!(
+            assign(
+                shortcut("Focus pane above"),
+                &keystroke("cmd-down"),
+                &none,
+                MAC
+            ),
+            Err(Rejection::TakenBy("Focus pane below"))
+        );
+        // A window-wide shortcut is in reach from every area.
+        assert_eq!(
+            assign(
+                shortcut("Focus pane above"),
+                &keystroke("cmd-t"),
+                &none,
+                MAC
+            ),
+            Err(Rejection::TakenBy("New terminal"))
+        );
+    }
+
+    #[test]
+    fn pane_focus_keys_reach_a_terminal_and_leave_other_panels_their_own() {
+        use gpui_kit::{KeyBinding, KeyContext, Keymap};
+        let context = |label| Some(SHORTCUTS[shortcut(label)].context);
+        let mut keymap = Keymap::default();
+        keymap.add_bindings([
+            KeyBinding::new(
+                "cmd-left",
+                super::FocusPaneLeft,
+                context("Focus pane on the left"),
+            ),
+            KeyBinding::new(
+                "cmd-right",
+                super::FocusPaneRight,
+                context("Focus pane on the right"),
+            ),
+            KeyBinding::new("cmd-up", super::FocusPaneUp, context("Focus pane above")),
+            KeyBinding::new(
+                "cmd-down",
+                super::FocusPaneDown,
+                context("Focus pane below"),
+            ),
+        ]);
+        let matches = |keys: &'static str, path: &[&str]| {
+            let path: Vec<_> = path
+                .iter()
+                .map(|name| KeyContext::parse(name).expect("context"))
+                .collect();
+            keymap.bindings_for_input(&[keystroke(keys)], &path).0.len()
+        };
+        for keys in ["cmd-left", "cmd-right", "cmd-up", "cmd-down"] {
+            assert_eq!(
+                matches(keys, &["Workspace", "TerminalPanel", "Terminal"]),
+                1
+            );
+            // The commit message, the Files tree and an editor keep ⌘+arrows for themselves.
+            for elsewhere in [
+                &["Workspace", "SourceControl", "Input"][..],
+                &["Workspace", "FilesPanel", "Tree"][..],
+                &["Workspace", "EditorPanel", "Input"][..],
+            ] {
+                assert_eq!(matches(keys, elsewhere), 0, "{keys} in {elsewhere:?}");
+            }
+        }
     }
 
     #[test]
