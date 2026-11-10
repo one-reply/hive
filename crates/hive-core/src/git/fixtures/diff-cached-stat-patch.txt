@@ -1,0 +1,51 @@
+ binary                                      | Bin 0 -> 4 bytes
+ deep/dir/space name.rs                      |   1 +
+ delete.txt                                  |   1 -
+ keep.txt                                    |   3 ++-
+ "new\n\321\226\320\274\342\200\231\321\217" |   1 +
+ old name                                    |   1 -
+ 6 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/binary b/binary
+new file mode 100644
+index 0000000..badc806
+Binary files /dev/null and b/binary differ
+diff --git a/deep/dir/space name.rs b/deep/dir/space name.rs
+new file mode 100644
+index 0000000..587be6b
+--- /dev/null
++++ b/deep/dir/space name.rs	
+@@ -0,0 +1 @@
++x
+diff --git a/delete.txt b/delete.txt
+deleted file mode 100644
+index 286c5f5..0000000
+--- a/delete.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-gone
+diff --git a/keep.txt b/keep.txt
+old mode 100644
+new mode 100755
+index 814f4a4..f04eb26
+--- a/keep.txt
++++ b/keep.txt
+@@ -1,2 +1,3 @@
+ one
+-two
++2
++three
+diff --git "a/new\n\321\226\320\274\342\200\231\321\217" "b/new\n\321\226\320\274\342\200\231\321\217"
+new file mode 100644
+index 0000000..3367afd
+--- /dev/null
++++ "b/new\n\321\226\320\274\342\200\231\321\217"
+@@ -0,0 +1 @@
++old
+diff --git a/old name b/old name
+deleted file mode 100644
+index 3367afd..0000000
+--- a/old name	
++++ /dev/null
+@@ -1 +0,0 @@
+-old
