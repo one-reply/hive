@@ -183,7 +183,14 @@ impl Terminal {
             size: Arc::new(std::sync::Mutex::new(window_size)),
         };
 
-        let term = Term::new(Config::default(), &size, listener.clone());
+        let config = Config {
+            default_cursor_style: alacritty_terminal::vte::ansi::CursorStyle {
+                blinking: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let term = Term::new(config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
         let (child, file) = process::spawn(command, window_size).map_err(TerminalError::Pty)?;
@@ -299,6 +306,17 @@ impl Terminal {
 
     pub fn mode(&self) -> TermMode {
         *self.term.lock().mode()
+    }
+
+    /// Whether the cursor on screen is one that blinks: the program shows it, its style
+    /// blinks, and the viewport has not scrolled it out of sight.
+    pub fn has_blinking_cursor(&self) -> bool {
+        let term = self.term.lock();
+        let content = term.renderable_content();
+        content.cursor.shape != CursorShape::Hidden
+            && term.cursor_style().blinking
+            && point_to_viewport(content.display_offset, content.cursor.point)
+                .is_some_and(|point| point.line < term.screen_lines())
     }
 
     pub fn set_focused(&self, focused: bool) {

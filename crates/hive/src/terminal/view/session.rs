@@ -89,6 +89,7 @@ impl TerminalView {
         });
         self._session_subscriptions = Self::subscribe_session(&session, window, cx);
         self.session = session;
+        self.restart_cursor_blink(cx);
         self.stop_selection();
         self.scroll_remainder = 0.;
         cx.emit(TerminalViewEvent::TitleChanged);

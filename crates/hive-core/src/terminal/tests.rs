@@ -5,6 +5,42 @@ fn shell() -> Terminal {
     Terminal::spawn(None, Some("/bin/sh"), TerminalSize::new(80, 24)).unwrap()
 }
 
+#[test]
+fn cursor_blinks_by_default_and_follows_program_style_visibility_and_viewport() {
+    use alacritty_terminal::vte::ansi::Processor;
+
+    let terminal = Terminal::spawn(None, Some("/bin/cat"), TerminalSize::new(80, 24)).unwrap();
+    let mut parser: Processor = Processor::new();
+    let mut feed = |bytes: &[u8]| parser.advance(&mut *terminal.term().lock(), bytes);
+    let shape = || terminal.term().lock().renderable_content().cursor.shape;
+
+    assert!(terminal.has_blinking_cursor());
+    feed(b"\x1b[2 q");
+    assert!(!terminal.has_blinking_cursor());
+    feed(b"\x1b[5 q");
+    assert!(terminal.has_blinking_cursor());
+    assert_eq!(shape(), CursorShape::Beam);
+    feed(b"\x1b[?12l");
+    assert!(!terminal.has_blinking_cursor());
+
+    // Hiding the cursor keeps its blinking style for when the program shows it again.
+    feed(b"\x1b[?12h\x1b[?25l");
+    assert!(terminal.term().lock().cursor_style().blinking);
+    assert_eq!(shape(), CursorShape::Hidden);
+    assert!(!terminal.has_blinking_cursor());
+    feed(b"\x1b[?25h");
+    assert_eq!(shape(), CursorShape::Beam);
+    assert!(terminal.has_blinking_cursor());
+
+    // The cursor sits on the last row, so one line of history scrolls it out of the viewport.
+    feed(&b"\n".repeat(30));
+    assert!(terminal.has_blinking_cursor());
+    terminal.scroll(1);
+    assert!(!terminal.has_blinking_cursor());
+    terminal.scroll_to_bottom();
+    assert!(terminal.has_blinking_cursor());
+}
+
 fn wait_for(mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !ready() {
