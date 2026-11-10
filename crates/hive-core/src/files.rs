@@ -10,6 +10,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod content_search;
 pub mod decorations;
 pub mod images;
 mod language;
@@ -120,19 +121,9 @@ impl Snapshot {
 
     /// Parse bounded UTF-8 source bytes, preserving their exact disk representation.
     pub fn parse(path: &Path, bytes: &[u8]) -> Result<Self, FileError> {
-        if bytes.len() > MAX_FILE_BYTES {
-            return Err(unsupported(
-                path,
-                "files larger than 1 MiB are not supported in Code",
-            ));
-        }
-        if bytes.contains(&0) {
-            return Err(unsupported(path, "binary files are not supported"));
-        }
-        let raw = std::str::from_utf8(bytes)
-            .map_err(|_| unsupported(path, "the file is not UTF-8"))?
-            .to_owned();
-        Ok(Self { raw })
+        document_text(path, bytes).map(|raw| Self {
+            raw: raw.to_owned(),
+        })
     }
 
     /// Text presented to the editor; uniform CRLF documents use LF internally.
@@ -168,22 +159,48 @@ impl Snapshot {
     }
 }
 
+/// The editor's document rule: at most 1 MiB, no NUL bytes, valid UTF-8.
+pub(super) fn document_text<'a>(path: &Path, bytes: &'a [u8]) -> Result<&'a str, FileError> {
+    if bytes.len() > MAX_FILE_BYTES {
+        return Err(unsupported(
+            path,
+            "files larger than 1 MiB are not supported in Code",
+        ));
+    }
+    if bytes.contains(&0) {
+        return Err(unsupported(path, "binary files are not supported"));
+    }
+    std::str::from_utf8(bytes).map_err(|_| unsupported(path, "the file is not UTF-8"))
+}
+
 /// Reject paths outside a worktree, Git internals, symlinks and remote hosts.
 pub fn resolve(host: &Host, root: &Path, relative: &Path) -> Result<PathBuf, FileError> {
     if host != &Host::Local {
         return Err(unsupported(root, "remote editing is not supported yet"));
     }
-    if !root.is_absolute()
-        || relative
-            .components()
-            .any(|part| !matches!(part, Component::Normal(name) if name != ".git"))
-    {
-        return Err(unsupported(
-            relative,
-            "the path must stay inside the selected worktree",
-        ));
+    if !root.is_absolute() || !stays_inside(relative) {
+        return Err(outside_worktree(relative));
     }
-    let mut path = fs::canonicalize(root).map_err(|e| io_error("resolve worktree", root, e))?;
+    let root = fs::canonicalize(root).map_err(|e| io_error("resolve worktree", root, e))?;
+    resolve_within(&root, relative)
+}
+
+fn stays_inside(relative: &Path) -> bool {
+    relative
+        .components()
+        .all(|part| matches!(part, Component::Normal(name) if name != ".git"))
+}
+
+fn outside_worktree(relative: &Path) -> FileError {
+    unsupported(relative, "the path must stay inside the selected worktree")
+}
+
+/// `resolve` against an already canonical local root, for callers that check many paths.
+pub(super) fn resolve_within(root: &Path, relative: &Path) -> Result<PathBuf, FileError> {
+    if !stays_inside(relative) {
+        return Err(outside_worktree(relative));
+    }
+    let mut path = root.to_path_buf();
     for part in relative.components() {
         path.push(part);
         let metadata = fs::symlink_metadata(&path).map_err(|e| io_error("inspect", &path, e))?;
@@ -217,7 +234,7 @@ fn read_path(path: &Path) -> Result<Snapshot, FileError> {
     Snapshot::parse(path, &bytes)
 }
 
-fn read_bytes(
+pub(super) fn read_bytes(
     path: &Path,
     limit: usize,
     limit_message: &'static str,

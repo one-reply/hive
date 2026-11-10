@@ -10,10 +10,12 @@ use hive_core::{
     files::{decorations::Decoration, tree::Node},
     settings::FilesSettings,
 };
+mod content_search;
 mod listing;
 mod mutations;
 mod search;
 mod tree;
+pub(crate) use content_search::{ContentStatus, SearchMode, SearchOption};
 pub(crate) use mutations::FileOperation;
 
 /// A finished file operation. `warning` reports a secondary failure after success, such as
@@ -59,6 +61,8 @@ pub(crate) struct Files {
     pending_reveal: Option<PathBuf>,
     pending_refresh: bool,
     search: search::Search,
+    search_mode: SearchMode,
+    content: content_search::ContentSearch,
     generation: u64,
     _operation: Option<Task<()>>,
     _read: Option<Task<()>>,
@@ -174,6 +178,7 @@ impl Files {
                     this.entries.clear();
                     this.expanded.clear();
                     this.search.reset();
+                    this.content.reset();
                     this.rebuild(cx);
                     this.sync_documents(true, cx);
                     this.refresh(cx);
@@ -217,6 +222,8 @@ impl Files {
             pending_reveal: None,
             pending_refresh: false,
             search: search::Search::default(),
+            search_mode: SearchMode::default(),
+            content: content_search::ContentSearch::default(),
             generation: 0,
             _operation: None,
             _read: None,
@@ -275,6 +282,29 @@ impl Files {
     }
 
     pub fn open(&self, path: PathBuf, preview: bool, cx: &mut Context<Self>) {
+        self.request_open(path, None, preview, cx);
+    }
+
+    /// Open a file with the cursor at a zero-based line and char column.
+    pub fn open_at(
+        &self,
+        path: PathBuf,
+        line: u32,
+        column: u32,
+        preview: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let position = gpui_kit::component::input::Position::new(line, column);
+        self.request_open(path, Some(position), preview, cx);
+    }
+
+    fn request_open(
+        &self,
+        path: PathBuf,
+        position: Option<gpui_kit::component::input::Position>,
+        preview: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.missing.contains(&path) || self.busy {
             return;
         }
@@ -287,7 +317,7 @@ impl Files {
                 OpenFile {
                     target,
                     path,
-                    position: None,
+                    position,
                     preview,
                     placement: Default::default(),
                 },

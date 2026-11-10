@@ -31,7 +31,9 @@ fn dispatch(request: Request) -> Result<Response, FileError> {
         Request::List { root, path } => {
             Response::Entries(files::list_directory(host, &root, &path)?)
         }
-        Request::Index { root } => Response::Index(files::list_files(host, &root)?),
+        Request::Index { root } => {
+            Response::Index(files::list_files(host, &root, &Default::default())?)
+        }
         Request::Read { root, path } => Response::Snapshot(files::read(host, &root, &path)?),
         Request::Image { root, path } => {
             Response::Image(STANDARD.encode(files::images::read(host, &root, &path)?))

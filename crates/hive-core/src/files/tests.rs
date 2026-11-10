@@ -206,7 +206,7 @@ fn git_index_excludes_ignored_but_tree_keeps_them() {
     fs::write(f.0.join("tracked"), "tracked").unwrap();
     fs::write(f.0.join("untracked\nUnicode世界"), "new").unwrap();
     git(&["add", "tracked"]);
-    let index = list_files(&Host::Local, &f.0).unwrap();
+    let index = list_files(&Host::Local, &f.0, &Default::default()).unwrap();
     assert!(!index.truncated);
     assert!(index.paths.contains(&"tracked".into()));
     assert!(index.paths.contains(&"untracked\nUnicode世界".into()));
@@ -217,6 +217,18 @@ fn git_index_excludes_ignored_but_tree_keeps_them() {
             .iter()
             .any(|entry| entry.path == Path::new("ignored"))
     );
+}
+
+#[test]
+fn cancelled_listing_fails_without_listing() {
+    let f = Fixture::new();
+    fs::write(f.0.join("a"), "a").unwrap();
+    let cancellation = crate::command::Cancellation::default();
+    cancellation.cancel();
+    let Err(error) = list_files(&Host::Local, &f.0, &cancellation) else {
+        panic!("a cancelled listing must fail");
+    };
+    assert!(error.to_string().contains("cancelled"), "{error}");
 }
 
 #[test]

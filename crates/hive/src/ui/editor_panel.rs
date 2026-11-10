@@ -19,7 +19,7 @@ mod image_preview;
 mod render;
 mod suggestions;
 
-actions!(editor, [SaveFile, CloseFile, OpenFileSearch]);
+actions!(editor, [SaveFile, CloseFile, OpenFileSearch, SearchInFiles]);
 
 pub(crate) struct EditorPanel {
     pub document: Entity<Document>,

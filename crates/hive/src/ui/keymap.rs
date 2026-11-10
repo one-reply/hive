@@ -13,7 +13,7 @@ use crate::terminal::panel::{
 };
 use crate::terminal::view::{Copy, Paste};
 use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
-use crate::ui::editor_panel::{CloseFile, OpenFileSearch, SaveFile};
+use crate::ui::editor_panel::{CloseFile, OpenFileSearch, SaveFile, SearchInFiles};
 use crate::ui::files_panel::{
     CancelFileEdit, DeleteSelectedFile, OpenSelectedFile, RenameSelectedFile,
 };
@@ -34,6 +34,10 @@ pub(crate) const FILE_TAB_CONTEXT: &str = "EditorPanel || DiffPanel || ConflictP
 pub(crate) const CODE_EDITOR_CONTEXT: &str = "Input && mode == editor";
 /// Key context of the Files tree while no file name is being edited.
 pub(crate) const FILES_TREE_CONTEXT: &str = "(FilesPanel > Tree) && !Input";
+/// Match the input dispatch node too, where gpui-base binds ⌘⇧F to the editor's Replace.
+pub(crate) const SEARCH_IN_FILES_CONTEXT: &str = "Workspace || (Workspace > Input)";
+/// Key context of the focused content search results.
+pub(crate) const CONTENT_RESULTS_CONTEXT: &str = "ContentResults";
 /// Key context of pane shortcuts: a focused terminal tab.
 pub(crate) const TERMINAL_CONTEXT: &str = "TerminalPanel";
 /// Key context of a focused terminal pane's own shortcuts.
@@ -112,13 +116,20 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 28] = [
+pub(crate) static SHORTCUTS: [Shortcut; 29] = [
     Shortcut {
         label: "Open file",
         default: "cmd-p",
         category: Category::Workspace,
         context: CONTEXT,
         action: || Box::new(OpenFileSearch),
+    },
+    Shortcut {
+        label: "Search in files",
+        default: "cmd-shift-f",
+        category: Category::Workspace,
+        context: SEARCH_IN_FILES_CONTEXT,
+        action: || Box::new(SearchInFiles),
     },
     Shortcut {
         label: "Save file",
@@ -330,6 +341,7 @@ pub fn init(cx: &mut App) {
         crate::ui::files_panel::FocusFileResults,
         Some("FileSearch > Input"),
     )]);
+    cx.bind_keys(content_results_bindings());
     let store = AppState::get(cx).store.clone();
     let mut installed = store.read(cx).state.settings.keybindings().clone();
     install(cx);
@@ -341,6 +353,26 @@ pub fn init(cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// Arrow keys, Enter and Escape in the content search results, plus a key for the editor's
+/// Replace now that ⌘⇧F searches in files (⌥⌘F, as in VS Code).
+fn content_results_bindings() -> [KeyBinding; 7] {
+    use gpui_kit::base::actions::{Cancel, Confirm, SelectDown, SelectLeft, SelectRight, SelectUp};
+    let results = Some(CONTENT_RESULTS_CONTEXT);
+    [
+        KeyBinding::new("up", SelectUp, results),
+        KeyBinding::new("down", SelectDown, results),
+        KeyBinding::new("left", SelectLeft, results),
+        KeyBinding::new("right", SelectRight, results),
+        KeyBinding::new("enter", Confirm { secondary: false }, results),
+        KeyBinding::new("escape", Cancel, results),
+        KeyBinding::new(
+            "cmd-alt-f",
+            gpui_kit::component::input::Replace,
+            Some(CODE_EDITOR_CONTEXT),
+        ),
+    ]
 }
 
 fn terminal_input_bindings() -> [KeyBinding; 2] {
@@ -528,6 +560,51 @@ mod tests {
         assert!(predicate.eval(&contexts(&["Workspace", "SourceControl"])));
         assert!(!predicate.eval(&contexts(&["Workspace", "TerminalPanel"])));
         assert!(!predicate.eval(&contexts(&["Workspace", "Settings", "Input"])));
+    }
+
+    #[test]
+    fn search_in_files_wins_over_editor_replace() {
+        use gpui_kit::{KeyBinding, KeyContext, Keymap};
+        let contexts = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| KeyContext::parse(name).expect("context"))
+                .collect::<Vec<_>>()
+        };
+        let mut keymap = Keymap::default();
+        keymap.add_bindings([KeyBinding::new(
+            "cmd-shift-f",
+            gpui_kit::component::input::Replace,
+            Some("Input"),
+        )]);
+        // Hive's shortcuts are bound after the library's, as `install` does.
+        keymap.add_bindings([KeyBinding::new(
+            "cmd-shift-f",
+            super::SearchInFiles,
+            Some(super::SEARCH_IN_FILES_CONTEXT),
+        )]);
+        for path in [
+            &["Workspace", "EditorPanel", "Input mode=editor"][..],
+            &["Workspace", "SourceControl", "Input"][..],
+            &["Workspace", "TerminalPanel", "Terminal"][..],
+            &["Workspace"][..],
+        ] {
+            let (bindings, _) =
+                keymap.bindings_for_input(&[keystroke("cmd-shift-f")], &contexts(path));
+            assert_eq!(
+                bindings.first().map(|binding| binding.action().name()),
+                Some("editor::SearchInFiles"),
+                "{path:?}"
+            );
+        }
+        let (bindings, _) = keymap.bindings_for_input(
+            &[keystroke("cmd-shift-f")],
+            &contexts(&["Settings", "Input"]),
+        );
+        assert_eq!(
+            bindings.first().map(|binding| binding.action().name()),
+            Some("input::Replace")
+        );
     }
 
     #[test]

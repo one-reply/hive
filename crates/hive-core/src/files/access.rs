@@ -40,7 +40,7 @@ impl<'a> Access<'a> {
     /// Index files for search.
     pub fn list_files(&self, root: &Path) -> Result<FileIndex, FileError> {
         if self.host.is_local() {
-            super::list_files(self.host, root)
+            super::list_files(self.host, root, self.cancellation)
         } else {
             crate::remote::list_files(self.host, root, self.cancellation)
         }

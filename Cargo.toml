@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "1.0.11"
+version = "1.0.12"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/one-reply/hive"
@@ -38,6 +38,8 @@ tracing = "0.1"
 tree-sitter = "0.26"
 tree-sitter-javascript = "0.23"
 tree-sitter-typescript = "0.23"
+# Already built for tree-sitter; hive-core's content search compiles queries with it.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode"] }
 # Same version gpui-component uses for its DefinitionProvider contract.
 lsp-types = "0.97"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
