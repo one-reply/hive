@@ -86,9 +86,14 @@ impl Updates {
         }
     }
 
-    pub(crate) fn check(&self) {
-        if let Status::Ready(updater) = &self.status {
-            updater.check();
+    pub(crate) fn check(&self) -> Result<(), &str> {
+        match &self.status {
+            Status::Ready(updater) => {
+                updater.check();
+                Ok(())
+            }
+            Status::Loading => Err("The updater is starting. Please try again in a moment."),
+            Status::Unavailable(error) => Err(error),
         }
     }
 
@@ -105,6 +110,26 @@ impl Updates {
 mod tests {
     use super::{Status, Updates};
     use gpui_kit::Task;
+
+    #[test]
+    fn manual_checks_report_loading_and_unavailable_updater() {
+        let mut updates = Updates {
+            status: Status::Loading,
+            reminder: None,
+            _load: Task::ready(()),
+            _reminders: Task::ready(()),
+        };
+        assert_eq!(
+            updates.check(),
+            Err("The updater is starting. Please try again in a moment.")
+        );
+        updates.status =
+            Status::Unavailable("Install the packaged Hive.app to enable updates.".into());
+        assert_eq!(
+            updates.check(),
+            Err("Install the packaged Hive.app to enable updates.")
+        );
+    }
 
     #[test]
     fn reminders_follow_verified_availability_and_clear_on_attention_or_failure() {

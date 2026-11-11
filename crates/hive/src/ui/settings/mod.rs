@@ -69,10 +69,6 @@ pub(crate) fn open_files(cx: &mut App) {
     open_at(None, Some(Page::Files), cx);
 }
 
-pub(crate) fn open_updates(cx: &mut App) {
-    open_at(None, Some(Page::Updates), cx);
-}
-
 fn open_at(project: Option<(Host, PathBuf)>, page: Option<Page>, cx: &mut App) {
     if let Some(root) = settings_window(cx) {
         let shown = root.update(cx, |root, window, cx| {

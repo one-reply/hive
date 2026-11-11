@@ -62,8 +62,19 @@ pub fn init(cx: &mut App) {
     });
     cx.on_action(|_: &About, cx| show_about(cx));
     cx.on_action(|_: &CheckForUpdates, cx| {
-        crate::ui::settings::open_updates(cx);
-        AppState::get(cx).updates.read(cx).check();
+        let result = AppState::get(cx)
+            .updates
+            .read(cx)
+            .check()
+            .map_err(str::to_owned);
+        if let Err(error) = result {
+            cx.defer(move |cx| {
+                if cx.windows().is_empty() {
+                    crate::open_main_window(cx);
+                }
+                show_alert("Software Updates", &error, cx);
+            });
+        }
     });
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
@@ -146,16 +157,45 @@ fn with_active_window(cx: &mut App, act: impl FnOnce(&mut Window)) {
 
 /// GPUI has no native About panel, so the version goes into an alert on the active window.
 fn show_about(cx: &mut App) {
-    let Some(handle) = cx.active_window() else {
+    let detail = format!("Version {}", env!("CARGO_PKG_VERSION"));
+    show_alert("Hive", &detail, cx);
+}
+
+fn show_alert(message: &str, detail: &str, cx: &mut App) {
+    let Some(handle) = cx
+        .active_window()
+        .or_else(|| cx.windows().into_iter().next())
+    else {
         return;
     };
-    let detail = format!("Version {}", env!("CARGO_PKG_VERSION"));
     let answer = handle.update(cx, |_, window, cx| {
-        window.prompt(PromptLevel::Info, "Hive", Some(&detail), &["OK"], cx)
+        window.activate_window();
+        window.prompt(PromptLevel::Info, message, Some(detail), &["OK"], cx)
     });
     match answer {
         // Awaited so the alert isn't torn down with its dropped receiver.
         Ok(answer) => cx.foreground_executor().spawn(answer).detach(),
-        Err(err) => tracing::warn!(%err, "failed to show the About alert"),
+        Err(err) => tracing::warn!(%err, "failed to show the app alert"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit as gpui;
+
+    #[gpui::test]
+    fn update_alert_uses_an_open_window_when_none_is_active(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.add_empty_window().deactivate_window();
+        cx.update(|cx| {
+            assert!(cx.active_window().is_none());
+            super::show_alert("Software Updates", "Updater unavailable", cx);
+            assert!(cx.active_window().is_some());
+        });
+        assert_eq!(
+            cx.pending_prompt(),
+            Some(("Software Updates".into(), "Updater unavailable".into()))
+        );
+        cx.simulate_prompt_answer("OK");
     }
 }

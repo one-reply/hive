@@ -7,6 +7,7 @@ use gpui_kit::*;
 
 use crate::app::AppState;
 use crate::state::updates::Updates;
+use crate::ui::app_menu::CheckForUpdates;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 
 const NOTIFICATION_ID: &str = "update-available";
@@ -24,9 +25,8 @@ pub(crate) fn sync(window: &mut Window, cx: &mut App) {
             .message("Update when you're ready. You choose when to install and restart.")
             .placement(Anchor::BottomRight)
             .autohide(false)
-            .content(move |_, window, cx| {
+            .content(|_, window, cx| {
                 let hover = Hover::new("install-update-hover", window, cx);
-                let updates = updates.clone();
                 div()
                     .flex()
                     .justify_end()
@@ -37,7 +37,9 @@ pub(crate) fn sync(window: &mut Window, cx: &mut App) {
                             .icon(Lucide::Download)
                             .small()
                             .cursor_pointer()
-                            .on_click(move |_, _, cx| updates.read(cx).check())
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(CheckForUpdates), cx)
+                            })
                             .smooth_hover(ButtonLook::Primary, &hover, cx),
                     )
                     .into_any_element()
