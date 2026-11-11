@@ -12,6 +12,7 @@ pub mod commit_context;
 pub mod conflicts;
 pub mod diff;
 pub mod history;
+pub mod hosting;
 mod numstat;
 pub mod pull_request;
 pub mod review_notes;

@@ -129,7 +129,7 @@ impl Render for GitPage {
             })
             .collect();
         let control = self.backend_control(generator.as_ref(), cx);
-        v_flex()
+        let commit = v_flex()
             .gap_4()
             .p_4()
             .border_1()
@@ -227,6 +227,10 @@ impl Render for GitPage {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child("Changes save automatically when you finish editing."),
-            )
+            );
+        v_flex()
+            .gap_6()
+            .child(self.connections.clone())
+            .child(commit)
     }
 }

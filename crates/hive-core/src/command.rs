@@ -173,11 +173,24 @@ impl Pipes {
 
 /// Blocking: service stdin and both output pipes until EOF, cancellation or the deadline.
 pub fn run(
+    command: Command,
+    input: &[u8],
+    cancellation: &Cancellation,
+    timeout: Duration,
+    limit: usize,
+) -> Result<Output, Error> {
+    run_with_progress(command, input, cancellation, timeout, limit, |_, _| {})
+}
+
+/// Like [`run`], reporting bounded cumulative stdout/stderr when either stream changes.
+/// The callback must not block; authentication callers use it to expose a device code.
+pub fn run_with_progress(
     mut command: Command,
     input: &[u8],
     cancellation: &Cancellation,
     timeout: Duration,
     limit: usize,
+    mut progress: impl FnMut(&[u8], &[u8]),
 ) -> Result<Output, Error> {
     let io_error = Error::Io;
     if cancellation.is_cancelled() {
@@ -221,8 +234,12 @@ pub fn run(
         if remaining.is_zero() {
             return Err(Error::TimedOut);
         }
+        let previous = (output.len(), errors.len());
         drain(&mut pipes.stdout, &mut output, limit)?;
         drain(&mut pipes.stderr, &mut errors, limit)?;
+        if previous != (output.len(), errors.len()) {
+            progress(&output, &errors);
+        }
         if let Some(pipe) = &mut pipes.stdin {
             match pipe.write(&input[written..]) {
                 Ok(count) => written += count,
@@ -294,6 +311,31 @@ pub fn executable(name: &str) -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use crate::host::Host;
+
+    #[test]
+    fn progress_is_available_before_a_waiting_child_completes_and_can_cancel_it() {
+        let cancellation = Cancellation::default();
+        let mut seen = false;
+        let result = run_with_progress(
+            Host::Local.command(
+                "/bin/sh",
+                &["-c", "printf code >&2; while :; do :; done"],
+                None,
+            ),
+            &[],
+            &cancellation,
+            Duration::from_secs(5),
+            1024,
+            |_, errors| {
+                if errors == b"code" {
+                    seen = true;
+                    cancellation.cancel();
+                }
+            },
+        );
+        assert!(seen);
+        assert!(matches!(result, Err(Error::Cancelled)));
+    }
 
     #[test]
     fn cancelled_command_never_spawns() {

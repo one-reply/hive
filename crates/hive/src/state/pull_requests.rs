@@ -61,6 +61,7 @@ pub(crate) enum Status {
 pub(crate) struct PullRequests {
     cards: HashMap<(Host, PathBuf), (String, Status)>,
     _poll: Task<()>,
+    refresh_generation: u64,
 }
 impl PullRequests {
     /// Polls only while the main window is active, like `Git`: nobody sees the cards
@@ -73,7 +74,16 @@ impl PullRequests {
     ) -> Self {
         let poll = cx.spawn(async move |this, cx| {
             let mut attempted = HashMap::<(Host, PathBuf), Attempt>::new();
+            let mut generation = 0;
             loop {
+                let current = this.read_with(cx, |this, _| this.refresh_generation);
+                let Ok(current) = current else {
+                    return;
+                };
+                if generation != current {
+                    attempted.clear();
+                    generation = current;
+                }
                 let targets = projects.read_with(cx, |projects, _| {
                     projects
                         .items
@@ -113,6 +123,12 @@ impl PullRequests {
                         .background_executor()
                         .spawn(async move { pull_request::read(&h, &p) })
                         .await;
+                    if this
+                        .read_with(cx, |this, _| this.refresh_generation != generation)
+                        .unwrap_or(true)
+                    {
+                        break;
+                    }
                     let failures = if backs_off(&result) {
                         failures.saturating_add(1)
                     } else {
@@ -151,7 +167,13 @@ impl PullRequests {
         Self {
             cards: HashMap::new(),
             _poll: poll,
+            refresh_generation: 0,
         }
+    }
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.refresh_generation = self.refresh_generation.wrapping_add(1);
+        self.cards.clear();
+        cx.notify();
     }
     pub(crate) fn status(&self, host: &Host, path: &Path, head: &str) -> Option<&Status> {
         self.cards
@@ -166,6 +188,31 @@ mod tests {
     use super::{Attempt, FAILURE_RECHECK_CAP, RECHECK, backs_off, is_due, recheck_after};
     use hive_core::git::pull_request::Error;
     use std::time::{Duration, Instant};
+
+    #[gpui::test]
+    fn reconnect_clears_unavailable_cards_and_invalidates_pending_reads(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext as _;
+        let state = cx.new(|_| super::PullRequests {
+            cards: [(
+                (hive_core::host::Host::Local, "/test/project".into()),
+                (
+                    "main".into(),
+                    super::Status::Unavailable("signed out".into()),
+                ),
+            )]
+            .into(),
+            _poll: gpui_kit::Task::ready(()),
+            refresh_generation: 7,
+        });
+        state.update(cx, |state, cx| {
+            let pending_generation = state.refresh_generation;
+            state.refresh(cx);
+            assert!(state.cards.is_empty());
+            assert_ne!(state.refresh_generation, pending_generation);
+        });
+    }
 
     fn attempt(failures: u32) -> Attempt {
         Attempt {

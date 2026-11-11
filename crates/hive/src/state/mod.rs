@@ -8,6 +8,7 @@ pub(crate) mod files;
 pub(crate) mod git;
 pub(crate) mod git_conflict;
 pub(crate) mod git_diff;
+pub(crate) mod git_hosting;
 pub(crate) mod notifications;
 pub mod projects;
 pub mod store;

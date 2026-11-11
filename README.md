@@ -133,12 +133,29 @@ For a release build, use `cargo run --locked --release -p hive`.
 
 Projects, terminals, and Git tools work without configuring an AI API key in Hive.
 Install and sign in to your preferred agent separately. Usage indicators read
-supported CLI sign-ins. PR/MR cards use **`gh auth login`** for GitHub or
-**`glab auth login --hostname <host>`** for GitLab.com or your self-managed GitLab.
-Install and sign in to the CLI on the project host (locally or over SSH). Hive uses
-the CLI's repository context, including configured SSH aliases and host settings; it
-does not copy access tokens. If several MRs match a branch, the card reports the
-ambiguity instead of selecting one silently. MR and CI links require HTTPS.
+supported CLI sign-ins.
+
+For pull/merge requests and CI, open **Settings → Git** and connect **GitHub** or
+**GitLab**. Hive reuses an installed `gh`/`glab` and existing sign-ins. If the CLI is
+missing, **Install & Connect** downloads a pinned official Apple Silicon build,
+checks its SHA-256, and installs it privately for Hive; Homebrew and administrator
+access are not required. Finish the provider's authorization in your browser.
+GitHub shows a one-time code with **Copy code & Open browser**. Credentials remain
+managed by the official CLI, and PR/MR cards refresh after a successful connection.
+
+For self-managed GitLab, enter the server hostname. Browser login requires an
+OAuth Application ID configured for that server; supply it in Git settings or reuse
+your existing `glab` configuration. The setup link explains the required OAuth
+application. Your selected server is remembered across restarts; Hive does not
+store access tokens in `state.json`. Connecting an account does not grant access
+to repositories that the account cannot already read.
+
+These settings connect this Mac. For SSH projects, install and sign in on the
+remote host with `gh auth login` or `glab auth login --hostname <host>`. Hive uses
+the CLI's repository context, including configured SSH aliases and host settings;
+it does not copy local credentials to SSH hosts. If several MRs match a branch,
+the card reports ambiguity instead of selecting one silently. MR and CI links
+require HTTPS.
 
 ### Attention and usage
 

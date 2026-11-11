@@ -18,6 +18,7 @@ pub struct AppState {
     pub projects: Entity<Projects>,
     pub usage: Entity<Usage>,
     pub(crate) ai_providers: Entity<AiProviders>,
+    pub(crate) git_hosting: Entity<crate::state::git_hosting::GitHosting>,
     pub(crate) agents: Entity<Agents>,
     pub(crate) git: Entity<Git>,
     pub(crate) documents: Entity<crate::state::documents::Documents>,
@@ -42,6 +43,9 @@ impl AppState {
         let projects = cx.new(|cx| Projects::new(&store, cx));
         let usage = cx.new(Usage::new);
         let ai_providers = cx.new(AiProviders::new);
+        let hosting_servers = store.read(cx).state.settings.hosting_servers.clone();
+        let git_hosting =
+            cx.new(|cx| crate::state::git_hosting::GitHosting::new(hosting_servers, cx));
         let agents = cx.new(|cx| Agents::new(endpoint, cx));
         let git = cx.new(|cx| Git::new(projects.clone(), cx));
         let documents =
@@ -57,7 +61,9 @@ impl AppState {
             let store = app.store.clone();
             let terminals = app.terminals.clone();
             app.git.read(cx).stop_generations();
+            let hosting = app.git_hosting.clone();
             let documents = app.documents.clone();
+            hosting.update(cx, |hosting, _| hosting.stop());
             documents.update(cx, |documents, cx| documents.flush(cx));
             store.update(cx, |store, _| store.stop());
             terminals.stop();
@@ -88,6 +94,7 @@ impl AppState {
             projects,
             usage,
             ai_providers,
+            git_hosting,
             agents,
             git,
             documents,

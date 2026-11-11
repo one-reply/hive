@@ -87,7 +87,13 @@ impl Sidebar {
                         .cursor_pointer()
                         .xsmall()
                         .label("PR/MR unavailable")
-                        .tooltip(error)
+                        .tooltip(format!(
+                            "{error}\nOpen Git settings to connect your account."
+                        ))
+                        .on_click(|_, _, cx| {
+                            cx.stop_propagation();
+                            crate::ui::settings::open_git(cx);
+                        })
                         .smooth_hover(ButtonLook::Ghost, &hover, cx),
                 )
                 .into_any_element(),

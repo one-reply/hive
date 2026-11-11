@@ -8,7 +8,7 @@ use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-mod lenient;
+pub(crate) mod lenient;
 mod persistence;
 mod sidebar;
 pub use sidebar::ProjectExpansion;

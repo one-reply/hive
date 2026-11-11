@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod files;
+mod hosting;
+pub use hosting::HostingServers;
 mod themes;
 pub use files::{FILES_FONT_SIZE_DEFAULT, FileDensity, FileIcons, FilesSettings};
 pub use themes::{DarkTheme, LightTheme};
@@ -98,6 +100,9 @@ pub const TERMINAL_FONT_SIZE_DEFAULT: f32 = 13.;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Settings {
+    /// Last selected GitHub/GitLab hosts, without secrets.
+    #[serde(deserialize_with = "crate::state::lenient::or_default")]
+    pub hosting_servers: HostingServers,
     /// Appearance and navigation of the Files panel.
     pub files: FilesSettings,
     /// CLI used when preparing a Git error draft in an agent terminal.
@@ -143,6 +148,7 @@ impl Default for Settings {
             files: FilesSettings::default(),
             default_cli_agent: crate::agent::AgentKind::Codex,
             commit_message: Default::default(),
+            hosting_servers: Default::default(),
             theme: ThemeChoice::default(),
             light_theme: LightTheme::default(),
             dark_theme: DarkTheme::default(),

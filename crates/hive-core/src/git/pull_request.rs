@@ -4,14 +4,7 @@ use crate::{command, host::Host};
 use serde::Deserialize;
 use std::{path::Path, time::Duration};
 
-/// Hosting service confirmed by its CLI's repository context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Provider {
-    /// GitHub, including hosts configured in `gh`.
-    GitHub,
-    /// GitLab.com or a self-managed host configured in `glab`.
-    GitLab,
-}
+pub use super::hosting::Provider;
 
 /// A branch's metadata, retaining the provider even when it has no request.
 #[derive(Debug, Clone, PartialEq)]
@@ -153,7 +146,12 @@ fn run_cli(
     args: &[&str],
 ) -> Result<command::Output, Error> {
     let executable = if *host == Host::Local {
-        command::executable(program).ok_or(Error::Missing)?
+        match program {
+            "gh" => Provider::GitHub.executable(),
+            "glab" => Provider::GitLab.executable(),
+            _ => command::executable(program),
+        }
+        .ok_or(Error::Missing)?
     } else {
         program.into()
     };
