@@ -26,6 +26,17 @@ pub(crate) struct SaveError(pub(crate) String);
 impl EventEmitter<SaveError> for Store {}
 
 impl Store {
+    pub(crate) fn set_hosting_server(
+        &mut self,
+        provider: hive_core::git::hosting::Provider,
+        server: hive_core::git::hosting::Server,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.settings.hosting_servers.set(provider, server) {
+            self.commit(cx);
+        }
+    }
+
     pub(crate) fn set_project_expanded(
         &mut self,
         host: &Host,

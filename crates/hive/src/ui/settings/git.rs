@@ -26,6 +26,7 @@ use hive_core::agent::AgentKind;
 use hive_core::commit_message::{DEFAULT_PROMPT, Generator, VARIABLES};
 
 mod choices;
+mod connections;
 mod view;
 use choices::{SourceItem, sources};
 
@@ -56,6 +57,7 @@ fn argument_hint(agent: AgentKind) -> (&'static str, &'static str) {
 }
 
 pub(super) struct GitPage {
+    connections: Entity<connections::Connections>,
     providers: Entity<AiProviders>,
     source: Entity<SelectState<SearchableVec<SourceItem>>>,
     model: Entity<SelectState<SearchableVec<String>>>,
@@ -153,7 +155,9 @@ impl GitPage {
             }),
             cx.on_release(|this, cx| this.save(cx)),
         ];
+        let connections = cx.new(|cx| connections::Connections::new(window, cx));
         let mut page = Self {
+            connections,
             providers,
             source,
             model,
@@ -193,6 +197,10 @@ impl GitPage {
     }
 
     pub(super) fn refresh(&self, cx: &mut Context<Self>) {
+        AppState::get(cx)
+            .git_hosting
+            .clone()
+            .update(cx, |hosting, cx| hosting.refresh(cx));
         self.providers
             .update(cx, |providers, cx| providers.refresh(cx));
     }

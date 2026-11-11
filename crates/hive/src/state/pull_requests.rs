@@ -3,11 +3,11 @@ use super::git::Git;
 use super::projects::Projects;
 use gpui_kit::*;
 use hive_core::{
-    git::pull_request::{self, Snapshot},
+    git::pull_request::{self, Provider, Snapshot},
     host::Host,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -48,19 +48,26 @@ fn is_due(attempt: Option<&Attempt>, head: &str, now: Instant) -> bool {
 fn backs_off(result: &Result<Snapshot, pull_request::Error>) -> bool {
     matches!(
         result,
-        Err(pull_request::Error::Command(_) | pull_request::Error::Response(_))
+        Err(pull_request::Error::Command(_)
+            | pull_request::Error::Response(_)
+            | pull_request::Error::Authentication { .. })
     )
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Status {
     Ready(Snapshot),
-    Unavailable(String),
+    Unavailable {
+        message: String,
+        authentication: Option<Provider>,
+    },
 }
 
 pub(crate) struct PullRequests {
     cards: HashMap<(Host, PathBuf), (String, Status)>,
     _poll: Task<()>,
+    refresh_generations: HashMap<Provider, u64>,
+    retry: HashSet<(Host, PathBuf)>,
 }
 impl PullRequests {
     /// Polls only while the main window is active, like `Git`: nobody sees the cards
@@ -74,6 +81,17 @@ impl PullRequests {
         let poll = cx.spawn(async move |this, cx| {
             let mut attempted = HashMap::<(Host, PathBuf), Attempt>::new();
             loop {
+                let Ok(generations) =
+                    this.read_with(cx, |this, _| this.refresh_generations.clone())
+                else {
+                    return;
+                };
+                let retry = this
+                    .update(cx, |this, _| std::mem::take(&mut this.retry))
+                    .unwrap_or_default();
+                for key in retry {
+                    attempted.remove(&key);
+                }
                 let targets = projects.read_with(cx, |projects, _| {
                     projects
                         .items
@@ -113,6 +131,21 @@ impl PullRequests {
                         .background_executor()
                         .spawn(async move { pull_request::read(&h, &p) })
                         .await;
+                    let stale = host == Host::Local
+                        && result
+                            .as_ref()
+                            .err()
+                            .and_then(pull_request::Error::authentication_provider)
+                            .is_some_and(|provider| {
+                                this.read_with(cx, |this, _| {
+                                    this.refresh_generations.get(&provider)
+                                        != generations.get(&provider)
+                                })
+                                .unwrap_or(true)
+                            });
+                    if stale {
+                        continue;
+                    }
                     let failures = if backs_off(&result) {
                         failures.saturating_add(1)
                     } else {
@@ -126,14 +159,17 @@ impl PullRequests {
                     attempted.insert(key, attempt);
                     let status = match result {
                         Ok(pr) => Status::Ready(pr),
-                        Err(error) => Status::Unavailable(error.to_string()),
+                        Err(error) => Status::Unavailable {
+                            message: error.to_string(),
+                            authentication: error.authentication_provider(),
+                        },
                     };
                     if this
                         .update(cx, |this, cx| {
                             let key = (host, path);
                             let value = (head, status);
                             if this.cards.get(&key) != Some(&value) {
-                                if let Status::Unavailable(error) = &value.1 {
+                                if let Status::Unavailable { message: error, .. } = &value.1 {
                                     tracing::warn!(?key, %error, "PR/MR metadata unavailable");
                                 }
                                 this.cards.insert(key, value);
@@ -151,7 +187,19 @@ impl PullRequests {
         Self {
             cards: HashMap::new(),
             _poll: poll,
+            refresh_generations: HashMap::new(),
+            retry: HashSet::new(),
         }
+    }
+    pub(crate) fn refresh(&mut self, provider: Provider, _: &mut Context<Self>) {
+        let generation = self.refresh_generations.entry(provider).or_default();
+        *generation = generation.wrapping_add(1);
+        self.retry
+            .extend(self.cards.iter().filter_map(|(key, (_, status))| {
+                can_connect(&key.0, status)
+                    .filter(|p| *p == provider)
+                    .map(|_| key.clone())
+            }));
     }
     pub(crate) fn status(&self, host: &Host, path: &Path, head: &str) -> Option<&Status> {
         self.cards
@@ -161,11 +209,85 @@ impl PullRequests {
     }
 }
 
+pub(crate) fn can_connect(host: &Host, status: &Status) -> Option<Provider> {
+    match (host, status) {
+        (Host::Local, Status::Unavailable { authentication, .. }) => *authentication,
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Attempt, FAILURE_RECHECK_CAP, RECHECK, backs_off, is_due, recheck_after};
     use hive_core::git::pull_request::Error;
     use std::time::{Duration, Instant};
+
+    #[gpui::test]
+    fn reconnect_retries_only_local_provider_errors_and_keeps_all_cards_visible(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use super::{Host, Provider, PullRequests, Status};
+        use gpui_kit::AppContext as _;
+        let failure = |provider| Status::Unavailable {
+            message: "signed out".into(),
+            authentication: Some(provider),
+        };
+        let local = Host::Local;
+        let remote = Host::Ssh {
+            target: "test-host".into(),
+        };
+        let state = cx.new(|_| PullRequests {
+            cards: [
+                (
+                    (local.clone(), "/github".into()),
+                    ("main".into(), failure(Provider::GitHub)),
+                ),
+                (
+                    (local.clone(), "/gitlab".into()),
+                    ("main".into(), failure(Provider::GitLab)),
+                ),
+                (
+                    (remote.clone(), "/ssh".into()),
+                    ("main".into(), failure(Provider::GitHub)),
+                ),
+                (
+                    (local.clone(), "/timeout".into()),
+                    (
+                        "main".into(),
+                        Status::Unavailable {
+                            message: "timeout".into(),
+                            authentication: None,
+                        },
+                    ),
+                ),
+            ]
+            .into(),
+            _poll: gpui_kit::Task::ready(()),
+            refresh_generations: Default::default(),
+            retry: Default::default(),
+        });
+        state.update(cx, |state, cx| {
+            state.refresh(Provider::GitHub, cx);
+            assert_eq!(state.cards.len(), 4);
+            assert_eq!(state.retry, [(local.clone(), "/github".into())].into());
+            assert_eq!(state.refresh_generations.get(&Provider::GitHub), Some(&1));
+            assert_eq!(state.refresh_generations.get(&Provider::GitLab), None);
+            assert_eq!(
+                super::can_connect(&remote, &failure(Provider::GitHub)),
+                None
+            );
+            assert_eq!(
+                super::can_connect(
+                    &local,
+                    &Status::Unavailable {
+                        message: "ambiguous MR".into(),
+                        authentication: None
+                    }
+                ),
+                None
+            );
+        });
+    }
 
     fn attempt(failures: u32) -> Attempt {
         Attempt {

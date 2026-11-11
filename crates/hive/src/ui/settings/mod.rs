@@ -172,7 +172,7 @@ impl Page {
                 "Keyboard shortcuts of the main window. Click Edit and press new keys."
             }
             Page::Terminal => "Terminal appearance and the default CLI agent.",
-            Page::Git => "Commit generation for every project and worktree.",
+            Page::Git => "Hosting accounts and commit generation.",
             Page::Files => "File appearance and navigation for every local worktree.",
             Page::Updates => "Your version of Hive and software updates.",
             Page::Ai => {
