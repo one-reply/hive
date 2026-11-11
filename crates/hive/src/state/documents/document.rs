@@ -7,9 +7,11 @@ use hive_core::files::{self, Snapshot};
 use std::rc::Rc;
 use std::time::Duration;
 
+mod blame;
 mod image;
 mod io;
 mod relocation;
+pub(crate) use blame::LineBlame;
 pub(crate) use image::{Content, PreviewState, SvgMode};
 pub(crate) use io::Changes;
 
@@ -31,6 +33,7 @@ pub(crate) struct Document {
     pub path: PathBuf,
     pub editor: Entity<EditorState>,
     completions: Rc<Completions>,
+    blame: LineBlame,
     pub content: Content,
     pub base: Option<Snapshot>,
     pub conflict: Option<Snapshot>,
@@ -83,6 +86,7 @@ impl Document {
                     this.update_dirty(cx);
                     this.schedule_recovery(cx);
                     this.completions.schedule_refresh(cx);
+                    this.invalidate_blame(cx);
                     this.emit(DocumentEvent::Changed(this.target.clone()), cx);
                     cx.notify();
                 }
@@ -126,6 +130,7 @@ impl Document {
             path: request.path,
             editor,
             completions,
+            blame: LineBlame::default(),
             content,
             base: None,
             conflict: None,
@@ -238,6 +243,7 @@ impl Document {
         self.visible = active;
         if active {
             self.refresh(window, cx);
+            self.schedule_blame(cx);
             self.emit(
                 DocumentEvent::Activated(self.target.clone(), self.path.clone()),
                 cx,
@@ -319,6 +325,7 @@ impl Document {
         self.error = None;
         self.dirty = false;
         self.completions.schedule_refresh(cx);
+        self.invalidate_blame(cx);
         self.apply_position(window, cx);
         if let Some(focus) = focus {
             focus.focus(window, cx);

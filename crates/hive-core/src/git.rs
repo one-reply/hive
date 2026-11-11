@@ -5,6 +5,7 @@ use crate::host::Host;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod blame;
 pub mod branches;
 pub mod changes;
 #[cfg(feature = "desktop")]
