@@ -1,7 +1,15 @@
 use super::*;
 use crate::state::pull_requests::Status;
 use gpui_kit::component::Disableable as _;
+use hive_core::git::pull_request::Provider;
 pub(super) const HEIGHT: Pixels = px(24.);
+
+fn request_labels(provider: Provider) -> (&'static str, &'static str, &'static str) {
+    match provider {
+        Provider::GitHub => ("#", "Open pull request", "No pull request"),
+        Provider::GitLab => ("!", "Open merge request", "No merge request"),
+    }
+}
 
 impl Sidebar {
     pub(super) fn pr_card(
@@ -34,8 +42,12 @@ impl Sidebar {
             .text_xs()
             .text_color(cx.theme().muted_foreground);
         match status {
-            Some(Status::Ready(Some(pr))) => {
-                let label = format!("#{} · {}", pr.number, pr.state.to_lowercase());
+            Some(Status::Ready(snapshot)) => {
+                let (prefix, tooltip, empty) = request_labels(snapshot.provider());
+                let Some(pr) = snapshot.request() else {
+                    return row.child(empty).into_any_element();
+                };
+                let label = format!("{prefix}{} · {}", pr.number, pr.state.to_lowercase());
                 let url = pr.web_url().map(str::to_owned);
                 let check_url = pr.failed_check_url().map(str::to_owned);
                 row.child(
@@ -43,7 +55,7 @@ impl Sidebar {
                         .cursor_pointer()
                         .xsmall()
                         .label(label)
-                        .tooltip("Open pull request")
+                        .tooltip(tooltip)
                         .on_click(move |_, _, cx| {
                             cx.stop_propagation();
                             if let Some(url) = &url {
@@ -57,7 +69,7 @@ impl Sidebar {
                         .cursor_pointer()
                         .xsmall()
                         .label(pr.checks())
-                        .tooltip("Open the first failing check")
+                        .tooltip("Open failing CI run")
                         .disabled(check_url.is_none())
                         .on_click(move |_, _, cx| {
                             cx.stop_propagation();
@@ -69,18 +81,34 @@ impl Sidebar {
                 )
                 .into_any_element()
             }
-            Some(Status::Ready(None)) => row.child("No pull request").into_any_element(),
             Some(Status::Unavailable(error)) => row
                 .child(
                     Button::new("pr-unavailable")
                         .cursor_pointer()
                         .xsmall()
-                        .label("PR unavailable")
+                        .label("PR/MR unavailable")
                         .tooltip(error)
                         .smooth_hover(ButtonLook::Ghost, &hover, cx),
                 )
                 .into_any_element(),
-            None => row.child("Loading PR…").into_any_element(),
+            None => row.child("Loading PR/MR…").into_any_element(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Provider, request_labels};
+
+    #[test]
+    fn github_and_gitlab_have_distinct_request_labels() {
+        assert_eq!(
+            request_labels(Provider::GitHub),
+            ("#", "Open pull request", "No pull request")
+        );
+        assert_eq!(
+            request_labels(Provider::GitLab),
+            ("!", "Open merge request", "No merge request")
+        );
     }
 }

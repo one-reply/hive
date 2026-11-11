@@ -1,17 +1,44 @@
-//! Read-only GitHub CLI metadata; no authentication or repository mutations.
+//! Read-only GitHub/GitLab CLI metadata using the host's existing authentication.
+mod gitlab;
 use crate::{command, host::Host};
 use serde::Deserialize;
 use std::{path::Path, time::Duration};
 
-/// PR metadata returned by `gh pr view --json`.
+/// Hosting service confirmed by its CLI's repository context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    /// GitHub, including hosts configured in `gh`.
+    GitHub,
+    /// GitLab.com or a self-managed host configured in `glab`.
+    GitLab,
+}
+
+/// A branch's metadata, retaining the provider even when it has no request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Snapshot {
+    provider: Provider,
+    request: Option<PullRequest>,
+}
+impl Snapshot {
+    /// Hosting service used for this read.
+    pub fn provider(&self) -> Provider {
+        self.provider
+    }
+    /// The current branch's pull or merge request, if one exists.
+    pub fn request(&self) -> Option<&PullRequest> {
+        self.request.as_ref()
+    }
+}
+
+/// Pull or merge request metadata normalized from the hosting CLI.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PullRequest {
-    /// PR number, zero only for an invalid response.
+    /// Repository-local PR number or MR IID, zero only for an invalid response.
     pub number: u64,
     /// Web URL; only exposed through `web_url`.
     url: String,
-    /// GitHub's OPEN/CLOSED/MERGED state, unknown values remain visible.
+    /// Hosting service's request state; unknown values remain visible.
     pub state: String,
     status_check_rollup: Option<Vec<Check>>,
 }
@@ -76,42 +103,113 @@ fn web_url(value: &str) -> Option<&str> {
 /// Failed metadata retrieval; the UI keeps it distinct from a branch without a PR.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// No local GitHub CLI was found.
-    #[error("Install gh and run gh auth login to show PR checks.")]
+    /// The hosting CLI was not found on the project host.
+    #[error(
+        "Install gh and run gh auth login for GitHub, or install glab and run glab auth login --hostname <host> for GitLab."
+    )]
     Missing,
     /// The bounded subprocess failed.
-    #[error("Could not read PR: {0}")]
+    #[error("Could not read PR/MR: {0}")]
     Command(#[from] command::Error),
     /// CLI/API response could not be interpreted.
     #[error("{0}")]
     Response(String),
 }
 
-/// Blocking: read the current branch's PR using the host's existing gh authentication.
-pub fn read(host: &Host, cwd: &Path) -> Result<Option<PullRequest>, Error> {
-    let executable = if *host == Host::Local {
-        command::executable("gh").ok_or(Error::Missing)?
-    } else {
-        "gh".into()
+/// Blocking: read the branch's PR/MR without changing authentication or the repository.
+pub fn read(host: &Host, cwd: &Path) -> Result<Snapshot, Error> {
+    resolve(read_github(host, cwd), || gitlab::read(host, cwd))
+}
+
+fn resolve(
+    github: Result<Option<PullRequest>, Error>,
+    gitlab: impl FnOnce() -> Result<Option<PullRequest>, Error>,
+) -> Result<Snapshot, Error> {
+    let (provider, request) = match github {
+        Ok(request) => (Provider::GitHub, request),
+        Err(error) if try_gitlab(&error) => (Provider::GitLab, gitlab()?),
+        Err(error) => return Err(error),
     };
-    let args = ["pr", "view", "--json", "number,url,state,statusCheckRollup"];
-    let mut cmd = host.command(&executable.to_string_lossy(), &args, Some(cwd));
-    cmd.env("GH_PROMPT_DISABLED", "1")
-        .env("GH_PAGER", "cat")
-        .env("NO_COLOR", "1");
+    Ok(Snapshot { provider, request })
+}
+
+// Let the CLIs resolve SSH aliases and configured enterprise hosts themselves.
+// API/network/parse failures on a recognized GitHub repository must stay visible.
+fn try_gitlab(error: &Error) -> bool {
+    match error {
+        Error::Missing => true,
+        Error::Response(message) => message.contains(
+            "none of the git remotes configured for this repository point to a known GitHub host",
+        ) || message
+            .contains("To get started with GitHub CLI, please run:"),
+        Error::Command(_) => false,
+    }
+}
+
+fn run_cli(
+    host: &Host,
+    cwd: &Path,
+    program: &str,
+    args: &[&str],
+) -> Result<command::Output, Error> {
+    let executable = if *host == Host::Local {
+        command::executable(program).ok_or(Error::Missing)?
+    } else {
+        program.into()
+    };
+    // Host::command's local environment does not propagate into an SSH command.
+    let executable = executable.to_string_lossy();
+    let mut environment = vec![
+        "GH_PROMPT_DISABLED=1",
+        "GH_NO_UPDATE_NOTIFIER=1",
+        "GH_PAGER=cat",
+        "GLAB_SKIP_UPDATE_CHECK=1",
+        "GLAB_NO_PROMPT=1",
+        "NO_PROMPT=1", // Older glab versions use the unprefixed variable.
+        "GLAB_PAGER=cat",
+        "NO_COLOR=1",
+        "LC_ALL=C",
+        &executable,
+    ];
+    environment.extend_from_slice(args);
     let output = command::run(
-        cmd,
+        host.command("env", &environment, Some(cwd)),
         &[],
         &command::Cancellation::default(),
         Duration::from_secs(15),
         1024 * 1024,
     )?;
+    if output.code == Some(127) {
+        return Err(Error::Missing);
+    }
+    Ok(output)
+}
+
+fn response_error(program: &str, stderr: &[u8]) -> Error {
+    let message = String::from_utf8_lossy(stderr);
+    Error::Response(format!(
+        "{program}: {}",
+        message.trim().chars().take(500).collect::<String>()
+    ))
+}
+
+fn read_github(host: &Host, cwd: &Path) -> Result<Option<PullRequest>, Error> {
+    let output = run_cli(
+        host,
+        cwd,
+        "gh",
+        &["pr", "view", "--json", "number,url,state,statusCheckRollup"],
+    )?;
+    github_response(output)
+}
+
+fn github_response(output: command::Output) -> Result<Option<PullRequest>, Error> {
     if output.code != Some(0) {
         let error = String::from_utf8_lossy(&output.stderr);
         if error.contains("no pull requests found for branch") {
             return Ok(None);
         }
-        return Err(Error::Response(error.trim().chars().take(500).collect()));
+        return Err(response_error("gh", &output.stderr));
     }
     let pr: PullRequest = serde_json::from_slice(&output.stdout)
         .map_err(|error| Error::Response(format!("Invalid gh response: {error}")))?;
@@ -124,6 +222,69 @@ pub fn read(host: &Host, cwd: &Path) -> Result<Option<PullRequest>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_is_retained_without_a_request_and_github_errors_do_not_fall_through() {
+        let github = resolve(Ok(None), || panic!("GitHub already resolved")).unwrap();
+        assert_eq!(github.provider(), Provider::GitHub);
+        assert!(github.request().is_none());
+        let gitlab = resolve(Err(Error::Missing), || Ok(None)).unwrap();
+        assert_eq!(gitlab.provider(), Provider::GitLab);
+        assert!(gitlab.request().is_none());
+        assert!(
+            resolve(Err(Error::Command(command::Error::TimedOut)), || panic!(
+                "must preserve GitHub failure"
+            ))
+            .is_err()
+        );
+        assert!(matches!(
+            resolve(Err(Error::Missing), || Err(Error::Missing)),
+            Err(Error::Missing)
+        ));
+    }
+    #[test]
+    fn only_unavailable_github_context_tries_gitlab() {
+        assert!(try_gitlab(&Error::Missing));
+        for error in [
+            "none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`",
+            "To get started with GitHub CLI, please run:  gh auth login",
+        ] {
+            assert!(try_gitlab(&response_error("gh", error.as_bytes())));
+        }
+        for error in [
+            "HTTP 401: Bad credentials",
+            "HTTP 500",
+            "connection refused",
+            "Invalid gh response",
+        ] {
+            assert!(!try_gitlab(&response_error("gh", error.as_bytes())));
+        }
+        assert!(!try_gitlab(&Error::Command(command::Error::TimedOut)));
+    }
+
+    #[test]
+    fn github_no_request_and_failures_are_distinct() {
+        let output = |code, stdout: &str, stderr: &str| command::Output {
+            code: Some(code),
+            stdout: stdout.as_bytes().into(),
+            stderr: stderr.as_bytes().into(),
+        };
+        assert!(
+            github_response(output(1, "", "no pull requests found for branch \"topic\""))
+                .unwrap()
+                .is_none()
+        );
+        assert!(github_response(output(1, "", "HTTP 403: Forbidden")).is_err());
+        for response in [
+            "",
+            "{",
+            "null",
+            "{}",
+            r#"{"number":1,"url":"file:///tmp/a"}"#,
+        ] {
+            assert!(github_response(output(0, response, "")).is_err());
+        }
+    }
     #[test]
     fn captured_github_cli_response() {
         // gh pr view 5 --repo vitaliits-stack/hive, captured 2026-11-05.

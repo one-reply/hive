@@ -1,9 +1,9 @@
-//! Periodic PR cards, separate from the frequently refreshed local Git panel.
+//! Periodic PR/MR cards, separate from the frequently refreshed local Git panel.
 use super::git::Git;
 use super::projects::Projects;
 use gpui_kit::*;
 use hive_core::{
-    git::pull_request::{self, PullRequest},
+    git::pull_request::{self, Snapshot},
     host::Host,
 };
 use std::{
@@ -25,7 +25,7 @@ struct Attempt {
     failures: u32,
 }
 
-/// The pause after `failures` failed reads in a row. A repository without a GitHub remote
+/// The pause after `failures` failed reads in a row. An unavailable hosting service
 /// fails the same way every time, so each further failure doubles the pause up to the cap;
 /// the first one retries as soon as a success would, in case it was a network blip.
 fn recheck_after(failures: u32) -> Duration {
@@ -43,9 +43,9 @@ fn is_due(attempt: Option<&Attempt>, head: &str, now: Instant) -> bool {
     })
 }
 
-/// Whether a read failed in a way that repeating it soon will not fix. A missing `gh` costs no
-/// process and is found again within a minute of being installed; no PR is a normal answer.
-fn backs_off(result: &Result<Option<PullRequest>, pull_request::Error>) -> bool {
+/// Whether a read failed in a way that repeating it soon will not fix. Missing hosting CLIs
+/// are checked again within a minute of installation; no PR/MR is a normal answer.
+fn backs_off(result: &Result<Snapshot, pull_request::Error>) -> bool {
     matches!(
         result,
         Err(pull_request::Error::Command(_) | pull_request::Error::Response(_))
@@ -54,7 +54,7 @@ fn backs_off(result: &Result<Option<PullRequest>, pull_request::Error>) -> bool 
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Status {
-    Ready(Option<PullRequest>),
+    Ready(Snapshot),
     Unavailable(String),
 }
 
@@ -64,7 +64,7 @@ pub(crate) struct PullRequests {
 }
 impl PullRequests {
     /// Polls only while the main window is active, like `Git`: nobody sees the cards
-    /// otherwise, and each check runs `gh` (over `ssh` for remote projects). A worktree whose
+    /// otherwise, and each check runs `gh`/`glab` (over `ssh` for remote projects). A worktree whose
     /// reads keep failing is asked ever more rarely, see `recheck_after`.
     pub(crate) fn new(
         projects: Entity<Projects>,
@@ -134,7 +134,7 @@ impl PullRequests {
                             let value = (head, status);
                             if this.cards.get(&key) != Some(&value) {
                                 if let Status::Unavailable(error) = &value.1 {
-                                    tracing::warn!(?key, %error, "PR metadata unavailable");
+                                    tracing::warn!(?key, %error, "PR/MR metadata unavailable");
                                 }
                                 this.cards.insert(key, value);
                                 cx.notify();
@@ -217,6 +217,5 @@ mod tests {
             hive_core::command::Error::TimedOut
         ))));
         assert!(!backs_off(&Err(Error::Missing)));
-        assert!(!backs_off(&Ok(None)));
     }
 }
