@@ -36,7 +36,7 @@ rustix = { version = "1.1", default-features = false, features = ["std", "proces
 tracing = "0.1"
 # Parsers already built by gpui-kit's highlighter; reused by hive-core import navigation.
 tree-sitter = "0.26"
-tree-sitter-javascript = "0.23"
+tree-sitter-javascript = "0.25"
 tree-sitter-typescript = "0.23"
 # Already built for tree-sitter; hive-core's content search compiles queries with it.
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode"] }
