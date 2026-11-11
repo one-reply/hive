@@ -1,4 +1,5 @@
 //! Local hosting CLI installation and browser authentication; credentials stay with the CLI.
+#[cfg(feature = "desktop")]
 mod install;
 #[cfg(test)]
 mod tests;
@@ -10,6 +11,7 @@ use crate::{
 use serde::Deserialize;
 use std::{path::PathBuf, process::Command, time::Duration};
 
+#[cfg(feature = "desktop")]
 pub use install::install;
 
 /// Hosting service for PR/MR metadata and authentication.
@@ -46,15 +48,19 @@ impl Provider {
     }
     /// Existing system installation, or Hive's verified private installation.
     pub fn executable(self) -> Option<PathBuf> {
-        command::executable(self.cli()).or_else(|| {
+        let executable = command::executable(self.cli());
+        #[cfg(feature = "desktop")]
+        let executable = executable.or_else(|| {
             let path = self.managed_path();
             use std::os::unix::fs::PermissionsExt;
             path.metadata()
                 .ok()
                 .filter(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
                 .map(|_| path)
-        })
+        });
+        executable
     }
+    #[cfg(feature = "desktop")]
     fn managed_path(self) -> PathBuf {
         crate::state::hive_dir().join("tools").join(self.cli())
     }
