@@ -31,6 +31,9 @@ use agents::{AgentsSection, CardTarget};
 mod reorder;
 use reorder::DraggedProject;
 
+#[cfg(test)]
+mod header_tests;
+
 use crate::app::AppState;
 use crate::state::projects::Projects;
 use crate::state::store::Store;
@@ -285,6 +288,7 @@ impl Sidebar {
         let fg = cx.theme().sidebar_foreground;
         let header_hover = Hover::new(("project", ix), window, cx);
         let new_worktree_hover = Hover::new(("new-worktree", ix), window, cx);
+        let collapse_hover = Hover::new(("collapse-project", ix), window, cx);
         let menu_open = window.use_keyed_state(
             SharedString::from(format!(
                 "project-menu-open:{:?}:{:?}",
@@ -296,6 +300,28 @@ impl Sidebar {
         let is_menu_open = *menu_open.read(cx);
         let path = project.path.clone();
         let host = project.host.clone();
+        let collapse_target = (host.clone(), path.clone());
+        let collapse_label = format!(
+            "{} {}",
+            if open { "Collapse" } else { "Expand" },
+            project.name
+        );
+        let collapse = Button::new(("collapse-project", ix))
+            .cursor_pointer()
+            .small()
+            .icon(if open {
+                Lucide::ChevronDown
+            } else {
+                Lucide::ChevronRight
+            })
+            .accessibility_label(collapse_label.clone())
+            .tooltip(collapse_label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                // Folding must not select the project behind the button.
+                cx.stop_propagation();
+                this.toggle_collapsed(&collapse_target, cx);
+            }))
+            .smooth_hover(ButtonLook::Ghost, &collapse_hover, cx);
         // The gap before the buttons lives inside, so it collapses with them.
         let buttons = h_flex()
             .flex_none()
@@ -311,7 +337,7 @@ impl Sidebar {
                         .icon(IconName::Plus)
                         .tooltip(format!("New worktree in {}", project.name))
                         .on_click(move |_, window, cx| {
-                            // The header behind would otherwise collapse the project.
+                            // Creating a worktree must not select the project behind the button.
                             cx.stop_propagation();
                             create::open(projects.clone(), &project, window, cx)
                         })
@@ -332,6 +358,9 @@ impl Sidebar {
             .child(buttons);
         h_flex()
             .id(("project", ix))
+            .role(Role::Button)
+            .aria_label(format!("Open project {}", project.name))
+            .tab_index(0)
             .on_hover(header_hover.listener())
             .h(HEADER_HEIGHT)
             .gap_1p5()
@@ -361,8 +390,10 @@ impl Sidebar {
                     .child(project.name.clone()),
             )
             .child(actions)
+            .child(collapse)
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.toggle_collapsed(&(host.clone(), path.clone()), cx)
+                this.projects
+                    .update(cx, |projects, cx| projects.select_project(&host, &path, cx));
             }))
     }
 

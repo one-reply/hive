@@ -72,6 +72,25 @@ impl Projects {
         cx.notify();
     }
 
+    /// Keeps the current worktree when active; otherwise selects the project's primary worktree.
+    pub(crate) fn select_project(&mut self, host: &Host, path: &Path, cx: &mut Context<Self>) {
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|selected| selected.host == *host && selected.project == path)
+        {
+            return;
+        }
+        let Some(project) = self.project(host, path) else {
+            return;
+        };
+        let worktree = project
+            .worktrees
+            .first()
+            .map(|worktree| worktree.path.clone());
+        self.select(host, path, worktree.as_deref(), cx);
+    }
+
     fn save_selection(&self, cx: &mut Context<Self>) {
         self.store.update(cx, |store, cx| {
             store.set_selection(self.selected.clone(), cx)
@@ -339,7 +358,68 @@ fn apply_scan(
 #[cfg(test)]
 mod tests {
     use super::{Project, Selection, Worktree, apply_scan};
+    use gpui_kit as gpui;
     use hive_core::{host::Host, identity::ProjectIdentity, projects::Head, state::WorktreeFilter};
+
+    #[gpui::test]
+    fn project_selection_handles_hosts_folders_and_removed_projects(cx: &mut gpui::TestAppContext) {
+        use crate::state::store::Store;
+        use gpui_kit::AppContext as _;
+        use hive_core::state::StateError;
+
+        let store = cx.new(|cx| {
+            Store::new(
+                Err(StateError::Io {
+                    operation: "test",
+                    path: "/unused".into(),
+                    source: std::io::Error::other("persistence disabled for test"),
+                }),
+                cx,
+            )
+        });
+        let projects = cx.new(|cx| super::Projects::new(&store, cx));
+        cx.run_until_parked();
+        projects.update(cx, |projects, cx| {
+            let mut remote = project();
+            remote.host = Host::Ssh {
+                target: "remote".into(),
+            };
+            remote.worktrees[0].path = "/remote-primary".into();
+            let mut folder = project();
+            folder.path = "/folder".into();
+            folder.worktrees.clear();
+            projects.items = vec![project(), remote.clone(), folder];
+
+            projects.select_project(&Host::Local, "/project".as_ref(), cx);
+            projects.select_project(&remote.host, &remote.path, cx);
+            assert_eq!(projects.target().unwrap().host, remote.host);
+            assert_eq!(
+                projects.target().unwrap().path,
+                std::path::Path::new("/remote-primary")
+            );
+            projects.select(
+                &remote.host,
+                &remote.path,
+                Some("/new-worktree".as_ref()),
+                cx,
+            );
+            projects.select_project(&remote.host, &remote.path, cx);
+            projects.select_project(&Host::Local, "/removed".as_ref(), cx);
+            assert!(projects.is_selected(
+                &remote.host,
+                &remote.path,
+                Some("/new-worktree".as_ref())
+            ));
+
+            projects.select_project(&Host::Local, "/folder".as_ref(), cx);
+            assert!(projects.is_selected(&Host::Local, "/folder".as_ref(), None));
+            assert_eq!(
+                projects.target().unwrap().path,
+                std::path::Path::new("/folder")
+            );
+            assert_eq!(store.read(cx).state.workspace.selection, projects.selected);
+        });
+    }
 
     #[test]
     fn failed_remote_scan_keeps_only_that_hosts_worktrees() {
