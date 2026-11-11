@@ -52,6 +52,8 @@ pub struct FilesSettings {
     pub save_on_focus_change: bool,
     /// Suggest names from the open file and import paths while typing in the editor.
     pub code_completion: bool,
+    /// Show who last changed the line under the editor caret.
+    pub inline_blame: bool,
     font_size: f32,
 }
 
@@ -66,6 +68,7 @@ impl Default for FilesSettings {
             show_ignored: true,
             save_on_focus_change: true,
             code_completion: true,
+            inline_blame: true,
             font_size: FILES_FONT_SIZE_DEFAULT,
         }
     }
@@ -113,11 +116,17 @@ mod tests {
             future.code_completion,
             "settings saved before completion turn it on"
         );
+        assert!(
+            future.inline_blame,
+            "settings saved before blame turn it on"
+        );
         let opted_out: FilesSettings =
             serde_json::from_str(r#"{"save_on_focus_change":false,"code_completion":false}"#)
                 .unwrap();
         assert!(!opted_out.save_on_focus_change);
         assert!(!opted_out.code_completion);
+        let no_blame: FilesSettings = serde_json::from_str(r#"{"inline_blame":false}"#).unwrap();
+        assert!(!no_blame.inline_blame);
         let mut settings = FilesSettings::default();
         settings.set_font_size(f32::NAN);
         assert_eq!(settings.font_size(), FILES_FONT_SIZE_DEFAULT);

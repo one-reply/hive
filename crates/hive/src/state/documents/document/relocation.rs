@@ -50,6 +50,7 @@ impl Document {
         self.editor
             .update(cx, |editor, cx| editor.set_highlighter(language, cx));
         self.completions.schedule_refresh(cx);
+        self.invalidate_blame(cx);
         let draft = self.base.as_ref().filter(|_| self.dirty).map(|base| Draft {
             host: self.target.host.clone(),
             project: self.target.project.clone(),

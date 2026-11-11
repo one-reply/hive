@@ -86,8 +86,8 @@ impl GitPanel {
         let files = state.files.clone();
         let muted = cx.theme().muted_foreground;
         let mut content = v_flex().gap_0p5();
-        if let Some(oid) = state.selected_commit.clone() {
-            let commit = state.commits.iter().find(|c| c.oid == oid).cloned();
+        if let Some(commit) = state.selected_commit.clone() {
+            let oid = commit.oid.clone();
             content = content
                 .child(
                     Button::new("history-back")
@@ -110,14 +110,7 @@ impl GitPanel {
                         .gap_0p5()
                         .rounded_md()
                         .bg(cx.theme().foreground.opacity(0.04))
-                        .child(
-                            div().text_size(TITLE_TEXT).child(
-                                commit
-                                    .as_ref()
-                                    .map(|c| c.subject.clone())
-                                    .unwrap_or_default(),
-                            ),
-                        )
+                        .child(div().text_size(TITLE_TEXT).child(commit.subject.clone()))
                         .child(
                             div()
                                 .text_size(META_TEXT)
@@ -135,7 +128,7 @@ impl GitPanel {
         let more = state.history_more;
         content = content.children(commits.into_iter().zip(commit_hovers).enumerate().map(
             |(i, (commit, hover))| {
-                let oid = commit.oid.clone();
+                let selected = commit.clone();
                 Button::new(("commit", i))
                     .accessibility_label(format!(
                         "Open commit {}: {}",
@@ -177,7 +170,7 @@ impl GitPanel {
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.git
-                            .update(cx, |g, cx| g.select_commit(oid.clone(), cx))
+                            .update(cx, |g, cx| g.select_commit(selected.clone(), cx))
                     }))
                     .smooth_hover(ButtonLook::Ghost, &hover, cx)
             },

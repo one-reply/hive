@@ -22,9 +22,11 @@ impl Git {
         cx.notify();
     }
 
-    pub fn select_commit(&mut self, oid: String, cx: &mut Context<Self>) {
+    /// Show the files of `commit` in History, from the list or from elsewhere (inline blame).
+    pub fn select_commit(&mut self, commit: Commit, cx: &mut Context<Self>) {
         self.files.clear();
-        self.selected_commit = Some(oid);
+        self.section = Section::History;
+        self.selected_commit = Some(commit);
         self.load_review(false, cx);
         cx.notify();
     }
@@ -47,7 +49,7 @@ impl Git {
         let generation = self.query_generation;
         let section = self.section;
         let base = self.base.clone();
-        let commit = self.selected_commit.clone();
+        let commit = self.selected_commit.as_ref().map(|c| c.oid.clone());
         let skip = if more { self.commits.len() } else { 0 };
         self.review_loading = true;
         self._review = Some(cx.spawn(async move |this, cx| {

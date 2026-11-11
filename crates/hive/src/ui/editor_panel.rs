@@ -8,12 +8,13 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, DockArea, DockEvent, Panel, PanelEvent, TabGroup};
-use gpui_kit::component::input::Editor;
+use gpui_kit::component::input::{Editor, EditorState, RopeExt as _};
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 mod actions;
+mod blame;
 pub(crate) mod close;
 mod image_preview;
 mod render;
@@ -30,6 +31,8 @@ pub(crate) struct EditorPanel {
     last_position: (u32, u32, Point<Pixels>),
     image_focus: FocusHandle,
     changes: FileChanges,
+    blame_card: blame::BlameCard,
+    blame_fade: blame::LabelFade,
     _position: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -51,6 +54,8 @@ impl EditorPanel {
                 let changes = file_changes(&git, &this.document, cx);
                 if this.changes != changes {
                     this.changes = changes;
+                    // A commit or checkout changes what the lines are blamed on.
+                    this.document.update(cx, |d, cx| d.schedule_blame(cx));
                     cx.notify();
                 }
             }),
@@ -73,6 +78,7 @@ impl EditorPanel {
                 let position = (cursor.line, cursor.character, editor.scroll_offset());
                 if this.last_position != position {
                     this.last_position = position;
+                    this.close_blame_card(cx);
                     this._position = Some(cx.spawn(async |this, cx| {
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(500))
@@ -98,6 +104,8 @@ impl EditorPanel {
             last_position: (0, 0, Point::default()),
             image_focus: cx.focus_handle(),
             changes,
+            blame_card: blame::BlameCard::default(),
+            blame_fade: blame::LabelFade::default(),
             _position: None,
             _subscriptions: subscriptions,
         }
