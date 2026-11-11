@@ -104,9 +104,37 @@ pub enum Error {
     /// The bounded subprocess failed.
     #[error("Could not read PR/MR: {0}")]
     Command(#[from] command::Error),
+    /// The hosting service rejected credentials or denied account access.
+    #[error("{provider:?}: {failure}")]
+    Authentication {
+        /// Provider whose API rejected the request.
+        provider: Provider,
+        /// Authentication failure category.
+        failure: AuthFailure,
+    },
     /// CLI/API response could not be interpreted.
     #[error("{0}")]
     Response(String),
+}
+
+/// Provider authentication failure; distinct from network and repository errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum AuthFailure {
+    /// Credentials are absent or expired.
+    #[error("Sign in to your hosting account.")]
+    SignedOut,
+    /// The account lacks access.
+    #[error("The server denied access; check account permissions.")]
+    AccessDenied,
+}
+impl Error {
+    /// Provider for which signing in or checking access may resolve this failure.
+    pub fn authentication_provider(&self) -> Option<Provider> {
+        match self {
+            Self::Authentication { provider, .. } => Some(*provider),
+            _ => None,
+        }
+    }
 }
 
 /// Blocking: read the branch's PR/MR without changing authentication or the repository.
@@ -135,43 +163,20 @@ fn try_gitlab(error: &Error) -> bool {
             "none of the git remotes configured for this repository point to a known GitHub host",
         ) || message
             .contains("To get started with GitHub CLI, please run:"),
-        Error::Command(_) => false,
+        Error::Command(_) | Error::Authentication { .. } => false,
     }
 }
 
 fn run_cli(
     host: &Host,
     cwd: &Path,
-    program: &str,
+    provider: Provider,
     args: &[&str],
 ) -> Result<command::Output, Error> {
-    let executable = if *host == Host::Local {
-        match program {
-            "gh" => Provider::GitHub.executable(),
-            "glab" => Provider::GitLab.executable(),
-            _ => command::executable(program),
-        }
-        .ok_or(Error::Missing)?
-    } else {
-        program.into()
-    };
-    // Host::command's local environment does not propagate into an SSH command.
-    let executable = executable.to_string_lossy();
-    let mut environment = vec![
-        "GH_PROMPT_DISABLED=1",
-        "GH_NO_UPDATE_NOTIFIER=1",
-        "GH_PAGER=cat",
-        "GLAB_SKIP_UPDATE_CHECK=1",
-        "GLAB_NO_PROMPT=1",
-        "NO_PROMPT=1", // Older glab versions use the unprefixed variable.
-        "GLAB_PAGER=cat",
-        "NO_COLOR=1",
-        "LC_ALL=C",
-        &executable,
-    ];
-    environment.extend_from_slice(args);
+    let command =
+        super::hosting::cli_command_on(provider, host, Some(cwd), args).ok_or(Error::Missing)?;
     let output = command::run(
-        host.command("env", &environment, Some(cwd)),
+        command,
         &[],
         &command::Cancellation::default(),
         Duration::from_secs(15),
@@ -185,6 +190,25 @@ fn run_cli(
 
 fn response_error(program: &str, stderr: &[u8]) -> Error {
     let message = String::from_utf8_lossy(stderr);
+    let lower = message.to_ascii_lowercase();
+    let failure =
+        if super::hosting::has_http_status(&lower, "401") || lower.contains("not logged in") {
+            Some(AuthFailure::SignedOut)
+        } else if super::hosting::has_http_status(&lower, "403") {
+            Some(AuthFailure::AccessDenied)
+        } else {
+            None
+        };
+    if let Some(failure) = failure {
+        return Error::Authentication {
+            provider: if program == "gh" {
+                Provider::GitHub
+            } else {
+                Provider::GitLab
+            },
+            failure,
+        };
+    }
     Error::Response(format!(
         "{program}: {}",
         message.trim().chars().take(500).collect::<String>()
@@ -195,7 +219,7 @@ fn read_github(host: &Host, cwd: &Path) -> Result<Option<PullRequest>, Error> {
     let output = run_cli(
         host,
         cwd,
-        "gh",
+        Provider::GitHub,
         &["pr", "view", "--json", "number,url,state,statusCheckRollup"],
     )?;
     github_response(output)
@@ -221,6 +245,28 @@ fn github_response(output: command::Output) -> Result<Option<PullRequest>, Error
 mod tests {
     use super::*;
 
+    #[test]
+    fn authentication_failures_keep_provider_and_do_not_match_dns_errors() {
+        for (program, provider) in [("gh", Provider::GitHub), ("glab", Provider::GitLab)] {
+            for status in ["HTTP 401: Unauthorized", "403 Forbidden", "not logged in"] {
+                assert_eq!(
+                    response_error(program, status.as_bytes()).authentication_provider(),
+                    Some(provider)
+                );
+            }
+            for failure in [
+                "lookup git4013.example.com failed",
+                "dial host:4401: refused",
+                "ambiguous merge requests",
+                "SSH timeout",
+            ] {
+                assert_eq!(
+                    response_error(program, failure.as_bytes()).authentication_provider(),
+                    None
+                );
+            }
+        }
+    }
     #[test]
     fn provider_is_retained_without_a_request_and_github_errors_do_not_fall_through() {
         let github = resolve(Ok(None), || panic!("GitHub already resolved")).unwrap();

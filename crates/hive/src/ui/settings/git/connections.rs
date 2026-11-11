@@ -146,7 +146,10 @@ impl Connections {
         );
         let busy = status.busy();
         let label = action_label(&status);
-        let connected = matches!(&status, Status::Ready(Connection::Connected(_)));
+        let connected = matches!(
+            &status,
+            Status::Ready(Connection::Connected(_) | Connection::ConnectedWithWarning(_))
+        );
         let message = match &status {
             Status::Checking => "Checking your connection…".into(),
             Status::Ready(Connection::MissingCli) => format!(
@@ -156,7 +159,7 @@ impl Connections {
             Status::Ready(Connection::SignedOut) => {
                 "Sign in to see pull/merge requests and CI status.".into()
             }
-            Status::Ready(Connection::Connected(user)) => {
+            Status::Ready(Connection::Connected(user) | Connection::ConnectedWithWarning(user)) => {
                 format!("Connected as {user} · {}", account.server.as_str())
             }
             Status::Installing => {
@@ -215,7 +218,9 @@ impl Connections {
         }
         let color = match &status {
             Status::Failed(_) => cx.theme().danger,
-            Status::Ready(Connection::Connected(_)) => cx.theme().success,
+            Status::Ready(Connection::Connected(_) | Connection::ConnectedWithWarning(_)) => {
+                cx.theme().success
+            }
             _ => cx.theme().muted_foreground,
         };
         let details = Hover::new(("hosting-details", provider as usize), window, cx).enabled(!busy);
@@ -264,6 +269,17 @@ impl Connections {
                                     .child(div().min_w_0().child(message)),
                             ),
                     ),
+            )
+            .when(
+                matches!(&status, Status::Ready(Connection::ConnectedWithWarning(_))),
+                |panel| {
+                    panel.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(hive_core::git::hosting::STORAGE_WARNING),
+                    )
+                },
             )
             .when(row.details_open, |panel| {
                 panel.child(self.server_fields(row, busy, window, cx))
@@ -345,8 +361,10 @@ fn is_custom_server(provider: Provider, input: &str) -> bool {
 }
 
 fn visible_status(status: &Status, server: &str, input: &str) -> Status {
-    if matches!(status, Status::Ready(Connection::Connected(_)))
-        && !input.trim().eq_ignore_ascii_case(server)
+    if matches!(
+        status,
+        Status::Ready(Connection::Connected(_) | Connection::ConnectedWithWarning(_))
+    ) && !input.trim().eq_ignore_ascii_case(server)
     {
         Status::Ready(Connection::SignedOut)
     } else {
@@ -357,7 +375,9 @@ fn visible_status(status: &Status, server: &str, input: &str) -> Status {
 fn action_label(status: &Status) -> &'static str {
     match status {
         Status::Ready(Connection::MissingCli) => "Install & Connect",
-        Status::Ready(Connection::Connected(_)) => "Sign in again",
+        Status::Ready(Connection::Connected(_) | Connection::ConnectedWithWarning(_)) => {
+            "Sign in again"
+        }
         Status::Installing => "Preparing…",
         Status::SigningIn(_) => "Waiting for sign-in…",
         Status::Checking => "Checking…",

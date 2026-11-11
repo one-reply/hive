@@ -19,6 +19,10 @@ impl Status {
         matches!(self, Self::Checking | Self::Installing | Self::SigningIn(_))
     }
 }
+fn is_connected(status: &Status) -> bool {
+    matches!(status, Status::Ready(connection) if connection.username().is_some())
+}
+
 struct Operation {
     cancellation: Arc<Cancellation>,
     _task: Task<()>,
@@ -137,11 +141,7 @@ impl GitHosting {
         account.generation = account.generation.wrapping_add(1);
         let generation = account.generation;
         let server = account.server.clone();
-        account.status = if connect {
-            Status::Installing
-        } else {
-            Status::Checking
-        };
+        account.status = Status::Checking;
         let cancellation = Arc::new(Cancellation::default());
         let cancel = cancellation.clone();
         let task = cx.spawn(async move |this, cx| {
@@ -151,6 +151,7 @@ impl GitHosting {
                     let installed = if provider.executable().is_some() {
                         Ok(())
                     } else {
+                        let _ = send.send_blocking(Status::Installing);
                         hosting::install(provider, &cancel)
                     };
                     installed.and_then(|()| {
@@ -177,8 +178,7 @@ impl GitHosting {
                 });
             });
             while let Ok(status) = receive.recv().await {
-                let connected =
-                    connect && matches!(status, Status::Ready(Connection::Connected(_)));
+                let connected = is_connected(&status);
                 let applied = this
                     .update(cx, |this, cx| {
                         let account = &mut this.accounts[index(provider)];
@@ -198,7 +198,7 @@ impl GitHosting {
                 if connected {
                     cx.update(|cx| {
                         let requests = crate::app::AppState::get(cx).pull_requests.clone();
-                        requests.update(cx, |requests, cx| requests.refresh(cx));
+                        requests.update(cx, |requests, cx| requests.refresh(provider, cx));
                     });
                 }
             }
@@ -216,6 +216,17 @@ impl GitHosting {
 mod tests {
     use super::{Connection, GitHosting, Provider, Status};
     use gpui_kit::{AppContext as _, TestAppContext};
+    #[test]
+    fn successful_check_and_login_warning_both_refresh_metadata() {
+        assert!(super::is_connected(&Status::Ready(Connection::Connected(
+            "person".into()
+        ))));
+        assert!(super::is_connected(&Status::Ready(
+            Connection::ConnectedWithWarning("person".into())
+        )));
+        assert!(!super::is_connected(&Status::Checking));
+        assert!(!super::is_connected(&Status::Failed("network".into())));
+    }
     #[gpui::test]
     fn cancelling_invalidates_callbacks_and_keeps_other_provider_independent(
         cx: &mut TestAppContext,

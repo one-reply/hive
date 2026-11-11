@@ -115,6 +115,8 @@ pub enum Connection {
     SignedOut,
     /// The server accepted the CLI's credentials.
     Connected(String),
+    /// Authentication succeeded, but the CLI reported non-Keychain credential storage.
+    ConnectedWithWarning(String),
 }
 
 /// Safe instructions extracted from CLI output, never an access token.
@@ -157,33 +159,70 @@ pub enum Error {
         "Enter the OAuth Application ID supplied by your GitLab administrator, or leave it empty to use glab configuration."
     )]
     InvalidClientId,
-    /// CLI reported falling back from the operating system credential store.
-    #[error(
-        "The CLI reported insecure credential storage. Unlock Keychain and sign in again to move credentials into secure storage."
-    )]
-    InsecureStorage,
     /// Storage/download validation failure; only safe, owned context is included.
     #[error("CLI installation failed: {0}")]
     Install(String),
 }
 
+/// Credential storage notice; authentication is still valid.
+pub const STORAGE_WARNING: &str = "The CLI reported storing credentials outside Keychain. Review its credential storage settings.";
+
+impl Connection {
+    /// Verified account name, including a successful login with a storage warning.
+    pub fn username(&self) -> Option<&str> {
+        match self {
+            Self::Connected(name) | Self::ConnectedWithWarning(name) => Some(name),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) fn cli_command_on(
+    provider: Provider,
+    host: &Host,
+    cwd: Option<&std::path::Path>,
+    args: &[&str],
+) -> Option<Command> {
+    let executable = if *host == Host::Local {
+        provider.executable()?
+    } else {
+        provider.cli().into()
+    };
+    let executable = executable.to_string_lossy();
+    let mut arguments = vec![
+        "-u",
+        "CI",
+        "-u",
+        "GITLAB_CI",
+        "-u",
+        "GH_FORCE_TTY",
+        "-u",
+        "GH_DEBUG",
+        "-u",
+        "GLAB_DEBUG_HTTP",
+        "NO_COLOR=1",
+        "CLICOLOR=0",
+        "LC_ALL=C",
+        "GH_PROMPT_DISABLED=1",
+        "GH_NO_UPDATE_NOTIFIER=1",
+        "GH_PAGER=cat",
+        "GLAB_NO_PROMPT=1",
+        "NO_PROMPT=1",
+        "GLAB_SKIP_UPDATE_CHECK=1",
+        "GLAB_PAGER=cat",
+        &executable,
+    ];
+    arguments.extend_from_slice(args);
+    Some(host.command("env", &arguments, cwd))
+}
 fn cli_command(provider: Provider, args: &[&str]) -> Result<Command, Error> {
-    let executable = provider.executable().ok_or(Error::MissingCli)?;
-    let mut command = Host::Local.command(&executable.to_string_lossy(), args, None);
-    command
-        .env("NO_COLOR", "1")
-        .env("CLICOLOR", "0")
-        .env("LC_ALL", "C")
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_NO_UPDATE_NOTIFIER", "1")
-        .env("GLAB_NO_PROMPT", "1")
-        .env("GLAB_SKIP_UPDATE_CHECK", "1")
-        .env_remove("CI")
-        .env_remove("GITLAB_CI")
-        .env_remove("GH_FORCE_TTY")
-        .env_remove("GH_DEBUG")
-        .env_remove("GLAB_DEBUG_HTTP");
-    Ok(command)
+    cli_command_on(provider, &Host::Local, None, args).ok_or(Error::MissingCli)
+}
+
+pub(crate) fn has_http_status(message: &str, status: &str) -> bool {
+    message
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != ':' && c != '-')
+        .any(|word| word == status || word.strip_prefix(status) == Some(":"))
 }
 
 /// Blocking: verify the chosen host using existing CLI credentials, without exposing tokens.
@@ -209,7 +248,6 @@ fn account_response(provider: Provider, output: command::Output) -> Result<Conne
     if output.code != Some(0) {
         let message = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
         if [
-            "401",
             "not logged",
             "auth login",
             "authentication required",
@@ -217,10 +255,11 @@ fn account_response(provider: Provider, output: command::Output) -> Result<Conne
         ]
         .iter()
         .any(|s| message.contains(s))
+            || has_http_status(&message, "401")
         {
             return Ok(Connection::SignedOut);
         }
-        return Err(if message.contains("403") {
+        return Err(if has_http_status(&message, "403") {
             Error::AccessDenied
         } else {
             Error::Unavailable
@@ -309,10 +348,8 @@ pub fn sign_in(
     if output.code != Some(0) {
         return Err(Error::SignIn);
     }
-    if insecure_storage(&output) {
-        return Err(Error::InsecureStorage);
-    }
-    check(provider, server, cancellation)
+    let connection = check(provider, server, cancellation)?;
+    Ok(storage_notice(connection, &output))
 }
 
 fn device_prompt(bytes: &[u8], server: &Server) -> Option<DevicePrompt> {
@@ -347,6 +384,15 @@ fn valid_client_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn storage_notice(connection: Connection, output: &command::Output) -> Connection {
+    match connection {
+        Connection::Connected(name) if insecure_storage(output) => {
+            Connection::ConnectedWithWarning(name)
+        }
+        other => other,
+    }
 }
 
 fn insecure_storage(output: &command::Output) -> bool {

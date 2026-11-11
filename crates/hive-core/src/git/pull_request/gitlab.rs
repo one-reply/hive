@@ -20,7 +20,12 @@ struct Pipeline {
 }
 
 pub(super) fn read(host: &Host, cwd: &Path) -> Result<Option<PullRequest>, Error> {
-    let output = run_cli(host, cwd, "glab", &["mr", "view", "--output", "json"])?;
+    let output = run_cli(
+        host,
+        cwd,
+        super::Provider::GitLab,
+        &["mr", "view", "--output", "json"],
+    )?;
     response(output)
 }
 

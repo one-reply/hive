@@ -152,3 +152,58 @@ fn insecure_credential_storage_warning_is_not_silently_reported_as_success() {
         "Stored your credentials in the operating system keyring."
     )));
 }
+
+#[test]
+fn hostnames_and_ports_are_not_http_authentication_statuses() {
+    for message in [
+        "lookup git4013.example.com failed",
+        "dial host:4401: refused",
+        "https://git403.example.com timeout",
+    ] {
+        assert!(matches!(
+            account_response(Provider::GitLab, output(1, "", message)),
+            Err(Error::Unavailable)
+        ));
+    }
+    assert!(has_http_status("HTTP 401: Unauthorized", "401"));
+    assert!(has_http_status("403 Forbidden", "403"));
+}
+#[test]
+fn plaintext_notice_preserves_verified_account_and_does_not_claim_migration() {
+    let connection = storage_notice(
+        Connection::Connected("person".into()),
+        &output(0, "", "stored in plain text"),
+    );
+    assert_eq!(
+        connection,
+        Connection::ConnectedWithWarning("person".into())
+    );
+    assert_eq!(connection.username(), Some("person"));
+    assert_eq!(
+        storage_notice(Connection::SignedOut, &output(0, "", "plain text")),
+        Connection::SignedOut
+    );
+}
+#[test]
+fn ssh_and_settings_commands_share_noninteractive_environment() {
+    let command = cli_command_on(
+        Provider::GitLab,
+        &Host::Ssh {
+            target: "test-host".into(),
+        },
+        None,
+        &["api", "user"],
+    )
+    .unwrap();
+    let command = format!("{command:?}");
+    for entry in [
+        "NO_PROMPT=1",
+        "GLAB_NO_PROMPT=1",
+        "GLAB_PAGER=cat",
+        "GH_PAGER=cat",
+        "GLAB_DEBUG_HTTP",
+        "glab",
+    ] {
+        assert!(command.contains(entry), "{command}");
+    }
+}

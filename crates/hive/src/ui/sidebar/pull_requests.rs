@@ -1,5 +1,5 @@
 use super::*;
-use crate::state::pull_requests::Status;
+use crate::state::pull_requests::{Status, can_connect};
 use gpui_kit::component::Disableable as _;
 use hive_core::git::pull_request::Provider;
 pub(super) const HEIGHT: Pixels = px(24.);
@@ -41,6 +41,10 @@ impl Sidebar {
             .items_center()
             .text_xs()
             .text_color(cx.theme().muted_foreground);
+        let can_connect = status
+            .as_ref()
+            .and_then(|status| can_connect(&project.host, status))
+            .is_some();
         match status {
             Some(Status::Ready(snapshot)) => {
                 let (prefix, tooltip, empty) = request_labels(snapshot.provider());
@@ -81,8 +85,21 @@ impl Sidebar {
                 )
                 .into_any_element()
             }
-            Some(Status::Unavailable(error)) => row
-                .child(
+            Some(Status::Unavailable { message: error, .. }) => {
+                if !can_connect {
+                    return row
+                        .child(
+                            div()
+                                .id("pr-unavailable-detail")
+                                .child("PR/MR unavailable")
+                                .tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(error.clone())
+                                        .build(window, cx)
+                                }),
+                        )
+                        .into_any_element();
+                }
+                row.child(
                     Button::new("pr-unavailable")
                         .cursor_pointer()
                         .xsmall()
@@ -96,7 +113,8 @@ impl Sidebar {
                         })
                         .smooth_hover(ButtonLook::Ghost, &hover, cx),
                 )
-                .into_any_element(),
+                .into_any_element()
+            }
             None => row.child("Loading PR/MR…").into_any_element(),
         }
     }

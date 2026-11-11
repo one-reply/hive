@@ -45,6 +45,39 @@ impl Drop for Staging {
 fn io_error(error: std::io::Error) -> Error {
     Error::Install(error.to_string())
 }
+fn cleanup_staging(parent: &Path, is_alive: impl Fn(u32) -> bool) -> Result<(), Error> {
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(io_error(error)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(io_error)?;
+        let name = entry.file_name();
+        let Some((pid, counter)) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(".install-"))
+            .and_then(|name| name.split_once('-'))
+        else {
+            continue;
+        };
+        let Some(pid) = pid
+            .parse::<u32>()
+            .ok()
+            .filter(|pid| *pid > 0 && *pid <= i32::MAX as u32)
+        else {
+            continue;
+        };
+        if counter.parse::<u64>().is_err()
+            || is_alive(pid)
+            || !entry.file_type().map_err(io_error)?.is_dir()
+        {
+            continue;
+        }
+        fs::remove_dir_all(entry.path()).map_err(io_error)?;
+    }
+    Ok(())
+}
 fn staging(parent: &Path) -> Result<Staging, Error> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     fs::create_dir_all(parent).map_err(io_error)?;
@@ -130,6 +163,11 @@ fn install_at(
     let parent = destination
         .parent()
         .ok_or_else(|| Error::Install("Invalid installation path.".into()))?;
+    cleanup_staging(parent, |pid| {
+        rustix::process::Pid::from_raw(pid as i32).is_none_or(|pid| {
+            rustix::process::test_kill_process(pid) != Err(rustix::io::Errno::SRCH)
+        })
+    })?;
     let staging = staging(parent)?;
     let archive = staging.0.join("archive");
     let release = release(provider);
@@ -208,6 +246,29 @@ fn write_binary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn abandoned_installations_are_removed_without_touching_live_or_unrelated_paths() {
+        let parent =
+            std::env::temp_dir().join(format!("hive-stale-install-test-{}", std::process::id()));
+        fs::create_dir_all(&parent).unwrap();
+        for name in [
+            ".install-123-0",
+            ".install-456-1",
+            ".install-invalid",
+            "other",
+        ] {
+            fs::create_dir(parent.join(name)).unwrap();
+            fs::write(parent.join(name).join("archive"), b"partial").unwrap();
+        }
+        std::os::unix::fs::symlink(parent.join("other"), parent.join(".install-789-0")).unwrap();
+        cleanup_staging(&parent, |pid| pid == 456).unwrap();
+        assert!(!parent.join(".install-123-0").exists());
+        assert!(parent.join(".install-456-1/archive").exists());
+        assert!(parent.join(".install-invalid/archive").exists());
+        assert!(parent.join("other/archive").exists());
+        assert!(parent.join(".install-789-0").is_symlink());
+        fs::remove_dir_all(parent).unwrap();
+    }
     #[test]
     fn rejected_or_cancelled_install_preserves_existing_binary_and_cleans_staging() {
         use std::os::unix::fs::PermissionsExt;
