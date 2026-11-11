@@ -298,6 +298,19 @@ impl Sidebar {
             |_, _| false,
         );
         let is_menu_open = *menu_open.read(cx);
+        let header_focus = window
+            .use_keyed_state(
+                SharedString::from(format!(
+                    "project-focus:{:?}:{:?}",
+                    project.host, project.path
+                )),
+                cx,
+                |_, cx| cx.focus_handle(),
+            )
+            .read(cx)
+            .clone();
+        let keyboard_focus =
+            window.last_input_was_keyboard() && header_focus.contains_focused(window, cx);
         let path = project.path.clone();
         let host = project.host.clone();
         let collapse_target = (host.clone(), path.clone());
@@ -306,14 +319,20 @@ impl Sidebar {
             if open { "Collapse" } else { "Expand" },
             project.name
         );
+        let unfolded = transition(
+            format!("project-chevron:{:?}:{:?}", project.host, project.path),
+            if open { 1.0_f32 } else { 0. },
+            Transition::new(COLLAPSE_DURATION).ease(ease_in_out),
+            window,
+            cx,
+        );
         let collapse = Button::new(("collapse-project", ix))
             .cursor_pointer()
             .small()
-            .icon(if open {
-                Lucide::ChevronDown
-            } else {
-                Lucide::ChevronRight
-            })
+            .icon(
+                Icon::new(Lucide::ChevronRight)
+                    .rotate(radians(std::f32::consts::FRAC_PI_2 * unfolded)),
+            )
             .accessibility_label(collapse_label.clone())
             .tooltip(collapse_label)
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -322,8 +341,7 @@ impl Sidebar {
                 this.toggle_collapsed(&collapse_target, cx);
             }))
             .smooth_hover(ButtonLook::Ghost, &collapse_hover, cx);
-        // The gap before the buttons lives inside, so it collapses with them.
-        let buttons = h_flex()
+        let actions = h_flex()
             .flex_none()
             .pl_1()
             .gap_0p5()
@@ -343,23 +361,18 @@ impl Sidebar {
                         })
                         .smooth_hover(ButtonLook::Ghost, &new_worktree_hover, cx),
                 )
-            });
-        let actions = h_flex()
-            .flex_none()
-            .w_0()
-            .overflow_hidden()
-            // The popup needs its trigger to stay visible while the pointer crosses the gap.
-            .when(header_hover.is_hovered(cx) || is_menu_open, |s| s.w_auto())
-            .opacity(if is_menu_open {
+            })
+            .child(collapse)
+            .opacity(if is_menu_open || keyboard_focus {
                 1.
             } else {
                 header_hover.progress()
-            })
-            .child(buttons);
+            });
         h_flex()
             .id(("project", ix))
             .role(Role::Button)
             .aria_label(format!("Open project {}", project.name))
+            .track_focus(&header_focus)
             .tab_index(0)
             .on_hover(header_hover.listener())
             .h(HEADER_HEIGHT)
@@ -390,7 +403,6 @@ impl Sidebar {
                     .child(project.name.clone()),
             )
             .child(actions)
-            .child(collapse)
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.projects
                     .update(cx, |projects, cx| projects.select_project(&host, &path, cx));

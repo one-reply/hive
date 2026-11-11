@@ -65,7 +65,12 @@ jobs:
       - name: Install toolchain and musl
         run: |
           rustup target add "${{ matrix.target }}"
-          sudo apt-get update
+          # Keep Ubuntu's signing keys while avoiding runner DNS failures on the upstream mirrors.
+          sudo sed -i \
+            -e 's|mirror+file:/etc/apt/apt-mirrors\.txt|https://mirrors.ocf.berkeley.edu/ubuntu|g' \
+            -e 's|http://ports\.ubuntu\.com/ubuntu-ports|https://mirrors.ocf.berkeley.edu/ubuntu-ports|g' \
+            /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get -o APT::Update::Error-Mode=any update
           sudo apt-get install -y musl-tools
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Check and test shared filesystem on Linux
