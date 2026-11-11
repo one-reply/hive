@@ -1,0 +1,51 @@
+{
+  "id": 565802652,
+  "iid": 4383,
+  "state": "merged",
+  "web_url": "https://gitlab.com/gitlab-org/cli/-/merge_requests/4383",
+  "head_pipeline": {
+    "id": 3053420629,
+    "iid": 17386,
+    "project_id": 34675721,
+    "status": "success",
+    "source": "merge_request_event",
+    "ref": "refs/merge-requests/4383/train",
+    "name": "",
+    "sha": "70eadbd44b699328b56f7567197a329e88b86473",
+    "before_sha": "70eadbd44b699328b56f7567197a329e88b86473",
+    "tag": false,
+    "yaml_errors": "",
+    "user": {
+      "id": 12689435,
+      "username": "timofurrer",
+      "name": "Timo Furrer",
+      "state": "active",
+      "created_at": null,
+      "avatar_url": "https://gitlab.com/uploads/-/system/user/avatar/12689435/avatar.png?v=1794407392",
+      "web_url": "https://gitlab.com/timofurrer"
+    },
+    "updated_at": "2026-11-11T08:47:42.386Z",
+    "created_at": "2026-11-11T08:35:05.928Z",
+    "started_at": "2026-11-11T08:35:08.296Z",
+    "finished_at": "2026-11-11T08:47:42.371Z",
+    "committed_at": null,
+    "duration": 752,
+    "queued_duration": 2,
+    "coverage": "75.60",
+    "web_url": "https://gitlab.com/gitlab-org/cli/-/pipelines/3053420629",
+    "detailed_status": {
+      "icon": "status_success",
+      "text": "Passed",
+      "label": "passed",
+      "group": "success",
+      "tooltip": "passed",
+      "has_details": true,
+      "details_path": "/gitlab-org/cli/-/pipelines/3053420629",
+      "illustration": {
+        "image": ""
+      },
+      "favicon": "/assets/ci_favicons/favicon_status_success-8451333011eee8ce9f2ab25dc487fe24a8758c694827a582f17f42b0a90446a2.png"
+    },
+    "archived": false
+  }
+}

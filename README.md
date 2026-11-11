@@ -60,7 +60,7 @@ already runs there, and scrolls terminal selections past the pane edges.
 | **Pick up where you left off** | Restore selected worktrees, pinned files, terminal and diff tabs, split sizes, focus, and shell directories. Agent panes continue their Claude Code, Codex, OpenCode, or Antigravity conversation. |
 | **Review and commit** | Inspect unified or split diffs, stage files or hunks, compare branches, browse history, and commit, fetch, pull, or push. |
 | **Send feedback to agents** | Annotate diff lines and copy an editable review prompt. Turn a Git error into a draft in the appropriate agent terminal, ready for you to submit. |
-| **Follow pull requests** | See PR and CI status on worktree cards, with links to the PR and failing checks, using your existing GitHub CLI sign-in. |
+| **Follow pull and merge requests** | See GitHub PR or GitLab MR and CI status on worktree cards, with links to the request and failing CI, using your existing CLI sign-in. GitLab.com and self-managed GitLab are supported. |
 | **Generate commit messages** | Use Codex, Claude Code, OpenCode, or an API provider to draft a message from staged changes. |
 | **Track usage** | View compact usage bars for Claude Code, Codex, Cursor Agent, and Antigravity. Hover for limits, reset times, or sign-in help; unavailable limits appear gray. |
 | **Make it yours** | Choose from six built-in themes, with independent light and dark palettes and automatic system switching; customize UI and code fonts, Files density and icons, and keyboard shortcuts. |
@@ -133,7 +133,12 @@ For a release build, use `cargo run --locked --release -p hive`.
 
 Projects, terminals, and Git tools work without configuring an AI API key in Hive.
 Install and sign in to your preferred agent separately. Usage indicators read
-supported CLI sign-ins; PR/CI cards additionally require **`gh`** signed in to GitHub.
+supported CLI sign-ins. PR/MR cards use **`gh auth login`** for GitHub or
+**`glab auth login --hostname <host>`** for GitLab.com or your self-managed GitLab.
+Install and sign in to the CLI on the project host (locally or over SSH). Hive uses
+the CLI's repository context, including configured SSH aliases and host settings; it
+does not copy access tokens. If several MRs match a branch, the card reports the
+ambiguity instead of selecting one silently. MR and CI links require HTTPS.
 
 ### Attention and usage
 
@@ -278,7 +283,7 @@ Shortcuts can be changed in **Settings → Application → Shortcuts**.
   endpoint. They refresh every five minutes or on demand. These integrations rely
   on undocumented endpoints and may stop working when providers change them.
 - Claude hooks are scoped to sessions launched by Hive and do not modify global
-  Claude settings. PR/CI status uses read-only `gh` queries.
+  Claude settings. PR/MR and CI status uses read-only `gh`/`glab` queries.
 - Logs are written to `~/.hive/logs/hive.log`. For troubleshooting, run
   `RUST_LOG=hive_core=debug cargo run --locked -p hive`. Usage diagnostics include
   HTTP status and response size, not response bodies or credentials. Other logs can
