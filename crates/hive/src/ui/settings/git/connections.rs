@@ -8,8 +8,9 @@ use crate::{
     },
 };
 use gpui_kit::{
+    assets::IconName as Lucide,
     component::{
-        ActiveTheme as _, Disableable as _, Sizable as _,
+        ActiveTheme as _, Disableable as _, Icon, Sizable as _,
         button::Button,
         h_flex,
         input::{Input, InputEvent, InputState},
@@ -20,10 +21,11 @@ use gpui_kit::{
 };
 use hive_core::git::hosting::{Connection, Provider};
 
-const SERVER_WIDTH: Pixels = px(180.);
+const LOGO_SIZE: Pixels = px(24.);
 struct ServerInput {
     provider: Provider,
     input: Entity<InputState>,
+    details_open: bool,
 }
 pub(super) struct Connections {
     hosting: Entity<GitHosting>,
@@ -45,8 +47,12 @@ impl Connections {
                     .to_owned();
                 let input =
                     cx.new(|cx| InputState::new(window, cx).placeholder(provider.default_host()));
-                input.update(cx, |input, cx| input.set_value(server, window, cx));
-                ServerInput { provider, input }
+                input.update(cx, |input, cx| input.set_value(server.clone(), window, cx));
+                ServerInput {
+                    provider,
+                    input,
+                    details_open: is_custom_server(provider, &server),
+                }
             })
             .collect();
         let mut subscriptions = vec![cx.observe(&hosting, |_, _, cx| cx.notify())];
@@ -72,7 +78,7 @@ impl Connections {
             return;
         };
         let server = row.input.read(cx).value().to_string();
-        let client_id = (provider == Provider::GitLab && server.trim() != "gitlab.com")
+        let client_id = (provider == Provider::GitLab && is_custom_server(provider, &server))
             .then(|| self.client_id.read(cx).value().trim().to_owned())
             .filter(|id| !id.is_empty());
         self.hosting.update(cx, |hosting, cx| {
@@ -87,12 +93,60 @@ impl Connections {
         self.hosting
             .update(cx, |hosting, cx| hosting.check(provider, &server, cx));
     }
+    fn toggle_details(&mut self, provider: Provider, cx: &mut Context<Self>) {
+        if let Some(row) = self.inputs.iter_mut().find(|row| row.provider == provider) {
+            row.details_open = !row.details_open;
+            cx.notify();
+        }
+    }
+    fn server_fields(
+        &self,
+        row: &ServerInput,
+        busy: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let mut fields = v_flex()
+            .gap_2()
+            .pt_3()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(div().text_sm().child("Server"))
+            .child(TextField::input(
+                Input::new(&row.input)
+                    .disabled(busy)
+                    .aria_label(format!("{} server", row.provider.name())),
+                &row.input,
+                cx,
+            ));
+        if row.provider == Provider::GitLab
+            && is_custom_server(row.provider, row.input.read(cx).value().as_ref())
+        {
+            let help = Hover::new("gitlab-oauth-help", window, cx);
+            fields = fields
+                .child(div().pt_2().text_sm().child("OAuth Application ID"))
+                .child(TextField::input(Input::new(&self.client_id).disabled(busy)
+                    .aria_label("GitLab OAuth Application ID"), &self.client_id, cx))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                    .child("Self-managed GitLab requires an OAuth application for browser sign-in."))
+                .child(Button::new("gitlab-oauth-help").cursor_pointer().small()
+                    .icon(Lucide::ExternalLink).label("Self-managed sign-in setup")
+                    .on_click(|_, _, cx| cx.open_url("https://docs.gitlab.com/cli/authentication/#oauth-gitlab-self-managed-gitlab-dedicated"))
+                    .smooth_hover(ButtonLook::Ghost, &help, cx));
+        }
+        fields
+    }
     fn provider(&self, row: &ServerInput, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let provider = row.provider;
         let account = self.hosting.read(cx).account(provider);
-        let status = account.status.clone();
+        let status = visible_status(
+            &account.status,
+            account.server.as_str(),
+            row.input.read(cx).value().as_ref(),
+        );
         let busy = status.busy();
         let label = action_label(&status);
+        let connected = matches!(&status, Status::Ready(Connection::Connected(_)));
         let message = match &status {
             Status::Checking => "Checking your connection…".into(),
             Status::Ready(Connection::MissingCli) => format!(
@@ -103,7 +157,7 @@ impl Connections {
                 "Sign in to see pull/merge requests and CI status.".into()
             }
             Status::Ready(Connection::Connected(user)) => {
-                format!("Connected as {user} on {}", account.server.as_str())
+                format!("Connected as {user} · {}", account.server.as_str())
             }
             Status::Installing => {
                 "Preparing the official CLI. Downloads are verified before installation.".into()
@@ -126,12 +180,21 @@ impl Connections {
                     .loading(matches!(&status, Status::Checking | Status::Installing))
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, _, cx| this.connect(provider, cx)))
-                    .smooth_hover(ButtonLook::Primary, &action, cx),
+                    .smooth_hover(
+                        if connected {
+                            ButtonLook::Ghost
+                        } else {
+                            ButtonLook::Primary
+                        },
+                        &action,
+                        cx,
+                    ),
             )
             .child(
                 Button::new(("hosting-check", provider as usize))
                     .cursor_pointer()
                     .small()
+                    .icon(Lucide::RefreshCw)
                     .label("Check connection")
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, _, cx| this.check(provider, cx)))
@@ -155,6 +218,11 @@ impl Connections {
             Status::Ready(Connection::Connected(_)) => cx.theme().success,
             _ => cx.theme().muted_foreground,
         };
+        let details = Hover::new(("hosting-details", provider as usize), window, cx).enabled(!busy);
+        let logo: &'static [u8] = match provider {
+            Provider::GitHub => include_bytes!("../../../../assets/github.svg"),
+            Provider::GitLab => include_bytes!("../../../../assets/gitlab.svg"),
+        };
         v_flex()
             .gap_3()
             .p_4()
@@ -162,37 +230,70 @@ impl Connections {
             .border_color(cx.theme().border)
             .rounded_lg()
             .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(provider.name()),
+                h_flex()
+                    .gap_3()
+                    .items_start()
+                    .child(Icon::default().data(logo).size(LOGO_SIZE).flex_shrink_0())
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(provider.name()),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_start()
+                                    .when(connected, |line| line.items_center())
+                                    .text_sm()
+                                    .text_color(color)
+                                    .when(connected, |line| {
+                                        line.child(
+                                            Icon::new(Lucide::CircleCheck).size_4().flex_shrink_0(),
+                                        )
+                                    })
+                                    .when(matches!(&status, Status::Failed(_)), |line| {
+                                        line.child(
+                                            Icon::new(Lucide::CircleAlert).size_4().flex_shrink_0(),
+                                        )
+                                    })
+                                    .child(div().min_w_0().child(message)),
+                            ),
+                    ),
             )
+            .when(row.details_open, |panel| {
+                panel.child(self.server_fields(row, busy, window, cx))
+            })
             .child(
                 h_flex()
                     .gap_2()
+                    .justify_between()
                     .flex_wrap()
-                    .items_center()
-                    .child("Server")
                     .child(
-                        div().flex_1().min_w(SERVER_WIDTH).child(TextField::input(
-                            Input::new(&row.input)
-                                .disabled(busy)
-                                .aria_label(format!("{} server", provider.name())),
-                            &row.input,
-                            cx,
-                        )),
-                    ),
+                        Button::new(("hosting-details", provider as usize))
+                            .cursor_pointer()
+                            .small()
+                            .icon(if row.details_open {
+                                Lucide::ChevronDown
+                            } else {
+                                Lucide::ChevronRight
+                            })
+                            .label("Server settings")
+                            .disabled(busy)
+                            .tooltip(format!("{} server settings", provider.name()))
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.toggle_details(provider, cx)
+                                }),
+                            )
+                            .smooth_hover(ButtonLook::Ghost, &details, cx),
+                    )
+                    .child(controls),
             )
-            .when(provider == Provider::GitLab && row.input.read(cx).value().trim() != "gitlab.com", |panel| {
-                let help = Hover::new("gitlab-oauth-help", window, cx);
-                panel.child(v_flex().gap_2()
-                    .child(div().text_sm().child("OAuth Application ID (self-managed)"))
-                    .child(TextField::input(Input::new(&self.client_id).disabled(busy).aria_label("GitLab OAuth Application ID"), &self.client_id, cx))
-                    .child(Button::new("gitlab-oauth-help").cursor_pointer().small().label("Self-managed sign-in setup")
-                        .on_click(|_, _, cx| cx.open_url("https://docs.gitlab.com/cli/authentication/#oauth-gitlab-self-managed-gitlab-dedicated"))
-                        .smooth_hover(ButtonLook::Ghost, &help, cx)))
-            })
-            .child(div().text_sm().text_color(color).child(message))
-            .child(controls)
             .when_some(
                 match status {
                     Status::SigningIn(prompt) => prompt,
@@ -212,6 +313,7 @@ impl Connections {
                                 Button::new(("hosting-code", provider as usize))
                                     .cursor_pointer()
                                     .small()
+                                    .icon(Lucide::ExternalLink)
                                     .label("Copy code & Open browser")
                                     .on_click(move |_, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
@@ -231,10 +333,24 @@ impl Render for Connections {
         v_flex().gap_4()
             .child(div().font_weight(FontWeight::SEMIBOLD).child("Hosting accounts"))
             .child(div().text_sm().text_color(cx.theme().muted_foreground)
-                .child("Connect GitHub or GitLab to see pull/merge requests and CI. Existing CLI sign-ins are reused; credentials are managed by the official CLI."))
+                .child("Connect your accounts to see pull requests, merge requests and CI status."))
             .children(self.inputs.iter().map(|row| self.provider(row,window,cx)).collect::<Vec<_>>())
             .child(div().text_xs().text_color(cx.theme().muted_foreground)
-                .child("These connections apply to this Mac. SSH projects use credentials on their remote host. Repository access still depends on your account permissions."))
+                .child("Existing CLI sign-ins are reused; credentials stay with the official CLI. These connections apply to this Mac. SSH projects use credentials on their remote host. Repository access still depends on your account permissions."))
+    }
+}
+
+fn is_custom_server(provider: Provider, input: &str) -> bool {
+    !input.trim().eq_ignore_ascii_case(provider.default_host())
+}
+
+fn visible_status(status: &Status, server: &str, input: &str) -> Status {
+    if matches!(status, Status::Ready(Connection::Connected(_)))
+        && !input.trim().eq_ignore_ascii_case(server)
+    {
+        Status::Ready(Connection::SignedOut)
+    } else {
+        status.clone()
     }
 }
 
@@ -251,7 +367,27 @@ fn action_label(status: &Status) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Connection, Status, action_label};
+    use super::{Connection, Provider, Status, action_label, is_custom_server, visible_status};
+    #[test]
+    fn public_servers_hide_details_and_custom_servers_keep_them_discoverable() {
+        assert!(!is_custom_server(Provider::GitLab, " GitLab.COM "));
+        assert!(is_custom_server(Provider::GitLab, "code.example"));
+        assert!(!is_custom_server(Provider::GitHub, "github.com"));
+    }
+    #[test]
+    fn editing_server_does_not_claim_the_new_host_is_connected() {
+        let connected = Status::Ready(Connection::Connected("person".into()));
+        assert_eq!(
+            visible_status(&connected, "gitlab.com", " GitLab.COM "),
+            connected
+        );
+        assert_eq!(
+            visible_status(&connected, "gitlab.com", "code.example"),
+            Status::Ready(Connection::SignedOut)
+        );
+        let failed = Status::Failed("check hostname".into());
+        assert_eq!(visible_status(&failed, "gitlab.com", "bad/host"), failed);
+    }
     #[test]
     fn missing_cli_offers_install_and_failed_auth_never_looks_connected() {
         assert_eq!(
