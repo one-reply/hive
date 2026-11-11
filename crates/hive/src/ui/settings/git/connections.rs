@@ -9,6 +9,7 @@ use crate::{
 };
 use gpui_kit::{
     assets::IconName as Lucide,
+    base::motion::{Transition, transition},
     component::{
         ActiveTheme as _, Disableable as _, Icon, Sizable as _,
         button::Button,
@@ -20,12 +21,16 @@ use gpui_kit::{
     *,
 };
 use hive_core::git::hosting::{Connection, Provider};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 const LOGO_SIZE: Pixels = px(24.);
+const DETAILS_DURATION: Duration = Duration::from_millis(200);
 struct ServerInput {
     provider: Provider,
     input: Entity<InputState>,
     details_open: bool,
+    /// Natural height of the server settings, recorded each frame; GPUI cannot animate to `auto`.
+    details_height: Rc<Cell<Pixels>>,
 }
 pub(super) struct Connections {
     hosting: Entity<GitHosting>,
@@ -52,6 +57,7 @@ impl Connections {
                     provider,
                     input,
                     details_open: is_custom_server(provider, &server),
+                    details_height: Rc::default(),
                 }
             })
             .collect();
@@ -223,7 +229,13 @@ impl Connections {
             }
             _ => cx.theme().muted_foreground,
         };
-        let details = Hover::new(("hosting-details", provider as usize), window, cx).enabled(!busy);
+        let openness = transition(
+            format!("hosting-details-open:{}", provider.name()),
+            if row.details_open { 1.0_f32 } else { 0. },
+            Transition::new(DETAILS_DURATION).ease(ease_in_out),
+            window,
+            cx,
+        );
         let logo: &'static [u8] = match provider {
             Provider::GitHub => include_bytes!("../../../../assets/github.svg"),
             Provider::GitLab => include_bytes!("../../../../assets/gitlab.svg"),
@@ -281,34 +293,12 @@ impl Connections {
                     )
                 },
             )
-            .when(row.details_open, |panel| {
-                panel.child(self.server_fields(row, busy, window, cx))
-            })
             .child(
-                h_flex()
-                    .gap_2()
-                    .justify_between()
-                    .flex_wrap()
-                    .child(
-                        Button::new(("hosting-details", provider as usize))
-                            .cursor_pointer()
-                            .small()
-                            .icon(if row.details_open {
-                                Lucide::ChevronDown
-                            } else {
-                                Lucide::ChevronRight
-                            })
-                            .label("Server settings")
-                            .disabled(busy)
-                            .tooltip(format!("{} server settings", provider.name()))
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.toggle_details(provider, cx)
-                                }),
-                            )
-                            .smooth_hover(ButtonLook::Ghost, &details, cx),
-                    )
-                    .child(controls),
+                v_flex()
+                    .when(openness > 0., |group| {
+                        group.child(self.animated_details(row, busy, openness, window, cx))
+                    })
+                    .child(self.footer(row, busy, openness, controls, window, cx)),
             )
             .when_some(
                 match status {
@@ -343,6 +333,66 @@ impl Connections {
                 },
             )
     }
+    /// Server settings clipped to `openness` of their measured height while they fold.
+    fn animated_details(
+        &self,
+        row: &ServerInput,
+        busy: bool,
+        openness: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let measured = row.details_height.clone();
+        v_flex()
+            .overflow_hidden()
+            .when_some(animated_height(openness, measured.get()), |clip, height| {
+                clip.h(height)
+            })
+            .on_children_prepainted(move |bounds, _, _| {
+                if let Some(bounds) = bounds.first() {
+                    measured.set(bounds.size.height);
+                }
+            })
+            // The padding lives inside the clip so the gap above the footer folds with it.
+            .child(
+                div()
+                    .flex_none()
+                    .pb_3()
+                    .opacity(openness)
+                    .child(self.server_fields(row, busy, window, cx)),
+            )
+    }
+    fn footer(
+        &self,
+        row: &ServerInput,
+        busy: bool,
+        openness: f32,
+        controls: Div,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let provider = row.provider;
+        let details = Hover::new(("hosting-details", provider as usize), window, cx).enabled(!busy);
+        h_flex()
+            .gap_2()
+            .justify_between()
+            .flex_wrap()
+            .child(
+                Button::new(("hosting-details", provider as usize))
+                    .cursor_pointer()
+                    .small()
+                    .icon(
+                        Icon::new(Lucide::ChevronRight)
+                            .rotate(radians(std::f32::consts::FRAC_PI_2 * openness)),
+                    )
+                    .label("Server settings")
+                    .disabled(busy)
+                    .tooltip(format!("{} server settings", provider.name()))
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_details(provider, cx)))
+                    .smooth_hover(ButtonLook::Ghost, &details, cx),
+            )
+            .child(controls)
+    }
 }
 impl Render for Connections {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -358,6 +408,11 @@ impl Render for Connections {
 
 fn is_custom_server(provider: Provider, input: &str) -> bool {
     !input.trim().eq_ignore_ascii_case(provider.default_host())
+}
+
+/// `None` once fully open, so content that grows (custom GitLab fields) is never clipped.
+fn animated_height(openness: f32, measured: Pixels) -> Option<Pixels> {
+    (openness < 1.).then(|| measured * openness)
 }
 
 fn visible_status(status: &Status, server: &str, input: &str) -> Status {
@@ -387,7 +442,17 @@ fn action_label(status: &Status) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Connection, Provider, Status, action_label, is_custom_server, visible_status};
+    use super::{
+        Connection, Provider, Status, action_label, animated_height, is_custom_server,
+        visible_status,
+    };
+    use gpui_kit::px;
+    #[test]
+    fn server_settings_clip_only_while_folding() {
+        assert_eq!(animated_height(0., px(80.)), Some(px(0.)));
+        assert_eq!(animated_height(0.5, px(80.)), Some(px(40.)));
+        assert_eq!(animated_height(1., px(80.)), None);
+    }
     #[test]
     fn public_servers_hide_details_and_custom_servers_keep_them_discoverable() {
         assert!(!is_custom_server(Provider::GitLab, " GitLab.COM "));
