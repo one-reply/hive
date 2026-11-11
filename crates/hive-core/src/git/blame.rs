@@ -3,6 +3,7 @@
 //! The buffer is passed with `--contents -`, so unsaved edits and inserted lines are blamed as
 //! uncommitted instead of shifting every line below them onto the wrong commit.
 use super::{GitError, READ_LIMIT, bytes, run};
+use crate::files::Snapshot;
 use crate::host::Host;
 use chrono::{DateTime, FixedOffset};
 use std::collections::HashMap;
@@ -58,10 +59,19 @@ impl Blame {
     }
 }
 
-/// Blocking: blames `contents` as the current version of `path`, relative to `cwd`.
+/// Blocking: blames the editor `text` as the current version of `path`, relative to `cwd`.
 ///
-/// Fails for a path Git does not track at `HEAD`, as `git blame` itself does.
-pub fn read(host: &Host, cwd: &Path, path: &Path, contents: &[u8]) -> Result<Blame, GitError> {
+/// The text is encoded with the BOM and line endings of `base`, the version on disk, exactly as a
+/// save would write it: the editor strips both, and Git would otherwise see every line of a CRLF
+/// file, or the first line of a file with a BOM, as rewritten. Fails for a path Git does not
+/// track at `HEAD`, as `git blame` itself does.
+pub fn read(
+    host: &Host,
+    cwd: &Path,
+    path: &Path,
+    base: &Snapshot,
+    text: &str,
+) -> Result<Blame, GitError> {
     let path = path
         .to_str()
         .ok_or_else(|| GitError::Invalid(format!("Non-UTF-8 path {}", path.display())))?;
@@ -69,7 +79,7 @@ pub fn read(host: &Host, cwd: &Path, path: &Path, contents: &[u8]) -> Result<Bla
         host,
         cwd,
         &["blame", "--porcelain", "--contents", "-", "--", path],
-        Some(contents),
+        Some(base.encode(text).as_bytes()),
         READ_LIMIT,
         false,
     )?;
@@ -258,6 +268,82 @@ mod tests {
         );
         assert_eq!(iso_date("1790838000", "0300"), None);
         assert_eq!(iso_date("1790838000", "+03"), None);
+    }
+
+    /// A throwaway repository with one committed file, removed on drop.
+    struct Repo(std::path::PathBuf);
+
+    impl Repo {
+        fn with_committed(name: &str, raw: &[u8]) -> Self {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "hive-blame-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            let repo = Self(path);
+            for args in [
+                &["init", "-q"][..],
+                &["config", "user.name", "Hive Test"],
+                &["config", "user.email", "hive@example.invalid"],
+                &["config", "commit.gpgsign", "false"],
+                &["config", "core.hooksPath", "/dev/null"],
+                // Store the bytes as written, whatever the developer's global setting.
+                &["config", "core.autocrlf", "false"],
+            ] {
+                run(&Host::Local, &repo.0, args).unwrap();
+            }
+            std::fs::write(repo.0.join(name), raw).unwrap();
+            run(&Host::Local, &repo.0, &["add", "--", name]).unwrap();
+            run(&Host::Local, &repo.0, &["commit", "-q", "-m", "fixture"]).unwrap();
+            repo
+        }
+    }
+
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn unchanged_crlf_file_with_bom_is_blamed_on_its_commit() {
+        let raw = "\u{feff}one\r\ntwo\r\n";
+        let repo = Repo::with_committed("a.txt", raw.as_bytes());
+        let base = Snapshot::parse(Path::new("a.txt"), raw.as_bytes()).unwrap();
+        let blame = read(
+            &Host::Local,
+            &repo.0,
+            Path::new("a.txt"),
+            &base,
+            &base.text(),
+        )
+        .unwrap();
+        for line in 0..2 {
+            assert!(
+                matches!(blame.line(line), Some(Origin::Commit(_))),
+                "line {line} is {:?}",
+                blame.line(line)
+            );
+        }
+    }
+
+    #[test]
+    fn edited_line_of_a_crlf_file_alone_is_uncommitted() {
+        let raw = "one\r\ntwo\r\n";
+        let repo = Repo::with_committed("a.txt", raw.as_bytes());
+        let base = Snapshot::parse(Path::new("a.txt"), raw.as_bytes()).unwrap();
+        let blame = read(
+            &Host::Local,
+            &repo.0,
+            Path::new("a.txt"),
+            &base,
+            "one\nTWO\n",
+        )
+        .unwrap();
+        assert!(matches!(blame.line(0), Some(Origin::Commit(_))));
+        assert_eq!(blame.line(1), Some(&Origin::Uncommitted));
     }
 
     #[test]
