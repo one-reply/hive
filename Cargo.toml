@@ -29,7 +29,7 @@ alacritty_terminal = "0.26"
 rustix-openpty = "0.2"
 libc = { version = "0.2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "webp", "gif", "bmp", "ico"] }
-resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts", "raster-images"] }
+resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts", "raster-images"] }
 async-channel = "2.5"
 polling = "3.11"
 rustix = { version = "1.1", default-features = false, features = ["std", "process", "termios", "fs", "event"] }
