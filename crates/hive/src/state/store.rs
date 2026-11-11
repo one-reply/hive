@@ -26,6 +26,18 @@ pub(crate) struct SaveError(pub(crate) String);
 impl EventEmitter<SaveError> for Store {}
 
 impl Store {
+    pub(crate) fn set_project_expanded(
+        &mut self,
+        host: &Host,
+        path: &Path,
+        expanded: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.set_project_expanded(host, path, expanded) {
+            self.commit(cx);
+        }
+    }
+
     pub(crate) fn take_release_notes(&mut self, cx: &mut Context<Self>) -> bool {
         if self.writer.is_none() || self.stopping {
             return false;

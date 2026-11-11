@@ -73,5 +73,6 @@ fn project_ref(project: &Project) -> ProjectRef {
         host: project.host.clone(),
         worktrees: project.filter,
         identity: project.identity.clone(),
+        expansion: Default::default(),
     }
 }

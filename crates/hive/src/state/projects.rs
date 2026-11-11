@@ -32,7 +32,12 @@ impl Projects {
         let mut previous = store.read(cx).state.projects.clone();
         let observer = cx.observe(store, move |this, store, cx| {
             let current = &store.read(cx).state.projects;
-            if *current != previous {
+            if current.len() != previous.len()
+                || current
+                    .iter()
+                    .zip(&previous)
+                    .any(|(a, b)| !a.has_same_scan_settings(b))
+            {
                 previous = current.clone();
                 this.rescan(cx).detach();
             }
