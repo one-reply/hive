@@ -75,7 +75,9 @@ impl Document {
             editor
         });
         let editor_focus = editor.read(cx).focus_handle(cx);
+        let blame = LineBlame::new(store.read(cx).state.settings.files.inline_blame);
         let subscriptions = vec![
+            cx.observe(&store, |this, _, cx| this.apply_blame_setting(cx)),
             cx.subscribe(&editor, |this, _, event: &InputEditsEvent, _| {
                 this.completions.edit(event.edits());
             }),
@@ -130,7 +132,7 @@ impl Document {
             path: request.path,
             editor,
             completions,
-            blame: LineBlame::default(),
+            blame,
             content,
             base: None,
             conflict: None,

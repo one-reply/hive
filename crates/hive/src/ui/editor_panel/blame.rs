@@ -4,6 +4,10 @@
 //! gpui-component's editor has no end-of-line decorations, so a canvas painted after the editor
 //! reads the line's bounds from the layout the editor has just painted. A div positioned during
 //! layout would lag a frame behind scrolling.
+//!
+//! The label's mouse handlers are window-wide, so they act only where the canvas's own hitbox is
+//! hovered: anything drawn over the editor later (the hover card, menus, notifications) keeps its
+//! clicks.
 use super::*;
 use crate::ui::workspace::ShowGitPanel;
 use fade::Fade;
@@ -24,6 +28,9 @@ const ICON_GAP: Pixels = px(6.);
 const ICON_SCALE: f32 = 0.9;
 /// How much of the theme's success hue tints the muted label: visible, yet quieter than code.
 const LABEL_TINT: f32 = 0.35;
+/// gpui-component's scrollbar track width (private there): the label stays out of the track so a
+/// long caret line does not take the scrollbar's clicks.
+const SCROLLBAR_WIDTH: Pixels = px(16.);
 /// Pointer travel time from the label into the card before the card closes.
 const HIDE_DELAY: Duration = Duration::from_millis(250);
 const CARD_WIDTH: Pixels = px(420.);
@@ -83,9 +90,16 @@ pub(super) fn overlay(
     editor: Entity<EditorState>,
     fade: LabelFade,
 ) -> impl IntoElement {
+    let overlay = Overlay {
+        panel,
+        document,
+        editor,
+        fade,
+    };
     canvas(
-        |_, _, _| {},
-        move |bounds, _, window, cx| paint(bounds, &panel, &document, &editor, &fade, window, cx),
+        // `Normal` leaves the editor below hovered; only elements drawn later occlude it.
+        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |bounds, hitbox, window, cx| overlay.paint(bounds, hitbox, window, cx),
     )
     // Without insets an absolute element keeps its in-flow spot, below the editor.
     .absolute()
@@ -94,60 +108,69 @@ pub(super) fn overlay(
     .size_full()
 }
 
-fn paint(
-    bounds: Bounds<Pixels>,
-    panel: &WeakEntity<EditorPanel>,
-    document: &Entity<Document>,
-    editor: &Entity<EditorState>,
-    fade: &LabelFade,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let next = caret_line(document, editor, window, cx)
-        .map(|(line, origin, line_end)| ((line, origin.clone()), Placed { origin, line_end }));
-    let frame = fade.borrow_mut().advance(next, Instant::now());
-    if frame.is_animating() {
-        window.request_animation_frame();
-    }
-    if let Some((place, opacity)) = frame.leaving {
-        paint_label(&place, opacity, bounds, window, cx);
-    }
-    let Some((_, place, opacity)) = frame.current else {
-        return;
-    };
-    let label_bounds = paint_label(&place, opacity, bounds, window, cx);
-    let Origin::Commit(commit) = place.origin else {
-        return;
-    };
-    let over_label = move |position: &Point<Pixels>| {
-        bounds.contains(position) && label_bounds.contains(position)
-    };
-    // Capture runs before the editor's own handler, so the click opens the commit instead of
-    // moving the caret to the end of the line.
-    let (click_panel, click_commit) = (panel.clone(), commit.clone());
-    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-        if phase != DispatchPhase::Capture
-            || event.button != MouseButton::Left
-            || !over_label(&event.position)
-        {
-            return;
+/// Where a label may show and take the pointer: the canvas minus the editor's scrollbar track.
+fn label_area(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+    let width = (bounds.size.width - SCROLLBAR_WIDTH).max(Pixels::ZERO);
+    Bounds::new(bounds.origin, size(width, bounds.size.height))
+}
+
+/// What the canvas reads each frame to paint the caret line's label.
+struct Overlay {
+    panel: WeakEntity<EditorPanel>,
+    document: Entity<Document>,
+    editor: Entity<EditorState>,
+    fade: LabelFade,
+}
+
+impl Overlay {
+    fn paint(self, bounds: Bounds<Pixels>, hitbox: Hitbox, window: &mut Window, cx: &mut App) {
+        let next = caret_line(&self.document, &self.editor, window, cx)
+            .map(|(line, origin, line_end)| ((line, origin.clone()), Placed { origin, line_end }));
+        let area = label_area(bounds);
+        let frame = self.fade.borrow_mut().advance(next, Instant::now());
+        if frame.is_animating() {
+            window.request_animation_frame();
         }
-        cx.stop_propagation();
-        let commit = click_commit.clone();
-        let _ = click_panel.update(cx, |panel, cx| panel.open_blame_commit(commit, window, cx));
-    });
-    let panel = panel.clone();
-    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-        if phase != DispatchPhase::Bubble {
-            return;
+        if let Some((place, opacity)) = frame.leaving {
+            paint_label(&place, opacity, area, window, cx);
         }
-        let over = over_label(&event.position);
-        let shown = over.then(|| Shown {
-            commit: commit.clone(),
-            anchor: label_bounds.bottom_left(),
+        let Some((_, place, opacity)) = frame.current else {
+            return;
+        };
+        let label_bounds = paint_label(&place, opacity, area, window, cx);
+        let Origin::Commit(commit) = place.origin else {
+            return;
+        };
+        let over_label = move |position: &Point<Pixels>, window: &Window| {
+            area.contains(position) && label_bounds.contains(position) && hitbox.is_hovered(window)
+        };
+        let over_label_on_move = over_label.clone();
+        // Capture runs before the editor's own handler, so the click opens the commit instead of
+        // moving the caret to the end of the line.
+        let (click_panel, click_commit) = (self.panel.clone(), commit.clone());
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Capture
+                || event.button != MouseButton::Left
+                || !over_label(&event.position, window)
+            {
+                return;
+            }
+            cx.stop_propagation();
+            let commit = click_commit.clone();
+            let _ = click_panel.update(cx, |panel, cx| panel.open_blame_commit(commit, window, cx));
         });
-        let _ = panel.update(cx, |panel, cx| panel.point_at_blame(shown, cx));
-    });
+        let panel = self.panel;
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let shown = over_label_on_move(&event.position, window).then(|| Shown {
+                commit: commit.clone(),
+                anchor: label_bounds.bottom_left(),
+            });
+            let _ = panel.update(cx, |panel, cx| panel.point_at_blame(shown, cx));
+        });
+    }
 }
 
 /// Paint the icon and text of one label, clipped to the editor; returns its bounds.
@@ -439,8 +462,20 @@ impl EditorPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::{label, short_oid};
+    use super::{SCROLLBAR_WIDTH, label, label_area, short_oid};
+    use gpui_kit::{Bounds, point, px, size};
     use hive_core::git::blame::{Commit, Origin};
+
+    #[test]
+    fn labels_stay_out_of_the_scrollbar_track() {
+        let editor = Bounds::new(point(px(10.), px(20.)), size(px(300.), px(200.)));
+        let area = label_area(editor);
+        assert_eq!(area.origin, editor.origin);
+        assert_eq!(area.size, size(px(300.) - SCROLLBAR_WIDTH, px(200.)));
+        assert!(!area.contains(&point(px(305.), px(100.))));
+        let narrow = Bounds::new(point(px(0.), px(0.)), size(px(8.), px(10.)));
+        assert_eq!(label_area(narrow).size.width, px(0.));
+    }
 
     #[test]
     fn labels_name_author_and_age_only() {
