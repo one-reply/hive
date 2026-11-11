@@ -8,6 +8,7 @@ use gpui_kit::*;
 use super::{setting_row, setting_title};
 use crate::app::AppState;
 use crate::state::updates::Updates;
+use crate::ui::app_menu::CheckForUpdates;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 
 pub(super) struct UpdatesPage {
@@ -53,7 +54,9 @@ impl Render for UpdatesPage {
                     .loading(loading)
                     .disabled(!available)
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.updates.read(cx).check()))
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(CheckForUpdates), cx)
+                    })
                     .smooth_hover(ButtonLook::Primary, &check_hover, cx),
                 cx,
             ))
