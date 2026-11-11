@@ -56,3 +56,7 @@ For MPL-2.0 dependencies, the corresponding unmodified crate source archives are
 included in `Contents/Resources/licenses/`, including their licenses. This makes
 their covered source available alongside the executable. Hive's license does not
 replace their MPL terms.
+
+## Hosting provider icons
+
+GitHub and GitLab marks are from [Simple Icons](https://github.com/simple-icons/simple-icons), under CC0-1.0. The license is included in `licenses/SimpleIcons.txt`. Brand names and marks belong to their respective owners.
