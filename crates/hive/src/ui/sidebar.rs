@@ -79,7 +79,7 @@ const HOVER_BACKGROUND_OPACITY: f32 = 0.05;
 pub struct Sidebar {
     projects: Entity<Projects>,
     store: Entity<Store>,
-    /// Projects the user folded; everything else is expanded.
+    /// Startup visibility, then manual changes; background activity never unfolds projects.
     collapsed: HashSet<(Host, PathBuf)>,
     /// When projects were last folded or unfolded: only those animate, so the tree doesn't
     /// play its animations on startup.
@@ -88,7 +88,7 @@ pub struct Sidebar {
     agents_open: HashSet<(Host, PathBuf)>,
     /// Turns the Working indicators of visible agents; idle while none is on screen.
     working: SteppedSpinner,
-    _observers: [Subscription; 3],
+    _observers: [Subscription; 4],
 }
 
 impl Sidebar {
@@ -98,15 +98,25 @@ impl Sidebar {
             (app.projects.clone(), app.store.clone(), app.agents.clone())
         };
         let pull_requests = AppState::get(cx).pull_requests.clone();
+        let collapsed = {
+            let state = &store.read(cx).state;
+            state
+                .projects
+                .iter()
+                .filter(|project| !project.expanded_on_start(&state.workspace))
+                .map(|project| (project.host.clone(), project.path.clone()))
+                .collect()
+        };
         let observers = [
             cx.observe(&pull_requests, |_, _, cx| cx.notify()),
             cx.observe(&projects, |_, _, cx| cx.notify()),
             cx.observe(&agents, |_, _, cx| cx.notify()),
+            cx.observe(&store, |this, _, cx| this.forget_removed_projects(cx)),
         ];
         Self {
             projects,
             store,
-            collapsed: HashSet::new(),
+            collapsed,
             toggled: HashMap::new(),
             agents_open: HashSet::new(),
             working: SteppedSpinner::new(cx),
@@ -118,10 +128,27 @@ impl Sidebar {
         crate::ui::add_project::open(window, cx);
     }
 
+    fn forget_removed_projects(&mut self, cx: &mut Context<Self>) {
+        let projects = &self.store.read(cx).state.projects;
+        let registered = |(host, path): &(Host, PathBuf)| {
+            projects.iter().any(|p| &p.host == host && &p.path == path)
+        };
+        let before = self.collapsed.len();
+        self.collapsed.retain(registered);
+        self.toggled.retain(|key, _| registered(key));
+        if self.collapsed.len() != before {
+            cx.notify();
+        }
+    }
+
     fn toggle_collapsed(&mut self, path: &(Host, PathBuf), cx: &mut Context<Self>) {
         if !self.collapsed.remove(path) {
             self.collapsed.insert(path.clone());
         }
+        let expanded = !self.collapsed.contains(path);
+        self.store.update(cx, |store, cx| {
+            store.set_project_expanded(&path.0, &path.1, expanded, cx)
+        });
         let now = Instant::now();
         self.toggled
             .retain(|_, toggled_at| collapse_animating(Some(*toggled_at), now));

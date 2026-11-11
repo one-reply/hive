@@ -69,6 +69,12 @@ fn project_names_select_and_only_the_disclosure_button_folds(cx: &mut TestAppCon
             cx,
         )
     });
+    store.update(cx, |store, _| {
+        store.state.projects = ["/alpha", "/beta"]
+            .into_iter()
+            .map(|path| hive_core::state::ProjectRef::new(path.into(), Host::Local))
+            .collect();
+    });
     let projects = cx.new(|cx| Projects::new(&store, cx));
     cx.run_until_parked();
     projects.update(cx, |projects, _| {
@@ -85,6 +91,9 @@ fn project_names_select_and_only_the_disclosure_button_folds(cx: &mut TestAppCon
             cx.observe(&projects, |_, _, cx| cx.notify()),
             cx.observe(&store, |_, _, _| {}),
             cx.observe(&store, |_, _, _| {}),
+            cx.observe(&store, |this: &mut Sidebar, _, cx| {
+                this.forget_removed_projects(cx)
+            }),
         ],
     });
     let (_, cx) = cx.add_window_view(|_, _| Headers(sidebar.clone()));
@@ -115,6 +124,16 @@ fn project_names_select_and_only_the_disclosure_button_folds(cx: &mut TestAppCon
             );
         });
     }
+    cx.read(|cx| {
+        let state = &store.read(cx).state;
+        assert_eq!(
+            state.projects[0].expansion,
+            hive_core::state::ProjectExpansion::Expanded
+        );
+        let restored: hive_core::state::State =
+            serde_json::from_slice(&serde_json::to_vec(state).unwrap()).unwrap();
+        assert!(restored.projects[0].expanded_on_start(&restored.workspace));
+    });
     projects.update(cx, |projects, cx| {
         projects.select(
             &Host::Local,
@@ -155,5 +174,28 @@ fn project_names_select_and_only_the_disclosure_button_folds(cx: &mut TestAppCon
             projects.read(cx).target().unwrap().path,
             std::path::Path::new("/alpha")
         )
+    });
+    sidebar.update(cx, |sidebar, cx| {
+        sidebar.toggle_collapsed(&(Host::Local, "/alpha".into()), cx)
+    });
+    store.update(cx, |store, cx| {
+        store.remove_project(&Host::Local, "/alpha".as_ref(), cx)
+    });
+    cx.run_until_parked();
+    store.update(cx, |store, cx| {
+        store.add_project(Host::Local, "/alpha".into(), cx)
+    });
+    cx.run_until_parked();
+    cx.read(|cx| {
+        assert!(
+            !sidebar
+                .read(cx)
+                .collapsed
+                .contains(&(Host::Local, "/alpha".into()))
+        );
+        assert_eq!(
+            store.read(cx).state.projects.last().unwrap().expansion,
+            hive_core::state::ProjectExpansion::Automatic
+        );
     });
 }

@@ -67,6 +67,7 @@ fn inactive_strip_selects_card_then_active_strip_only_toggles_agents(cx: &mut Te
             cx.observe(&store, |_, _, _| {}),
             cx.observe(&store, |_, _, _| {}),
             cx.observe(&store, |_, _, _| {}),
+            cx.observe(&store, |_, _, _| {}),
         ],
     });
     let (view, cx) = cx.add_window_view(|_, _| Harness {

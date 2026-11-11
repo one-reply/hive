@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 mod lenient;
 mod persistence;
+mod sidebar;
+pub use sidebar::ProjectExpansion;
 pub mod workspace;
 pub use persistence::{LoadedState, Recovery, RecoveryCause, SCHEMA_VERSION, StateError};
 
@@ -24,6 +26,9 @@ pub struct ProjectRef {
     /// Display details; an unreadable badge or color must not cost the project itself.
     #[serde(default, deserialize_with = "lenient::or_default")]
     pub identity: ProjectIdentity,
+    /// Manual sidebar choice; automatic uses the saved workspace at launch.
+    #[serde(default, deserialize_with = "lenient::or_default")]
+    pub expansion: ProjectExpansion,
 }
 
 impl ProjectRef {
@@ -34,12 +39,20 @@ impl ProjectRef {
             host,
             worktrees: WorktreeFilter::default(),
             identity: ProjectIdentity::default(),
+            expansion: ProjectExpansion::default(),
         }
     }
 
     /// Same folder on the same host, whatever the view settings.
     pub fn is_same_folder(&self, other: &ProjectRef) -> bool {
         self.path == other.path && self.host == other.host
+    }
+
+    /// Whether scanning these references would produce the same project metadata.
+    pub fn has_same_scan_settings(&self, other: &Self) -> bool {
+        self.is_same_folder(other)
+            && self.worktrees == other.worktrees
+            && self.identity == other.identity
     }
 }
 
