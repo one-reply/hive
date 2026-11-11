@@ -65,10 +65,10 @@ jobs:
       - name: Install toolchain and musl
         run: |
           rustup target add "${{ matrix.target }}"
-          # Use signed Ubuntu repositories directly over HTTPS instead of the runner's HTTP mirrors.
+          # Keep Ubuntu's signing keys while avoiding runner DNS failures on the upstream mirrors.
           sudo sed -i \
-            -e 's|mirror+file:/etc/apt/apt-mirrors\.txt|https://archive.ubuntu.com/ubuntu|g' \
-            -e 's|http://ports\.ubuntu\.com/ubuntu-ports|https://ports.ubuntu.com/ubuntu-ports|g' \
+            -e 's|mirror+file:/etc/apt/apt-mirrors\.txt|https://mirrors.ocf.berkeley.edu/ubuntu|g' \
+            -e 's|http://ports\.ubuntu\.com/ubuntu-ports|https://mirrors.ocf.berkeley.edu/ubuntu-ports|g' \
             /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get -o APT::Update::Error-Mode=any update
           sudo apt-get install -y musl-tools
