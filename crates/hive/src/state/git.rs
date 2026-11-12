@@ -88,7 +88,7 @@ pub(crate) struct Git {
     pub commits: Vec<Commit>,
     pub history_more: bool,
     pub files: Vec<FileChange>,
-    pub selected_commit: Option<String>,
+    pub selected_commit: Option<Commit>,
     pub loading: bool,
     pub review_loading: bool,
     pub error: Option<String>,

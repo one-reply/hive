@@ -212,12 +212,27 @@ impl Render for EditorPanel {
         if loading && !ready {
             body = body.child(gpui_kit::component::spinner::Spinner::new());
         }
+        let blame = blame::overlay(
+            cx.weak_entity(),
+            self.document.clone(),
+            editor.clone(),
+            self.blame_fade.clone(),
+        );
         body.capture_action(suggestions::accept_on_tab(editor.clone()))
             .child(
-                Editor::new(&editor)
-                    .readonly(!ready)
-                    .bordered(false)
-                    .size_full(),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(
+                        Editor::new(&editor)
+                            .readonly(!ready)
+                            .bordered(false)
+                            .size_full(),
+                    )
+                    .child(blame)
+                    .children(self.render_blame_card(window, cx)),
             )
     }
 }

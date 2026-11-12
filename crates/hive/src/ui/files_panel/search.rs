@@ -10,14 +10,16 @@ use gpui_kit::component::{
     tab::{Tab, TabBar},
 };
 
-/// Tint behind matched text, in both modes.
-const HIGHLIGHT_OPACITY: f32 = 0.15;
+/// Tint behind matched text, in both modes. Strong enough to scan a long result list at a glance.
+const HIGHLIGHT_OPACITY: f32 = 0.4;
 
-/// How matched text is drawn in file names and in content results.
+/// How matched text is drawn in file names and in content results: the editors' yellow
+/// find-match marker, because a primary-colored tint is barely visible where primary is
+/// close to the foreground (dark themes).
 pub(super) fn match_highlight(cx: &App) -> HighlightStyle {
     HighlightStyle {
-        color: Some(cx.theme().primary),
-        background_color: Some(cx.theme().primary.opacity(HIGHLIGHT_OPACITY)),
+        color: Some(cx.theme().foreground),
+        background_color: Some(cx.theme().yellow.opacity(HIGHLIGHT_OPACITY)),
         font_weight: Some(FontWeight::SEMIBOLD),
         ..Default::default()
     }

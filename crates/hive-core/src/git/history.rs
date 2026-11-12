@@ -172,6 +172,39 @@ pub fn relative_date(iso: &str) -> String {
     relative_date_at(iso, chrono::Utc::now())
 }
 
+/// Spelled-out age of an ISO-8601 date for prose such as inline blame: "just now",
+/// "5 minutes ago", "3 days ago", "2 weeks ago", "4 months ago", "1 year ago". Unparseable input
+/// is returned as is.
+pub fn age(iso: &str) -> String {
+    age_at(iso, chrono::Utc::now())
+}
+
+fn age_at(iso: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let Ok(date) = chrono::DateTime::parse_from_rfc3339(iso) else {
+        return iso.to_string();
+    };
+    let seconds = (now - date.with_timezone(&chrono::Utc)).num_seconds();
+    let (count, unit) = match seconds {
+        ..60 => return "just now".into(),
+        60..3_600 => (seconds / 60, "minute"),
+        3_600..86_400 => (seconds / 3_600, "hour"),
+        86_400..604_800 => (seconds / 86_400, "day"),
+        604_800..2_592_000 => (seconds / 604_800, "week"),
+        2_592_000..31_536_000 => (seconds / 2_592_000, "month"),
+        _ => (seconds / 31_536_000, "year"),
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} {unit}{plural} ago")
+}
+
+/// Calendar day of an ISO-8601 date in its own zone, as `11 Oct 2026`. Unparseable input is
+/// returned as is.
+pub fn calendar_date(iso: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .map(|date| date.format("%-d %b %Y").to_string())
+        .unwrap_or_else(|_| iso.to_string())
+}
+
 fn relative_date_at(iso: &str, now: chrono::DateTime<chrono::Utc>) -> String {
     let Ok(date) = chrono::DateTime::parse_from_rfc3339(iso) else {
         return iso.to_string();
@@ -193,6 +226,7 @@ fn relative_date_at(iso: &str, now: chrono::DateTime<chrono::Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::relative_date_at as relative_date;
+    use super::{age_at, calendar_date};
     use chrono::{DateTime, Utc};
 
     #[test]
@@ -204,5 +238,31 @@ mod tests {
         assert_eq!(relative_date("2026-11-01T12:00:00Z", now), "3d ago");
         assert_eq!(relative_date("2026-01-15T12:00:00Z", now), "2026-01-15");
         assert_eq!(relative_date("yesterday", now), "yesterday");
+    }
+
+    #[test]
+    fn ages_are_spelled_out() {
+        let now: DateTime<Utc> = "2026-11-04T12:00:00Z".parse().unwrap();
+        for (date, age) in [
+            ("2026-11-04T11:59:30Z", "just now"),
+            ("2026-11-04T11:59:00Z", "1 minute ago"),
+            ("2026-11-04T11:15:00+00:00", "45 minutes ago"),
+            ("2026-11-04T05:00:00+02:00", "9 hours ago"),
+            ("2026-11-03T12:00:00Z", "1 day ago"),
+            ("2026-10-21T12:00:00Z", "2 weeks ago"),
+            ("2026-07-04T12:00:00Z", "4 months ago"),
+            ("2025-11-04T12:00:00Z", "1 year ago"),
+            ("2020-01-15T12:00:00Z", "6 years ago"),
+            ("2026-11-05T12:00:00Z", "just now"),
+            ("yesterday", "yesterday"),
+        ] {
+            assert_eq!(age_at(date, now), age, "{date}");
+        }
+    }
+
+    #[test]
+    fn calendar_dates_use_the_author_zone() {
+        assert_eq!(calendar_date("2026-10-11T23:30:00-02:00"), "11 Oct 2026");
+        assert_eq!(calendar_date(""), "");
     }
 }

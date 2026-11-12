@@ -1,0 +1,43 @@
+b4eb94f00ec0aaa2554e0307c2d8f85833458738 1 1 1
+author Ada Lovelace
+author-mail <ada@example.com>
+author-time 1790838000
+author-tz +0300
+committer Ada Lovelace
+committer-mail <ada@example.com>
+committer-time 1790838000
+committer-tz +0300
+summary Add numbers
+boundary
+filename a.txt
+	one
+36bc4166d711997bb8dfd66db0acda800faa7150 2 2 1
+author Grace Hopper
+author-mail <grace@example.com>
+author-time 1793534400
+author-tz +0000
+committer Grace Hopper
+committer-mail <grace@example.com>
+committer-time 1793534400
+committer-tz +0000
+summary Shout two
+previous b4eb94f00ec0aaa2554e0307c2d8f85833458738 a.txt
+filename a.txt
+	TWO
+b4eb94f00ec0aaa2554e0307c2d8f85833458738 3 3 1
+	three
+0000000000000000000000000000000000000000 4 4 2
+author External file (--contents)
+author-mail <external.file>
+author-time 1794435891
+author-tz +0100
+committer External file (--contents)
+committer-mail <external.file>
+committer-time 1794435891
+committer-tz +0100
+summary Version of a.txt from standard input
+previous 36bc4166d711997bb8dfd66db0acda800faa7150 a.txt
+filename a.txt
+	four
+0000000000000000000000000000000000000000 5 5
+	five
