@@ -26,6 +26,7 @@ pub struct AppState {
     pub(crate) terminals: Arc<Terminals>,
     pub(crate) updates: Entity<Updates>,
     pub(crate) notifications: Entity<crate::state::notifications::Notifications>,
+    pub(crate) keep_awake: Entity<crate::state::keep_awake::KeepAwake>,
     _quit: Subscription,
     _quit_requests: Task<()>,
 }
@@ -52,6 +53,7 @@ impl AppState {
             cx.new(|_| crate::state::documents::Documents::new(store.clone(), recovery));
         let updates = cx.new(Updates::new);
         let notifications = cx.new(crate::state::notifications::Notifications::new);
+        let keep_awake = cx.new(|cx| crate::state::keep_awake::KeepAwake::new(&agents, &store, cx));
         let pull_requests = cx.new(|cx| {
             crate::state::pull_requests::PullRequests::new(projects.clone(), git.clone(), cx)
         });
@@ -101,6 +103,7 @@ impl AppState {
             terminals: Arc::default(),
             updates,
             notifications,
+            keep_awake,
             pull_requests,
             _quit: quit,
             _quit_requests: quit_requests,

@@ -178,6 +178,15 @@ impl Store {
         self.commit(cx);
     }
 
+    pub(crate) fn set_keep_awake_while_agents_work(
+        &mut self,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.settings.keep_awake_while_agents_work = enabled;
+        self.commit(cx);
+    }
+
     pub(crate) fn set_files_selected(&mut self, files: bool, cx: &mut Context<Self>) {
         self.state.settings.files_selected = files;
         self.commit(cx);

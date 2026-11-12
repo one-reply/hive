@@ -1,6 +1,8 @@
-//! Bottom bar: usage limits per provider + refresh, and the settings gear.
+//! Bottom bar: usage limits per provider, the keep-awake toggle, refresh and the settings gear.
 
-use gpui_kit::base::motion::{Presence, Transition};
+use gpui_kit::assets::IconName as Lucide;
+use gpui_kit::base::animation::Lerp as _;
+use gpui_kit::base::motion::{Presence, Transition, transition};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::progress::Progress;
@@ -14,6 +16,8 @@ use hive_core::usage::{self, Provider, UsageLevel, UsageWindow, Vendor};
 use std::time::Duration;
 
 use crate::app::AppState;
+use crate::state::keep_awake::KeepAwake;
+use crate::state::store::Store;
 use crate::state::usage::Usage;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::ui::settings;
@@ -32,20 +36,85 @@ const CARD_TRANSITION: Duration = Duration::from_millis(180);
 const CARD_CLOSE_DELAY: Duration = Duration::from_millis(200);
 /// How far below its place the card starts rising from.
 const CARD_RISE: Pixels = px(6.);
+/// How long the keep-awake icon takes to change color between off, on and holding.
+const KEEP_AWAKE_TRANSITION: Duration = Duration::from_millis(180);
 
 pub struct StatusBarView {
     usage: Entity<Usage>,
-    _observer: Subscription,
+    store: Entity<Store>,
+    keep_awake: Entity<KeepAwake>,
+    _observers: [Subscription; 3],
 }
 
 impl StatusBarView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let usage = AppState::get(cx).usage.clone();
-        let observer = cx.observe(&usage, |_, _, cx| cx.notify());
+        let app = AppState::get(cx);
+        let (usage, store, keep_awake) =
+            (app.usage.clone(), app.store.clone(), app.keep_awake.clone());
+        let observers = [
+            cx.observe(&usage, |_, _, cx| cx.notify()),
+            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe(&keep_awake, |_, _, cx| cx.notify()),
+        ];
         Self {
             usage,
-            _observer: observer,
+            store,
+            keep_awake,
+            _observers: observers,
         }
+    }
+
+    /// Coffee cup that turns the setting on and off; it fades from muted to the foreground
+    /// when on, and to the success color while it actually keeps the Mac awake.
+    fn keep_awake_button(&self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
+        let enabled = self
+            .store
+            .read(cx)
+            .state
+            .settings
+            .keep_awake_while_agents_work;
+        let holding = self.keep_awake.read(cx).is_holding();
+        let on = transition(
+            "keep-awake-on",
+            if enabled { 1.0_f32 } else { 0. },
+            Transition::new(KEEP_AWAKE_TRANSITION).ease(ease_in_out),
+            window,
+            cx,
+        );
+        let held = transition(
+            "keep-awake-holding",
+            if holding { 1.0_f32 } else { 0. },
+            Transition::new(KEEP_AWAKE_TRANSITION).ease(ease_in_out),
+            window,
+            cx,
+        );
+        let theme = cx.theme();
+        let color = theme
+            .muted_foreground
+            .opacity(INACTIVE_ICON_OPACITY)
+            .lerp(&theme.foreground, on)
+            .lerp(&theme.success, held);
+        let hover = Hover::new("keep-awake", window, cx);
+        let store = self.store.clone();
+        Button::new("keep-awake")
+            .cursor_pointer()
+            .xsmall()
+            .icon(Icon::new(Lucide::Coffee).text_color(color))
+            .tooltip(keep_awake_tooltip(enabled, holding))
+            .on_click(move |_, _, cx| {
+                store.update(cx, |store, cx| {
+                    store.set_keep_awake_while_agents_work(!enabled, cx)
+                })
+            })
+            .smooth_hover(ButtonLook::Ghost, &hover, cx)
+    }
+}
+
+fn keep_awake_tooltip(enabled: bool, holding: bool) -> &'static str {
+    match (enabled, holding) {
+        (false, _) => "Keep Mac awake while agents work: off",
+        (true, false) => "Keep Mac awake while agents work: on",
+        (true, true) => "Keeping this Mac awake while agents work",
     }
 }
 
@@ -262,12 +331,14 @@ impl Render for StatusBarView {
             .map(|(ix, p)| provider_item(ix, p, window, cx))
             .collect();
         let usage = self.usage.clone();
+        let keep_awake = self.keep_awake_button(window, cx);
         StatusBar::new()
             .bg(cx.theme().background)
             .left(h_flex().gap_6().children(providers))
             .right(
                 h_flex()
                     .gap_1()
+                    .child(keep_awake)
                     .child(
                         Button::new("refresh-usage")
                             .cursor_pointer()
@@ -293,7 +364,23 @@ impl Render for StatusBarView {
 
 #[cfg(test)]
 mod tests {
-    use super::available_window;
+    use super::{available_window, keep_awake_tooltip};
+
+    #[test]
+    fn keep_awake_tooltip_names_each_state() {
+        assert_eq!(
+            keep_awake_tooltip(false, true),
+            "Keep Mac awake while agents work: off"
+        );
+        assert_eq!(
+            keep_awake_tooltip(true, false),
+            "Keep Mac awake while agents work: on"
+        );
+        assert_eq!(
+            keep_awake_tooltip(true, true),
+            "Keeping this Mac awake while agents work"
+        );
+    }
     use hive_core::{
         keychain::CredentialError,
         usage::{Provider, UsageError, UsageWindow, Vendor},
