@@ -134,6 +134,9 @@ pub struct Settings {
     pub confirm_close_running_agent: bool,
     /// Post a system notification when an agent needs input or approval, finishes or fails.
     pub agent_notifications: bool,
+    /// Hold an idle-sleep assertion while any agent is working, so a long turn is not cut off
+    /// by the Mac going to sleep. The display can still sleep.
+    pub keep_awake_while_agents_work: bool,
     ui_font_size: f32,
     terminal_font_size: f32,
     /// Shortcuts the user reassigned: action name (`"workspace::NewTerminal"`) → keystrokes
@@ -162,6 +165,7 @@ impl Default for Settings {
             diff_split: false,
             confirm_close_running_agent: true,
             agent_notifications: true,
+            keep_awake_while_agents_work: true,
             ui_font_size: UI_FONT_SIZE_DEFAULT,
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             keybindings: BTreeMap::new(),
@@ -419,6 +423,17 @@ mod tests {
         let saved = serde_json::to_string(&settings).expect("serializable");
         let reloaded: Settings = serde_json::from_str(&saved).expect("valid json");
         assert!(!reloaded.agent_notifications);
+    }
+
+    #[test]
+    fn keep_awake_defaults_on_and_round_trips() {
+        let settings: Settings = serde_json::from_str("{}").expect("valid json");
+        assert!(settings.keep_awake_while_agents_work);
+        let settings: Settings =
+            serde_json::from_str(r#"{"keep_awake_while_agents_work":false}"#).expect("valid json");
+        let saved = serde_json::to_string(&settings).expect("serializable");
+        let reloaded: Settings = serde_json::from_str(&saved).expect("valid json");
+        assert!(!reloaded.keep_awake_while_agents_work);
     }
 
     #[test]

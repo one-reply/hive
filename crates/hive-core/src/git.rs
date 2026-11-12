@@ -114,15 +114,26 @@ pub fn run(host: &Host, cwd: &Path, args: &[&str]) -> Result<String, GitError> {
 const READ_LIMIT: usize = 16 * 1024 * 1024;
 /// Deadline for queries, including anything run over ssh to inspect a worktree.
 pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(15);
-/// Deadline for commands that may change files, refs or a remote.
-const MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
+/// Deadline for commands that may change files, refs or a remote. Hooks and transfers take
+/// minutes, so this only bounds a command nobody is watching; the user stops a stuck one.
+const MUTATION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 pub(crate) fn run_mutation(host: &Host, cwd: &Path, args: &[&str]) -> Result<String, GitError> {
-    Ok(
-        String::from_utf8_lossy(&bytes_mutation(host, cwd, args, None, READ_LIMIT, false)?)
-            .trim_end()
-            .to_owned(),
-    )
+    run_stoppable(host, cwd, args, &Cancellation::default())
+}
+
+/// A mutation that runs hooks or talks to a remote: `stop` ends it before its deadline.
+pub(crate) fn run_stoppable(
+    host: &Host,
+    cwd: &Path,
+    args: &[&str],
+    stop: &Cancellation,
+) -> Result<String, GitError> {
+    Ok(String::from_utf8_lossy(&bytes_mutation(
+        host, cwd, args, None, READ_LIMIT, false, stop,
+    )?)
+    .trim_end()
+    .to_owned())
 }
 
 pub(crate) fn bytes(
@@ -133,7 +144,7 @@ pub(crate) fn bytes(
     limit: usize,
     allow_exit_one: bool,
 ) -> Result<Vec<u8>, GitError> {
-    invoke(host, cwd, args, input, limit, allow_exit_one, false)
+    invoke(host, cwd, args, input, limit, allow_exit_one, None)
 }
 
 fn bytes_mutation(
@@ -143,8 +154,9 @@ fn bytes_mutation(
     input: Option<&[u8]>,
     limit: usize,
     allow_exit_one: bool,
+    stop: &Cancellation,
 ) -> Result<Vec<u8>, GitError> {
-    invoke(host, cwd, args, input, limit, allow_exit_one, true)
+    invoke(host, cwd, args, input, limit, allow_exit_one, Some(stop))
 }
 
 fn invoke(
@@ -154,8 +166,11 @@ fn invoke(
     input: Option<&[u8]>,
     limit: usize,
     allow_exit_one: bool,
-    mutation: bool,
+    // A mutation carries its stop switch; a query has none and the shorter deadline.
+    stop: Option<&Cancellation>,
 ) -> Result<Vec<u8>, GitError> {
+    let mutation = stop.is_some();
+    let unstoppable = Cancellation::default();
     let mut command = match host {
         Host::Local => host.command("git", args, Some(cwd)),
         Host::Ssh { .. } => {
@@ -180,7 +195,7 @@ fn invoke(
     } else {
         READ_TIMEOUT
     };
-    let output = command::run(command, input.unwrap_or_default(), &Cancellation::default(), timeout, limit)
+    let output = command::run(command, input.unwrap_or_default(), stop.unwrap_or(&unstoppable), timeout, limit)
         .map_err(|source| match source {
             command::Error::TooLarge(limit) if !mutation => GitError::TooLarge(limit),
             source => GitError::Interrupted {

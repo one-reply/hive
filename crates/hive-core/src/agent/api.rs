@@ -27,6 +27,8 @@ pub const SEND_TIMEOUT: Duration = Duration::from_secs(60);
 pub const START_TIMEOUT: Duration = Duration::from_secs(90);
 /// How long `wait` and `send --wait` wait for a turn when the caller sets no timeout.
 pub const WAIT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Longest wait a caller may ask for. The app applies it too: the socket accepts any number.
+pub const MAX_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 /// Lines `read` returns when the caller does not say.
 pub const READ_LINES: usize = 80;
 

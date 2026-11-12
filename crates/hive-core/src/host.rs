@@ -97,9 +97,13 @@ impl Host {
             }
             None => "exec \"${SHELL:-/bin/sh}\" -l".into(),
         };
-        let mut script = OsString::from("cd ");
-        script.push(quote_path(cwd));
-        script.push(format!(" && {action}"));
+        let mut posix = OsString::from("cd ");
+        posix.push(quote_path(cwd));
+        posix.push(format!(" && {action}"));
+        // sshd hands this line to the account's login shell, which may be fish or csh; neither
+        // reads `${SHELL:-…}`. `exec sh -c '…'` means the same in all of them.
+        let mut script = OsString::from("exec sh -c ");
+        script.push(quote_for_login_shell(&posix));
         Ok(ssh(target, true, &script))
     }
 
@@ -160,6 +164,21 @@ fn quote_path(path: &Path) -> OsString {
     OsString::from_vec(bytes)
 }
 
+/// Single-quotes `value` so that sh, fish and csh read back the same bytes. Inside single
+/// quotes fish treats `\\` and `\'` as escapes, so a backslash is written outside them.
+fn quote_for_login_shell(value: &OsStr) -> OsString {
+    let mut bytes = vec![b'\''];
+    for &byte in value.as_bytes() {
+        match byte {
+            b'\'' => bytes.extend_from_slice(b"'\\''"),
+            b'\\' => bytes.extend_from_slice(b"'\\\\'"),
+            _ => bytes.push(byte),
+        }
+    }
+    bytes.push(b'\'');
+    OsString::from_vec(bytes)
+}
+
 /// POSIX single-quote escaping.
 pub(crate) fn quote(s: &str) -> String {
     if !s.is_empty()
@@ -182,14 +201,52 @@ mod tests {
         };
         let path =
             std::path::PathBuf::from(OsString::from_vec(b"/tmp/\xff'$(touch nope)".to_vec()));
-        for cmd in [
-            host.command("pwd", &[], Some(&path)),
-            host.terminal_command(&path, None).unwrap(),
-        ] {
-            let script = cmd.get_args().last().unwrap().as_bytes();
-            assert!(script.starts_with(b"cd '/tmp/\xff'\\''$(touch nope)' && "));
-            assert!(!script.windows(3).any(|bytes| bytes == [0xef, 0xbf, 0xbd]));
-        }
+        let command = host.command("pwd", &[], Some(&path));
+        let script = command.get_args().last().unwrap().as_bytes();
+        assert!(script.starts_with(b"cd '/tmp/\xff'\\''$(touch nope)' && "));
+        let terminal = host.terminal_command(&path, None).unwrap();
+        let script = read_by_sh(terminal.get_args().last().unwrap());
+        assert!(script.starts_with(b"cd '/tmp/\xff'\\''$(touch nope)' && exec "));
+        assert!(!script.windows(3).any(|bytes| bytes == [0xef, 0xbf, 0xbd]));
+    }
+
+    /// What `sh` receives as its script from `exec sh -c '…'`: the real `/bin/sh` unquotes it.
+    fn read_by_sh(line: &OsStr) -> Vec<u8> {
+        let quoted = line
+            .as_bytes()
+            .strip_prefix(b"exec sh -c ")
+            .expect("terminal line starts with exec sh -c");
+        let mut print = b"printf %s ".to_vec();
+        print.extend_from_slice(quoted);
+        let output = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(OsString::from_vec(print))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        output.stdout
+    }
+
+    #[test]
+    fn remote_terminal_line_reads_the_same_in_sh_fish_and_csh() {
+        let host = Host::Ssh {
+            target: "home".into(),
+        };
+        let command = host
+            .terminal_command(Path::new("/srv/it's\\here"), None)
+            .unwrap();
+        let line = command.get_args().last().unwrap();
+        assert_eq!(
+            read_by_sh(line),
+            b"cd '/srv/it'\\''s\\here' && exec \"${SHELL:-/bin/sh}\" -l"
+        );
+        // Outside `sh -c '…'` nothing is left for the login shell to expand, and a backslash
+        // only ever appears as `'\''` or `'\\'`, which fish and csh read as sh does.
+        let line = line.to_str().unwrap();
+        let literal = line.replace("'\\''", "").replace("'\\\\'", "");
+        assert!(!literal.contains('\\'));
+        assert!(line.starts_with("exec sh -c 'cd "));
+        assert!(line.ends_with('\''));
     }
 
     #[test]
@@ -206,12 +263,9 @@ mod tests {
         assert!(command.get_current_dir().is_none());
         let args: Vec<_> = command.get_args().map(|a| a.to_string_lossy()).collect();
         assert_eq!(args[0], "-tt");
-        assert!(
-            args.last()
-                .unwrap()
-                .starts_with("cd '/srv/my app'\\''s code' && exec")
-        );
-        assert!(args.last().unwrap().contains("${SHELL:-/bin/sh}"));
+        let script = String::from_utf8(read_by_sh(command.get_args().last().unwrap())).unwrap();
+        assert!(script.starts_with("cd '/srv/my app'\\''s code' && exec"));
+        assert!(script.contains("${SHELL:-/bin/sh}"));
         assert!(
             !args
                 .iter()

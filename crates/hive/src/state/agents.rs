@@ -24,6 +24,7 @@ use crate::state::terminal_session::{Message, TerminalSession};
 mod api;
 mod conversations;
 mod endpoint;
+mod history;
 mod installed;
 
 pub(crate) use api::SpawnRequest;

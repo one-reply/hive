@@ -80,6 +80,9 @@ jobs:
       - name: Build static helper
         env:
           CC: musl-gcc
+          # The release profile makes a dSYM for the macOS app; the helper only needs the strip.
+          CARGO_PROFILE_RELEASE_DEBUG: "false"
+          CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: "off"
         run: cargo build --locked -p hive-core --no-default-features --features remote-helper --bin hive-remote --release --target "${{ matrix.target }}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -156,6 +159,12 @@ jobs:
             target/release/bundle/Hive-*-macos-arm64.zip.sha256
           if-no-files-found: error
           retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: hive-macos-arm64-symbols
+          path: target/release/bundle/Hive-*-macos-arm64.dSYM.zip
+          if-no-files-found: error
+          retention-days: 90
 
   release:
     name: Sign and publish release

@@ -20,7 +20,8 @@ use crate::ui::files_panel::{
 use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
 use crate::ui::workspace::{
-    NewTerminal, QuickSwitch, ShowFilesPanel, ShowGitPanel, ToggleGitPanel, ToggleSidebar,
+    NewTerminal, OpenHistory, QuickSwitch, ShowFilesPanel, ShowGitPanel, ToggleGitPanel,
+    ToggleSidebar,
 };
 
 /// Key context of window-wide shortcuts: the main window's root.
@@ -116,7 +117,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 29] = [
+pub(crate) static SHORTCUTS: [Shortcut; 30] = [
     Shortcut {
         label: "Open file",
         default: "cmd-p",
@@ -223,6 +224,13 @@ pub(crate) static SHORTCUTS: [Shortcut; 29] = [
         category: Category::Workspace,
         context: CONTEXT,
         action: || Box::new(QuickSwitch),
+    },
+    Shortcut {
+        label: "Conversation history",
+        default: "cmd-shift-h",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(OpenHistory),
     },
     Shortcut {
         label: "Split terminal right",

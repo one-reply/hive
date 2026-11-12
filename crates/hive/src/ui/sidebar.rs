@@ -452,6 +452,10 @@ impl Sidebar {
             WorktreeFilter::All => "Hide non-Hive worktrees".into(),
         };
         let can_toggle = project.filter == WorktreeFilter::All || hidden > 0;
+        let filter_icon = match project.filter {
+            WorktreeFilter::Hive => Lucide::Eye,
+            WorktreeFilter::All => Lucide::EyeOff,
+        };
         Button::new(("project-menu", ix))
             .cursor_pointer()
             .ghost()
@@ -461,6 +465,7 @@ impl Sidebar {
                 let (store, path, host) = (store.clone(), path.clone(), host.clone());
                 menu.item(
                     PopupMenuItem::new(filter_label.clone())
+                        .icon(filter_icon)
                         .disabled(!can_toggle)
                         .on_click({
                             let (store, path, host) = (store.clone(), path.clone(), host.clone());
@@ -469,28 +474,38 @@ impl Sidebar {
                             }
                         }),
                 )
-                .item(copy_item("Copy Path", path.display().to_string()))
-                .item(PopupMenuItem::new("Project Settings").on_click({
-                    let path = path.clone();
-                    let host = host.clone();
-                    move |_, _, cx| settings::open_project(&host, &path, cx)
-                }))
+                .item(copy_item(
+                    "Copy Path",
+                    Lucide::Copy,
+                    path.display().to_string(),
+                ))
+                .item(
+                    PopupMenuItem::new("Project Settings")
+                        .icon(Lucide::Settings)
+                        .on_click({
+                            let path = path.clone();
+                            let host = host.clone();
+                            move |_, _, cx| settings::open_project(&host, &path, cx)
+                        }),
+                )
                 .separator()
                 .item(
-                    PopupMenuItem::new("Remove Project").on_click(move |_, window, cx| {
-                        let (store, path, host) = (store.clone(), path.clone(), host.clone());
-                        crate::ui::editor_panel::close::guard(
-                            crate::ui::editor_panel::close::Scope::Project(
-                                host.clone(),
-                                path.clone(),
-                            ),
-                            window,
-                            cx,
-                            move |_, cx| {
-                                store.update(cx, |s, cx| s.remove_project(&host, &path, cx))
-                            },
-                        );
-                    }),
+                    PopupMenuItem::new("Remove Project")
+                        .icon(Lucide::FolderMinus)
+                        .on_click(move |_, window, cx| {
+                            let (store, path, host) = (store.clone(), path.clone(), host.clone());
+                            crate::ui::editor_panel::close::guard(
+                                crate::ui::editor_panel::close::Scope::Project(
+                                    host.clone(),
+                                    path.clone(),
+                                ),
+                                window,
+                                cx,
+                                move |_, cx| {
+                                    store.update(cx, |s, cx| s.remove_project(&host, &path, cx))
+                                },
+                            );
+                        }),
                 )
             })
             .on_open_change(move |open, _, cx| {
@@ -875,8 +890,9 @@ fn render_creating(cx: &App) -> impl IntoElement {
         .child("Creating worktree…")
 }
 
-fn copy_item(label: &'static str, text: String) -> PopupMenuItem {
+fn copy_item(label: &'static str, icon: Lucide, text: String) -> PopupMenuItem {
     PopupMenuItem::new(label)
+        .icon(icon)
         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())))
 }
 
@@ -897,30 +913,66 @@ fn worktree_menu(
         (project.host.clone(), project.path.clone()),
         worktree.clone(),
     );
-    menu.item(copy_item("Copy Path", worktree.path.display().to_string()))
-        .when_some(worktree.branch(), |menu, branch| {
-            menu.item(copy_item("Copy Branch Name", branch.to_string()))
+    let history = history_item(projects.clone(), &project_path, &worktree.path);
+    menu.item(copy_item(
+        "Copy Path",
+        Lucide::Copy,
+        worktree.path.display().to_string(),
+    ))
+    .when_some(worktree.branch(), |menu, branch| {
+        menu.item(copy_item(
+            "Copy Branch Name",
+            Lucide::GitBranch,
+            branch.to_string(),
+        ))
+    })
+    .separator()
+    .item(history)
+    .separator()
+    .item(
+        PopupMenuItem::new(delete_label)
+            .icon(Lucide::Trash)
+            .disabled(is_primary)
+            .on_click(move |_, window, cx| {
+                let (projects, project_path, worktree) =
+                    (projects.clone(), project_path.clone(), worktree.clone());
+                crate::ui::editor_panel::close::guard(
+                    crate::ui::editor_panel::close::Scope::Worktree(
+                        project_path.0.clone(),
+                        worktree.path.clone(),
+                    ),
+                    window,
+                    cx,
+                    move |window, cx| {
+                        confirm_delete(projects, &project_path, &worktree, window, cx)
+                    },
+                );
+            }),
+    )
+}
+
+/// Selects the worktree first: the history dialog and the tab it opens act on the selection.
+fn history_item(
+    projects: Entity<Projects>,
+    project: &(Host, PathBuf),
+    worktree: &Path,
+) -> PopupMenuItem {
+    let local = project.0.is_local();
+    let label = if local {
+        "Conversation History…"
+    } else {
+        "Conversation History — local projects only"
+    };
+    let (project, worktree) = (project.clone(), worktree.to_path_buf());
+    PopupMenuItem::new(label)
+        .icon(Lucide::MessagesSquare)
+        .disabled(!local)
+        .on_click(move |_, window, cx| {
+            projects.update(cx, |projects, cx| {
+                projects.select(&project.0, &project.1, Some(&worktree), cx)
+            });
+            crate::ui::workspace::history::open_selected(window, cx);
         })
-        .separator()
-        .item(
-            PopupMenuItem::new(delete_label)
-                .disabled(is_primary)
-                .on_click(move |_, window, cx| {
-                    let (projects, project_path, worktree) =
-                        (projects.clone(), project_path.clone(), worktree.clone());
-                    crate::ui::editor_panel::close::guard(
-                        crate::ui::editor_panel::close::Scope::Worktree(
-                            project_path.0.clone(),
-                            worktree.path.clone(),
-                        ),
-                        window,
-                        cx,
-                        move |window, cx| {
-                            confirm_delete(projects, &project_path, &worktree, window, cx)
-                        },
-                    );
-                }),
-        )
 }
 
 fn confirm_delete(

@@ -9,8 +9,8 @@ use gpui_kit::component::{
 pub(super) mod attention;
 use attention::Attention;
 
-const WIDTH: Pixels = px(600.);
-const HEIGHT: Pixels = px(420.);
+pub(super) const WIDTH: Pixels = px(600.);
+pub(super) const HEIGHT: Pixels = px(420.);
 
 struct Destination {
     host: Host,

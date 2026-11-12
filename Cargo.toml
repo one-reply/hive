@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "1.0.18"
+version = "1.0.19"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/one-reply/hive"
@@ -12,7 +12,18 @@ publish = false
 [workspace.dependencies]
 hive-core = { path = "crates/hive-core" }
 
-gpui-kit = { version = "0.9", features = ["tree-sitter-languages"] }
+# Every gpui-kit grammar except C#, Kotlin, Scala and Swift: those four are 19 MB of parse
+# tables. Their files open as plain text. See wiki/decisions/highlight-language-set.
+gpui-kit = { version = "0.9", features = [
+    "tree-sitter-astro", "tree-sitter-bash", "tree-sitter-c", "tree-sitter-cmake",
+    "tree-sitter-cpp", "tree-sitter-css", "tree-sitter-diff", "tree-sitter-ejs",
+    "tree-sitter-elixir", "tree-sitter-erb", "tree-sitter-go", "tree-sitter-graphql",
+    "tree-sitter-html", "tree-sitter-java", "tree-sitter-javascript", "tree-sitter-jsdoc",
+    "tree-sitter-lua", "tree-sitter-make", "tree-sitter-markdown", "tree-sitter-php",
+    "tree-sitter-proto", "tree-sitter-python", "tree-sitter-ruby", "tree-sitter-rust",
+    "tree-sitter-sql", "tree-sitter-svelte", "tree-sitter-toml", "tree-sitter-tsx",
+    "tree-sitter-typescript", "tree-sitter-yaml", "tree-sitter-zig",
+] }
 # Test-only: the GPUI gpui-kit pins, for `test-support` (TestAppContext, `#[gpui::test]`).
 # gpui-kit's own `test-support` names gpui-fast weakly, which still enters resolution and
 # conflicts on taffy, so the feature is turned on here directly.
@@ -29,7 +40,8 @@ alacritty_terminal = "0.26"
 rustix-openpty = "0.2"
 libc = { version = "0.2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "webp", "gif", "bmp", "ico"] }
-resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts", "raster-images"] }
+# The version GPUI links: a newer one adds a second resvg, usvg, tiny-skia and fontdb.
+resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts", "raster-images"] }
 async-channel = "2.5"
 polling = "3.11"
 rustix = { version = "1.1", default-features = false, features = ["std", "process", "termios", "fs", "event"] }
@@ -48,3 +60,14 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 # Already built for GPUI's notifications; Hive only reads its own permission.
 block2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotificationSettings", "UNUserNotificationCenter"] }
+
+# The executable ships without its symbol table (12 MB); `hive.dSYM`, kept beside each release
+# archive, symbolicates crash reports.
+[profile.release]
+strip = "symbols"
+debug = "line-tables-only"
+split-debuginfo = "packed"
+
+# Line numbers in panics and backtraces are enough here; full debug info makes a 235 MB binary.
+[profile.dev]
+debug = "line-tables-only"

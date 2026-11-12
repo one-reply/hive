@@ -165,7 +165,11 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             Some(seconds) => seconds
                 .parse::<f64>()
                 .ok()
-                .filter(|seconds| seconds.is_finite() && *seconds > 0.0 && *seconds <= 86_400.0)
+                .filter(|seconds| {
+                    seconds.is_finite()
+                        && *seconds > 0.0
+                        && *seconds <= api::MAX_TIMEOUT.as_secs_f64()
+                })
                 .map(Duration::from_secs_f64)
                 .ok_or_else(|| format!("--timeout expects seconds, got {seconds:?}")),
         }

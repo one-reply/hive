@@ -29,6 +29,8 @@ pub(crate) struct DiffPanel {
     synced_generation: Option<u64>,
     git: Entity<Git>,
     store: Entity<Store>,
+    /// `(diff_split, git_panel_open)` as last drawn.
+    drawn_settings: (bool, bool),
     area: WeakEntity<DockArea>,
     group: Option<WeakEntity<TabGroup>>,
     alone: bool,
@@ -59,13 +61,20 @@ impl DiffPanel {
                 cx.notify()
             }),
             cx.observe(&git, |_, _, cx| cx.notify()),
+            // The store saves on every layout and cursor change; the panel draws two settings.
             cx.observe(&store, |this, store, cx| {
+                let drawn = drawn_settings(&store, cx);
+                if this.drawn_settings == drawn {
+                    return;
+                }
+                this.drawn_settings = drawn;
                 let mode = diff_mode(&store, cx);
                 this.display.update(cx, |d, cx| d.set_mode(mode, cx));
                 cx.notify()
             }),
         ];
         let mut this = Self {
+            drawn_settings: drawn_settings(&store, cx),
             review,
             display,
             synced_generation: None,
@@ -151,6 +160,11 @@ impl DiffPanel {
 }
 
 /// The user's side-by-side preference as the widget's mode.
+fn drawn_settings(store: &Entity<Store>, cx: &App) -> (bool, bool) {
+    let settings = &store.read(cx).state.settings;
+    (settings.diff_split, settings.git_panel_open)
+}
+
 fn diff_mode(store: &Entity<Store>, cx: &App) -> DiffMode {
     if store.read(cx).state.settings.diff_split {
         DiffMode::Split

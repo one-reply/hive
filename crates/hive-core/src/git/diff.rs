@@ -217,6 +217,7 @@ pub fn apply_hunk(
         Some(hunk.patch.as_bytes()),
         PREVIEW_LIMIT,
         false,
+        &crate::command::Cancellation::default(),
     )
     .map(drop)
 }

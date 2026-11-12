@@ -1,5 +1,5 @@
-//! Terminal page: default CLI agent, close confirmation, agent notifications and terminal font
-//! size.
+//! Terminal page: default CLI agent, close confirmation, agent notifications, keep-awake and
+//! terminal font size.
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{ActiveTheme as _, Icon, h_flex, v_flex};
@@ -29,6 +29,8 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
     let confirm_store = store.clone();
     let notify = store.read(cx).state.settings.agent_notifications;
     let notify_store = store.clone();
+    let keep_awake = store.read(cx).state.settings.keep_awake_while_agents_work;
+    let keep_awake_store = store.clone();
     let blocked = notify && AppState::get(cx).notifications.read(cx).is_blocked();
     let agent = store.read(cx).state.settings.default_cli_agent();
     let agent_store = store.clone();
@@ -87,6 +89,15 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
             }),
         cx,
     )).when(blocked, |page| page.child(blocked_notifications(window, cx))).child(setting_row(
+        setting_title("Keep Mac awake while agents work", "Prevents idle sleep while an agent is working. The display can still sleep, and closing the lid still sleeps the Mac.", cx),
+        Switch::new("keep-awake")
+            .accessibility_label("Keep Mac awake while agents work")
+            .checked(keep_awake)
+            .on_click(move |value, _, cx| {
+                keep_awake_store.update(cx, |store, cx| store.set_keep_awake_while_agents_work(*value, cx))
+            }),
+        cx,
+    )).child(setting_row(
         setting_title("Font size", "Text size in every terminal tab.", cx),
         stepper,
         cx,

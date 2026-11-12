@@ -37,7 +37,7 @@ impl Repo {
         std::fs::write(self.0.join(path), value).unwrap();
     }
     fn action(&self, action: Action) -> Result<Option<Synced>, GitError> {
-        execute(&Host::Local, &self.0, &action)
+        execute(&Host::Local, &self.0, &action, &Cancellation::default())
     }
     fn commit(&self) {
         self.git(&["add", "-A"]);
@@ -55,6 +55,27 @@ impl Repo {
             .unwrap();
         assert!(status.success());
     }
+}
+
+#[test]
+fn a_stopped_commit_is_an_interrupted_mutation_and_quick_mutations_ignore_the_stop() {
+    let repo = Repo::new();
+    repo.write("a.txt", "one\n");
+    let stop = Cancellation::default();
+    stop.cancel();
+    let stage = Action::Stage(vec!["a.txt".into()]);
+    assert!(execute(&Host::Local, &repo.0, &stage, &stop).is_ok());
+    let error = execute(
+        &Host::Local,
+        &repo.0,
+        &Action::Commit("add a".into()),
+        &stop,
+    )
+    .unwrap_err();
+    assert!(error.outcome_unknown(), "{error}");
+    assert!(error.to_string().contains("Command cancelled"), "{error}");
+    // Nothing ran: the file is still staged and no commit exists.
+    assert!(repo.git(&["status", "--porcelain"]).starts_with("A  a.txt"));
 }
 
 #[test]

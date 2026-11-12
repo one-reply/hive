@@ -38,6 +38,7 @@ mod center;
 mod center_dock;
 mod files;
 mod git;
+pub(crate) mod history;
 mod persistence;
 mod project_center;
 pub(crate) mod switcher;
@@ -52,6 +53,7 @@ actions!(
     workspace,
     [
         QuickSwitch,
+        OpenHistory,
         NewTerminal,
         ToggleSidebar,
         ToggleGitPanel,
@@ -529,13 +531,9 @@ impl Workspace {
             .w(RESIZE_HANDLE_WIDTH)
             .occlude()
             .cursor_col_resize()
-            .on_hover(|hovered, _, _| tracing::debug!(hovered, "DBG-RESIZE hover"))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, _| {
-                    tracing::debug!(?event.position, "DBG-RESIZE down");
-                    this.resizing_sidebar = true
-                }),
+                cx.listener(|this, _, _, _| this.resizing_sidebar = true),
             )
             .on_mouse_up(
                 MouseButton::Left,
@@ -545,15 +543,11 @@ impl Workspace {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.finish_sidebar_resize(cx)),
             )
-            .on_drag(SidebarResize, |_, _, _, cx| {
-                tracing::debug!("DBG-RESIZE drag start");
-                cx.new(|_| SidebarResize)
-            })
+            .on_drag(SidebarResize, |_, _, _, cx| cx.new(|_| SidebarResize))
             .on_drag_move(
                 cx.listener(|this, event: &DragMoveEvent<SidebarResize>, _, cx| {
                     // The sidebar starts at the window's left edge, so the pointer's x is its width.
                     let width = px(clamp_sidebar_width(f32::from(event.event.position.x)));
-                    tracing::debug!(?width, "DBG-RESIZE move");
                     if width != this.sidebar_width {
                         this.sidebar_width = width;
                         cx.notify();
@@ -691,6 +685,9 @@ impl Render for Workspace {
             ))
             .on_action(
                 cx.listener(|_, _: &QuickSwitch, window, cx| switcher::open(false, window, cx)),
+            )
+            .on_action(
+                cx.listener(|_, _: &OpenHistory, window, cx| history::open_selected(window, cx)),
             )
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(|this, _: &ToggleGitPanel, _, cx| this.toggle_git(cx)))

@@ -4,6 +4,8 @@ use super::{ApiError, Call, ErrorCode, Outcome};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// A call carries at most one message; anything larger is not a Hive call.
@@ -12,6 +14,28 @@ const MAX_REQUEST: usize = 64 * 1024;
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 /// A client that connects but never finishes its line must not pin a thread.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// Calls served at once. Each holds a thread until the app answers, so a process that opens
+/// connections in a loop must not exhaust them; the panes of one window make a handful.
+const MAX_CALLS: usize = 64;
+
+/// One served call; dropping it frees its place under [`MAX_CALLS`].
+struct Served(Arc<AtomicUsize>);
+
+impl Served {
+    fn begin(live: &Arc<AtomicUsize>) -> Option<Self> {
+        if live.fetch_add(1, Ordering::AcqRel) >= MAX_CALLS {
+            live.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(Self(live.clone()))
+    }
+}
+
+impl Drop for Served {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 /// A call waiting for the app's answer. Dropping it unanswered tells the caller the app
 /// is unavailable.
@@ -61,6 +85,7 @@ pub fn call(socket: &Path, call: &Call, timeout: Duration) -> io::Result<Outcome
 // ponytail: the accept thread ends only with the process; it notices a dropped receiver at
 // the next connection. Add a shutdown handshake if Hive ever rebinds the socket at runtime.
 fn accept(listener: &UnixListener, calls: &async_channel::Sender<Incoming>) {
+    let live = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         if calls.is_closed() {
             return;
@@ -72,10 +97,15 @@ fn accept(listener: &UnixListener, calls: &async_channel::Sender<Incoming>) {
                 continue;
             }
         };
+        let Some(served) = Served::begin(&live) else {
+            refuse(&stream);
+            continue;
+        };
         let calls = calls.clone();
         let spawned = std::thread::Builder::new()
             .name("hive-agent-call".into())
             .spawn(move || {
+                let _served = served;
                 if let Err(error) = serve(&stream, &calls) {
                     tracing::debug!(%error, "agent API caller went away");
                 }
@@ -98,7 +128,26 @@ fn serve(stream: &UnixStream, calls: &async_channel::Sender<Incoming>) -> io::Re
             format!("Not a Hive agent call: {error}"),
         )),
     };
-    let mut line = serde_json::to_vec(&outcome).map_err(io::Error::other)?;
+    reply(stream, &outcome)
+}
+
+/// Answers a call there is no thread for. The line fits the socket buffer, so the accept
+/// loop does not wait for the caller to read it.
+fn refuse(stream: &UnixStream) {
+    let busy = Outcome::Error(ApiError::new(
+        ErrorCode::Unavailable,
+        "Hive is serving too many agent calls; try again shortly",
+    ));
+    if let Err(error) = stream
+        .set_write_timeout(Some(REQUEST_TIMEOUT))
+        .and_then(|()| reply(stream, &busy))
+    {
+        tracing::debug!(%error, "agent API caller went away");
+    }
+}
+
+fn reply(stream: &UnixStream, outcome: &Outcome) -> io::Result<()> {
+    let mut line = serde_json::to_vec(outcome).map_err(io::Error::other)?;
     line.push(b'\n');
     let mut writer = stream;
     writer.write_all(&line)
@@ -220,6 +269,48 @@ mod tests {
             ));
         }
         assert!(calls.try_recv().is_err());
+    }
+
+    #[test]
+    fn calls_beyond_the_limit_are_refused_without_reaching_the_app() {
+        let path = socket("limit");
+        let calls = listen(&path).unwrap();
+        let list = Call {
+            from: None,
+            request: Request::List,
+        };
+        let mut line = serde_json::to_vec(&list).unwrap();
+        line.push(b'\n');
+        let mut callers = Vec::new();
+        let mut held = Vec::new();
+        for _ in 0..MAX_CALLS {
+            let mut stream = UnixStream::connect(&path).unwrap();
+            stream.write_all(&line).unwrap();
+            callers.push(stream);
+            held.push(calls.recv_blocking().unwrap());
+        }
+        let outcome = call(&path, &list, Duration::from_secs(5)).unwrap();
+        assert!(matches!(
+            outcome,
+            Outcome::Error(ApiError {
+                code: ErrorCode::Unavailable,
+                ..
+            })
+        ));
+        assert!(calls.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_finished_call_frees_its_place_for_the_next() {
+        let live = Arc::new(AtomicUsize::new(0));
+        let mut served: Vec<_> = (0..MAX_CALLS)
+            .map(|_| Served::begin(&live).unwrap())
+            .collect();
+        assert!(Served::begin(&live).is_none());
+        assert_eq!(live.load(Ordering::Acquire), MAX_CALLS);
+        served.pop();
+        assert!(Served::begin(&live).is_some());
+        assert_eq!(live.load(Ordering::Acquire), MAX_CALLS - 1);
     }
 
     #[test]

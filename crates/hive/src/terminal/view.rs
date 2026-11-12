@@ -77,9 +77,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut view = Self::with_launch(cwd, directory, Some(Launch::Resume(resume)), window, cx);
-        view.shell_after_exit = true;
-        view
+        Self::with_launch(cwd, directory, Some(Launch::Resume(resume)), window, cx)
     }
 
     pub(crate) fn with_launch(
@@ -101,6 +99,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> Self {
         let (cwd, directory) = paths;
+        let shell_after_exit = continues_in_shell(launch.as_ref());
         let session = cx.new(|cx| {
             TerminalSession::new(
                 host.clone(),
@@ -111,7 +110,9 @@ impl TerminalView {
                 cx,
             )
         });
-        Self::with_session(session, cwd, window, cx)
+        let mut view = Self::with_session(session, cwd, window, cx);
+        view.shell_after_exit = shell_after_exit;
+        view
     }
 
     fn with_session(
@@ -387,9 +388,25 @@ fn shorten_title(title: &str, max_chars: usize) -> String {
 
 actions!(terminal, [Copy, Paste]);
 
+/// A resumed conversation leaves its shell behind: when the CLI rejects the id or the user
+/// quits, the tab stays with the reason on screen instead of vanishing.
+fn continues_in_shell(launch: Option<&Launch>) -> bool {
+    matches!(launch, Some(Launch::Resume(_)))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::shorten_title;
+    use super::{continues_in_shell, shorten_title};
+    use hive_core::agent::AgentKind;
+    use hive_core::agent::launch::{Launch, ResumeSession};
+
+    #[test]
+    fn resumed_tile_falls_back_to_a_shell() {
+        let session = ResumeSession::new(AgentKind::ClaudeCode, "88ff5cc9").unwrap();
+        assert!(continues_in_shell(Some(&Launch::Resume(session))));
+        assert!(!continues_in_shell(Some(&Launch::New(AgentKind::Codex))));
+        assert!(!continues_in_shell(None));
+    }
 
     #[test]
     fn shortens_shell_titles() {

@@ -5,6 +5,7 @@
 //! thread to a rollout that names its directory and client, and Antigravity keeps the latest
 //! conversation of each workspace in one cache file.
 mod codex;
+pub mod history;
 mod process;
 
 use super::{AgentKind, launch::ResumeSession};
@@ -89,6 +90,23 @@ fn read_bounded_line(path: &Path, limit: u64) -> Option<Vec<u8>> {
     line.ends_with(b"\n").then_some(line)
 }
 
+/// The last `limit` bytes of `path`, starting at a whole line: the partial line the window
+/// cuts through is dropped. A shorter file is read whole.
+fn read_tail(path: &Path, limit: u64) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    let start = length.saturating_sub(limit);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(limit).read_to_end(&mut bytes).ok()?;
+    if start > 0 {
+        let first_line_end = bytes.iter().position(|&byte| byte == b'\n')?;
+        bytes.drain(..=first_line_end);
+    }
+    Some(bytes)
+}
+
 /// A record for another pid is a stale file left by a process whose pid was reused.
 fn parse_claude_record(bytes: &[u8], pid: u32) -> Option<ResumeSession> {
     let record: ClaudeRecord = serde_json::from_slice(bytes).ok()?;
@@ -126,6 +144,26 @@ mod tests {
 
     /// Captured from Claude Code 2.1.317 on macOS, trimmed.
     const CLAUDE_RECORD: &str = r#"{"pid":10834,"sessionId":"88ff5cc9-2be5-40e5-b624-2603e7746d4d","cwd":"/Users/me/project","startedAt":1793969031376,"procStart":"Fri Nov  6 12:43:50 2026","version":"2.1.317","kind":"interactive","status":"idle"}"#;
+
+    #[test]
+    fn tail_of_a_short_file_is_the_whole_file() {
+        let path = std::env::temp_dir().join(format!("hive-tail-short-{}", std::process::id()));
+        std::fs::write(&path, "one\ntwo\n").unwrap();
+        assert_eq!(read_tail(&path, 1024).unwrap(), b"one\ntwo\n");
+        assert!(read_tail(&path.with_extension("missing"), 1024).is_none());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn tail_of_a_long_file_starts_at_a_line_boundary() {
+        let path = std::env::temp_dir().join(format!("hive-tail-long-{}", std::process::id()));
+        std::fs::write(&path, "first line\nsecond\nthird\n").unwrap();
+        // The window starts inside "second"; the cut line is dropped.
+        assert_eq!(read_tail(&path, 10).unwrap(), b"third\n");
+        std::fs::write(&path, "x".repeat(50)).unwrap();
+        assert!(read_tail(&path, 10).is_none());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn claude_record_names_the_conversation_of_its_own_pid() {

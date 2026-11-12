@@ -4,6 +4,7 @@ use super::*;
 use crate::app::AppState;
 use crate::terminal::panel::{ClosePane, SplitDown, SplitRight};
 use crate::ui::agent_logo;
+use crate::ui::workspace::OpenHistory;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 
@@ -63,6 +64,14 @@ impl TerminalView {
                     )
                 })
                 .separator()
+                .when(offers_agents, |menu| {
+                    menu.menu_with_icon(
+                        "Conversation History…",
+                        Lucide::MessagesSquare,
+                        Box::new(OpenHistory),
+                    )
+                    .separator()
+                })
                 .menu_with_icon(
                     "Split Right",
                     Lucide::SquareSplitHorizontal,

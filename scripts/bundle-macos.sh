@@ -130,4 +130,11 @@ if [[ "${1:-debug}" == release ]]; then
     mv "$stage/$archive" "$output/$archive"
     (cd "$output" && shasum -a 256 "$archive" > "$archive.sha256" && shasum -a 256 -c "$archive.sha256")
     echo "Release archive: $output/$archive"
+    # The executable is stripped; its symbols stay beside the archive, outside the app.
+    symbols="Hive-$version-macos-arm64.dSYM.zip"
+    [[ -d "$executable.dSYM" ]] || { echo "Missing $executable.dSYM; check [profile.release]." >&2; exit 1; }
+    # Cargo's `hive.dSYM` is a link into `deps`; archive the bundle itself under a stable name.
+    cp -RL "$executable.dSYM" "$stage/hive.dSYM"
+    ditto -c -k --keepParent "$stage/hive.dSYM" "$output/$symbols"
+    echo "Symbols: $output/$symbols"
 fi

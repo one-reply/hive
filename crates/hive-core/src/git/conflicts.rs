@@ -1,5 +1,5 @@
 //! Unmerged paths and the operation that left them: whole-file resolution, abort and continue.
-use super::{GitError, READ_TIMEOUT, changes, run, run_mutation, status};
+use super::{GitError, READ_TIMEOUT, changes, run, run_mutation, run_stoppable, status};
 use crate::command::{self, Cancellation};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
@@ -242,14 +242,18 @@ pub(super) fn abort(host: &Host, cwd: &Path) -> Result<(), GitError> {
 }
 
 /// Conclude the unfinished operation, or advance it to its next stop.
-pub(super) fn continue_operation(host: &Host, cwd: &Path) -> Result<(), GitError> {
+pub(super) fn continue_operation(
+    host: &Host,
+    cwd: &Path,
+    stop: &Cancellation,
+) -> Result<(), GitError> {
     let operation = require_operation(host, cwd)?;
     if status::read(host, cwd)?.has_conflicts() {
         return Err(GitError::Invalid(
             "Resolve every conflict before continuing.".into(),
         ));
     }
-    match run_mutation(host, cwd, &[operation.command(), "--continue"]) {
+    match run_stoppable(host, cwd, &[operation.command(), "--continue"], stop) {
         Ok(_) => Ok(()),
         // Git exits non-zero when the next replayed commit conflicts; that is the operation
         // moving on, and the new conflicts are what the user needs to see.
