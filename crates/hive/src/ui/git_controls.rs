@@ -7,13 +7,18 @@ use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::searchable_list::SearchableVec;
+use gpui_kit::component::select::{Select, SelectState};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, IndexPath, Sizable as _, WindowExt as _, h_flex,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use hive_core::git::{branches::Branch, changes::Action};
+use hive_core::git::branches::{self, Branch};
+use hive_core::git::changes::Action;
 use hive_core::projects::Target;
+use std::sync::Arc;
 
 const DIALOG_WIDTH: Pixels = px(460.);
 const BRANCH_LIST_HEIGHT: Pixels = px(320.);
@@ -274,6 +279,9 @@ fn section_title(title: &'static str, cx: &App) -> impl IntoElement {
         .child(title)
 }
 
+/// The start point that is always offered: the commit checked out now.
+const HEAD: &str = "HEAD";
+
 fn create_branch(
     git: Entity<Git>,
     target: Target,
@@ -282,17 +290,6 @@ fn create_branch(
     cx: &mut App,
 ) {
     let name = cx.new(|cx| InputState::new(window, cx).placeholder("feature/name"));
-    let base = cx.new(|cx| InputState::new(window, cx).placeholder("HEAD or branch name"));
-    base.update(cx, |b, cx| {
-        b.set_value(
-            remote
-                .as_ref()
-                .map(|r| r.reference.as_str())
-                .unwrap_or("HEAD"),
-            window,
-            cx,
-        )
-    });
     if let Some(remote) = &remote {
         let suggested = remote
             .name
@@ -301,8 +298,10 @@ fn create_branch(
             .unwrap_or(&remote.name);
         name.update(cx, |n, cx| n.set_value(suggested.to_string(), window, cx));
     }
+    let base = start_points(&git, &target, remote.as_ref(), window, cx);
     window.open_alert_dialog(cx, move |dialog, _, cx| {
-        let (git, target, name, base) = (git.clone(), target.clone(), name.clone(), base.clone());
+        let (git, target, name) = (git.clone(), target.clone(), name.clone());
+        let (base, references) = base.clone();
         let busy = git.read(cx).is_busy_at(&target);
         let track = remote.is_some();
         dialog
@@ -319,7 +318,7 @@ fn create_branch(
                     .child("Branch name")
                     .child(TextField::input(Input::new(&name), &name, cx))
                     .child("Start from")
-                    .child(TextField::input(Input::new(&base), &base, cx)),
+                    .child(Select::new(&base).w_full()),
             )
             .button_props(
                 DialogButtonProps::default()
@@ -329,9 +328,14 @@ fn create_branch(
                         if git.read(cx).is_busy_at(&target) {
                             return false;
                         }
+                        let start = base
+                            .read(cx)
+                            .selected_index(cx)
+                            .and_then(|ix| references.get(ix.row))
+                            .map_or(HEAD, String::as_str);
                         let action = Action::CreateBranch {
                             name: name.read(cx).value().trim().into(),
-                            base: base.read(cx).value().trim().into(),
+                            base: start.into(),
                             track,
                         };
                         git.update(cx, |g, cx| g.perform_at(target.clone(), action, cx));
@@ -339,6 +343,43 @@ fn create_branch(
                     }),
             )
     });
+}
+
+/// A searchable list of HEAD and every known branch, preselecting the tracked remote or
+/// `default_start`; the parallel references are what Git resolves.
+fn start_points(
+    git: &Entity<Git>,
+    target: &Target,
+    remote: Option<&Branch>,
+    window: &mut Window,
+    cx: &mut App,
+) -> (Entity<SelectState<SearchableVec<String>>>, Arc<[String]>) {
+    let git = git.read(cx);
+    let branches: &[Branch] = if git.target.as_ref() == Some(target) {
+        &git.branches
+    } else {
+        &[]
+    };
+    let start = remote.or_else(|| branches::default_start(branches, git.base.as_deref()));
+    let selected = start
+        .and_then(|start| branches.iter().position(|b| b.reference == start.reference))
+        .map_or(0, |ix| ix + 1);
+    let names: Vec<String> = std::iter::once(HEAD.to_owned())
+        .chain(branches.iter().map(|b| b.name.clone()))
+        .collect();
+    let references: Arc<[String]> = std::iter::once(HEAD.to_owned())
+        .chain(branches.iter().map(|b| b.reference.clone()))
+        .collect();
+    let select = cx.new(|cx| {
+        SelectState::new(
+            SearchableVec::new(names),
+            Some(IndexPath::default().row(selected)),
+            window,
+            cx,
+        )
+        .searchable(true)
+    });
+    (select, references)
 }
 
 /// Checks off the main thread whether `name` is merged into HEAD, then asks accordingly:

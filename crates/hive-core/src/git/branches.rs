@@ -107,6 +107,15 @@ pub fn default_base(
         }))
 }
 
+/// Where a new branch starts unless the user picks otherwise: the git-flow integration branch
+/// (`develop`, else `origin/develop`), else the review base, else `None` for HEAD.
+pub fn default_start<'a>(branches: &'a [Branch], base: Option<&str>) -> Option<&'a Branch> {
+    ["develop", "origin/develop"]
+        .into_iter()
+        .find_map(|name| branches.iter().find(|b| b.name == name))
+        .or_else(|| branches.iter().find(|b| Some(b.reference.as_str()) == base))
+}
+
 /// Refuse checkout and pull while changes or an unfinished operation exist.
 pub fn require_clean(host: &Host, cwd: &Path) -> Result<(), GitError> {
     if !status::read(host, cwd)?.is_clean() {
@@ -191,7 +200,45 @@ fn validate_name(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {
 
 #[cfg(test)]
 mod tests {
-    use super::short_name;
+    use super::{Branch, default_start, short_name};
+
+    fn branch(reference: &str) -> Branch {
+        Branch {
+            reference: reference.into(),
+            name: short_name(reference).into(),
+            remote: reference.starts_with("refs/remotes/"),
+            worktree: None,
+        }
+    }
+
+    fn start(references: &[&str], base: Option<&str>) -> Option<String> {
+        let branches: Vec<_> = references.iter().map(|r| branch(r)).collect();
+        default_start(&branches, base).map(|b| b.name.clone())
+    }
+
+    #[test]
+    fn default_start_prefers_local_then_remote_develop() {
+        let base = Some("refs/remotes/origin/main");
+        let all = [
+            "refs/remotes/origin/main",
+            "refs/remotes/origin/develop",
+            "refs/heads/develop",
+        ];
+        assert_eq!(start(&all, base).as_deref(), Some("develop"));
+        assert_eq!(start(&all[..2], base).as_deref(), Some("origin/develop"));
+    }
+
+    #[test]
+    fn default_start_falls_back_to_review_base_then_head() {
+        let branches = ["refs/heads/feature", "refs/remotes/origin/main"];
+        assert_eq!(
+            start(&branches, Some("refs/remotes/origin/main")).as_deref(),
+            Some("origin/main")
+        );
+        assert_eq!(start(&branches, Some("refs/heads/gone")), None);
+        assert_eq!(start(&branches, None), None);
+        assert_eq!(start(&[], None), None);
+    }
 
     #[test]
     fn short_name_strips_branch_namespaces_only() {
