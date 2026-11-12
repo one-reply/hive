@@ -2,9 +2,9 @@
 
 use super::TermMode;
 use crate::host::quote;
-use image::{ImageFormat, ImageReader};
+use image::ImageFormat;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufWriter, Cursor, Write};
+use std::io::{self, BufWriter, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,7 +48,7 @@ pub enum PasteError {
     },
 }
 
-/// Decode PNG/JPEG/TIFF with the decoder's default limits and save a unique temporary PNG.
+/// Decode PNG/JPEG/TIFF within the image preview limits and save a unique temporary PNG.
 ///
 /// This blocks and must run off the UI thread. Files survive the terminal session;
 /// the operating system may remove them when it cleans its temporary directory.
@@ -64,7 +64,7 @@ fn save_image_in(bytes: &[u8], directory: &Path) -> Result<PathBuf, PasteError> 
     ) {
         return Err(PasteError::UnsupportedFormat);
     }
-    let image = ImageReader::with_format(Cursor::new(bytes), format).decode()?;
+    let image = crate::files::images::raster(bytes, format)?;
     let (path, file) = create_image_file(directory)?;
     let result = (|| {
         let mut writer = BufWriter::new(file);
@@ -198,8 +198,12 @@ fn path_text(path: &Path) -> Result<&str, PasteError> {
 }
 
 /// Encode text using the terminal's paste mode, without adding a submit key.
+///
+/// Bracketed text loses ESC and ETX: an ESC could spell the end-of-paste marker and turn the
+/// rest of the clipboard into keystrokes, and some shells end a paste on ETX.
 pub fn text_bytes(text: &str, mode: TermMode) -> Vec<u8> {
     if mode.contains(TermMode::BRACKETED_PASTE) {
+        let text = text.replace(['\x1b', '\x03'], "");
         let mut bytes = Vec::with_capacity(text.len() + 12);
         bytes.extend_from_slice(b"\x1b[200~");
         bytes.extend_from_slice(text.as_bytes());

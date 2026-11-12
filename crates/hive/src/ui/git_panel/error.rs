@@ -25,12 +25,7 @@ impl GitPanel {
         let target = state.target.clone();
         let needs_verification = state.needs_verification();
         let inspected = state.result_inspected();
-        let agent = AppState::get(cx)
-            .store
-            .read(cx)
-            .state
-            .settings
-            .default_cli_agent();
+        let agent = self.default_agent;
         let danger = cx.theme().danger;
         let copy = error.clone();
         let prompt = error.clone();

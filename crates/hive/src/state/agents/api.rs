@@ -638,7 +638,15 @@ fn check_interrupt(target: &Address, status: Option<AgentStatus>) -> Result<(), 
 }
 
 fn deadline(timeout_ms: Option<u64>, default: Duration) -> Instant {
-    Instant::now() + timeout_ms.map_or(default, Duration::from_millis)
+    Instant::now() + wait_for(timeout_ms, default)
+}
+
+/// The caller's timeout within the protocol's ceiling: a call holds a thread until it ends,
+/// and the socket takes any number from any local process.
+fn wait_for(timeout_ms: Option<u64>, default: Duration) -> Duration {
+    timeout_ms
+        .map_or(default, Duration::from_millis)
+        .min(protocol::MAX_TIMEOUT)
 }
 
 fn outcome(answer: Result<Response, ApiError>) -> Outcome {
@@ -679,6 +687,16 @@ mod tests {
         Address, AgentKind, AgentStatus, ErrorCode, Pane, StartVerdict, Verdict, check_interrupt,
         check_start, settle, start_verdict,
     };
+
+    #[test]
+    fn a_caller_cannot_ask_to_wait_past_the_protocol_ceiling() {
+        use super::{protocol, wait_for};
+        use std::time::Duration;
+        let default = Duration::from_secs(60);
+        assert_eq!(wait_for(None, default), default);
+        assert_eq!(wait_for(Some(1_500), default), Duration::from_millis(1_500));
+        assert_eq!(wait_for(Some(u64::MAX), default), protocol::MAX_TIMEOUT);
+    }
 
     #[test]
     fn start_needs_a_valid_free_name_and_a_launchable_agent() {

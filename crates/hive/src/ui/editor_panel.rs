@@ -22,8 +22,30 @@ mod suggestions;
 
 actions!(editor, [SaveFile, CloseFile, OpenFileSearch, SearchInFiles]);
 
+/// What the saved workspace keeps of a file tab besides its cursor.
+#[derive(Debug, PartialEq)]
+struct SavedTab {
+    pinned: bool,
+    path: std::path::PathBuf,
+}
+
+impl SavedTab {
+    /// Records the tab as it is now and says whether that differs from what was recorded.
+    fn replace(&mut self, pinned: bool, path: &std::path::Path) -> bool {
+        if self.pinned == pinned && self.path == path {
+            return false;
+        }
+        *self = Self {
+            pinned,
+            path: path.to_owned(),
+        };
+        true
+    }
+}
+
 pub(crate) struct EditorPanel {
     pub document: Entity<Document>,
+    saved_tab: SavedTab,
     area: WeakEntity<DockArea>,
     pub group: Option<WeakEntity<TabGroup>>,
     alone: bool,
@@ -67,7 +89,12 @@ impl EditorPanel {
                 if let Some(group) = this.group.as_ref().and_then(WeakEntity::upgrade) {
                     group.update(cx, |_, cx| cx.notify());
                 }
-                if let Some(area) = this.area.upgrade() {
+                let document = document.read(cx);
+                // A document notifies on every keystroke; only what the saved workspace keeps
+                // of this tab is worth a `state.json` write. The cursor is saved after a pause.
+                if this.saved_tab.replace(document.pinned, &document.path)
+                    && let Some(area) = this.area.upgrade()
+                {
                     cx.defer(move |cx| area.update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged)));
                 }
                 cx.notify();
@@ -95,8 +122,16 @@ impl EditorPanel {
                 }
             }),
         ];
+        let saved_tab = {
+            let document = document.read(cx);
+            SavedTab {
+                pinned: document.pinned,
+                path: document.path.clone(),
+            }
+        };
         Self {
             document,
+            saved_tab,
             area,
             group: None,
             alone: false,
@@ -210,4 +245,29 @@ impl Panel for EditorPanel {
 fn file_changes(git: &Entity<Git>, document: &Entity<Document>, cx: &App) -> FileChanges {
     let document = document.read(cx);
     git.read(cx).file_changes(&document.target, &document.path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SavedTab;
+    use std::path::Path;
+
+    #[test]
+    fn typing_leaves_the_saved_tab_unchanged_while_pinning_and_renaming_change_it() {
+        let mut tab = SavedTab {
+            pinned: false,
+            path: "src/main.rs".into(),
+        };
+        assert!(!tab.replace(false, Path::new("src/main.rs")));
+        assert!(tab.replace(true, Path::new("src/main.rs")));
+        assert!(!tab.replace(true, Path::new("src/main.rs")));
+        assert!(tab.replace(true, Path::new("src/app.rs")));
+        assert_eq!(
+            tab,
+            SavedTab {
+                pinned: true,
+                path: "src/app.rs".into()
+            }
+        );
+    }
 }

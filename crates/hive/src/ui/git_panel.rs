@@ -45,6 +45,8 @@ const EMPTY_ICON: Pixels = px(28.);
 
 pub(crate) struct GitPanel {
     git: Entity<Git>,
+    /// The agent the error card offers; the only setting this panel draws.
+    default_agent: hive_core::agent::AgentKind,
     filter: Entity<InputState>,
     message: Entity<TextareaState>,
     draft_target: Option<Target>,
@@ -68,7 +70,14 @@ impl GitPanel {
                 .placeholder("Commit message")
         });
         let subscriptions = vec![
-            cx.observe(&store, |_, _, cx| cx.notify()),
+            // The store saves on every layout and cursor change; the panel draws one setting.
+            cx.observe(&store, |this, store, cx| {
+                let agent = store.read(cx).state.settings.default_cli_agent();
+                if this.default_agent != agent {
+                    this.default_agent = agent;
+                    cx.notify();
+                }
+            }),
             cx.observe_in(&git, window, |this, _, window, cx| {
                 let state = this.git.read(cx);
                 let target = state.target.clone();
@@ -96,6 +105,7 @@ impl GitPanel {
         ];
         Self {
             git,
+            default_agent: store.read(cx).state.settings.default_cli_agent(),
             filter,
             message,
             draft_target: None,

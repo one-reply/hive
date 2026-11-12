@@ -141,7 +141,8 @@ pub fn decode(
     }
 }
 
-fn raster(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, image::ImageError> {
+/// Decodes within [`MAX_IMAGE_SIDE`] and [`MAX_IMAGE_PIXELS`], upright.
+pub(crate) fn raster(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, image::ImageError> {
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_SIDE);
