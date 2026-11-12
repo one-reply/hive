@@ -8,7 +8,7 @@ use crate::app::AppState;
 use crate::terminal::panel::{ClosePane, SplitDown, SplitRight};
 use crate::ui::settings::OpenSettings;
 use crate::ui::workspace::{
-    NewTerminal, ShowFilesPanel, ShowGitPanel, ToggleGitPanel, ToggleSidebar,
+    NewTerminal, OpenHistory, ShowFilesPanel, ShowGitPanel, ToggleGitPanel, ToggleSidebar,
 };
 
 actions!(
@@ -132,6 +132,8 @@ pub(crate) fn install(cx: &mut App) {
         Menu::new("Terminal").items([
             MenuItem::action("Split Right", SplitRight),
             MenuItem::action("Split Down", SplitDown),
+            MenuItem::separator(),
+            MenuItem::action("Conversation History…", OpenHistory),
             MenuItem::separator(),
             MenuItem::action("Close Pane", ClosePane),
         ]),

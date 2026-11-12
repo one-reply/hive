@@ -4,6 +4,8 @@
 //! Since 0.16x the TUI is only a client of a shared `codex app-server --managed-daemon`: the
 //! daemon holds the locks of every client's threads, so the TUI process holds none. Its thread
 //! is then the rollout the daemon wrote for a TUI in the same directory since it started.
+pub(super) mod history;
+
 use super::{process, read_bounded_line};
 use crate::agent::{AgentKind, launch::ResumeSession};
 use serde::Deserialize;
@@ -42,7 +44,7 @@ pub(super) fn discover(pids: &[u32]) -> Option<ResumeSession> {
 }
 
 /// Codex honours `CODEX_HOME`; shells started by Hive take it from the login shell.
-fn home() -> Option<PathBuf> {
+pub(super) fn home() -> Option<PathBuf> {
     crate::host::environment::login()
         .and_then(|environment| environment.get("CODEX_HOME"))
         .map(PathBuf::from)
@@ -160,7 +162,7 @@ fn same_directory(left: &Path, right: &Path) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::time::Duration;
 
@@ -209,9 +211,9 @@ mod tests {
 
     /// Captured from Codex 0.167.0 (TUI on the managed daemon), trimmed: base instructions
     /// and account ids removed.
-    const TUI_META: &str = r#"{"timestamp":"2026-11-07T07:25:21.871Z","ordinal":0,"type":"session_meta","payload":{"session_id":"01a1b4e5-cce0-7f72-ac75-8c15a2f6678e","id":"01a1b4e5-cce0-7f72-ac75-8c15a2f6678e","timestamp":"2026-11-07T07:25:21.578Z","cwd":"/Users/me/project","runtime_workspace_roots":["/Users/me/project"],"originator":"codex-tui","cli_version":"0.167.0","source":"vscode","thread_source":"user","model_provider":"openai","history_mode":"paginated","base_instructions":{"text":"You are Codex"},"git":{"branch":"main"}}}"#;
+    pub(in crate::agent::conversation) const TUI_META: &str = r#"{"timestamp":"2026-11-07T07:25:21.871Z","ordinal":0,"type":"session_meta","payload":{"session_id":"01a1b4e5-cce0-7f72-ac75-8c15a2f6678e","id":"01a1b4e5-cce0-7f72-ac75-8c15a2f6678e","timestamp":"2026-11-07T07:25:21.578Z","cwd":"/Users/me/project","runtime_workspace_roots":["/Users/me/project"],"originator":"codex-tui","cli_version":"0.167.0","source":"vscode","thread_source":"user","model_provider":"openai","history_mode":"paginated","base_instructions":{"text":"You are Codex"},"git":{"branch":"main"}}}"#;
     /// Captured from Codex 0.167.0-alpha.3.2, trimmed: a guardian subagent of a desktop thread.
-    const SUBAGENT_META: &str = r#"{"timestamp":"2026-11-06T20:44:39.400Z","ordinal":0,"type":"session_meta","payload":{"id":"01a1b29b-3834-7662-abbe-c12712449edb","parent_thread_id":"01a1b26f-f2ad-7b50-aba7-88f01dd48cd0","cwd":"/Users/me/project","originator":"Codex Desktop","source":{"subagent":{"other":"guardian"}},"thread_source":"guardian_review"}}"#;
+    pub(in crate::agent::conversation) const SUBAGENT_META: &str = r#"{"timestamp":"2026-11-06T20:44:39.400Z","ordinal":0,"type":"session_meta","payload":{"id":"01a1b29b-3834-7662-abbe-c12712449edb","parent_thread_id":"01a1b26f-f2ad-7b50-aba7-88f01dd48cd0","cwd":"/Users/me/project","originator":"Codex Desktop","source":{"subagent":{"other":"guardian"}},"thread_source":"guardian_review"}}"#;
 
     #[test]
     fn tui_session_meta_names_the_thread_of_its_directory() {

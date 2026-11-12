@@ -897,10 +897,13 @@ fn worktree_menu(
         (project.host.clone(), project.path.clone()),
         worktree.clone(),
     );
+    let history = history_item(projects.clone(), &project_path, &worktree.path);
     menu.item(copy_item("Copy Path", worktree.path.display().to_string()))
         .when_some(worktree.branch(), |menu, branch| {
             menu.item(copy_item("Copy Branch Name", branch.to_string()))
         })
+        .separator()
+        .item(history)
         .separator()
         .item(
             PopupMenuItem::new(delete_label)
@@ -921,6 +924,30 @@ fn worktree_menu(
                     );
                 }),
         )
+}
+
+/// Selects the worktree first: the history dialog and the tab it opens act on the selection.
+fn history_item(
+    projects: Entity<Projects>,
+    project: &(Host, PathBuf),
+    worktree: &Path,
+) -> PopupMenuItem {
+    let local = project.0.is_local();
+    let label = if local {
+        "Conversation History…"
+    } else {
+        "Conversation History — local projects only"
+    };
+    let (project, worktree) = (project.clone(), worktree.to_path_buf());
+    PopupMenuItem::new(label)
+        .icon(Lucide::MessagesSquare)
+        .disabled(!local)
+        .on_click(move |_, window, cx| {
+            projects.update(cx, |projects, cx| {
+                projects.select(&project.0, &project.1, Some(&worktree), cx)
+            });
+            crate::ui::workspace::history::open_selected(window, cx);
+        })
 }
 
 fn confirm_delete(

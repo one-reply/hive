@@ -19,7 +19,7 @@ use super::view::{TerminalView, TerminalViewEvent};
 use crate::app::AppState;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::ui::keymap;
-use crate::ui::workspace::{NewTerminal, right_sidebar_toggle};
+use crate::ui::workspace::{NewTerminal, OpenHistory, right_sidebar_toggle};
 use hive_core::host::Host;
 
 actions!(
@@ -408,6 +408,19 @@ impl Panel for TerminalPanel {
                     cx.listener(|this, _, window, cx| this.split(Axis::Vertical, window, cx)),
                 ),
         ];
+        if self.host.is_local() {
+            buttons.push(
+                Button::new("terminal-history")
+                    .cursor_pointer()
+                    .icon(Lucide::MessagesSquare)
+                    .tooltip_with_action(
+                        "Conversation history",
+                        &OpenHistory,
+                        Some(keymap::CONTEXT),
+                    )
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenHistory), cx)),
+            );
+        }
         if !AppState::get(cx)
             .store
             .read(cx)

@@ -38,6 +38,7 @@ mod center;
 mod center_dock;
 mod files;
 mod git;
+pub(crate) mod history;
 mod persistence;
 mod project_center;
 pub(crate) mod switcher;
@@ -52,6 +53,7 @@ actions!(
     workspace,
     [
         QuickSwitch,
+        OpenHistory,
         NewTerminal,
         ToggleSidebar,
         ToggleGitPanel,
@@ -683,6 +685,9 @@ impl Render for Workspace {
             ))
             .on_action(
                 cx.listener(|_, _: &QuickSwitch, window, cx| switcher::open(false, window, cx)),
+            )
+            .on_action(
+                cx.listener(|_, _: &OpenHistory, window, cx| history::open_selected(window, cx)),
             )
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(|this, _: &ToggleGitPanel, _, cx| this.toggle_git(cx)))
