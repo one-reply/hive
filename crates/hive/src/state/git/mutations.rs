@@ -60,6 +60,10 @@ impl Git {
             self.error = None;
         }
         self.failures.remove(&target);
+        let stop = std::sync::Arc::new(hive_core::command::Cancellation::default());
+        if action.as_ref().is_some_and(Action::is_stoppable) {
+            self.stops.insert(target.clone(), stop.clone());
+        }
         self.start_remote_operation(&target, action.as_ref());
         tracing::info!(path = ?target.path, ?action, hunk = hunk.is_some(), "source control mutation");
         cx.notify();
@@ -71,7 +75,7 @@ impl Git {
                 .background_executor()
                 .spawn(async move {
                     if let Some(action) = operation {
-                        git::changes::execute(&t.host, &t.path, &action)
+                        git::changes::execute(&t.host, &t.path, &action, &stop)
                     } else if let Some((request, diff, index)) = hunk {
                         git::diff::apply_hunk(
                             &t.host,
@@ -89,6 +93,7 @@ impl Git {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy.remove(&target);
+                this.stops.remove(&target);
                 let (result, synced) = match result {
                     Ok(synced) => (Ok(()), synced),
                     Err(error) => (Err(error), None),

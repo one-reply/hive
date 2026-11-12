@@ -1,7 +1,9 @@
 //! Explicit index, commit and remote operations. No force, implicit staging or automatic stash.
 use super::{
-    GitError, READ_LIMIT, branches, bytes_mutation, conflicts, diff, run, run_mutation, status,
+    GitError, READ_LIMIT, branches, bytes_mutation, conflicts, diff, run, run_mutation,
+    run_stoppable, status,
 };
+use crate::command::Cancellation;
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -48,6 +50,22 @@ pub enum Action {
     AbortOperation,
     /// Conclude the unfinished operation once every conflict is resolved.
     ContinueOperation,
+}
+
+impl Action {
+    /// Whether [`execute`] can end this action early: it runs hooks or talks to a remote, so
+    /// it may take minutes. The rest are local and finish at once.
+    pub fn is_stoppable(&self) -> bool {
+        matches!(
+            self,
+            Action::Commit(_)
+                | Action::CommitAndPush { .. }
+                | Action::Fetch(_)
+                | Action::Pull
+                | Action::Push { .. }
+                | Action::ContinueOperation
+        )
+    }
 }
 
 /// What a fetch, pull or push changed, for a short confirmation once it finishes.
@@ -150,18 +168,36 @@ pub(super) fn paths(
         .iter()
         .flat_map(|p| p.bytes().chain(std::iter::once(0)))
         .collect();
-    bytes_mutation(host, cwd, &command, Some(&input), READ_LIMIT, false).map(drop)
+    bytes_mutation(
+        host,
+        cwd,
+        &command,
+        Some(&input),
+        READ_LIMIT,
+        false,
+        &Cancellation::default(),
+    )
+    .map(drop)
 }
 
 /// Execute one mutation synchronously. Call only on a background executor.
 ///
 /// Fetch, pull and push report what they changed; local mutations return `None`.
-pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<Option<Synced>, GitError> {
+///
+/// `stop` ends the commands that run hooks or talk to a remote (commit, fetch, pull, push and
+/// continuing an operation); the error then says the outcome is unknown. The quick local
+/// mutations ignore it.
+pub fn execute(
+    host: &Host,
+    cwd: &Path,
+    action: &Action,
+    stop: &Cancellation,
+) -> Result<Option<Synced>, GitError> {
     let local = match action {
-        Action::Fetch(remote) => return fetch(host, cwd, remote).map(Some),
-        Action::Pull => return pull(host, cwd).map(Some),
+        Action::Fetch(remote) => return fetch(host, cwd, remote, stop).map(Some),
+        Action::Pull => return pull(host, cwd, stop).map(Some),
         Action::Push { remote, publish } => {
-            return push_branch(host, cwd, remote, *publish).map(Some);
+            return push_branch(host, cwd, remote, *publish, stop).map(Some);
         }
         Action::Stage(selected) => paths(host, cwd, &["add", "-A"], selected),
         Action::Unstage(selected) => {
@@ -207,7 +243,7 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<Option<Synced
                 )
             }
         }
-        Action::Commit(message) => commit(host, cwd, message),
+        Action::Commit(message) => commit(host, cwd, message, stop),
         Action::CommitAndPush {
             message,
             remote,
@@ -215,8 +251,8 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<Option<Synced
         } => {
             // Reject an unavailable destination before creating a local commit.
             let destination = push_destination(host, cwd, remote, *publish)?;
-            commit(host, cwd, message)?;
-            push(host, cwd, remote, *publish, &destination).map_err(|source| {
+            commit(host, cwd, message, stop)?;
+            push(host, cwd, remote, *publish, &destination, stop).map_err(|source| {
                 GitError::PushAfterCommit {
                     source: Box::new(source),
                 }
@@ -229,17 +265,18 @@ pub fn execute(host: &Host, cwd: &Path, action: &Action) -> Result<Option<Synced
         }
         Action::ResolveWith { path, side } => conflicts::resolve_with(host, cwd, path, *side),
         Action::AbortOperation => conflicts::abort(host, cwd),
-        Action::ContinueOperation => conflicts::continue_operation(host, cwd),
+        Action::ContinueOperation => conflicts::continue_operation(host, cwd, stop),
     };
     local.map(|()| None)
 }
 
-fn fetch(host: &Host, cwd: &Path, remote: &str) -> Result<Synced, GitError> {
+fn fetch(host: &Host, cwd: &Path, remote: &str, stop: &Cancellation) -> Result<Synced, GitError> {
     remote_exists(host, cwd, remote)?;
-    run_mutation(
+    run_stoppable(
         host,
         cwd,
         &["-c", "credential.interactive=false", "fetch", remote],
+        stop,
     )?;
     let status = status::read(host, cwd)?;
     let tracks_remote = match (&status.branch, &status.upstream) {
@@ -252,7 +289,7 @@ fn fetch(host: &Host, cwd: &Path, remote: &str) -> Result<Synced, GitError> {
     })
 }
 
-fn pull(host: &Host, cwd: &Path) -> Result<Synced, GitError> {
+fn pull(host: &Host, cwd: &Path, stop: &Cancellation) -> Result<Synced, GitError> {
     branches::require_clean(host, cwd)?;
     let before = status::read(host, cwd)?;
     if before.upstream.is_none() {
@@ -260,7 +297,7 @@ fn pull(host: &Host, cwd: &Path) -> Result<Synced, GitError> {
             "Publish this branch or configure an upstream before pulling.".into(),
         ));
     }
-    run_mutation(
+    run_stoppable(
         host,
         cwd,
         &[
@@ -270,6 +307,7 @@ fn pull(host: &Host, cwd: &Path) -> Result<Synced, GitError> {
             "--no-rebase",
             "--ff-only",
         ],
+        stop,
     )?;
     // Fast-forward only, so the new commits are exactly those between the old and new HEAD.
     let range = match before.oid {
@@ -281,10 +319,16 @@ fn pull(host: &Host, cwd: &Path) -> Result<Synced, GitError> {
     })
 }
 
-fn push_branch(host: &Host, cwd: &Path, remote: &str, publish: bool) -> Result<Synced, GitError> {
+fn push_branch(
+    host: &Host,
+    cwd: &Path,
+    remote: &str,
+    publish: bool,
+    stop: &Cancellation,
+) -> Result<Synced, GitError> {
     let destination = push_destination(host, cwd, remote, publish)?;
     let ahead = status::read(host, cwd)?.ahead;
-    push(host, cwd, remote, publish, &destination)?;
+    push(host, cwd, remote, publish, &destination, stop)?;
     Ok(if publish {
         Synced::Published {
             remote: remote.into(),
@@ -304,7 +348,7 @@ fn count_commits(host: &Host, cwd: &Path, range: &str) -> Result<usize, GitError
         .map_err(|_| GitError::Invalid(format!("Unexpected `git rev-list --count` output: {raw}")))
 }
 
-fn commit(host: &Host, cwd: &Path, message: &str) -> Result<(), GitError> {
+fn commit(host: &Host, cwd: &Path, message: &str, stop: &Cancellation) -> Result<(), GitError> {
     if message.trim().is_empty() {
         return Err(GitError::Invalid("Enter a commit message.".into()));
     }
@@ -320,6 +364,7 @@ fn commit(host: &Host, cwd: &Path, message: &str) -> Result<(), GitError> {
         Some(message.as_bytes()),
         READ_LIMIT,
         false,
+        stop,
     )
     .map(drop)
 }
@@ -355,6 +400,7 @@ fn push(
     remote: &str,
     publish: bool,
     destination: &str,
+    stop: &Cancellation,
 ) -> Result<(), GitError> {
     let refspec = format!("HEAD:{destination}");
     let mut args = vec!["-c", "credential.interactive=false", "push"];
@@ -362,7 +408,7 @@ fn push(
         args.push("--set-upstream");
     }
     args.extend([remote, &refspec]);
-    run_mutation(host, cwd, &args).map(drop)
+    run_stoppable(host, cwd, &args, stop).map(drop)
 }
 
 #[cfg(test)]

@@ -178,6 +178,19 @@ impl GitPanel {
                     .flex_1(),
             );
         }
+        if self.git.read(cx).can_stop() {
+            let hover = Hover::new("stop-git-operation", window, cx);
+            row = row.child(
+                Button::new("stop-git-operation")
+                    .cursor_pointer()
+                    .small()
+                    .icon(Lucide::Square)
+                    .accessibility_label("Stop the running Git operation")
+                    .tooltip("Stop · Git is ended mid-command; verify the result afterwards")
+                    .on_click(cx.listener(|this, _, _, cx| this.git.read(cx).stop_mutation()))
+                    .smooth_hover(ButtonLook::Outline, &hover, cx),
+            );
+        }
         row
     }
 
