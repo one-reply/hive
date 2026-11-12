@@ -38,7 +38,6 @@ Sources use immutable revisions; the two predecessor-project notices are marked 
 | tree-sitter-proto 0.2.0 | [MIT](tree-sitter-proto-0.2.0.txt) | [upstream](https://raw.githubusercontent.com/mitchellh/tree-sitter-proto/42d82fa18f8afe59b5fc0b16c207ee4f84cb185f/LICENSE) (original predecessor; published crate also declares MIT) |
 | tree-sitter-python 0.23.6 | [MIT](tree-sitter-python-0.23.6.txt) | [upstream](https://raw.githubusercontent.com/tree-sitter/tree-sitter-python/bffb65a8cfe4e46290331dfef0dbf0ef3679de11/LICENSE) |
 | tree-sitter-ruby 0.23.1 | [MIT](tree-sitter-ruby-0.23.1.txt) | [upstream](https://raw.githubusercontent.com/tree-sitter/tree-sitter-ruby/71bd32fb7607035768799732addba884a37a6210/LICENSE) |
-| tree-sitter-scala 0.23.4 | [MIT](tree-sitter-scala-0.23.4.txt) | [upstream](https://raw.githubusercontent.com/tree-sitter/tree-sitter-scala/d3b9553b47d7ab413a146c4b6498e527265b966e/LICENSE) |
 | tree-sitter-sequel 0.3.11 | [MIT](tree-sitter-sequel-0.3.11.txt) | [upstream](https://raw.githubusercontent.com/derekstride/tree-sitter-sql/7b51ecda191d36b92f5a90a8d1bc3faef1c7b8b8/LICENSE) |
 | tree-sitter-toml-ng 0.7.0 | [MIT](tree-sitter-toml-ng-0.7.0.txt) | [upstream](https://raw.githubusercontent.com/tree-sitter-grammars/tree-sitter-toml/64b56832c2cffe41758f28e05c756a3a98d16f41/LICENSE) |
 | tree-sitter-typescript 0.23.2 | [MIT](tree-sitter-typescript-0.23.2.txt) | [upstream](https://raw.githubusercontent.com/tree-sitter/tree-sitter-typescript/f975a621f4e7f532fe322e13c4f79495e0a7b2e7/LICENSE) |
