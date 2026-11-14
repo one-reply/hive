@@ -57,7 +57,7 @@ fn project(name: &str) -> Project {
 }
 
 #[gpui::test]
-fn project_names_select_and_only_the_disclosure_button_folds(cx: &mut TestAppContext) {
+fn project_names_expand_on_selection_and_toggle_when_active(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let store = cx.new(|cx| {
         Store::new(
@@ -83,7 +83,10 @@ fn project_names_select_and_only_the_disclosure_button_folds(cx: &mut TestAppCon
     let sidebar = cx.new(|cx| Sidebar {
         projects: projects.clone(),
         store: store.clone(),
-        collapsed: HashSet::new(),
+        collapsed: HashSet::from([
+            (Host::Local, "/alpha".into()),
+            (Host::Local, "/beta".into()),
+        ]),
         toggled: HashMap::new(),
         agents_open: HashSet::new(),
         working: crate::ui::stepped_spinner::SteppedSpinner::new(cx),
@@ -98,11 +101,16 @@ fn project_names_select_and_only_the_disclosure_button_folds(cx: &mut TestAppCon
     });
     let (_, cx) = cx.add_window_view(|_, _| Headers(sidebar.clone()));
     for (x, y, selected, folded) in [
-        (100., 14., "/alpha", false),
-        (100., 42., "/beta", false),
-        (280., 14., "/beta", true),
-        (100., 14., "/alpha", true),
-        (280., 14., "/alpha", false),
+        (100., 14., "/alpha", [false, true]),
+        (100., 14., "/alpha", [true, true]),
+        (100., 14., "/alpha", [false, true]),
+        (100., 42., "/beta", [false, false]),
+        (100., 14., "/alpha", [false, false]),
+        (100., 42., "/beta", [false, false]),
+        (280., 14., "/beta", [true, false]),
+        (100., 14., "/alpha", [false, false]),
+        (280., 14., "/alpha", [true, false]),
+        (280., 14., "/alpha", [false, false]),
     ] {
         cx.update(|window, cx| {
             window.activate_window();
@@ -115,13 +123,16 @@ fn project_names_select_and_only_the_disclosure_button_folds(cx: &mut TestAppCon
                 projects.read(cx).target().unwrap().path,
                 std::path::Path::new(selected)
             );
-            assert_eq!(
-                sidebar
-                    .read(cx)
-                    .collapsed
-                    .contains(&(Host::Local, "/alpha".into())),
-                folded
-            );
+            for (path, folded) in ["/alpha", "/beta"].into_iter().zip(folded) {
+                assert_eq!(
+                    sidebar
+                        .read(cx)
+                        .collapsed
+                        .contains(&(Host::Local, path.into())),
+                    folded,
+                    "{path} after clicking ({x}, {y})"
+                );
+            }
         });
     }
     cx.read(|cx| {
@@ -142,39 +153,64 @@ fn project_names_select_and_only_the_disclosure_button_folds(cx: &mut TestAppCon
             cx,
         )
     });
-    cx.update(|window, cx| {
-        window.draw(cx).clear(cx);
-    });
-    cx.simulate_click(point(px(100.), px(14.)), Default::default());
-    cx.run_until_parked();
-    cx.read(|cx| {
-        assert_eq!(
-            projects.read(cx).target().unwrap().path,
-            std::path::Path::new("/alpha-feature")
-        )
-    });
+    for folded in [true, false] {
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        cx.simulate_click(point(px(100.), px(14.)), Default::default());
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert_eq!(
+                projects.read(cx).target().unwrap().path,
+                std::path::Path::new("/alpha-feature")
+            );
+            assert_eq!(
+                sidebar
+                    .read(cx)
+                    .collapsed
+                    .contains(&(Host::Local, "/alpha".into())),
+                folded
+            );
+            assert_eq!(
+                store.read(cx).state.projects[0].expanded_on_start(&Default::default()),
+                !folded
+            );
+        });
+    }
 
     projects.update(cx, |projects, cx| {
         projects.select_project(&Host::Local, "/beta".as_ref(), cx)
     });
-    cx.update(|window, cx| {
-        window.draw(cx).clear(cx);
+    sidebar.update(cx, |sidebar, cx| {
+        sidebar.toggle_collapsed(&(Host::Local, "/alpha".into()), cx)
     });
-    let keystroke =
-        cx.update(|_, cx| Keystroke::parse_with_os("enter", cx.platform_info().os).unwrap());
-    cx.simulate_event(KeyDownEvent {
-        keystroke: keystroke.clone(),
-        is_held: false,
-        prefer_character_input: false,
-    });
-    cx.simulate_event(KeyUpEvent { keystroke });
-    cx.run_until_parked();
-    cx.read(|cx| {
-        assert_eq!(
-            projects.read(cx).target().unwrap().path,
-            std::path::Path::new("/alpha")
-        )
-    });
+    for (key, folded) in [("enter", false), ("space", true), ("space", false)] {
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let keystroke =
+            cx.update(|_, cx| Keystroke::parse_with_os(key, cx.platform_info().os).unwrap());
+        cx.simulate_event(KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(KeyUpEvent { keystroke });
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert_eq!(
+                projects.read(cx).target().unwrap().path,
+                std::path::Path::new("/alpha")
+            );
+            assert_eq!(
+                sidebar
+                    .read(cx)
+                    .collapsed
+                    .contains(&(Host::Local, "/alpha".into())),
+                folded
+            );
+        });
+    }
     sidebar.update(cx, |sidebar, cx| {
         sidebar.toggle_collapsed(&(Host::Local, "/alpha".into()), cx)
     });
