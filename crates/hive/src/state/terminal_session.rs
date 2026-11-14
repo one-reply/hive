@@ -168,6 +168,16 @@ impl TerminalSession {
                         endpoint.launcher.as_deref(),
                         executable,
                     );
+                    if let Some(agent) = launched_agent {
+                        api::mcp_config::attach(
+                            &mut command,
+                            agent,
+                            socket,
+                            terminal_id,
+                            executable,
+                        )
+                        .map_err(|error| format!("Could not configure Hive tools: {error}"))?;
+                    }
                 }
                 Terminal::spawn_command(command, cwd.as_deref(), TerminalSize::new(80, 24))
             };

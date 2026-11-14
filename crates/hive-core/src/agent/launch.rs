@@ -167,7 +167,7 @@ impl Launch {
         hook_settings: Option<&str>,
     ) -> Result<Command, LaunchError> {
         let executable = self.executable()?;
-        let args = self.arguments(hook_settings)?;
+        let args = self.local_arguments(hook_settings)?;
         let mut command = Host::Local.command(
             &executable.to_string_lossy(),
             &args.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -183,6 +183,16 @@ impl Launch {
             }
         }
         Ok(command)
+    }
+    fn local_arguments(&self, hook_settings: Option<&str>) -> Result<Vec<String>, LaunchError> {
+        let mut args = self.arguments(hook_settings)?;
+        // Even without our API, a shared server must not reuse another pane's MCP or env.
+        match self.agent() {
+            AgentKind::Codex => args.push("--no-daemon".into()),
+            AgentKind::OpenCode => args.push("--standalone".into()),
+            _ => {}
+        }
+        Ok(args)
     }
     fn arguments(&self, hook_settings: Option<&str>) -> Result<Vec<String>, LaunchError> {
         let mut args = Vec::new();
@@ -314,5 +324,40 @@ mod tests {
         assert!(ResumeSession::new(AgentKind::OpenCode, "a1-b2").is_none());
         assert!(ResumeSession::new(AgentKind::OpenCode, "ses_--x;").is_none());
         assert!(ResumeSession::new(AgentKind::GeminiCli, "ses_abc").is_none());
+    }
+
+    #[test]
+    fn local_new_and_resume_keep_their_identity_without_reusing_shared_servers() {
+        for agent in AGENTS {
+            let new = Launch::New(agent);
+            let resumed = Launch::Resume(ResumeSession::new(agent, "ses_saved").unwrap());
+            let new_args = new.local_arguments(None).unwrap();
+            let resumed_args = resumed.local_arguments(None).unwrap();
+            assert_eq!(&resumed_args[2..], new_args);
+            match agent {
+                AgentKind::Codex => assert_eq!(new_args, ["--no-daemon"]),
+                AgentKind::OpenCode => assert_eq!(new_args, ["--standalone"]),
+                _ => assert!(new_args.is_empty()),
+            }
+            let attach = |args: &[String]| {
+                let mut command = Command::new("agent");
+                command.args(args);
+                super::super::api::mcp_config::attach(
+                    &mut command,
+                    agent,
+                    Path::new("/tmp/instance/a"),
+                    42,
+                    Path::new("/Apps/hive"),
+                )
+                .unwrap();
+                command
+                    .get_args()
+                    .map(|arg| arg.to_owned())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(&attach(&resumed_args)[2..], attach(&new_args));
+            // Remote launches never receive local daemon flags or the pane's MCP identity.
+            assert!(new.arguments(None).unwrap().is_empty());
+        }
     }
 }

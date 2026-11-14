@@ -4,9 +4,22 @@ You run in a terminal pane of Hive, a desktop app for coding agents. Other agent
 Codex, OpenCode, Antigravity) may run in other panes. The `hive` command lets you list them,
 start a helper next to you and exchange messages with them.
 
-First check that you are inside Hive: `test -n "$HIVE_SOCKET"`. If it fails, say that you are
-not running in a Hive pane and stop. If `hive` is not on `PATH`, call `"$HIVE_BIN"` instead.
-Your own pane id is `$HIVE_TERMINAL`.
+When Hive MCP tools are available, use them directly: they already identify your Hive instance
+and pane, independently of shell environment variables. Hive attaches them to its local Codex
+and Claude launches, including resume. Their normal trust and approval rules still apply.
+
+For the CLI fallback, check `HIVE_SOCKET` and `HIVE_TERMINAL`. Missing shell variables do not
+prove you are outside Hive: an agent's execution environment may filter them. If `hive` is not
+on `PATH`, call `"$HIVE_BIN"` instead. If identity is missing, obtain the explicit values from
+the pane's launch context/user; never scan sockets or guess another instance by cwd. Then use:
+`env HIVE_SOCKET='<exact socket>' HIVE_TERMINAL='<pane id>' /absolute/path/to/hive agent list`.
+
+OpenCode and Antigravity currently use this CLI fallback; there is no verified session-scoped
+MCP override for their current CLIs. Hive launches OpenCode with a private `--standalone`
+server to keep its environment separate. Manually started agents require explicit setup.
+A client supporting a session-only stdio server can run:
+`/absolute/path/to/hive mcp --socket '<exact socket>' --terminal '<pane id>'`.
+Do not save one pane's endpoint in a global or shared project configuration.
 
 ## Commands
 
@@ -57,3 +70,5 @@ finished turn; ask it to answer with `hive agent send`, or use `hive agent wait`
   `hive agent read` before sending it again.
 - Agents in one worktree share its files. Agree on who edits what; let one agent edit a file
   at a time.
+- Send your final report without `--wait` to avoid mutual waits. Cancellation/timeouts stop
+  waiting, not already submitted work; inspect the target before retrying a mutation.

@@ -354,9 +354,19 @@ pub fn sign_in(
 
 fn device_prompt(bytes: &[u8], server: &Server) -> Option<DevicePrompt> {
     let text = std::str::from_utf8(bytes).ok()?;
-    let code = text.lines().find_map(|line| {
+    // Progress can end halfway through a URL; only complete lines may launch a browser.
+    let lines = text
+        .split_inclusive('\n')
+        .filter(|line| line.ends_with('\n'));
+    let code = lines.clone().find_map(|line| {
         line.split_once("First copy your one-time code: ")
             .map(|(_, code)| code.trim())
+            .or_else(|| {
+                line.split_once("One-time code (")?
+                    .1
+                    .trim_end()
+                    .strip_suffix(") copied to clipboard")
+            })
     })?;
     if !(4..=32).contains(&code.len())
         || !code
@@ -365,12 +375,14 @@ fn device_prompt(bytes: &[u8], server: &Server) -> Option<DevicePrompt> {
     {
         return None;
     }
-    let url = text.lines().find_map(|line| {
+    let url = lines.clone().find_map(|line| {
         line.split_once("to continue in your web browser: ")
             .map(|(_, url)| url.trim())
     })?;
     let rest = url.strip_prefix("https://")?;
-    if rest.split('/').next()? != server.as_str() || url.chars().any(char::is_whitespace) {
+    if rest.split('/').next()? != server.as_str()
+        || url.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
         return None;
     }
     Some(DevicePrompt {

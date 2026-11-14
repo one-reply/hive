@@ -1,5 +1,6 @@
 mod app;
 mod cli;
+mod mcp;
 mod notify;
 mod quit;
 mod state;
