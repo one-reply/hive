@@ -361,7 +361,7 @@ impl Sidebar {
                     .rotate(radians(std::f32::consts::FRAC_PI_2 * unfolded)),
             )
             .accessibility_label(collapse_label.clone())
-            .tooltip(collapse_label)
+            .tooltip(collapse_label.clone())
             .on_click(cx.listener(move |this, _, _, cx| {
                 // Folding must not select the project behind the button.
                 cx.stop_propagation();
@@ -390,7 +390,7 @@ impl Sidebar {
                 )
             })
             .child(collapse)
-            .opacity(if is_menu_open || keyboard_focus {
+            .opacity(if holds_selection || is_menu_open || keyboard_focus {
                 1.
             } else {
                 header_hover.progress()
@@ -398,7 +398,11 @@ impl Sidebar {
         h_flex()
             .id(("project", ix))
             .role(Role::Button)
-            .aria_label(format!("Open project {}", project.name))
+            .aria_label(if holds_selection {
+                collapse_label
+            } else {
+                format!("Open project {}", project.name)
+            })
             .track_focus(&header_focus)
             .tab_index(0)
             .on_hover(header_hover.listener())
@@ -433,6 +437,10 @@ impl Sidebar {
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.projects
                     .update(cx, |projects, cx| projects.select_project(&host, &path, cx));
+                let target = (host.clone(), path.clone());
+                if holds_selection || this.collapsed.contains(&target) {
+                    this.toggle_collapsed(&target, cx);
+                }
             }))
     }
 
