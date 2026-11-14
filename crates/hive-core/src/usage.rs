@@ -123,17 +123,6 @@ fn get_json_with_timeout(
     json_of(status, &text)
 }
 
-/// Blocking: POSTs `body` as JSON; the status and text, for callers that read error bodies.
-fn post_text(url: &str, headers: &[(&str, &str)], body: &str) -> Result<(u16, String), UsageError> {
-    let mut req = agent(Duration::from_secs(10))
-        .post(url)
-        .content_type("application/json");
-    for (k, v) in headers {
-        req = req.header(*k, *v);
-    }
-    response_text(req.send(body))
-}
-
 /// Non-2xx statuses come back as responses, so a caller can tell them apart by their body.
 fn agent(timeout: Duration) -> ureq::Agent {
     let config = ureq::Agent::config_builder()

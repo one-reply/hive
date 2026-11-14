@@ -1,58 +1,140 @@
-//! Antigravity's quota, from the Cloud Code `retrieveUserQuotaSummary` call that `agy` itself
-//! makes, with the Google session it saved and its Cloud Code project context.
+//! Antigravity's structured `/usage` command reports the same pools as the signed-in CLI.
+//! Remote OAuth summaries can omit Gemini while returning an unused Claude/GPT bucket.
 
-use super::{UsageError, UsageWindow, json_of, parse_time, post_text};
-use crate::keychain;
+use super::{UsageError, UsageWindow, parse_time};
+use crate::{command, host::Host};
+use serde::Deserialize;
 use serde_json::Value;
+use std::{
+    fs,
+    os::unix::fs::{DirBuilderExt, symlink},
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
-const API_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:";
+const TIMEOUT: Duration = Duration::from_secs(25);
+const OUTPUT_LIMIT: usize = 1024 * 1024;
+static NEXT_PROBE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn fetch() -> Result<Vec<UsageWindow>, UsageError> {
-    let token = keychain::antigravity_access_token()?;
-    let authorization = format!("Bearer {token}");
-    let headers = [
-        ("Authorization", authorization.as_str()),
-        ("Accept", "application/json"),
-        ("User-Agent", "antigravity"),
-    ];
-    fetch_quota(|method, body| post_text(&format!("{API_URL}{method}"), &headers, body))
+    let executable = command::executable("agy")
+        .ok_or_else(|| UsageError::Http("Antigravity CLI unavailable; run `agy`".into()))?;
+    let guard = BrowserGuard::new().map_err(|_| {
+        UsageError::Http("Could not prepare a noninteractive Antigravity usage check".into())
+    })?;
+    let mut command = Host::Local.command(
+        &executable.to_string_lossy(),
+        &[
+            "-p",
+            "/usage",
+            "--output-format",
+            "json",
+            "--print-timeout",
+            "20s",
+        ],
+        Some(&guard.0),
+    );
+    guard.configure(&mut command).map_err(|_| {
+        UsageError::Http("Could not configure a noninteractive Antigravity usage check".into())
+    })?;
+    let output = command::run(
+        command,
+        &[],
+        &command::Cancellation::default(),
+        TIMEOUT,
+        OUTPUT_LIMIT,
+    )
+    .map_err(|error| UsageError::Http(format!("Antigravity usage check: {error}")))?;
+    read_report(output)
 }
 
-fn fetch_quota(
-    mut post: impl FnMut(&str, &str) -> Result<(u16, String), UsageError>,
-) -> Result<Vec<UsageWindow>, UsageError> {
-    let (status, text) = post(
-        "loadCodeAssist",
-        r#"{"metadata":{"ideType":"ANTIGRAVITY"}}"#,
-    )?;
-    let account = json_of(status, &text)?;
-    let project = account["cloudaicompanionProject"]
-        .as_str()
-        .filter(|project| !project.trim().is_empty())
-        .ok_or_else(|| {
-            UsageError::Json("Antigravity project unavailable; open `agy` to sign in".into())
-        })?;
-    // Without project, Google can return SUBSCRIPTION_REQUIRED even for an eligible account.
-    let body = serde_json::json!({ "project": project }).to_string();
-    let (status, text) = post("retrieveUserQuotaSummary", &body)?;
-    let json = json_of(status, &text)?;
-    Ok(parse(&json))
+fn read_report(output: command::Output) -> Result<Vec<UsageWindow>, UsageError> {
+    if output.code != Some(0) {
+        return Err(UsageError::Http(
+            "Antigravity usage check failed; open `agy` and run /usage".into(),
+        ));
+    }
+    let report: Report = serde_json::from_slice(&output.stdout)
+        .map_err(|_| UsageError::Json("Invalid Antigravity usage report".into()))?;
+    if report.status != "SUCCESS" || report.command.name != "usage" {
+        return Err(UsageError::Json(
+            "Antigravity usage unavailable; open `agy` and run /usage".into(),
+        ));
+    }
+    let windows = parse(&report.command.data);
+    if windows.is_empty() {
+        return Err(UsageError::Json(
+            "Antigravity returned no usable quota windows".into(),
+        ));
+    }
+    Ok(windows)
 }
 
-/// Model groups (Gemini; Claude and GPT; plan-specific pools) each hold a 5-hour and a weekly
-/// bucket of the same account-wide quota. Per window the bar shows the most used bucket: that
-/// is the one that stops work first.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Report {
+    status: String,
+    command: CommandReport,
+}
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct CommandReport {
+    name: String,
+    data: Value,
+}
+
+/// A background usage refresh must never launch OAuth or update the CLI installation.
+struct BrowserGuard(PathBuf);
+impl BrowserGuard {
+    fn new() -> std::io::Result<Self> {
+        let directory = std::env::temp_dir().join(format!(
+            "hive-agy-usage-{}-{}",
+            std::process::id(),
+            NEXT_PROBE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&directory)?;
+        let guard = Self(directory);
+        for name in ["open", "xdg-open"] {
+            symlink("/usr/bin/false", guard.0.join(name))?;
+        }
+        Ok(guard)
+    }
+    fn configure(
+        &self,
+        command: &mut std::process::Command,
+    ) -> Result<(), std::env::JoinPathsError> {
+        let path = crate::host::environment::path();
+        let paths =
+            std::iter::once(self.0.clone()).chain(path.iter().flat_map(std::env::split_paths));
+        command
+            .env("PATH", std::env::join_paths(paths)?)
+            .env("BROWSER", self.0.join("open"))
+            .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+        Ok(())
+    }
+}
+impl Drop for BrowserGuard {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_dir_all(&self.0) {
+            tracing::warn!(%error, "could not clean up Antigravity usage launchers");
+        }
+    }
+}
+
+/// Show the most used enabled pool for each window, including exhausted (zero remaining) pools.
 fn parse(json: &Value) -> Vec<UsageWindow> {
-    let groups = json["response"]["groups"]
+    let buckets = json["groups"]
         .as_array()
-        .or_else(|| json["groups"].as_array());
-    let buckets = groups
         .into_iter()
         .flatten()
         .filter_map(|group| group["buckets"].as_array())
         .flatten();
     let mut windows: Vec<UsageWindow> = Vec::new();
     for bucket in buckets {
+        if bucket["disabled"].as_bool() == Some(true) {
+            continue;
+        }
         let Some(window) = bucket_window(bucket) else {
             continue;
         };
@@ -72,161 +154,108 @@ fn bucket_window(bucket: &Value) -> Option<UsageWindow> {
         "weekly" => "7d",
         _ => return None,
     };
-    let remaining = bucket["remainingFraction"]
+    let remaining = bucket["remaining_fraction"]
         .as_f64()
         .filter(|fraction| (0. ..=1.).contains(fraction))?;
     Some(UsageWindow {
         label,
         percent: (1. - remaining) * 100.,
-        resets_at: parse_time(&bucket["resetTime"]),
+        resets_at: parse_time(&bucket["reset_time"]),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A real `RetrieveUserQuotaSummary` response (2026-07-22, `agy` 1.1.5) as ai-usagebar
-    /// captured and trimmed it.
-    const QUOTA_JSON: &str = r#"{
-      "response": {
-        "groups": [
-          {
-            "displayName": "Gemini Models",
-            "buckets": [
-              {"bucketId": "gemini-weekly", "displayName": "Weekly Limit",
-               "window": "weekly", "remainingFraction": 0.9191212,
-               "resetTime": "2026-07-28T17:39:58Z"},
-              {"bucketId": "gemini-5h", "displayName": "Five Hour Limit",
-               "window": "5h", "remainingFraction": 0.5672253,
-               "resetTime": "2026-07-22T17:47:00Z"}
-            ]
-          },
-          {
-            "displayName": "Claude and GPT models",
-            "buckets": [
-              {"bucketId": "3p-weekly", "window": "weekly",
-               "remainingFraction": 1, "resetTime": "2026-07-29T12:47:00Z"},
-              {"bucketId": "3p-5h", "window": "5h",
-               "remainingFraction": 0.25, "resetTime": "2026-07-22T17:47:00Z"}
-            ]
-          }
-        ]
-      }
-    }"#;
-
-    #[test]
-    fn resolves_the_account_project_before_requesting_quota() {
-        let mut calls = Vec::new();
-        let windows = fetch_quota(|method, body| {
-            calls.push(method.to_owned());
-            let body: Value = serde_json::from_str(body).unwrap();
-            match method {
-                "loadCodeAssist" => {
-                    assert_eq!(body["metadata"]["ideType"], "ANTIGRAVITY");
-                    Ok((
-                        200,
-                        r#"{"cloudaicompanionProject":"project-\"one","unknown":true}"#.into(),
-                    ))
-                }
-                "retrieveUserQuotaSummary" => {
-                    assert_eq!(body, serde_json::json!({"project": "project-\"one"}));
-                    Ok((200, QUOTA_JSON.into()))
-                }
-                _ => panic!("unexpected method"),
-            }
-        })
-        .unwrap();
-        assert_eq!(calls, ["loadCodeAssist", "retrieveUserQuotaSummary"]);
-        assert_eq!(windows.len(), 2);
-        assert_eq!(windows[0].percent, 75.);
-    }
-
-    #[test]
-    fn missing_or_invalid_project_never_sends_an_unscoped_quota_request() {
-        for response in [
-            "{}",
-            r#"{"cloudaicompanionProject":null}"#,
-            r#"{"cloudaicompanionProject":123}"#,
-            r#"{"cloudaicompanionProject":"  "}"#,
-            "{",
-        ] {
-            let error = fetch_quota(|method, _| {
-                assert_eq!(method, "loadCodeAssist");
-                Ok((200, response.into()))
-            })
-            .unwrap_err();
-            assert!(matches!(error, UsageError::Json(_)));
+    // agy 1.5.9 /usage, captured 2026-11-14; only quota fields retained.
+    const REPORT: &str = r#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[
+        {"name":"Gemini Models","buckets":[{"id":"gemini-weekly","window":"weekly","remaining_fraction":0,"reset_time":"2026-11-21T19:41:31Z"}]},
+        {"name":"Claude and GPT models","buckets":[{"id":"3p-weekly","window":"weekly","remaining_fraction":1,"reset_time":"2026-11-21T20:40:36Z"}]}
+    ]}}}"#;
+    fn output(code: i32, report: &str) -> command::Output {
+        command::Output {
+            code: Some(code),
+            stdout: report.as_bytes().into(),
+            stderr: b"private-account-marker".to_vec(),
         }
     }
-
     #[test]
-    fn project_lookup_errors_stop_without_exposing_the_account() {
-        for status in [401, 403, 429, 500] {
-            let error = fetch_quota(|method, _| {
-                assert_eq!(method, "loadCodeAssist");
-                Ok((status, r#"{"account":"private-account-marker"}"#.into()))
-            })
-            .unwrap_err();
-            assert_eq!(error, UsageError::Http(format!("HTTP {status}")));
-        }
-        let error = fetch_quota(|_, _| Err(UsageError::Http("timeout".into()))).unwrap_err();
-        assert_eq!(error, UsageError::Http("timeout".into()));
-    }
-
-    #[test]
-    fn quota_denial_is_not_misreported_as_a_plan_without_quota() {
-        let error = fetch_quota(|method, _| match method {
-            "loadCodeAssist" => Ok((200, r#"{"cloudaicompanionProject":"project-one"}"#.into())),
-            _ => Ok((403, r#"{"error":{"details":[{"reason":"SUBSCRIPTION_REQUIRED"}],"message":"private-account-marker"}}"#.into())),
-        })
-        .unwrap_err();
-        assert_eq!(error, UsageError::Http("HTTP 403".into()));
-    }
-
-    #[test]
-    fn reads_the_live_project_scoped_weekly_summary() {
-        // Captured 2026-11-07; only public model labels and quota fields are retained.
-        let response = serde_json::json!({"groups": [{
-            "displayName": "Claude and GPT models",
-            "buckets": [{"displayName": "Weekly Limit Remaining", "window": "weekly",
-                "remainingFraction": 1, "resetTime": "2026-11-14T20:30:36Z"}]
-        }]});
-        let windows = parse(&response);
+    fn cli_usage_includes_exhausted_gemini_quota_missing_from_remote_summary() {
+        let windows = read_report(output(0, REPORT)).unwrap();
         assert_eq!(windows.len(), 1);
-        assert_eq!(windows[0].label, "7d");
-        assert_eq!(windows[0].remaining_percent(), 100.);
+        assert_eq!(windows[0].remaining_percent(), 0.);
         assert_eq!(
             windows[0].resets_at,
-            parse_time(&serde_json::json!("2026-11-14T20:30:36Z"))
+            parse_time(&serde_json::json!("2026-11-21T19:41:31Z"))
         );
     }
-
     #[test]
-    fn shows_the_most_used_bucket_of_each_window() {
-        let windows = parse(&serde_json::from_str(QUOTA_JSON).unwrap());
-        let summary: Vec<_> = windows
-            .iter()
-            .map(|window| (window.label, window.percent.round()))
-            .collect();
-        assert_eq!(summary, [("5h", 75.), ("7d", 8.)]);
-        assert_eq!(
-            windows[1].resets_at,
-            parse_time(&serde_json::json!("2026-07-28T17:39:58Z"))
-        );
+    fn failed_empty_and_wrong_command_reports_never_show_full_quota_or_private_output() {
+        for report in [
+            "",
+            "{",
+            "null",
+            "{}",
+            r#"{"status":"FAILED"}"#,
+            r#"{"status":"SUCCESS","command":{"name":"other","data":{}}}"#,
+            r#"{"status":"SUCCESS","command":{"name":"usage","data":{}}}"#,
+        ] {
+            let error = read_report(output(0, report)).unwrap_err();
+            assert!(!error.to_string().contains("private-account-marker"));
+        }
+        assert!(read_report(output(1, REPORT)).is_err());
     }
-
     #[test]
-    fn tolerates_an_unwrapped_summary_and_skips_unknown_buckets() {
-        let json = serde_json::json!({"groups": [{"buckets": [
-            {"window": "weekly", "remainingFraction": 0.5},
-            {"window": "daily", "remainingFraction": 0},
-            {"window": "5h", "remainingFraction": 7},
-            {"window": "5h"}
+    fn most_used_enabled_pool_wins_without_inventing_missing_windows() {
+        let data = serde_json::json!({"groups":[{"buckets":[
+            {"window":"5h","remaining_fraction":0.8},
+            {"window":"5h","remaining_fraction":0.25},
+            {"window":"weekly","remaining_fraction":0.5},
+            {"window":"weekly","remaining_fraction":0,"disabled":true},
+            {"window":"daily","remaining_fraction":0},
+            {"window":"weekly","remaining_fraction":-1},
+            {"window":"weekly","remaining_fraction":2},
+            {"window":"weekly","remaining_fraction":"0"},
+            {"window":"weekly"}
         ]}]});
-        let windows = parse(&json);
-        assert_eq!(windows.len(), 1);
-        assert_eq!((windows[0].label, windows[0].percent), ("7d", 50.));
-        assert!(parse(&serde_json::json!({})).is_empty());
+        let windows = parse(&data);
+        assert_eq!(
+            windows
+                .iter()
+                .map(|w| (w.label, w.percent))
+                .collect::<Vec<_>>(),
+            [("5h", 75.), ("7d", 50.)]
+        );
+        assert!(parse(&serde_json::json!({"groups":[{"buckets":[{"window":"weekly","disabled":true,"remaining_fraction":1}]}]})).is_empty());
+    }
+    #[test]
+    fn usage_probe_blocks_browser_launchers_and_cleans_them_up() {
+        let guard = BrowserGuard::new().unwrap();
+        let path = guard.0.clone();
+        for name in ["open", "xdg-open"] {
+            assert_eq!(
+                fs::read_link(path.join(name)).unwrap(),
+                PathBuf::from("/usr/bin/false")
+            );
+        }
+        let mut command =
+            Host::Local.command("/bin/sh", &["-c", "open https://example.com"], Some(&path));
+        guard.configure(&mut command).unwrap();
+        let environment: std::collections::HashMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            environment[std::ffi::OsStr::new("AGY_CLI_DISABLE_AUTO_UPDATE")],
+            Some(std::ffi::OsStr::new("true"))
+        );
+        let result = command::run(
+            command,
+            &[],
+            &command::Cancellation::default(),
+            Duration::from_secs(5),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(result.code, Some(1));
+        drop(guard);
+        assert!(!path.exists());
     }
 }
