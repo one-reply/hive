@@ -129,6 +129,27 @@ impl GitHosting {
             account.operation = None;
         }
     }
+    fn apply_status(
+        &mut self,
+        provider: Provider,
+        generation: u64,
+        status: Status,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let account = &mut self.accounts[index(provider)];
+        if !account.accepts(generation) {
+            return false;
+        }
+        if account.status != status {
+            if let Status::SigningIn(Some(prompt)) = &status {
+                // gh only prints the URL with piped stdio; Hive owns opening the browser.
+                cx.open_url(&prompt.url);
+            }
+            account.status = status;
+            cx.notify();
+        }
+        true
+    }
     fn start(
         &mut self,
         provider: Provider,
@@ -181,15 +202,7 @@ impl GitHosting {
                 let connected = is_connected(&status);
                 let applied = this
                     .update(cx, |this, cx| {
-                        let account = &mut this.accounts[index(provider)];
-                        if !account.accepts(generation) {
-                            return false;
-                        }
-                        if account.status != status {
-                            account.status = status;
-                            cx.notify();
-                        }
-                        true
+                        this.apply_status(provider, generation, status, cx)
                     })
                     .unwrap_or(false);
                 if !applied {
@@ -214,7 +227,7 @@ impl GitHosting {
 
 #[cfg(test)]
 mod tests {
-    use super::{Connection, GitHosting, Provider, Status};
+    use super::{Connection, DevicePrompt, GitHosting, Provider, Status};
     use gpui_kit::{AppContext as _, TestAppContext};
     #[test]
     fn successful_check_and_login_warning_both_refresh_metadata() {
@@ -254,5 +267,30 @@ mod tests {
             assert!(!state.set_server(Provider::GitLab, "other.test", cx));
             assert_eq!(state.accounts[1].server.as_str(), "gitlab.com");
         });
+    }
+    #[gpui::test]
+    fn device_prompt_opens_once_and_cancelled_callbacks_do_not_open(cx: &mut TestAppContext) {
+        let state = cx.new(|cx| GitHosting::new(Default::default(), cx));
+        let prompt = Status::SigningIn(Some(DevicePrompt {
+            code: "ABCD-1234".into(),
+            url: "https://github.com/login/device".into(),
+        }));
+        state.update(cx, |state, cx| {
+            assert!(state.apply_status(Provider::GitHub, 0, prompt.clone(), cx));
+        });
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://github.com/login/device")
+        );
+        cx.update(|cx| cx.open_url("https://example.com/sentinel"));
+        state.update(cx, |state, cx| {
+            assert!(state.apply_status(Provider::GitHub, 0, prompt.clone(), cx));
+            state.cancel(Provider::GitHub, cx);
+            assert!(!state.apply_status(Provider::GitHub, 0, prompt, cx));
+        });
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://example.com/sentinel")
+        );
     }
 }

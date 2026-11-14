@@ -5,11 +5,12 @@
 //! These types are the wire format; both ends are the same binary, but unknown fields and
 //! error codes are tolerated so an app and a CLI from adjacent versions still talk.
 
+pub mod mcp_config;
 mod pane;
 mod socket;
 
 pub use pane::{clear_environment, environment, link_launcher};
-pub use socket::{Incoming, call, listen};
+pub use socket::{Incoming, call, call_on, listen};
 
 use super::{AgentKind, AgentStatus};
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,8 @@ pub const WAIT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub const MAX_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 /// Lines `read` returns when the caller does not say.
 pub const READ_LINES: usize = 80;
+/// Maximum terminal lines returned by `read`; larger histories belong in files.
+pub const MAX_READ_LINES: usize = 2_000;
 
 /// How an agent learns to coordinate with others; printed by `hive --skill`.
 pub const SKILL: &str = include_str!("api/skill.md");

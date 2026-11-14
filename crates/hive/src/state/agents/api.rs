@@ -11,9 +11,6 @@ use hive_core::agent::api::{
 };
 use hive_core::agent::launch::AGENTS;
 
-/// Enough for a long build log; more belongs in a file the agent reads itself.
-const MAX_READ_LINES: usize = 2_000;
-
 /// What the workspace needs to open a named agent beside its caller.
 pub(crate) struct SpawnRequest {
     /// The caller's terminal; the new pane opens beside it.
@@ -425,7 +422,9 @@ impl Agents {
         cx: &App,
     ) -> Result<Response, ApiError> {
         let found = self.resolve(target, cx)?;
-        let lines = lines.unwrap_or(protocol::READ_LINES).min(MAX_READ_LINES);
+        let lines = lines
+            .unwrap_or(protocol::READ_LINES)
+            .min(protocol::MAX_READ_LINES);
         let text = found
             .session
             .read(cx)

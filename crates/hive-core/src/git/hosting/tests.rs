@@ -207,3 +207,38 @@ fn ssh_and_settings_commands_share_noninteractive_environment() {
         assert!(command.contains(entry), "{command}");
     }
 }
+
+#[test]
+fn clipboard_device_code_from_gh_2_104_is_recognized() {
+    // Captured from gh 2.104.0 with piped stdio; the ephemeral code is replaced.
+    let output = "\n! One-time code (ABCD-1234) copied to clipboard\nOpen this URL to continue in your web browser: https://github.com/login/device\n";
+    let server = Server::parse("github.com").unwrap();
+    let prompt = device_prompt(output.as_bytes(), &server).unwrap();
+    assert_eq!(prompt.code, "ABCD-1234");
+    assert_eq!(prompt.url, "https://github.com/login/device");
+    for end in 0..output.len() {
+        assert!(device_prompt(&output.as_bytes()[..end], &server).is_none());
+    }
+}
+
+#[test]
+fn clipboard_device_prompt_rejects_invalid_codes_and_urls() {
+    let server = Server::parse("github.com").unwrap();
+    for code in ["", "abc", "ABCD 1234", "ABCD) evil", "ABCD\x1b1234"] {
+        let text = format!(
+            "! One-time code ({code}) copied to clipboard\nOpen this URL to continue in your web browser: https://github.com/login/device\n"
+        );
+        assert!(device_prompt(text.as_bytes(), &server).is_none());
+    }
+    for url in [
+        "https://evil.test/login/device",
+        "http://github.com/login/device",
+        "https://github.com@evil.test/login/device",
+        "https://github.com/login/\x1bdevice",
+    ] {
+        let text = format!(
+            "! One-time code (ABCD-1234) copied to clipboard\nOpen this URL to continue in your web browser: {url}\n"
+        );
+        assert!(device_prompt(text.as_bytes(), &server).is_none());
+    }
+}

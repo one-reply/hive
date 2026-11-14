@@ -29,6 +29,7 @@ pub(crate) fn run(args: &[OsString]) -> Option<ExitCode> {
     match args.get(1)?.to_str()? {
         "--agent-hook" => Some(forward_hook(&args[2..])),
         "--skill" => Some(print(api::SKILL.trim_end())),
+        "mcp" => Some(crate::mcp::run(&args[2..])),
         "agent" => Some(agent(&args[2..])),
         _ => None,
     }
