@@ -30,6 +30,9 @@ gpui-kit = { version = "0.9", features = [
 gpui-pre = "=0.3.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Official MCP lifecycle, JSON-RPC validation and cancellation; only the window-less app mode.
+rmcp = { version = "3.10", default-features = false, features = ["server", "transport-io"] }
+tokio = { version = "1", default-features = false, features = ["rt", "time", "sync", "macros", "net"] }
 shlex = "2"
 ureq = "3"
 security-framework = { version = "3.7", default-features = false }

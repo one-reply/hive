@@ -71,13 +71,38 @@ pub fn listen(path: &Path) -> io::Result<async_channel::Receiver<Incoming>> {
 
 /// Blocking: send one call and wait up to `timeout` for its answer.
 pub fn call(socket: &Path, call: &Call, timeout: Duration) -> io::Result<Outcome> {
-    let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(timeout.max(Duration::from_millis(1))))?;
-    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
+    let stream = UnixStream::connect(socket)?;
+    call_on(&stream, call, timeout)
+}
+
+/// Blocking: perform one call on a connected stream. A caller may shut down a clone to
+/// interrupt the wait; already submitted operations are not rolled back.
+pub fn call_on(mut stream: &UnixStream, call: &Call, timeout: Duration) -> io::Result<Outcome> {
     let mut line = serde_json::to_vec(call).map_err(io::Error::other)?;
     line.push(b'\n');
-    stream.write_all(&line)?;
-    let response = read_line(&stream, MAX_RESPONSE)?;
+    if line.len() > MAX_REQUEST {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Hive request exceeds 64 KiB",
+        ));
+    }
+    let sent = stream
+        .set_read_timeout(Some(timeout.max(Duration::from_millis(1))))
+        .and_then(|()| stream.set_write_timeout(Some(REQUEST_TIMEOUT)))
+        .and_then(|()| stream.write_all(&line));
+    if let Err(error) = sent {
+        // macOS can reject even setsockopt after an early refusal. Read only bytes already
+        // queued; a failed write must not turn into an unbounded wait without a timeout.
+        return stream
+            .set_nonblocking(true)
+            .and_then(|()| read_outcome(stream))
+            .or(Err(error));
+    }
+    read_outcome(stream)
+}
+
+fn read_outcome(stream: &UnixStream) -> io::Result<Outcome> {
+    let response = read_line(stream, MAX_RESPONSE)?;
     serde_json::from_slice(&response)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
@@ -345,6 +370,50 @@ mod tests {
                 Duration::from_secs(1)
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn oversized_outgoing_call_is_rejected_before_writing() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let error = call_on(
+            &client,
+            &Call {
+                from: Some(1),
+                request: Request::Send {
+                    to: super::super::Address::Terminal(2),
+                    text: "x".repeat(MAX_REQUEST),
+                    wait: false,
+                    timeout_ms: None,
+                },
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        drop(client);
+        let mut bytes = Vec::new();
+        server.read_to_end(&mut bytes).unwrap();
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn reads_an_early_refusal_even_when_the_peer_already_closed() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let refusal = Outcome::Error(ApiError::new(ErrorCode::Unavailable, "Busy"));
+        reply(&server, &refusal).unwrap();
+        drop(server);
+        assert_eq!(
+            call_on(
+                &client,
+                &Call {
+                    from: None,
+                    request: Request::List
+                },
+                Duration::from_secs(1)
+            )
+            .unwrap(),
+            refusal
         );
     }
 }
