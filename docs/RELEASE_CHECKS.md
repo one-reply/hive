@@ -1,5 +1,30 @@
 # Release verification
 
+## README refresh — November 15, 2026
+
+The three `docs/images/hive-*.png` files are new, unretouched full-screen captures
+of Hive 1.0.21, built from release commit `a60fd6f`. They show local content search
+beside the Rust editor, a staged diff with a draft commit message, and the New
+worktree agent picker. Each image was inspected for private code, credentials,
+account details, and system control overlays.
+
+A separate app identity and `HIVE_DEV_DATA_DIR` isolated the demo workspace.
+The repository was made from `git archive a60fd6f`, with disposable `agent-tools`
+and `editor-search` worktrees. The two sidebar-width edits shown in review are
+sample changes only. The demo has no Git remote, so PR/MR status is unavailable.
+No agent prompts or demo commits were submitted, and the installed app was not
+replaced. These captures verify presentation, not a paid agent workflow, SSH,
+a clean-account install, or the Sparkle update cycle.
+
+The README now covers MCP coordination, local content search, conversation
+history, conflict resolution, inline blame, previews, and keep-awake. Download
+links use the latest-release URL rather than a version that becomes stale.
+
+Validation: native build and visual inspection, formatting, Clippy with warnings
+denied, workspace tests, the GPUI-free core dependency check, local Markdown
+links, PNG signatures/dimensions (3456×2168), and `git diff --check` passed.
+Socket tests required a rerun outside the restricted sandbox.
+
 ## Hive 1.0.4 — November 9, 2026
 
 The [release notes](releases/v1.0.4.md) describe the changes and verification limits.
