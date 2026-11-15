@@ -9,15 +9,17 @@
 
 **A native desktop workspace for AI coding agents.**
 
-Run agents in separate Git worktrees, edit their changes, and review and commit
-without leaving your workspace. Hive brings projects, terminals, a native code
-editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-kit`.
+Run Claude Code, Codex, OpenCode, and other CLI agents side by side in isolated
+Git worktrees. Give each task its own terminals, search and edit the code, review
+diffs, resolve conflicts, and commit from one workspace. Agents can start helpers
+and exchange messages through Hive’s MCP tools or CLI.
 
-- [Hive](https://github.com/one-reply/hive) - Autonomous multi-agent orchestration framework for automated development workflows.
+Built in Rust with GPUI, Hive runs natively on Apple Silicon Macs and also works
+with Linux projects over SSH.
 
-![Hive's native Rust editor, Files navigator, and worktree sidebar](docs/images/hive-editor.png)
+![Hive 1.0.21 showing its Rust editor, content search, and worktree sidebar](docs/images/hive-editor.png)
 
-*Hive editing its own Rust source, with worktrees on the left and Files on the right.*
+*Search across the project while editing, with isolated worktrees one click away.*
 
 > **Hive 1.0 · macOS / Apple Silicon**
 >
@@ -30,21 +32,15 @@ editor, and Git tools together in a Rust app, rendered with GPUI through `gpui-k
 
 **Apple Silicon only.** The button opens GitHub Releases, where you can download
 the latest stable release and its SHA-256 checksum.
-The current release is [Hive 1.0.4](https://github.com/one-reply/hive/releases/tag/v1.0.4),
-with a Developer ID signature and Apple notarization. See the
-[release notes](docs/releases/v1.0.4.md) for changes and the
-[verification record](docs/RELEASE_CHECKS.md) for completed
-and pending checks.
+Published builds have a Developer ID signature and Apple notarization.
+See the [latest release notes](https://github.com/one-reply/hive/releases/latest)
+for changes, verification results, and known limits.
 
 Packaged builds from **0.1.1** include signed in-app updates. Open **Settings → Updates**
 or **Hive → Check for Updates…** to check manually. Hive also checks daily and asks
 before installing and restarting. Finish active agent sessions before restarting.
 After updating, a compact notification links to the installed version’s release notes.
 Older builds need one manual installation of a version that includes the updater.
-
-Version **1.0.4** moves agent attention alerts to macOS notifications that open the
-agent's project and pane, starts agents from the pane menu in place unless another agent
-already runs there, and scrolls terminal selections past the pane edges.
 
 ## What you can do today
 
@@ -53,15 +49,18 @@ already runs there, and scrolls terminal selections past the pane edges.
 | **Organize your work** | Add local or SSH Linux projects, create and remove Git worktrees, reorder projects, and customize their names, colors, and icons. |
 | **Start a task** | Create a worktree from a chosen base branch and launch a terminal, Claude Code, Codex, OpenCode, or Antigravity with **Create & Start**. |
 | **Run agents in terminals** | Use terminal tabs and split panes, with text selection, scrollback, and clipboard image paste. See running agents on their worktree cards. |
-| **Let agents work together** | Agents list each other, start a named helper in the next pane, and exchange messages with the `hive agent` command. |
-| **Edit files** | Browse and search with **Files / ⌘P**, use syntax highlighting and preview or pinned tabs, save with **⌘S**, and handle external changes and recovery drafts. |
+| **Let agents work together** | Codex and Claude Code receive pane-specific MCP tools to list, start, message, read, wait for, and interrupt sibling agents. The `hive agent` CLI also supports coordination. |
+| **Edit files** | Find files with **⌘P** or search local file contents with **⌘⇧F**. Use syntax highlighting, completion, inline Git blame, image previews, explicit saves, and recovery drafts. |
 | **Manage files** | Create, rename, move, and delete files or folders; drag files between folders and see Git change badges in the tree. |
 | **Navigate your workspace** | Jump to a project, worktree, or agent with **⌘K**. Use **Needs attention** to see the status, task, agent, project, and branch of sessions that need you. |
 | **Pick up where you left off** | Restore selected worktrees, pinned files, terminal and diff tabs, split sizes, focus, and shell directories. Agent panes continue their Claude Code, Codex, OpenCode, or Antigravity conversation. |
 | **Review and commit** | Inspect unified or split diffs, stage files or hunks, compare branches, browse history, and commit, fetch, pull, or push. |
+| **Resolve conflicts** | Choose Current, Incoming, or both for each conflict block, review the result, then mark it resolved. Continue or abort the Git operation from the panel. |
+| **Resume a conversation** | Open local Claude and Codex conversation history with **⌘⇧H**, then resume a past session in a terminal. |
+| **Keep long tasks running** | Keep your Mac awake while agents work; the display can still sleep. Toggle it from the status bar. |
 | **Send feedback to agents** | Annotate diff lines and copy an editable review prompt. Turn a Git error into a draft in the appropriate agent terminal, ready for you to submit. |
 | **Follow pull and merge requests** | See GitHub PR or GitLab MR and CI status on worktree cards, with links to the request and failing CI, using your existing CLI sign-in. GitLab.com and self-managed GitLab are supported. |
-| **Generate commit messages** | Use Codex, Claude Code, OpenCode, or an API provider to draft a message from staged changes. |
+| **Generate commit messages** | Use Codex, Claude Code, OpenCode, Antigravity, or an API provider to draft a message from staged changes. |
 | **Track usage** | View compact usage bars for Claude Code, Codex, Cursor Agent, and Antigravity. Hover for limits, reset times, or sign-in help; unavailable limits appear gray. |
 | **Make it yours** | Choose from six built-in themes, with independent light and dark palettes and automatic system switching; customize UI and code fonts, Files density and icons, and keyboard shortcuts. |
 | **Keep Hive updated** | Check your installed version and install signed updates from Settings → Updates. |
@@ -93,8 +92,9 @@ directory.
 
 *Create an isolated worktree and choose the terminal or agent that starts in it.*
 
-Screenshots show the 1.0.3 development build in full screen, using a disposable copy
-of Hive's public source. See the [capture record](docs/RELEASE_CHECKS.md#readme-refresh--november-9-2026).
+Screenshots captured on November 15, 2026 show Hive **1.0.21**, built from the
+release source, with a disposable copy of Hive’s public code and sample changes.
+See the [capture record](docs/RELEASE_CHECKS.md#readme-refresh--november-15-2026).
 
 ## Build and run
 
@@ -170,15 +170,24 @@ the hover card explains the error or how to sign in.
 ### Files and editing
 
 The right sidebar switches between **Git** and **Files**. **⌘P** focuses the file
-search; it searches filenames and paths, not file contents. Click a file to preview
-it, or double-click to keep it open. File actions are available from the tree's
-context menu, including **Delete Permanently** with confirmation.
+search for filenames and paths. Use **⌘⇧F** or the **Content** tab to search saved
+file contents in a local project, with case, whole-word, and regular-expression
+options. Results are grouped by file and open at the matching line. Content search
+respects Git ignore rules and is not yet available over SSH.
+
+Click a file to preview it, or double-click to keep it open. Raster images and SVGs
+open in an image preview. File actions are available from the tree’s context menu,
+including **Delete Permanently** with confirmation; local files can also be pasted
+or dropped from Finder.
 
 The editor supports local and remote UTF-8 files up to **1 MiB**, syntax highlighting,
 find/replace, explicit saves, and recovery of unsaved drafts after a restart.
 External edits are reloaded for clean files; unsaved files show a conflict instead
 of silently overwriting either version. **⌘-click** follows JavaScript/TypeScript
 imports to their definitions; **⌘⇧-click** opens them in an adjacent tab.
+
+Inline Git blame shows the author and age of the current line, with commit details
+and a link to history.
 
 Code completion suggests names from the open file and JS/TS imports. Press
 **⌃Space** to show suggestions, **Tab** or **Enter** to accept, or **Escape** to dismiss.
@@ -187,8 +196,14 @@ automatic imports require a language server and are not included.
 
 ### Agents working together
 
-Agents in Hive's local terminals can find each other and talk through the `hive`
-command, which Hive adds to each terminal's `PATH`:
+When launched by Hive, **Codex and Claude Code** receive MCP tools bound to their
+own terminal pane. They can discover sibling agents, start a helper, send a
+message, read terminal output, wait for a result, or interrupt a turn. Hive keeps
+existing MCP servers and does not change global agent configuration or permissions.
+
+**OpenCode and Antigravity** use the CLI fallback; automatic MCP setup is not
+available for them. Agents in local terminals can use the `hive` command, which
+Hive adds to each terminal’s `PATH`:
 
 ```sh
 hive agent list
@@ -218,8 +233,8 @@ host key and unlock your key if needed. Password entry inside Hive is not suppor
 
 The host needs Linux on x86_64 or arm64, Git, and `sha256sum`. Hive installs its
 versioned file helper in `~/.hive/bin` without sudo, Rust, a daemon, or an open port.
-Files, search, editing, image previews, Git, worktrees, and terminal splits operate
-on that host. Install and sign in to agent CLIs on the Linux machine separately;
+Files, filename search, editing, image previews, Git, worktrees, and terminal
+splits operate on that host. Install and sign in to agent CLIs on the Linux machine separately;
 Hive does not copy your Mac's credentials or agent hooks there.
 
 Remote drafts stay on your Mac. Failed scans retain the last workspace, and an
@@ -233,8 +248,8 @@ paths; remote file operations also preserve non-UTF-8 Unix names.
 ### AI commit messages
 
 Open **Settings → Workspace → Git** to choose a generator and customize its prompt.
-CLI generation supports **Codex**, **Claude Code**, and **OpenCode**. API generation
-supports **OpenAI, Anthropic, OpenRouter, and Google AI**; add the corresponding key in
+CLI generation supports **Codex**, **Claude Code**, **OpenCode**, and **Antigravity**.
+API generation supports **OpenAI, Anthropic, OpenRouter, and Google AI**; add the corresponding key in
 **Settings → Workspace → AI**, then select a model in Git settings.
 
 Stage your changes and click the sparkle button in the commit message field.
@@ -273,6 +288,8 @@ require the credentials described in [Releasing](docs/RELEASING.md#developer-id-
 | Add project | ⌘O |
 | Switch project, worktree, or agent | ⌘K |
 | Find a file | ⌘P |
+| Search local file contents | ⌘⇧F |
+| Open conversation history | ⌘⇧H |
 | Save file | ⌘S |
 | Show code suggestions | ⌃Space |
 | New terminal | ⌘T |
