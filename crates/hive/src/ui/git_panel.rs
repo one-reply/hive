@@ -163,13 +163,20 @@ fn section_tab(label: &'static str, window: &mut Window, cx: &mut App) -> Tab {
     let foreground = cx.theme().foreground;
     Tab::new()
         .cursor_pointer()
-        .label(label)
+        .aria_label(label)
         .on_hover(hover.listener())
         // Tab replaces its own background when selected or hovered.
-        .child(div().absolute().inset_0().rounded_sm().bg(hover.mix(
-            foreground.opacity(0.),
-            foreground.opacity(TAB_HOVER_OPACITY),
-        )))
+        .child(
+            h_flex()
+                .h_full()
+                .px_1p5()
+                .rounded_sm()
+                .bg(hover.mix(
+                    foreground.opacity(0.),
+                    foreground.opacity(TAB_HOVER_OPACITY),
+                ))
+                .child(label),
+        )
 }
 
 impl Render for GitPanel {
