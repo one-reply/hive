@@ -42,6 +42,7 @@ const ROW_HEIGHT: Pixels = px(26.);
 const GROUP_HEIGHT: Pixels = px(24.);
 const BADGE_SIZE: Pixels = px(16.);
 const EMPTY_ICON: Pixels = px(28.);
+const TAB_HOVER_OPACITY: f32 = 0.05;
 
 pub(crate) struct GitPanel {
     git: Entity<Git>,
@@ -124,7 +125,13 @@ impl GitPanel {
         cx.notify();
     }
 
-    fn tabs(&self, section: Section, changes: usize) -> impl IntoElement {
+    fn tabs(
+        &self,
+        section: Section,
+        changes: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let git = self.git.clone();
         TabBar::new("git-sections")
             .underline()
@@ -135,12 +142,11 @@ impl GitPanel {
                 Section::History => 2,
             })
             .child(
-                Tab::new()
-                    .label("Changes")
+                section_tab("Changes", window, cx)
                     .when(changes > 0, |t| t.suffix(count_tag(changes))),
             )
-            .child(Tab::new().label("Compare"))
-            .child(Tab::new().label("History"))
+            .child(section_tab("Compare", window, cx))
+            .child(section_tab("History", window, cx))
             .on_click(move |ix, _, cx| {
                 let section = match ix {
                     0 => Section::Changes,
@@ -150,6 +156,20 @@ impl GitPanel {
                 git.update(cx, |g, cx| g.set_section(section, cx));
             })
     }
+}
+
+fn section_tab(label: &'static str, window: &mut Window, cx: &mut App) -> Tab {
+    let hover = Hover::new(SharedString::from(format!("git-tab-{label}")), window, cx);
+    let foreground = cx.theme().foreground;
+    Tab::new()
+        .cursor_pointer()
+        .label(label)
+        .on_hover(hover.listener())
+        // Tab replaces its own background when selected or hovered.
+        .child(div().absolute().inset_0().rounded_sm().bg(hover.mix(
+            foreground.opacity(0.),
+            foreground.opacity(TAB_HOVER_OPACITY),
+        )))
 }
 
 impl Render for GitPanel {
@@ -206,7 +226,7 @@ impl Render for GitPanel {
             .when_some(banner, |p, banner| {
                 p.child(self.operation(banner, window, cx))
             })
-            .child(div().px_2().child(self.tabs(section, changes)))
+            .child(div().px_2().child(self.tabs(section, changes, window, cx)))
             .when(has_files, |p| {
                 p.child(
                     div().px_3().py_2().child(TextField::input(
