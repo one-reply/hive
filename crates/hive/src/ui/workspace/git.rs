@@ -1,12 +1,14 @@
 //! Workspace integration for source control, diff and conflict tabs.
 use super::*;
 use crate::state::git::{ConflictRequest, DiffRequest, GitEvent};
+use crate::ui::hover::SmoothHoverBg as _;
 use gpui_kit::base::motion::{Transition, transition};
 use hive_core::projects::Target;
 use hive_core::settings::clamp_git_panel_width;
 
 const RIGHT_TAB_WIDTH: Rems = rems(2.);
 const RIGHT_TAB_TRANSITION: Duration = Duration::from_millis(180);
+const RIGHT_TAB_HOVER_OPACITY: f32 = 0.05;
 
 impl Workspace {
     pub(super) fn watch_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -205,6 +207,7 @@ impl Workspace {
                             "choose-git",
                             Lucide::GitBranch,
                             !selected_files && !git_absent,
+                            window,
                             cx,
                         )
                         .when(git_absent, |tab| tab.cursor_default().opacity(0.5))
@@ -212,9 +215,15 @@ impl Workspace {
                         .on_click(cx.listener(|this, _, _, cx| this.choose_files(false, cx))),
                     )
                     .child(
-                        render_right_tab("choose-files", Lucide::Folder, selected_files, cx)
-                            .aria_label("Files")
-                            .on_click(cx.listener(|this, _, _, cx| this.choose_files(true, cx))),
+                        render_right_tab(
+                            "choose-files",
+                            Lucide::Folder,
+                            selected_files,
+                            window,
+                            cx,
+                        )
+                        .aria_label("Files")
+                        .on_click(cx.listener(|this, _, _, cx| this.choose_files(true, cx))),
                     )
                     .child(
                         div()
@@ -311,7 +320,14 @@ impl Workspace {
 }
 
 /// Full-height tabs share one sliding indicator in their parent row.
-fn render_right_tab(id: &'static str, icon: Lucide, active: bool, cx: &App) -> Stateful<Div> {
+fn render_right_tab(
+    id: &'static str,
+    icon: Lucide,
+    active: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Stateful<Div> {
+    let hover = Hover::new(id, window, cx);
     let color = if active {
         cx.theme().foreground
     } else {
@@ -326,6 +342,11 @@ fn render_right_tab(id: &'static str, icon: Lucide, active: bool, cx: &App) -> S
         .items_center()
         .cursor_pointer()
         .child(Icon::new(icon).small().text_color(color))
+        .hover_bg(
+            &hover,
+            cx.theme().transparent,
+            cx.theme().foreground.opacity(RIGHT_TAB_HOVER_OPACITY),
+        )
 }
 
 /// The button that shows or hides the right sidebar. It stays in the window's top-right
