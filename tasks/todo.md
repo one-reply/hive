@@ -23,4 +23,4 @@ not that every platform/server combination has been exercised.
 - [x] Self-review, release microbenchmarks, wiki and final fmt/clippy/tests/dependency gates.
 - [ ] Real installed TypeScript server / rust-analyzer and live SSH formatter/LSP smoke (unavailable environment; no installation authorized).
 - [ ] Exhaustive native wrap/fold/resize stress and release UI frame-time measurement (beyond the completed smoke/microbenchmarks).
-- [ ] Commit and draft PR against develop.
+- [x] Commit `60ccdba` and [draft PR #92](https://github.com/one-reply/hive/pull/92) against develop.

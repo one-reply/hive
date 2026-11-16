@@ -4,6 +4,9 @@ All four implementation blocks in [plan.md](plan.md) are complete on
 `editor-navigation-and-language-tools`, based on `develop` at
 `c10f46a0ac32189258cfcd18932a5abddcf36ba3`.
 
+Implementation commit: `60ccdba`. Delivery: [draft PR #92](https://github.com/one-reply/hive/pull/92)
+against `develop`; not merged.
+
 - Navigation: viewport-safe blame, relative breadcrumbs, live symbols, bounded
   Back/Forward history, fuzzy file ranking and per-worktree recents.
 - Editing: explicit installed Prettier/rustfmt through Local/SSH Host, revision
