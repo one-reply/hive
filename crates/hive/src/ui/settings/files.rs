@@ -109,7 +109,7 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
         bool,
         fn(&mut FilesSettings, bool),
     );
-    let toggles: [Toggle; 7] = [
+    let toggles: [Toggle; 8] = [
         (
             "Git decorations",
             "Show staged, unstaged and changed-folder indicators.",
@@ -151,6 +151,12 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
             "Show who last changed the line under the caret.",
             settings.inline_blame,
             |s, v| s.inline_blame = v,
+        ),
+        (
+            "Sticky scopes",
+            "Keep enclosing declarations visible while scrolling.",
+            settings.sticky_scroll,
+            |s, v| s.sticky_scroll = v,
         ),
     ];
     for (label, description, checked, set) in toggles {

@@ -26,6 +26,16 @@ pub(crate) struct SaveError(pub(crate) String);
 impl EventEmitter<SaveError> for Store {}
 
 impl Store {
+    pub(crate) fn set_reviewed(
+        &mut self,
+        revision: hive_core::git::reviewed::Revision,
+        reviewed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if hive_core::git::reviewed::set(&mut self.state.reviewed, revision, reviewed) {
+            self.commit(cx);
+        }
+    }
     pub(crate) fn set_hosting_server(
         &mut self,
         provider: hive_core::git::hosting::Provider,

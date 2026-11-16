@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 mod blame;
+mod formatting;
 mod image;
 mod io;
 mod relocation;
@@ -33,6 +34,12 @@ pub(crate) struct Document {
     pub path: PathBuf,
     pub editor: Entity<EditorState>,
     completions: Rc<Completions>,
+    pub(crate) symbols: Arc<Vec<hive_core::symbols::Symbol>>,
+    pub(crate) symbols_text: Option<gpui_kit::component::input::Rope>,
+    pub(crate) language: Option<Entity<super::language::LanguageSession>>,
+    pub(crate) diagnostics: Vec<lsp_types::Diagnostic>,
+    pub(super) _language_subscription: Option<Subscription>,
+    pub(super) _language_sync: Option<Task<()>>,
     blame: LineBlame,
     pub content: Content,
     pub base: Option<Snapshot>,
@@ -42,6 +49,9 @@ pub(crate) struct Document {
     pub dirty: bool,
     pub loading: bool,
     pub saving: bool,
+    pub formatting: bool,
+    pub format_error: Option<String>,
+    revision: u64,
     pub visible: bool,
     pub pinned: bool,
     pub path_busy: bool,
@@ -51,6 +61,7 @@ pub(crate) struct Document {
     position: Option<([u32; 2], [f32; 2])>,
     _read: Option<Task<()>>,
     _save: Option<Task<()>>,
+    _format: Option<Task<()>>,
     /// Callers that asked to save while a write was already running.
     save_waiters: Vec<async_channel::Sender<bool>>,
     _backup: Option<Task<()>>,
@@ -77,17 +88,21 @@ impl Document {
         let editor_focus = editor.read(cx).focus_handle(cx);
         let blame = LineBlame::new(store.read(cx).state.settings.files.inline_blame);
         let subscriptions = vec![
+            cx.on_release(|this, cx| this.close_language(cx)),
             cx.observe(&store, |this, _, cx| this.apply_blame_setting(cx)),
             cx.subscribe(&editor, |this, _, event: &InputEditsEvent, _| {
                 this.completions.edit(event.edits());
             }),
             cx.subscribe_in(&editor, window, |this, _, event, _, cx| {
                 if matches!(event, InputEvent::Change) {
+                    this.revision = this.revision.wrapping_add(1);
+                    this.symbols = Arc::default();
                     this.invalidate_image(cx);
                     this.pinned = true;
                     this.update_dirty(cx);
                     this.schedule_recovery(cx);
                     this.completions.schedule_refresh(cx);
+                    this.schedule_language(cx);
                     this.invalidate_blame(cx);
                     this.emit(DocumentEvent::Changed(this.target.clone()), cx);
                     cx.notify();
@@ -132,6 +147,12 @@ impl Document {
             path: request.path,
             editor,
             completions,
+            symbols: Arc::default(),
+            symbols_text: None,
+            language: None,
+            diagnostics: Vec::new(),
+            _language_subscription: None,
+            _language_sync: None,
             blame,
             content,
             base: None,
@@ -141,6 +162,9 @@ impl Document {
             dirty: false,
             loading: false,
             saving: false,
+            formatting: false,
+            format_error: None,
+            revision: 0,
             visible: false,
             pinned: !request.preview || recovered.is_some(),
             path_busy: false,
@@ -150,6 +174,7 @@ impl Document {
             position: None,
             _read: None,
             _save: None,
+            _format: None,
             save_waiters: Vec::new(),
             _backup: None,
             _poll: poll,
@@ -172,6 +197,18 @@ impl Document {
 
     pub fn text(&self, cx: &App) -> String {
         self.editor.read(cx).text().to_string()
+    }
+
+    pub(crate) fn selection_draft(&self, cx: &App) -> Option<String> {
+        let editor = self.editor.read(cx);
+        hive_core::agent::draft::selection(
+            &self.target.host,
+            &self.target.path,
+            &self.path,
+            &editor.text().to_string(),
+            editor.selected_range(),
+            self.dirty,
+        )
     }
 
     pub fn saved_position(&self, cx: &App) -> ([u32; 2], [f32; 2]) {
@@ -327,6 +364,7 @@ impl Document {
         self.error = None;
         self.dirty = false;
         self.completions.schedule_refresh(cx);
+        self.schedule_language(cx);
         self.invalidate_blame(cx);
         self.apply_position(window, cx);
         if let Some(focus) = focus {

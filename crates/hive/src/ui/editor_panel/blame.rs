@@ -78,6 +78,8 @@ fn short_oid(oid: &str) -> &str {
 pub(super) struct Placed {
     origin: Origin,
     line_end: Bounds<Pixels>,
+    line: usize,
+    text: gpui_kit::component::input::Rope,
 }
 
 /// The label's fade, shared between the panel and the canvas that paints it every frame.
@@ -124,20 +126,35 @@ struct Overlay {
 
 impl Overlay {
     fn paint(self, bounds: Bounds<Pixels>, hitbox: Hitbox, window: &mut Window, cx: &mut App) {
-        let next = caret_line(&self.document, &self.editor, window, cx)
-            .map(|(line, origin, line_end)| ((line, origin.clone()), Placed { origin, line_end }));
+        let next =
+            caret_line(&self.document, &self.editor, window, cx).map(|(line, origin, line_end)| {
+                (
+                    (line, origin.clone()),
+                    Placed {
+                        origin,
+                        line_end,
+                        line,
+                        text: self.editor.read(cx).text().clone(),
+                    },
+                )
+            });
         let area = label_area(bounds);
         let frame = self.fade.borrow_mut().advance(next, Instant::now());
         if frame.is_animating() {
             window.request_animation_frame();
         }
-        if let Some((place, opacity)) = frame.leaving {
+        if let Some((place, opacity)) = frame.leaving
+            && self.editor.read(cx).text() == &place.text
+            && visible_line_end(self.editor.read(cx), place.line) == Some(place.line_end)
+        {
             paint_label(&place, opacity, area, window, cx);
         }
         let Some((_, place, opacity)) = frame.current else {
             return;
         };
-        let label_bounds = paint_label(&place, opacity, area, window, cx);
+        let Some(label_bounds) = paint_label(&place, opacity, area, window, cx) else {
+            return;
+        };
         let Origin::Commit(commit) = place.origin else {
             return;
         };
@@ -180,7 +197,7 @@ fn paint_label(
     clip: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
-) -> Bounds<Pixels> {
+) -> Option<Bounds<Pixels>> {
     let text = SharedString::from(label(&place.origin));
     let theme = cx.theme();
     let color = theme
@@ -210,6 +227,13 @@ fn paint_label(
         size(icon_size, icon_size),
     );
     let position = point(icon.right() + ICON_GAP, line_end.top());
+    let label_bounds = Bounds::from_corners(
+        point(icon.left(), line_end.top()),
+        point(position.x + shaped.width, line_end.bottom()),
+    );
+    if !fits_label(label_bounds, clip) {
+        return None;
+    }
     window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
         let painted = window
             .paint_svg(
@@ -225,10 +249,30 @@ fn paint_label(
             tracing::warn!(%error, "blame label paint failed");
         }
     });
-    Bounds::from_corners(
-        point(icon.left(), line_end.top()),
-        point(position.x + shaped.width, line_end.bottom()),
-    )
+    Some(label_bounds)
+}
+
+fn fits_label(label: Bounds<Pixels>, area: Bounds<Pixels>) -> bool {
+    label.left() >= area.left()
+        && label.right() <= area.right()
+        && label.top() >= area.top()
+        && label.bottom() <= area.bottom()
+}
+
+fn visible_line_end(editor: &EditorState, line: usize) -> Option<Bounds<Pixels>> {
+    let rows = editor
+        .display_map()
+        .buffer_line_to_display_row_range(line)?;
+    let height = editor.line_height()?;
+    let text_bounds = editor.text_bounds()?;
+    let top = text_bounds.top() + editor.scroll_offset().y + height * (rows.end - 1) as f32;
+    // Upstream saturates offsets before the viewport to its first laid-out row.
+    if top < text_bounds.top() || top + height > text_bounds.bottom() {
+        return None;
+    }
+    let end = editor.text().line_end_offset(line);
+    let bounds = editor.range_to_bounds(&(end..end))?;
+    ((bounds.top() - top).abs() < px(1.)).then_some(bounds)
 }
 
 /// The caret line, its origin and the bounds of its end, when the label should show.
@@ -248,8 +292,7 @@ fn caret_line(
     }
     let line = editor.cursor_position().line as usize;
     let origin = document.blame().line(line)?.clone();
-    let end = editor.text().line_end_offset(line);
-    Some((line, origin, editor.range_to_bounds(&(end..end))?))
+    Some((line, origin, visible_line_end(editor, line)?))
 }
 
 impl EditorPanel {
@@ -462,7 +505,7 @@ impl EditorPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::{SCROLLBAR_WIDTH, label, label_area, short_oid};
+    use super::{SCROLLBAR_WIDTH, fits_label, label, label_area, short_oid};
     use gpui_kit::{Bounds, point, px, size};
     use hive_core::git::blame::{Commit, Origin};
 
@@ -475,6 +518,17 @@ mod tests {
         assert!(!area.contains(&point(px(305.), px(100.))));
         let narrow = Bounds::new(point(px(0.), px(0.)), size(px(8.), px(10.)));
         assert_eq!(label_area(narrow).size.width, px(0.));
+    }
+
+    #[test]
+    fn labels_are_hidden_instead_of_clipped_into_the_viewport() {
+        let area = Bounds::new(point(px(20.), px(40.)), size(px(100.), px(60.)));
+        let label = |x, y, width| Bounds::new(point(px(x), px(y)), size(px(width), px(20.)));
+        assert!(fits_label(label(30., 50., 80.), area));
+        assert!(!fits_label(label(30., 50., 100.), area));
+        assert!(!fits_label(label(10., 50., 80.), area));
+        assert!(!fits_label(label(30., 30., 80.), area));
+        assert!(!fits_label(label(30., 90., 80.), area));
     }
 
     #[test]

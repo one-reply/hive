@@ -17,6 +17,7 @@ pub mod hosting;
 mod numstat;
 pub mod pull_request;
 pub mod review_notes;
+pub mod reviewed;
 pub mod status;
 pub mod verification;
 

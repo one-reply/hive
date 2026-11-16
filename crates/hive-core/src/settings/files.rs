@@ -54,6 +54,8 @@ pub struct FilesSettings {
     pub code_completion: bool,
     /// Show who last changed the line under the editor caret.
     pub inline_blame: bool,
+    /// Keep up to two enclosing declarations visible while scrolling source code.
+    pub sticky_scroll: bool,
     font_size: f32,
 }
 
@@ -69,6 +71,7 @@ impl Default for FilesSettings {
             save_on_focus_change: true,
             code_completion: true,
             inline_blame: true,
+            sticky_scroll: true,
             font_size: FILES_FONT_SIZE_DEFAULT,
         }
     }
@@ -127,6 +130,15 @@ mod tests {
         assert!(!opted_out.code_completion);
         let no_blame: FilesSettings = serde_json::from_str(r#"{"inline_blame":false}"#).unwrap();
         assert!(!no_blame.inline_blame);
+        assert!(future.sticky_scroll);
+        let no_sticky: FilesSettings =
+            serde_json::from_str(r#"{"sticky_scroll":false,"future":true}"#).unwrap();
+        assert!(!no_sticky.sticky_scroll);
+        assert!(
+            !serde_json::from_str::<FilesSettings>(&serde_json::to_string(&no_sticky).unwrap())
+                .unwrap()
+                .sticky_scroll
+        );
         let mut settings = FilesSettings::default();
         settings.set_font_size(f32::NAN);
         assert_eq!(settings.font_size(), FILES_FONT_SIZE_DEFAULT);

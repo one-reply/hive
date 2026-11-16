@@ -72,6 +72,33 @@ impl Workspace {
                 window,
                 |this, _, event, window, cx| match event {
                     DocumentEvent::Open(request) => this.open_file(request.clone(), window, cx),
+                    DocumentEvent::External(target, path, position) => {
+                        crate::ui::editor_panel::source_preview::open(
+                            target.clone(),
+                            path.clone(),
+                            *position,
+                            window,
+                            cx,
+                        )
+                    }
+                    DocumentEvent::AgentDraft(target, agent, prompt) => {
+                        this.activate_target(target, cx);
+                        this.center(&(target.host.clone(), target.project.clone()), window, cx)
+                            .prepare_agent_draft(&target.path, *agent, prompt.clone(), window, cx);
+                        this.sync_active_worktrees(cx);
+                        this.save_center(
+                            &(target.host.clone(), target.project.clone()),
+                            window,
+                            cx,
+                        );
+                        cx.notify();
+                    }
+                    DocumentEvent::Reveal(target, path) => {
+                        this.activate_target(target, cx);
+                        this.show_right_tab(true, cx);
+                        let files = this.files_panel.read(cx).files.clone();
+                        files.update(cx, |files, cx| files.reveal(path.clone(), cx));
+                    }
                     DocumentEvent::Deleted(target, path) => {
                         for center in this.centers.values_mut() {
                             center.remove_files(target, path, window, cx);
@@ -91,6 +118,14 @@ impl Workspace {
 
     fn open_file(&mut self, request: OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         let preview = request.preview;
+        let project = (request.target.host.clone(), request.target.project.clone());
+        if request.position.is_some()
+            && !preview
+            && let Some(center) = self.centers.get_mut(&project)
+            && let Some(from) = center.current_file(window, cx)
+        {
+            center.navigation.record(from);
+        }
         let documents = AppState::get(cx).documents.clone();
         let document = documents.update(cx, |documents, cx| documents.get(&request, window, cx));
         self.activate_target(&request.target, cx);
@@ -105,6 +140,30 @@ impl Workspace {
             });
         }
         drop(document);
+        cx.notify();
+    }
+
+    pub(super) fn navigate_file(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(target) = self.projects.read(cx).target() else {
+            return;
+        };
+        let project = (target.host, target.project);
+        let Some(center) = self.centers.get_mut(&project) else {
+            return;
+        };
+        let current = center.current_file(window, cx);
+        let Some(request) = center.navigation.step(forward, current) else {
+            return;
+        };
+        self.activate_target(&request.target, cx);
+        self.center(&project, window, cx)
+            .show_file(request, window, cx);
+        self.save_center(&project, window, cx);
         cx.notify();
     }
 

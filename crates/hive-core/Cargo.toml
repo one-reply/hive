@@ -22,6 +22,8 @@ required-features = ["remote-helper"]
 serde.workspace = true
 serde_json.workspace = true
 shlex.workspace = true
+sha2.workspace = true
+lsp-types.workspace = true
 ureq = { workspace = true, optional = true }
 base64.workspace = true
 chrono.workspace = true

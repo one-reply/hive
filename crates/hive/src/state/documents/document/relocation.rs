@@ -31,6 +31,7 @@ impl Document {
         path: PathBuf,
         cx: &mut Context<Self>,
     ) -> async_channel::Receiver<Result<(), String>> {
+        self.reset_language(cx);
         self.path = path;
         let content = Content::new(&self.path, self.dirty);
         if std::mem::discriminant(&self.content) != std::mem::discriminant(&content) {

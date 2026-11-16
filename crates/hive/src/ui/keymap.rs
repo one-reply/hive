@@ -13,7 +13,7 @@ use crate::terminal::panel::{
 };
 use crate::terminal::view::{Copy, Paste};
 use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
-use crate::ui::editor_panel::{CloseFile, OpenFileSearch, SaveFile, SearchInFiles};
+use crate::ui::editor_panel::{CloseFile, GoToSymbol, OpenFileSearch, SaveFile, SearchInFiles};
 use crate::ui::files_panel::{
     CancelFileEdit, DeleteSelectedFile, OpenSelectedFile, RenameSelectedFile,
 };
@@ -117,7 +117,56 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 30] = [
+pub(crate) static SHORTCUTS: [Shortcut; 37] = [
+    Shortcut {
+        label: "Find references",
+        default: "shift-f12",
+        category: Category::Workspace,
+        context: "EditorPanel",
+        action: || Box::new(crate::ui::editor_panel::FindReferences),
+    },
+    Shortcut {
+        label: "Show problems",
+        default: "cmd-shift-m",
+        category: Category::Workspace,
+        context: "EditorPanel",
+        action: || Box::new(crate::ui::editor_panel::ShowProblems),
+    },
+    Shortcut {
+        label: "Peek definition",
+        default: "alt-f12",
+        category: Category::Workspace,
+        context: "EditorPanel",
+        action: || Box::new(crate::ui::editor_panel::PeekDefinition),
+    },
+    Shortcut {
+        label: "Format document",
+        default: "alt-shift-f",
+        category: Category::Workspace,
+        context: "EditorPanel",
+        action: || Box::new(crate::ui::editor_panel::FormatDocument),
+    },
+    Shortcut {
+        label: "Navigate back",
+        default: "ctrl--",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(crate::ui::editor_panel::NavigateBack),
+    },
+    Shortcut {
+        label: "Navigate forward",
+        default: "ctrl-shift--",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(crate::ui::editor_panel::NavigateForward),
+    },
+    Shortcut {
+        label: "Go to symbol",
+        default: "cmd-shift-o",
+        category: Category::Workspace,
+        context: "EditorPanel",
+        action: || Box::new(GoToSymbol),
+    },
     Shortcut {
         label: "Open file",
         default: "cmd-p",

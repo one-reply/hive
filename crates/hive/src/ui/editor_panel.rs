@@ -14,13 +14,34 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 mod actions;
+mod agent_context;
 mod blame;
 pub(crate) mod close;
 mod image_preview;
+mod navigation;
+mod peek;
 mod render;
+pub(crate) mod source_preview;
+mod sticky;
 mod suggestions;
 
-actions!(editor, [SaveFile, CloseFile, OpenFileSearch, SearchInFiles]);
+actions!(
+    editor,
+    [
+        SaveFile,
+        CloseFile,
+        OpenFileSearch,
+        SearchInFiles,
+        GoToSymbol,
+        NavigateBack,
+        NavigateForward,
+        FormatDocument,
+        SelectionToAgent,
+        PeekDefinition,
+        FindReferences,
+        ShowProblems
+    ]
+);
 
 /// What the saved workspace keeps of a file tab besides its cursor.
 #[derive(Debug, PartialEq)]
@@ -55,6 +76,8 @@ pub(crate) struct EditorPanel {
     changes: FileChanges,
     blame_card: blame::BlameCard,
     blame_fade: blame::LabelFade,
+    peek: Option<peek::Peek>,
+    _peek: Option<Task<()>>,
     _position: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -104,6 +127,8 @@ impl EditorPanel {
                 let cursor = editor.cursor_position();
                 let position = (cursor.line, cursor.character, editor.scroll_offset());
                 if this.last_position != position {
+                    this.peek = None;
+                    this._peek = None;
                     this.last_position = position;
                     this.close_blame_card(cx);
                     this._position = Some(cx.spawn(async |this, cx| {
@@ -141,6 +166,8 @@ impl EditorPanel {
             changes,
             blame_card: blame::BlameCard::default(),
             blame_fade: blame::LabelFade::default(),
+            peek: None,
+            _peek: None,
             _position: None,
             _subscriptions: subscriptions,
         }
