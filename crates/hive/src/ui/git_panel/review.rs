@@ -3,6 +3,7 @@ use super::*;
 use hive_core::git::history::relative_date;
 
 const SHORT_OID: usize = 7;
+const COMMIT_HIGHLIGHT_OPACITY: f32 = 0.08;
 
 fn short(oid: &str) -> &str {
     &oid[..oid.len().min(SHORT_OID)]
@@ -109,13 +110,22 @@ impl GitPanel {
                         .p_2()
                         .gap_0p5()
                         .rounded_md()
-                        .bg(cx.theme().foreground.opacity(0.04))
+                        .border_l_2()
+                        .border_color(cx.theme().info)
+                        .bg(cx.theme().info.opacity(COMMIT_HIGHLIGHT_OPACITY))
                         .child(div().text_size(TITLE_TEXT).child(commit.subject.clone()))
                         .child(
-                            div()
+                            h_flex()
+                                .gap_1p5()
                                 .text_size(META_TEXT)
                                 .text_color(muted)
-                                .child(format!("{} · against first parent", short(&oid))),
+                                .child(
+                                    div()
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .text_color(cx.theme().warning)
+                                        .child(short(&oid).to_string()),
+                                )
+                                .child("· against first parent"),
                         ),
                 )
                 .children(self.review_files(&files, DiffSource::Commit(oid), window, cx));
@@ -151,6 +161,7 @@ impl GitPanel {
                             .child(
                                 div()
                                     .text_size(META_TEXT + px(1.))
+                                    .text_color(cx.theme().foreground)
                                     .truncate()
                                     .child(commit.subject.clone()),
                             )
@@ -161,10 +172,18 @@ impl GitPanel {
                                     .text_color(muted)
                                     .child(
                                         div()
+                                            .flex_none()
                                             .font_family(cx.theme().mono_font_family.clone())
+                                            .text_color(cx.theme().warning)
                                             .child(short(&commit.oid).to_string()),
                                     )
-                                    .child(div().min_w_0().truncate().child(commit.author.clone()))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_color(cx.theme().info)
+                                            .child(commit.author.clone()),
+                                    )
                                     .child(div().flex_none().child(relative_date(&commit.date))),
                             ),
                     )
