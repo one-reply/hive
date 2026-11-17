@@ -14,8 +14,10 @@ impl Files {
         let paths: Vec<_> = std::iter::once(PathBuf::new())
             .chain(self.expanded.iter().cloned())
             .collect();
-        let git = AppState::get(cx).git.read(cx);
-        let is_git = git.target.as_ref() == Some(&target) && git.status.is_some();
+        let tracking = AppState::get(cx).git.read(cx).tracking(Some(&target));
+        let is_git = matches!(tracking, Tracking::Status(_));
+        // Without an answer from Git the paths ignored so far stay ignored.
+        let ignored_known = tracking != Tracking::Unknown;
         self._read = Some(cx.spawn(async move |this, cx| {
             let read_target = target.clone();
             let result =
@@ -49,14 +51,14 @@ impl Files {
                             &read_target.path,
                             &paths,
                         ) {
-                            Ok(ignored) => ignored,
+                            Ok(ignored) => Some(ignored),
                             Err(error) => {
                                 errors.push(error.to_string());
-                                HashSet::new()
+                                Some(HashSet::new())
                             }
                         }
                     } else {
-                        HashSet::new()
+                        ignored_known.then(HashSet::new)
                     };
                     Ok((
                         directories,
@@ -72,14 +74,19 @@ impl Files {
                 this.loading = false;
                 match result {
                     Ok((directories, ignored, error)) => {
-                        let changed = this.entries != directories || this.ignored != ignored;
+                        let changed = this.entries != directories
+                            || ignored
+                                .as_ref()
+                                .is_some_and(|ignored| this.ignored != *ignored);
                         if this.error != error
                             && let Some(error) = &error
                         {
                             tracing::warn!(%error, "file tree directory unavailable");
                         }
                         this.entries = directories;
-                        this.ignored = ignored;
+                        if let Some(ignored) = ignored {
+                            this.ignored = ignored;
+                        }
                         this.error = error;
                         if changed || this.pending_reveal.is_some() {
                             this.rebuild(cx);

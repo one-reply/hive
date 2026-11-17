@@ -18,6 +18,7 @@ pub(crate) mod terminal_session;
 pub(crate) mod terminals;
 pub(crate) mod updates;
 pub mod usage;
+pub(crate) mod worktree_memory;
 
 pub(crate) mod pull_requests;
 

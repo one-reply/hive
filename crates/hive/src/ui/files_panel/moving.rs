@@ -146,8 +146,7 @@ impl FilesPanel {
         let Some(target) = state.target.clone() else {
             return;
         };
-        let projects = AppState::get(cx).projects.clone();
-        let destinations = cx.new(|cx| Files::new(projects, Some(source.clone()), cx));
+        let destinations = cx.new(|cx| Files::new(Some(target.clone()), Some(source.clone()), cx));
         let picker = cx
             .new(|cx| DestinationPicker::new(destinations, self.files.clone(), target, source, cx));
         window.open_dialog(cx, move |dialog, _, _| {

@@ -126,6 +126,12 @@ impl Projects {
         })
     }
 
+    /// Whether `target` is still a checkout of a listed project. Per-worktree state of
+    /// anything else can be dropped.
+    pub(crate) fn contains_target(&self, target: &Target) -> bool {
+        contains_target(&self.items, target)
+    }
+
     pub fn is_selected(&self, host: &Host, project: &Path, worktree: Option<&Path>) -> bool {
         self.selected.as_ref().is_some_and(|s| {
             s.host == *host && s.project == project && s.worktree.as_deref() == worktree
@@ -360,9 +366,23 @@ fn apply_scan(
     true
 }
 
+/// The project folder itself is a target even when it is not a Git repository and lists
+/// no worktrees.
+fn contains_target(items: &[Project], target: &Target) -> bool {
+    items.iter().any(|project| {
+        project.host == target.host
+            && project.path == target.project
+            && (project.path == target.path
+                || project
+                    .worktrees
+                    .iter()
+                    .any(|worktree| worktree.path == target.path))
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Project, Selection, Worktree, apply_scan};
+    use super::{Project, Selection, Target, Worktree, apply_scan, contains_target};
     use gpui_kit as gpui;
     use hive_core::{host::Host, identity::ProjectIdentity, projects::Head, state::WorktreeFilter};
 
@@ -470,6 +490,43 @@ mod tests {
             selected.unwrap().worktree.unwrap(),
             std::path::Path::new("/remote-worktree")
         );
+    }
+
+    #[test]
+    fn a_target_exists_while_its_project_lists_the_checkout() {
+        let items = vec![project()];
+        let target = |project: &str, path: &str| Target {
+            host: Host::Local,
+            project: project.into(),
+            path: path.into(),
+        };
+        assert!(contains_target(&items, &target("/project", "/project")));
+        assert!(contains_target(
+            &items,
+            &target("/project", "/new-worktree")
+        ));
+        assert!(!contains_target(&items, &target("/project", "/removed")));
+        assert!(!contains_target(&items, &target("/other", "/new-worktree")));
+        let remote = Target {
+            host: Host::Ssh {
+                target: "home".into(),
+            },
+            ..target("/project", "/project")
+        };
+        assert!(!contains_target(&items, &remote));
+        assert!(!contains_target(&[], &target("/project", "/project")));
+    }
+
+    #[test]
+    fn a_plain_folder_project_is_its_own_target() {
+        let mut folder = project();
+        folder.worktrees.clear();
+        let target = Target {
+            host: Host::Local,
+            project: "/project".into(),
+            path: "/project".into(),
+        };
+        assert!(contains_target(&[folder], &target));
     }
 
     fn project() -> Project {

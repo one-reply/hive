@@ -172,9 +172,7 @@ impl Files {
                     this.search(cx);
                     return;
                 }
-                if let Some((_, paths)) = this.recent.iter().find(|(key, _)| key == &target) {
-                    this.search.matches.prefer_recent(paths);
-                }
+                this.search.matches.prefer_recent(&this.recent);
                 this.rebuild(cx);
             });
         }));

@@ -1,5 +1,6 @@
 //! Active worktree source control. All Git IO runs off the foreground thread.
 use super::projects::Projects;
+use super::worktree_memory::WorktreeMemory;
 use gpui_kit::*;
 use hive_core::git::{
     self,
@@ -46,8 +47,9 @@ pub(crate) enum GitEvent {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Section {
+    #[default]
     Changes,
     Compare,
     History,
@@ -63,6 +65,17 @@ pub(crate) enum FileChanges {
     One,
     /// Both staged and unstaged changes, so the viewer can choose a side.
     StagedAndUnstaged,
+}
+
+/// What the cached `git status` can say about one worktree's files.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Tracking<'a> {
+    /// Another worktree is shown, or this one's status is still loading: whatever was known
+    /// about its files before still stands.
+    Unknown,
+    /// The folder is not a Git repository.
+    NoRepository,
+    Status(&'a Status),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -89,6 +102,8 @@ pub(crate) struct Git {
     pub history_more: bool,
     pub files: Vec<FileChange>,
     pub selected_commit: Option<Commit>,
+    /// Section, base and open commit of the worktrees that are not shown.
+    review_views: WorktreeMemory<review::ReviewView>,
     pub loading: bool,
     pub review_loading: bool,
     pub error: Option<String>,
@@ -160,6 +175,7 @@ impl Git {
             history_more: false,
             files: vec![],
             selected_commit: None,
+            review_views: WorktreeMemory::default(),
             loading: false,
             review_loading: false,
             error: None,
@@ -194,6 +210,17 @@ impl Git {
 
     pub(crate) fn has_no_repository(&self) -> bool {
         self.repository == Repository::Absent
+    }
+
+    pub(crate) fn tracking(&self, target: Option<&Target>) -> Tracking<'_> {
+        if target.is_none() || self.target.as_ref() != target {
+            return Tracking::Unknown;
+        }
+        match &self.status {
+            Some(status) => Tracking::Status(status),
+            None if self.has_no_repository() => Tracking::NoRepository,
+            None => Tracking::Unknown,
+        }
     }
 
     fn start_poll(&mut self, cx: &mut Context<Self>) {
@@ -251,7 +278,8 @@ impl Git {
         }
         self._poll = None;
         self.repository = Repository::Unknown;
-        self.target = target;
+        let previous = std::mem::replace(&mut self.target, target);
+        self.follow_review(previous.as_ref());
         self.sync_diff_visibility();
         self.status = None;
         self.operation = None;
@@ -259,11 +287,9 @@ impl Git {
         self.remotes.clear();
         self.remote = None;
         self.upstream_remote = None;
-        self.base = None;
         self.commits.clear();
         self.history_more = false;
         self.files.clear();
-        self.selected_commit = None;
         self._refresh = None;
         self.refresh_generation += 1;
         self._review = None;
@@ -477,12 +503,10 @@ impl Git {
                         let changed = this.status.as_ref() != Some(&status);
                         this.status = Some(status);
                         if let Some((branches, base, remotes, upstream)) = metadata {
+                            this.base = review::resolve_base(this.base.take(), base, &branches);
                             this.branches = branches;
                             this.remotes = remotes;
                             this.upstream_remote = upstream;
-                            if this.base.is_none() {
-                                this.base = base;
-                            }
                             if this
                                 .remote
                                 .as_ref()
@@ -601,6 +625,101 @@ mod tests {
             git.start_poll(cx);
             assert!(git._poll.is_some());
             git._poll = None;
+        });
+    }
+
+    #[gpui::test]
+    fn tracking_is_unknown_until_the_shown_worktree_has_a_status(cx: &mut TestAppContext) {
+        use super::Tracking;
+
+        let store = cx.new(|cx| {
+            Store::new(
+                Err(StateError::Io {
+                    operation: "test",
+                    path: "/unused".into(),
+                    source: std::io::Error::other("persistence disabled for test"),
+                }),
+                cx,
+            )
+        });
+        let projects = cx.new(|cx| Projects::new(&store, cx));
+        let git = cx.new(|cx| Git::new(projects, cx));
+        let worktree = |path: &str| Target {
+            host: Host::Local,
+            project: "/project".into(),
+            path: path.into(),
+        };
+        let (shown, hidden) = (worktree("/project"), worktree("/worktree"));
+        git.update(cx, |git, _| {
+            assert_eq!(git.tracking(None), Tracking::Unknown);
+            git.target = Some(shown.clone());
+            // Selected a moment ago: the status has not been read yet.
+            assert_eq!(git.tracking(Some(&shown)), Tracking::Unknown);
+            git.status = Some(Status::default());
+            assert_eq!(
+                git.tracking(Some(&shown)),
+                Tracking::Status(&Status::default())
+            );
+            assert_eq!(git.tracking(Some(&hidden)), Tracking::Unknown);
+            git.status = None;
+            git.repository = Repository::Absent;
+            assert_eq!(git.tracking(Some(&shown)), Tracking::NoRepository);
+            assert_eq!(git.tracking(Some(&hidden)), Tracking::Unknown);
+        });
+    }
+
+    #[gpui::test]
+    fn review_choices_stay_with_their_worktree(cx: &mut TestAppContext) {
+        use super::Section;
+        use hive_core::git::history::Commit;
+
+        let store = cx.new(|cx| {
+            Store::new(
+                Err(StateError::Io {
+                    operation: "test",
+                    path: "/unused".into(),
+                    source: std::io::Error::other("persistence disabled for test"),
+                }),
+                cx,
+            )
+        });
+        let projects = cx.new(|cx| Projects::new(&store, cx));
+        let git = cx.new(|cx| Git::new(projects, cx));
+        let worktree = |path: &str| Target {
+            host: Host::Local,
+            project: "/project".into(),
+            path: path.into(),
+        };
+        let (first, second) = (worktree("/project"), worktree("/worktree"));
+        let commit = Commit {
+            oid: "0123456789abcdef".into(),
+            subject: "subject".into(),
+            author: "author".into(),
+            date: "2026-11-17T00:00:00Z".into(),
+        };
+        git.update(cx, |git, _| {
+            git.target = Some(first.clone());
+            git.section = Section::History;
+            git.base = Some("refs/heads/release".into());
+            git.selected_commit = Some(commit.clone());
+
+            git.target = Some(second.clone());
+            git.follow_review(Some(&first));
+            assert_eq!(git.section, Section::Changes);
+            assert_eq!(git.base, None);
+            assert_eq!(git.selected_commit, None);
+            git.section = Section::Compare;
+
+            git.target = Some(first.clone());
+            git.follow_review(Some(&second));
+            assert_eq!(git.section, Section::History);
+            assert_eq!(git.base.as_deref(), Some("refs/heads/release"));
+            assert_eq!(git.selected_commit, Some(commit));
+
+            git.target = Some(second.clone());
+            git.follow_review(Some(&first));
+            assert_eq!(git.section, Section::Compare);
+            assert_eq!(git.selected_commit, None);
         });
     }
 

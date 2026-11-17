@@ -1,9 +1,10 @@
 //! The Files navigator's model: the listed worktree, what is open, what Git says about it.
 //! Holds no widget and no window: the panel projects `nodes()` into its own tree state.
+//! One navigator lists one worktree for its whole life, so the expanded folders and the
+//! search of a worktree survive while another one is shown.
 use super::{
     documents::{DocumentEvent, OpenFile},
-    git::GitEvent,
-    projects::Projects,
+    git::{GitEvent, Tracking},
 };
 use crate::app::AppState;
 use hive_core::{
@@ -41,6 +42,7 @@ use std::{
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 pub(crate) struct Files {
+    /// Fixed at creation; `None` is the navigator shown while nothing is selected.
     pub target: Option<Target>,
     pub error: Option<String>,
     visible: bool,
@@ -58,7 +60,8 @@ pub(crate) struct Files {
     pub dirty: HashSet<PathBuf>,
     pub missing: HashSet<PathBuf>,
     pub active: Option<PathBuf>,
-    recent: Vec<(Target, Vec<PathBuf>)>,
+    /// Files of this worktree opened last, newest first; search ranks them higher.
+    recent: Vec<PathBuf>,
     destination_for: Option<PathBuf>,
     pending_reveal: Option<PathBuf>,
     pending_refresh: bool,
@@ -68,27 +71,41 @@ pub(crate) struct Files {
     generation: u64,
     _operation: Option<Task<()>>,
     _read: Option<Task<()>>,
-    _poll: Task<()>,
+    /// Re-lists the open directories; runs only while the navigator is on screen.
+    _poll: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
+/// The badges `tracking` gives, or `None` while it cannot tell.
+fn decorations(tracking: Tracking<'_>) -> Option<BTreeMap<PathBuf, Decoration>> {
+    match tracking {
+        Tracking::Unknown => None,
+        Tracking::NoRepository => Some(BTreeMap::new()),
+        Tracking::Status(status) => Some(files::decorations::collect(&status.files)),
+    }
+}
+
 impl Files {
-    /// A navigator for the selected worktree, or, with `destination_for`, the folder picker
-    /// for moving that path.
+    /// A navigator for `target`, or, with `destination_for`, the folder picker for moving
+    /// that path.
     pub fn new(
-        projects: Entity<Projects>,
+        target: Option<Target>,
         destination_for: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> Self {
         let app = AppState::get(cx);
         let (store, git, documents) = (app.store.clone(), app.git.clone(), app.documents.clone());
         let settings = store.read(cx).state.settings.files.clone();
+        // A status already read for this worktree will not be announced again.
+        let known_decorations =
+            decorations(git.read(cx).tracking(target.as_ref())).unwrap_or_default();
         let subscriptions = vec![
+            // The store notifies on every layout and cursor change; clone only a real change.
             cx.observe(&store, |this, store, cx| {
-                let settings = store.read(cx).state.settings.files.clone();
-                if settings != this.settings {
+                let settings = &store.read(cx).state.settings.files;
+                if *settings != this.settings {
                     let reveal = settings.auto_reveal && !this.settings.auto_reveal;
-                    this.settings = settings;
+                    this.settings = settings.clone();
                     if reveal && let Some(path) = this.active.clone() {
                         this.reveal(path, cx);
                     }
@@ -99,13 +116,11 @@ impl Files {
                 }
             }),
             cx.observe(&git, |this, git, cx| {
-                let git = git.read(cx);
-                let decorations = git
-                    .status
-                    .as_ref()
-                    .filter(|_| git.target == this.target)
-                    .map(|s| files::decorations::collect(&s.files))
-                    .unwrap_or_default();
+                // Badges stay as they were until this worktree's own status arrives.
+                let tracking = git.read(cx).tracking(this.target.as_ref());
+                let Some(decorations) = decorations(tracking) else {
+                    return;
+                };
                 if decorations != this.decorations {
                     this.decorations = decorations;
                     this.rebuild(cx);
@@ -130,8 +145,8 @@ impl Files {
                 }
                 let target = match event {
                     DocumentEvent::Activated(target, path) => {
-                        recent::remember(&mut this.recent, target, path);
                         if this.target.as_ref() == Some(target) {
+                            recent::remember(&mut this.recent, path);
                             this.active = Some(path.clone());
                             if this.settings.auto_reveal {
                                 this.reveal(path.clone(), cx);
@@ -166,49 +181,9 @@ impl Files {
                 }
                 cx.notify();
             }),
-            cx.observe(&projects, |this, projects, cx| {
-                let target = projects.read(cx).target();
-                if this.target != target {
-                    this.target = target;
-                    this._read = None;
-                    this.generation += 1;
-                    this.pending_refresh = false;
-                    this.pending_reveal = None;
-                    this.active = None;
-                    this.decorations.clear();
-                    this.ignored.clear();
-                    this.dirty.clear();
-                    this.missing.clear();
-                    this.loading = false;
-                    this.error = None;
-                    this.entries.clear();
-                    this.expanded.clear();
-                    this.search.reset();
-                    this.content.reset();
-                    this.rebuild(cx);
-                    this.sync_documents(true, cx);
-                    this.refresh(cx);
-                    cx.notify();
-                }
-            }),
         ];
-        let poll = cx.spawn(async |this, cx| {
-            loop {
-                cx.background_executor().timer(POLL_INTERVAL).await;
-                if this
-                    .update(cx, |this, cx| {
-                        if this.visible && this.window_active {
-                            this.refresh(cx);
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
         let mut this = Self {
-            target: projects.read(cx).target(),
+            target,
             error: None,
             visible: false,
             window_active: true,
@@ -219,7 +194,7 @@ impl Files {
             loading: false,
             busy: false,
             settings,
-            decorations: BTreeMap::new(),
+            decorations: known_decorations,
             ignored: HashSet::new(),
             dirty: HashSet::new(),
             missing: HashSet::new(),
@@ -234,19 +209,52 @@ impl Files {
             generation: 0,
             _operation: None,
             _read: None,
-            _poll: poll,
+            _poll: None,
             _subscriptions: subscriptions,
         };
-        this.refresh(cx);
+        if this.destination_for.is_none() {
+            this.sync_documents(true, cx);
+            if let Some(path) = this.active.clone() {
+                recent::remember(&mut this.recent, &path);
+            }
+        }
+        // Revealing the active file has already listed the tree with its folders open.
+        if !this.loading {
+            this.refresh(cx);
+        }
         this
     }
 
-    /// Whether the navigator is on screen; a visible one keeps its listing fresh.
+    /// Whether the navigator is on screen; a visible one keeps its listing fresh, a hidden
+    /// one stops polling.
     pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         self.visible = visible;
-        if visible {
-            self.refresh(cx);
+        if !visible {
+            self._poll = None;
+            return;
         }
+        if self._poll.is_none() {
+            self._poll = Some(Self::poll(cx));
+        }
+        self.refresh(cx);
+    }
+
+    fn poll(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async |this, cx| {
+            loop {
+                cx.background_executor().timer(POLL_INTERVAL).await;
+                if this
+                    .update(cx, |this, cx| {
+                        if this.window_active {
+                            this.refresh(cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
     }
 
     /// Tracks the window the navigator lives in, so a hidden window stops polling and a
