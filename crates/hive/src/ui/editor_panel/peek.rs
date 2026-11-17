@@ -121,6 +121,9 @@ impl EditorPanel {
         let selected = peek.selected;
         let card = v_flex()
             .id("definition-peek")
+            // Without this a click in the peek also lands on the editor underneath, which
+            // moves its caret and so closes the peek.
+            .occlude()
             .w(WIDTH)
             .h(HEIGHT)
             .bg(cx.theme().background)

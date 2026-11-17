@@ -69,14 +69,18 @@ pub(super) fn open(document: &Entity<Document>, window: &mut Window, cx: &mut Ap
                     if local {
                         let Some(kind) = index.and_then(|i| AgentKind::ALL.get(i)).copied() else { return false; };
                         let target = target.clone();
+                        // Close now: the dialog's own close restores focus to the editor after
+                        // its animation, taking it back from the agent pane focused below.
+                        window.close_dialog(cx);
                         window.defer(cx,move |_,cx| AppState::get(cx).documents.clone().update(cx,|_,cx| cx.emit(DocumentEvent::AgentDraft(target,kind,prompt))));
                     } else {
                         cx.write_to_clipboard(ClipboardItem::new_string(prompt));
+                        window.close_dialog(cx);
                         if let Some(session) = index.and_then(|i| sessions.get(i)).map(|session| session.session) {
                             let agents=agents.clone(); window.defer(cx,move |_,cx| agents.update(cx,|agents,cx| agents.reveal(session,cx)));
                         }
                     }
-                    true
+                    false
                 }))
     });
 }
