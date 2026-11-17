@@ -56,6 +56,10 @@ pub struct FilesSettings {
     pub inline_blame: bool,
     /// Keep up to two enclosing declarations visible while scrolling source code.
     pub sticky_scroll: bool,
+    /// Start language servers and formatters for open files. They run programs the
+    /// worktree controls (`node_modules/.bin`, build scripts, proc macros), so turning
+    /// this off is the only way to open untrusted code without executing any of it.
+    pub language_tools: bool,
     font_size: f32,
 }
 
@@ -72,6 +76,7 @@ impl Default for FilesSettings {
             code_completion: true,
             inline_blame: true,
             sticky_scroll: true,
+            language_tools: true,
             font_size: FILES_FONT_SIZE_DEFAULT,
         }
     }
@@ -138,6 +143,17 @@ mod tests {
             !serde_json::from_str::<FilesSettings>(&serde_json::to_string(&no_sticky).unwrap())
                 .unwrap()
                 .sticky_scroll
+        );
+        assert!(
+            future.language_tools,
+            "settings saved before the switch keep starting language tools"
+        );
+        let no_tools: FilesSettings = serde_json::from_str(r#"{"language_tools":false}"#).unwrap();
+        assert!(!no_tools.language_tools);
+        assert!(
+            !serde_json::from_str::<FilesSettings>(&serde_json::to_string(&no_tools).unwrap())
+                .unwrap()
+                .language_tools
         );
         let mut settings = FilesSettings::default();
         settings.set_font_size(f32::NAN);

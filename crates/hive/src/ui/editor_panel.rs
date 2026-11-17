@@ -18,6 +18,7 @@ mod agent_context;
 mod blame;
 pub(crate) mod close;
 mod image_preview;
+mod language_tools;
 mod navigation;
 mod peek;
 mod render;
