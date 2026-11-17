@@ -1,5 +1,6 @@
 use super::Sidebar;
 use crate::state::{projects::Projects, store::Store};
+use crate::ui::hover::Hover;
 use gpui_kit as gpui;
 use gpui_kit::component::v_flex;
 use gpui_kit::prelude::*;
@@ -29,8 +30,9 @@ impl Render for Headers {
                         let open = !sidebar
                             .collapsed
                             .contains(&(project.host.clone(), project.path.clone()));
+                        let hover = Hover::new(("project", ix), window, cx);
                         sidebar
-                            .render_header(ix, project, open, window, cx)
+                            .render_header(ix, project, open, &hover, window, cx)
                             .into_any_element()
                     })
                     .collect::<Vec<_>>(),
