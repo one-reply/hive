@@ -87,6 +87,9 @@ pub struct State {
     pub workspace: workspace::Workspace,
     /// Installed version whose release highlights were last presented.
     pub last_seen_release: Option<String>,
+    /// Exact acknowledged diff revisions; never stores source text.
+    #[serde(deserialize_with = "lenient::elements")]
+    pub reviewed: Vec<crate::git::reviewed::Revision>,
 }
 
 impl State {

@@ -7,16 +7,20 @@ pub mod agent;
 pub mod code_navigation;
 pub mod command;
 pub mod completion;
+pub mod symbols;
 
 #[cfg(feature = "desktop")]
 pub mod commit_message;
 pub mod files;
+pub mod formatting;
 pub mod git;
 pub mod host;
 #[cfg(feature = "desktop")]
 pub mod identity;
 #[cfg(feature = "desktop")]
 pub mod keychain;
+#[cfg(feature = "desktop")]
+pub mod language_service;
 #[cfg(feature = "desktop")]
 pub mod llm;
 #[cfg(feature = "desktop")]

@@ -14,6 +14,8 @@ pub(crate) struct GitDiff {
     files_generation: u64,
     pub error: Option<String>,
     pub loading: bool,
+    pub revision: Option<hive_core::git::reviewed::Revision>,
+    pub reviewed: bool,
     /// Whether a panel shows this diff; only an active diff follows Git refreshes.
     active: bool,
     /// A refresh requested while one was loading; served when the load completes.
@@ -24,16 +26,29 @@ pub(crate) struct GitDiff {
 
 impl GitDiff {
     pub fn new(request: DiffRequest, git: Entity<Git>, cx: &mut Context<Self>) -> Self {
-        let subscriptions = vec![cx.subscribe(&git, |this, git, event, cx| {
-            // The patch is read on every refresh: content can change while the status does not.
-            if let GitEvent::Refreshed { target, .. } = event
-                && this.active
-                && git.read(cx).window_active
-                && target == &this.request.target
-            {
-                this.refresh(cx);
-            }
-        })];
+        let store = crate::app::AppState::get(cx).store.clone();
+        let subscriptions = vec![
+            cx.subscribe(&git, |this, git, event, cx| {
+                // The patch is read on every refresh: content can change while the status does not.
+                if let GitEvent::Refreshed { target, .. } = event
+                    && this.active
+                    && git.read(cx).window_active
+                    && target == &this.request.target
+                {
+                    this.refresh(cx);
+                }
+            }),
+            cx.observe(&store, |this, store, cx| {
+                let reviewed = this
+                    .revision
+                    .as_ref()
+                    .is_some_and(|revision| store.read(cx).state.reviewed.contains(revision));
+                if this.reviewed != reviewed {
+                    this.reviewed = reviewed;
+                    cx.notify();
+                }
+            }),
+        ];
         let mut this = Self {
             request,
             patch: None,
@@ -41,6 +56,8 @@ impl GitDiff {
             files_generation: 0,
             error: None,
             loading: false,
+            revision: None,
+            reviewed: false,
             active: false,
             pending: false,
             _task: None,
@@ -64,6 +81,21 @@ impl GitDiff {
         self.active = active;
     }
 
+    pub(crate) fn toggle_reviewed(&mut self, cx: &mut Context<Self>) {
+        if self.error.is_some() {
+            return;
+        }
+        let Some(revision) = self.revision.clone() else {
+            return;
+        };
+        crate::app::AppState::get(cx)
+            .store
+            .clone()
+            .update(cx, |store, cx| {
+                store.set_reviewed(revision, !self.reviewed, cx)
+            });
+    }
+
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.loading {
             self.pending = true;
@@ -85,14 +117,17 @@ impl GitDiff {
                     )
                     .map_err(|e| e.to_string())?;
                     let files = changed_display(&patch, previous.as_deref())?;
-                    Ok::<_, String>((patch, files))
+                    let revision = hive_core::git::reviewed::Revision::from_diff(&request.target.host, &request.target.path, &request.path, &request.source, &patch);
+                    Ok::<_, String>((patch, files, revision))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok((patch, files)) => {
+                    Ok((patch, files, revision)) => {
                         this.error = None;
+                        this.reviewed = revision.as_ref().is_some_and(|revision| crate::app::AppState::get(cx).store.read(cx).state.reviewed.contains(revision));
+                        this.revision = revision;
                         if let Some(files) = files {
                             this.patch = Some(Arc::new(patch));
                             this.files = files;
@@ -102,6 +137,8 @@ impl GitDiff {
                     }
                     Err(error) => {
                         this.patch = None;
+                        this.revision = None;
+                        this.reviewed = false;
                         // The refresh repeats every two seconds; one line per distinct failure.
                         if this.error.as_ref() != Some(&error) {
                             tracing::warn!(path = %this.request.path, %error, "diff preview failed");

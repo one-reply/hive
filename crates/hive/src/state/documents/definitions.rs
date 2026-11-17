@@ -143,9 +143,9 @@ fn links(
 }
 
 /// Opens another file of the same worktree as a pinned tab at the definition: in place of the
-/// clicked tab, or beside it with ⇧ held. The current file falls back to gpui-component's
-/// in-buffer jump.
-fn show_document(
+/// clicked tab, or beside it with ⇧ held. Same-file jumps use the registry too, so
+/// navigation history captures the cursor before the jump.
+pub(super) fn show_document(
     document: WeakEntity<Document>,
     documents: WeakEntity<Documents>,
 ) -> ShowDocumentHandler {
@@ -155,18 +155,32 @@ fn show_document(
             let Some(document) = document.upgrade() else {
                 return false;
             };
-            let (target, current) = {
+            let target = {
                 let document = document.read(cx);
-                (document.target.clone(), document.path.clone())
+                document.target.clone()
             };
-            let Some(path) = file_path(&params.uri)
-                .and_then(|path| path.strip_prefix(&target.path).ok().map(Path::to_path_buf))
-            else {
+            let Some(absolute) = file_path(&params.uri) else {
                 return false;
             };
-            if path == current {
-                return false;
-            }
+            let path = match absolute.strip_prefix(&target.path) {
+                Ok(path) => path.to_path_buf(),
+                Err(_) => {
+                    if hive_core::language_service::Family::for_path(&absolute).is_none() {
+                        return true;
+                    }
+                    let documents = documents.clone();
+                    let position = params
+                        .selection
+                        .map(|selection| selection.start)
+                        .unwrap_or_default();
+                    cx.defer(move |cx| {
+                        let _ = documents.update(cx, |_, cx| {
+                            cx.emit(super::DocumentEvent::External(target, absolute, position))
+                        });
+                    });
+                    return true;
+                }
+            };
             let request = OpenFile {
                 target,
                 path,
@@ -210,20 +224,7 @@ fn file_uri(path: &Path) -> Option<Uri> {
 }
 
 fn file_path(uri: &Uri) -> Option<PathBuf> {
-    let encoded = uri.as_str().strip_prefix("file://")?.as_bytes();
-    let mut bytes = Vec::with_capacity(encoded.len());
-    let mut ix = 0;
-    while ix < encoded.len() {
-        if encoded[ix] == b'%' {
-            let hex = std::str::from_utf8(encoded.get(ix + 1..ix + 3)?).ok()?;
-            bytes.push(u8::from_str_radix(hex, 16).ok()?);
-            ix += 3;
-        } else {
-            bytes.push(encoded[ix]);
-            ix += 1;
-        }
-    }
-    Some(PathBuf::from(String::from_utf8(bytes).ok()?))
+    hive_core::language_service::position::path(uri)
 }
 
 #[cfg(test)]

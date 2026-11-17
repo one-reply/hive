@@ -26,6 +26,34 @@ pub(crate) struct SaveError(pub(crate) String);
 impl EventEmitter<SaveError> for Store {}
 
 impl Store {
+    #[cfg(test)]
+    pub(crate) fn with_held_recovery(cx: &mut Context<Self>) -> Self {
+        Self {
+            state: State::default(),
+            notice: None,
+            writer: None,
+            recovery: recovery::RecoveryWriter::held(cx.background_executor()),
+            _recovery_errors: Task::ready(()),
+            stopping: false,
+            _errors: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn complete_held_recovery(&self) {
+        self.recovery.complete_held();
+    }
+
+    pub(crate) fn set_reviewed(
+        &mut self,
+        revision: hive_core::git::reviewed::Revision,
+        reviewed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if hive_core::git::reviewed::set(&mut self.state.reviewed, revision, reviewed) {
+            self.commit(cx);
+        }
+    }
     pub(crate) fn set_hosting_server(
         &mut self,
         provider: hive_core::git::hosting::Provider,

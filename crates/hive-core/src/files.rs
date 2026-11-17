@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod content_search;
 pub mod decorations;
+pub mod excerpts;
 pub mod images;
 mod language;
 mod listing;

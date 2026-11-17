@@ -13,7 +13,7 @@ mod index;
 mod site;
 
 pub use index::Index;
-pub use site::{Request, Site, is_trigger, site_at};
+pub use site::{Request, Site, is_trigger, site_at, word_range};
 
 /// The menu never shows more items than this; the closest matches come first.
 pub const MAX_ITEMS: usize = 50;
@@ -78,7 +78,7 @@ pub(crate) fn ranked<'a>(lists: &[&'a [String]], prefix: &str) -> Vec<&'a str> {
 }
 
 /// Prefix comparison that folds case the Unicode way, so `ПРИ` matches `привіт`.
-pub(crate) fn starts_with_ignoring_case(text: &str, prefix: &str) -> bool {
+pub fn starts_with_ignoring_case(text: &str, prefix: &str) -> bool {
     let mut text = text.chars().flat_map(char::to_lowercase);
     prefix
         .chars()

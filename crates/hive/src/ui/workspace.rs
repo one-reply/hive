@@ -674,6 +674,16 @@ impl Render for Workspace {
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(
+                |this, _: &crate::ui::editor_panel::NavigateBack, window, cx| {
+                    this.navigate_file(false, window, cx)
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::ui::editor_panel::NavigateForward, window, cx| {
+                    this.navigate_file(true, window, cx)
+                },
+            ))
+            .on_action(cx.listener(
                 |this, _: &crate::ui::editor_panel::OpenFileSearch, window, cx| {
                     this.open_file_search(SearchMode::Names, window, cx)
                 },

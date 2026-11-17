@@ -251,6 +251,8 @@ impl Render for DiffPanel {
                 .map(|id| Hover::new(id, window, cx));
         let notes_hover = Hover::new("review-notes", window, cx);
         let review = self.review.read(cx);
+        let reviewed = review.reviewed;
+        let can_review = review.revision.is_some() && review.error.is_none();
         let request = review.request.clone();
         let note_count = self.git.read(cx).notes(&request.target).len();
         let patch = review.patch.clone();
@@ -367,6 +369,24 @@ impl Render for DiffPanel {
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(div().flex_1().min_w_0().truncate().text_sm().child(source))
+                    .child({
+                        let hover = Hover::new("diff-reviewed", window, cx);
+                        Button::new("diff-reviewed")
+                            .small()
+                            .cursor_pointer()
+                            .label(if reviewed {
+                                "✓ Reviewed"
+                            } else {
+                                "Mark reviewed"
+                            })
+                            .tooltip("Acknowledges this exact diff. Changes invalidate the mark.")
+                            .disabled(!can_review)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.review
+                                    .update(cx, |review, cx| review.toggle_reviewed(cx))
+                            }))
+                            .smooth_hover(ButtonLook::Ghost, &hover, cx)
+                    })
                     .child({
                         let hover = Hover::new("diff-open-file", window, cx);
                         let request = request.clone();

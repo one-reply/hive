@@ -37,6 +37,29 @@ fn save_pending(
 }
 
 impl RecoveryWriter {
+    #[cfg(test)]
+    pub(super) fn held(executor: &BackgroundExecutor) -> Self {
+        let (sender, receiver) = async_channel::bounded(1);
+        let (_, done) = mpsc::channel();
+        Self {
+            sender,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            done,
+            _task: executor.spawn(async move { while receiver.recv().await.is_ok() {} }),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn complete_held(&self) {
+        for (_, pending) in std::mem::take(&mut *self.pending.lock().unwrap()) {
+            for done in pending.completions {
+                if !done.is_closed() {
+                    done.try_send(Ok(())).unwrap();
+                }
+            }
+        }
+    }
+
     pub(super) fn new(executor: &BackgroundExecutor) -> (Self, async_channel::Receiver<String>) {
         let (sender, receiver) = async_channel::bounded(1);
         let pending = Arc::new(Mutex::new(HashMap::new()));

@@ -1,4 +1,4 @@
-//! Substring matching and tree projection for the Files navigator, without UI or I/O.
+//! Ranked fuzzy matching and tree projection for the Files navigator, without UI or I/O.
 
 use super::tree::{Contents, Node, NodeKind};
 use std::{
@@ -10,7 +10,13 @@ use std::{
 /// Matching files and their ancestors, with byte ranges in each displayed basename.
 #[derive(Default)]
 pub struct Matches {
-    rows: BTreeMap<PathBuf, Vec<Range<usize>>>,
+    rows: BTreeMap<PathBuf, Match>,
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+struct Match {
+    ranges: Vec<Range<usize>>,
+    score: usize,
 }
 
 impl Matches {
@@ -24,7 +30,10 @@ impl Matches {
 
     /// Matching byte ranges in the original, unmodified row label.
     pub fn highlights(&self, path: &Path) -> &[Range<usize>] {
-        self.rows.get(path).map(Vec::as_slice).unwrap_or_default()
+        self.rows
+            .get(path)
+            .map(|row| row.ranges.as_slice())
+            .unwrap_or_default()
     }
 
     /// Retains matching files and their ancestors, opening all but manually closed folders.
@@ -45,10 +54,31 @@ impl Matches {
                 }
             }
         });
+        nodes.sort_by_key(|node| {
+            std::cmp::Reverse(self.rows.get(&node.path).map_or(0, |row| row.score))
+        });
+    }
+
+    /// Boosts equally strong matches using most-recent-first paths from this worktree.
+    pub fn prefer_recent(&mut self, paths: &[PathBuf]) {
+        for (index, path) in paths.iter().take(10).enumerate() {
+            if !self.rows.contains_key(path) {
+                continue;
+            }
+            let score = self.rows.get(path).map_or(0, |row| row.score) + 10 - index;
+            for ancestor in path.ancestors() {
+                if let Some(row) = self.rows.get_mut(ancestor) {
+                    row.score = row.score.max(score);
+                }
+            }
+        }
     }
 }
 
-/// Finds case-insensitive substrings of relative paths. Hidden ancestors hide a whole path.
+/// Finds case-insensitive substrings of the path and subsequences of the file name, ranking
+/// exact names, prefixes and substrings first. A query with `/` also matches as a subsequence
+/// of the whole path.
+/// Hidden ancestors hide a whole path.
 /// An empty query has no matches: callers use the ordinary tree in that case.
 pub fn find(paths: &[PathBuf], query: &str, show_hidden: bool) -> Matches {
     let query = lowercase(query);
@@ -66,10 +96,52 @@ pub fn find(paths: &[PathBuf], query: &str, show_hidden: bool) -> Matches {
         }
         let text = path.to_string_lossy();
         let folded = lowercase(&text);
-        if !folded.contains(&query) {
+        let contiguous = folded.contains(&query);
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let name_start = text.len() - name.len();
+        let fuzzy = if contiguous {
+            None
+        } else {
+            subsequence(&name, &query)
+                .map(|ranges| {
+                    ranges
+                        .into_iter()
+                        .map(|r| r.start + name_start..r.end + name_start)
+                        .collect()
+                })
+                // Across directories only when the query names a path: the letters of a short
+                // word appear, in order, somewhere along most paths of a repository.
+                .or_else(|| {
+                    query
+                        .contains('/')
+                        .then(|| subsequence(&text, &query))
+                        .flatten()
+                })
+        };
+        if !contiguous && fuzzy.is_none() {
             continue;
         }
-        let ranges: Vec<_> = if text.is_ascii() {
+        let name = lowercase(&name);
+        let score = if name == query {
+            500
+        } else if name.starts_with(&query) {
+            400
+        } else if name.contains(&query) {
+            300
+        } else if contiguous {
+            200
+        } else {
+            fuzzy
+                .as_ref()
+                .and_then(|ranges| ranges.first().zip(ranges.last()))
+                .filter(|(first, _)| first.start >= name_start)
+                .map_or(100, |(first, last)| {
+                    120 + 50usize.saturating_sub(text[first.start..last.end].chars().count())
+                })
+        };
+        let ranges: Vec<_> = if let Some(ranges) = fuzzy {
+            ranges
+        } else if text.is_ascii() {
             folded
                 .match_indices(&query)
                 .map(|(start, value)| start..start + value.len())
@@ -93,7 +165,9 @@ pub fn find(paths: &[PathBuf], query: &str, show_hidden: bool) -> Matches {
             let name = ancestor.file_name().unwrap_or_default().to_string_lossy();
             let end = ancestor.to_string_lossy().len();
             let start = end - name.len();
-            let highlights = matches.rows.entry(ancestor.into()).or_default();
+            let row = matches.rows.entry(ancestor.into()).or_default();
+            row.score = row.score.max(score);
+            let highlights = &mut row.ranges;
             for range in &ranges {
                 let left = range.start.max(start);
                 let right = range.end.min(end);
@@ -103,7 +177,8 @@ pub fn find(paths: &[PathBuf], query: &str, show_hidden: bool) -> Matches {
             }
         }
     }
-    for ranges in matches.rows.values_mut() {
+    for row in matches.rows.values_mut() {
+        let ranges = &mut row.ranges;
         if ranges.len() < 2 {
             continue;
         }
@@ -123,6 +198,24 @@ pub fn find(paths: &[PathBuf], query: &str, show_hidden: bool) -> Matches {
     matches
 }
 
+fn subsequence(text: &str, query: &str) -> Option<Vec<Range<usize>>> {
+    let mut needle = query.chars();
+    let mut next = needle.next()?;
+    let mut ranges = Vec::new();
+    for (offset, character) in text.char_indices() {
+        for folded in character.to_lowercase() {
+            if folded == next {
+                ranges.push(offset..offset + character.len_utf8());
+                match needle.next() {
+                    Some(character) => next = character,
+                    None => return Some(ranges),
+                }
+            }
+        }
+    }
+    None
+}
+
 fn lowercase(text: &str) -> String {
     if text.is_ascii() {
         text.to_ascii_lowercase()
@@ -134,6 +227,16 @@ fn lowercase(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compact_filename_initials_rank_above_sparse_directory_matches() {
+        let paths = vec![
+            PathBuf::from("node_modules/.bin/typescript-language-server"),
+            PathBuf::from("scopes.ts"),
+        ];
+        let found = find(&paths, "scps", true);
+        assert!(found.rows[&paths[1]].score > found.rows[&paths[0]].score);
+        assert!(found.highlights(Path::new("node_modules")).is_empty());
+    }
     use crate::{
         files::{
             Entry,
@@ -141,6 +244,67 @@ mod tests {
         },
         settings::FilesSettings,
     };
+
+    #[test]
+    fn fuzzy_unicode_ranges_are_valid_and_names_rank_above_path_matches() {
+        let paths = vec![
+            "Код/ЇжакТест.rs".into(),
+            "src/it.rs".into(),
+            "it/other.rs".into(),
+        ];
+        let matches = find(&paths, "їт", true);
+        let name = "ЇжакТест.rs";
+        assert_eq!(
+            matches
+                .highlights(&paths[0])
+                .iter()
+                .map(|range| &name[range.clone()])
+                .collect::<Vec<_>>(),
+            ["Ї", "Т"]
+        );
+        let mut matches = find(&paths, "it", true);
+        assert!(matches.rows[&paths[1]].score > matches.rows[&paths[2]].score);
+        matches.prefer_recent(&[paths[2].clone()]);
+        assert!(matches.rows[&paths[1]].score > matches.rows[&paths[2]].score);
+    }
+
+    #[test]
+    fn a_word_is_not_matched_letter_by_letter_across_directories() {
+        let paths: Vec<PathBuf> = vec![
+            "crates/hive/src/state/files.rs".into(),
+            "crates/hive/src/state/tests.rs".into(),
+            "crates/hive/src/terminal_session_input.rs".into(),
+        ];
+        // "t…e…s…t" runs through "crates/…/state" of every path; only names may be fuzzy.
+        let found = find(&paths, "test", true);
+        assert!(!found.rows.contains_key(&paths[0]));
+        assert!(found.rows[&paths[1]].score > found.rows[&paths[2]].score);
+        // A path-shaped query asks for exactly that.
+        assert!(
+            find(&paths, "hive/stfil", true)
+                .rows
+                .contains_key(&paths[0])
+        );
+        assert!(
+            find(&paths, "state/files", true)
+                .rows
+                .contains_key(&paths[0])
+        );
+    }
+
+    #[test]
+    fn a_large_index_has_stable_results() {
+        let paths: Vec<PathBuf> = (0..20_000)
+            .map(|n| format!("src/group{n}/example{n}.rs").into())
+            .collect();
+        let a = find(&paths, "ex999", true);
+        let b = find(&paths, "ex999", true);
+        assert_eq!(a.rows, b.rows);
+        assert!(
+            a.rows
+                .contains_key(&PathBuf::from("src/group999/example999.rs"))
+        );
+    }
 
     #[test]
     fn matches_names_paths_case_and_multiple_occurrences() {

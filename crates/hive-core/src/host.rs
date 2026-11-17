@@ -1,13 +1,16 @@
 //! Where a project lives. Remote v1 is simply "the same command, run through `ssh`".
 
 pub mod environment;
+mod login_shell;
+pub mod preamble;
 pub mod ssh_config;
 
+pub(crate) use login_shell::quote;
+use login_shell::{exec_sh, in_login_environment, quote_path};
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use std::{
     ffi::{OsStr, OsString},
-    os::unix::ffi::{OsStrExt, OsStringExt},
     path::Path,
 };
 
@@ -24,6 +27,7 @@ impl Host {
     /// Build a command to run `program args` on this host, optionally inside `cwd`.
     /// A local command runs in the user's login-shell environment once
     /// [`environment::load`] has captured it, so hooks and CLIs resolve as in a terminal.
+    /// A remote one runs with `sh`, whatever the account's login shell is.
     pub fn command(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> Command {
         match self {
             Host::Local => {
@@ -38,18 +42,31 @@ impl Host {
                 cmd
             }
             Host::Ssh { target } => {
-                let mut script = OsString::new();
-                if let Some(dir) = cwd {
-                    script.push("cd ");
-                    script.push(quote_path(dir));
-                    script.push(" && ");
-                }
+                let mut script = change_directory(cwd);
                 script.push(quote(program));
                 for arg in args {
                     script.push(" ");
                     script.push(quote(arg));
                 }
                 ssh(target, false, &script)
+            }
+        }
+    }
+
+    /// Run the POSIX `script` with `sh` in the account's login environment, inside `cwd`, so
+    /// tools resolve as in the user's terminal. Locally that is the environment
+    /// [`environment::load`] captured; over SSH the login shell reads its profile first.
+    ///
+    /// stdout carries whatever startup files print, then [`preamble::MARKER`], then the
+    /// script's own output: read it with [`preamble::skip`] or [`preamble::strip`].
+    pub fn login_command(&self, script: &str, cwd: Option<&Path>) -> Command {
+        let action = format!("printf %s {}; {script}", preamble::MARKER);
+        match self {
+            Host::Local => self.command("sh", &["-c", &action], cwd),
+            Host::Ssh { target } => {
+                let mut posix = change_directory(cwd);
+                posix.push(in_login_environment(OsStr::new(&action)));
+                ssh(target, false, &posix)
             }
         }
     }
@@ -86,33 +103,27 @@ impl Host {
                 "SSH terminal requires a remote host",
             ));
         };
-        let action = match program {
+        let mut posix = change_directory(Some(cwd));
+        match program {
             Some((program, args)) => {
                 let mut action = format!("exec {}", quote(program));
                 for arg in args {
                     action.push(' ');
                     action.push_str(&quote(arg));
                 }
-                format!("exec \"${{SHELL:-/bin/sh}}\" -lc {}", quote(&action))
+                posix.push(in_login_environment(OsStr::new(&action)));
             }
-            None => "exec \"${SHELL:-/bin/sh}\" -l".into(),
-        };
-        let mut posix = OsString::from("cd ");
-        posix.push(quote_path(cwd));
-        posix.push(format!(" && {action}"));
-        // sshd hands this line to the account's login shell, which may be fish or csh; neither
-        // reads `${SHELL:-…}`. `exec sh -c '…'` means the same in all of them.
-        let mut script = OsString::from("exec sh -c ");
-        script.push(quote_for_login_shell(&posix));
-        Ok(ssh(target, true, &script))
+            // `-l` on its own is the one form every login shell, csh included, accepts.
+            None => posix.push("exec \"${SHELL:-/bin/sh}\" -l"),
+        }
+        Ok(ssh(target, true, &posix))
     }
 
     /// Check a remote CLI in the login environment without starting the agent.
     pub fn check_executable(&self, program: &str) -> Result<(), String> {
-        let action = format!("command -v {} >/dev/null", quote(program));
-        let script = format!("exec \"${{SHELL:-/bin/sh}}\" -lc {}", quote(&action));
+        let script = format!("command -v {} >/dev/null", quote(program));
         let output = crate::command::run(
-            self.command("sh", &["-c", &script], None),
+            self.login_command(&script, None),
             &[],
             &crate::command::Cancellation::default(),
             std::time::Duration::from_secs(15),
@@ -130,7 +141,20 @@ impl Host {
     }
 }
 
-fn ssh(target: &str, interactive: bool, script: &OsStr) -> Command {
+/// `cd <dir> && `, the start of a remote POSIX script, or nothing without a directory.
+fn change_directory(cwd: Option<&Path>) -> OsString {
+    let mut script = OsString::new();
+    if let Some(dir) = cwd {
+        script.push("cd ");
+        script.push(quote_path(dir));
+        script.push(" && ");
+    }
+    script
+}
+
+/// sshd hands the command line to the account's login shell, so `posix` travels as
+/// `exec sh -c <posix>` written for any of them.
+fn ssh(target: &str, interactive: bool, posix: &OsStr) -> Command {
     let mut command = Command::new("/usr/bin/ssh");
     command.args([
         if interactive { "-tt" } else { "-T" },
@@ -147,187 +171,30 @@ fn ssh(target: &str, interactive: bool, script: &OsStr) -> Command {
         "--",
         target,
     ]);
-    command.arg(script);
+    command.arg(exec_sh(posix));
     command
 }
 
-fn quote_path(path: &Path) -> OsString {
-    let mut bytes = vec![b'\''];
-    for &byte in path.as_os_str().as_bytes() {
-        if byte == b'\'' {
-            bytes.extend_from_slice(b"'\\''");
-        } else {
-            bytes.push(byte);
-        }
-    }
-    bytes.push(b'\'');
-    OsString::from_vec(bytes)
-}
-
-/// Single-quotes `value` so that sh, fish and csh read back the same bytes. Inside single
-/// quotes fish treats `\\` and `\'` as escapes, so a backslash is written outside them.
-fn quote_for_login_shell(value: &OsStr) -> OsString {
-    let mut bytes = vec![b'\''];
-    for &byte in value.as_bytes() {
-        match byte {
-            b'\'' => bytes.extend_from_slice(b"'\\''"),
-            b'\\' => bytes.extend_from_slice(b"'\\\\'"),
-            _ => bytes.push(byte),
-        }
-    }
-    bytes.push(b'\'');
-    OsString::from_vec(bytes)
-}
-
-/// POSIX single-quote escaping.
-pub(crate) fn quote(s: &str) -> String {
-    if !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@".contains(c))
-    {
-        return s.to_string();
-    }
-    format!("'{}'", s.replace('\'', "'\\''"))
+/// What sshd runs for `command` on an account whose login shell is `shell`: `shell -c <line>`
+/// in `home`, with sshd's small environment, here on this machine.
+#[cfg(test)]
+pub(crate) fn as_login_shell(command: &Command, shell: &Path, home: &Path) -> Command {
+    assert_eq!(command.get_program(), "/usr/bin/ssh");
+    let line = command
+        .get_args()
+        .last()
+        .expect("ssh passes one command line");
+    let mut local = Command::new(shell);
+    local
+        .arg("-c")
+        .arg(line)
+        .current_dir(home)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home)
+        .env("SHELL", shell);
+    local
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ssh_cwd_keeps_non_utf8_bytes_and_quotes_metacharacters() {
-        let host = Host::Ssh {
-            target: "home".into(),
-        };
-        let path =
-            std::path::PathBuf::from(OsString::from_vec(b"/tmp/\xff'$(touch nope)".to_vec()));
-        let command = host.command("pwd", &[], Some(&path));
-        let script = command.get_args().last().unwrap().as_bytes();
-        assert!(script.starts_with(b"cd '/tmp/\xff'\\''$(touch nope)' && "));
-        let terminal = host.terminal_command(&path, None).unwrap();
-        let script = read_by_sh(terminal.get_args().last().unwrap());
-        assert!(script.starts_with(b"cd '/tmp/\xff'\\''$(touch nope)' && exec "));
-        assert!(!script.windows(3).any(|bytes| bytes == [0xef, 0xbf, 0xbd]));
-    }
-
-    /// What `sh` receives as its script from `exec sh -c '…'`: the real `/bin/sh` unquotes it.
-    fn read_by_sh(line: &OsStr) -> Vec<u8> {
-        let quoted = line
-            .as_bytes()
-            .strip_prefix(b"exec sh -c ")
-            .expect("terminal line starts with exec sh -c");
-        let mut print = b"printf %s ".to_vec();
-        print.extend_from_slice(quoted);
-        let output = Command::new("/bin/sh")
-            .arg("-c")
-            .arg(OsString::from_vec(print))
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        output.stdout
-    }
-
-    #[test]
-    fn remote_terminal_line_reads_the_same_in_sh_fish_and_csh() {
-        let host = Host::Ssh {
-            target: "home".into(),
-        };
-        let command = host
-            .terminal_command(Path::new("/srv/it's\\here"), None)
-            .unwrap();
-        let line = command.get_args().last().unwrap();
-        assert_eq!(
-            read_by_sh(line),
-            b"cd '/srv/it'\\''s\\here' && exec \"${SHELL:-/bin/sh}\" -l"
-        );
-        // Outside `sh -c '…'` nothing is left for the login shell to expand, and a backslash
-        // only ever appears as `'\''` or `'\\'`, which fish and csh read as sh does.
-        let line = line.to_str().unwrap();
-        let literal = line.replace("'\\''", "").replace("'\\\\'", "");
-        assert!(!literal.contains('\\'));
-        assert!(line.starts_with("exec sh -c 'cd "));
-        assert!(line.ends_with('\''));
-    }
-
-    #[test]
-    fn remote_terminal_uses_remote_cwd_and_never_local_current_dir() {
-        let host = Host::Ssh {
-            target: "home".into(),
-        };
-        let command = host
-            .terminal_command(
-                Path::new("/srv/my app's code"),
-                Some(("codex", &["--model", "a b"])),
-            )
-            .unwrap();
-        assert!(command.get_current_dir().is_none());
-        let args: Vec<_> = command.get_args().map(|a| a.to_string_lossy()).collect();
-        assert_eq!(args[0], "-tt");
-        let script = String::from_utf8(read_by_sh(command.get_args().last().unwrap())).unwrap();
-        assert!(script.starts_with("cd '/srv/my app'\\''s code' && exec"));
-        assert!(script.contains("${SHELL:-/bin/sh}"));
-        assert!(
-            !args
-                .iter()
-                .any(|arg| arg.contains("StrictHostKeyChecking=no"))
-        );
-        assert!(
-            Host::Ssh {
-                target: "home -A".into()
-            }
-            .validate()
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn local_command_runs_in_the_login_environment() {
-        let login = environment::parse(
-            b"__HIVE_ENVIRONMENT_BEGIN__HIVE_LOGIN_SHELL_TEST=1\0__HIVE_ENVIRONMENT_END__",
-        )
-        .expect("markers are present");
-        environment::install(login);
-        let cmd = Host::Local.command("git", &["status"], None);
-        let value = cmd
-            .get_envs()
-            .find(|(key, _)| *key == "HIVE_LOGIN_SHELL_TEST")
-            .and_then(|(_, value)| value);
-        assert_eq!(value, Some(std::ffi::OsStr::new("1")));
-    }
-
-    #[test]
-    fn ssh_command_is_quoted() {
-        let host = Host::Ssh {
-            target: "dev".into(),
-        };
-        let cmd = host.command(
-            "git",
-            &["log", "--format=%s it's"],
-            Some(Path::new("/my dir")),
-        );
-        let args: Vec<_> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(cmd.get_program(), "/usr/bin/ssh");
-        assert_eq!(
-            args.last().unwrap(),
-            "cd '/my dir' && git log '--format=%s it'\\''s'"
-        );
-    }
-
-    #[test]
-    fn ssh_target_never_becomes_an_option() {
-        let host = Host::Ssh {
-            target: "-oProxyCommand=touch /tmp/pwned".into(),
-        };
-        let cmd = host.command("git", &["status"], None);
-        let args: Vec<_> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args[args.len() - 3], "--");
-        assert_eq!(args[args.len() - 2], "-oProxyCommand=touch /tmp/pwned");
-        assert!(host.validate().is_err());
-    }
-}
+mod tests;

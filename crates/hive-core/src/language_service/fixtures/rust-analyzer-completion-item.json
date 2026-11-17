@@ -1,0 +1,24 @@
+{
+ "label": "into_boxed_slice",
+ "kind": 2,
+ "detail": "fn(self) -> Box<[T], A>",
+ "documentation": {
+  "kind": "markdown",
+  "value": "Converts the vector into [`Box<[T]>`][owned slice].\n\nBefore doing the conversion, this method discards excess capacity like [`shrink_to_fit`].\n\n[owned slice]: Box\n[`shrink_to_fit`]: Vec::shrink_to_fit\n\n# Examples\n\n```rust\nlet v = vec![1, 2, 3];\n\nlet slice = v.into_boxed_slice();\n```\n\nAny excess capacity is removed:\n\n```rust\nlet mut vec = Vec::with_capacity(10);\nvec.extend([1, 2, 3]);\n\nassert!(vec.capacity() >= 10);\nlet slice = vec.into_boxed_slice();\nassert_eq!(slice.into_vec().capacity(), 3);\n```"
+ },
+ "sortText": "7ffffff2",
+ "filterText": "into_boxed_slice",
+ "textEdit": {
+  "range": {
+   "start": {
+    "line": 22,
+    "character": 11
+   },
+   "end": {
+    "line": 22,
+    "character": 12
+   }
+  },
+  "newText": "into_boxed_slice"
+ }
+}

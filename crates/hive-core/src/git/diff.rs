@@ -93,6 +93,7 @@ pub fn read(
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",
+            "--full-index",
             if old_path.is_some() {
                 "--find-renames"
             } else {
@@ -224,6 +225,28 @@ pub fn apply_hunk(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reviewed_revision_changes_when_complete_object_changes_outside_visible_hunks() {
+        use super::*;
+        use crate::{git::reviewed::Revision, host::Host};
+        let patch = format!(
+            "diff --git a/a b/a\nindex {}..{} 100644\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n",
+            "a".repeat(40),
+            "b".repeat(40)
+        );
+        let changed = patch.replace(&"b".repeat(40), &"c".repeat(40));
+        let revision = |patch| {
+            Revision::from_diff(
+                &Host::Local,
+                Path::new("/work"),
+                "a",
+                &DiffSource::WorkingTree,
+                &parse(patch).unwrap(),
+            )
+            .unwrap()
+        };
+        assert_ne!(revision(patch), revision(changed));
+    }
     use super::*;
 
     #[test]

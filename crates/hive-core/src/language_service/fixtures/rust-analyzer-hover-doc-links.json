@@ -1,0 +1,16 @@
+{
+ "contents": {
+  "kind": "markdown",
+  "value": "\n```rust\ndemo\n```\n\n```rust\npub fn load(path: &str) -> Config\n```\n\n---\n\nReads a [`Config`](https://docs.rs/demo/0.1.0/demo/struct.Config.html) from `path`.\n\nSee [notes](file:///tmp/notes/x.command), [the share](smb://host/share),\n<smb://host/share> and [`Vec`](https://doc.rust-lang.org/stable/alloc/vec/struct.Vec.html) for details.\n\n# Examples\n\n```rust\nlet config = demo::load(\"a.toml\");\nassert_eq!(config.name, \"a.toml\");\n```"
+ },
+ "range": {
+  "start": {
+   "line": 23,
+   "character": 17
+  },
+  "end": {
+   "line": 23,
+   "character": 21
+  }
+ }
+}

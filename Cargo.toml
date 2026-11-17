@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "1.0.22"
+version = "1.0.23"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/one-reply/hive"
@@ -34,6 +34,8 @@ serde_json = "1"
 rmcp = { version = "3.10", default-features = false, features = ["server", "transport-io"] }
 tokio = { version = "1", default-features = false, features = ["rt", "time", "sync", "macros", "net"] }
 shlex = "2"
+# Already in the lockfile; stable fingerprints of the exact reviewed Git revision.
+sha2 = { version = "0.10.9", default-features = false }
 ureq = "3"
 security-framework = { version = "3.7", default-features = false }
 base64 = "0.23"
@@ -57,6 +59,9 @@ tree-sitter-typescript = "0.23"
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode"] }
 # Same version gpui-component uses for its DefinitionProvider contract.
 lsp-types = "0.97"
+# The Markdown parser behind gpui-kit's TextView, already built for it: hive-core finds links the
+# way the popover will. One copy in `cargo tree -i markdown` keeps the two parsers the same.
+markdown = "1.0.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSError", "NSString"] }

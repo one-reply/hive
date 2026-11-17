@@ -1,6 +1,6 @@
 use super::*;
 use crate::state::documents::{DocumentEvent, OpenFile};
-use crate::state::files::SearchMode;
+use crate::state::files::{FileOperation, FilesEvent, SearchMode};
 
 impl Workspace {
     pub(super) fn choose_files(&mut self, selected: bool, cx: &mut Context<Self>) {
@@ -66,12 +66,58 @@ impl Workspace {
             .clone()
             .update(cx, |files, cx| files.set_visible(visible, cx));
         let documents = AppState::get(cx).documents.clone();
+        let files = self.files_panel.read(cx).files.clone();
+        self._observers
+            .push(cx.subscribe(&files, |this, _, event: &FilesEvent, _| {
+                if event.result.is_ok()
+                    && let FileOperation::Move { from, to } = &event.operation
+                {
+                    for center in this.centers.values_mut() {
+                        center.navigation.relocate(&event.target, from, to);
+                    }
+                }
+            }));
         self._observers.push(
             cx.subscribe_in(
                 &documents,
                 window,
                 |this, _, event, window, cx| match event {
                     DocumentEvent::Open(request) => this.open_file(request.clone(), window, cx),
+                    DocumentEvent::External(target, path, position) => {
+                        crate::ui::editor_panel::source_preview::open(
+                            target.clone(),
+                            path.clone(),
+                            *position,
+                            window,
+                            cx,
+                        )
+                    }
+                    DocumentEvent::AgentDraft(target, agent, prompt) => {
+                        this.activate_target(target, cx);
+                        this.center(&(target.host.clone(), target.project.clone()), window, cx)
+                            .prepare_agent_draft(&target.path, *agent, prompt.clone(), window, cx);
+                        this.sync_active_worktrees(cx);
+                        this.save_center(
+                            &(target.host.clone(), target.project.clone()),
+                            window,
+                            cx,
+                        );
+                        cx.notify();
+                    }
+                    DocumentEvent::Reveal(target, path) => {
+                        this.activate_target(target, cx);
+                        this.show_right_tab(true, cx);
+                        let files = this.files_panel.read(cx).files.clone();
+                        let (target, path) = (target.clone(), path.clone());
+                        // Projects observers first install the selected worktree in Files.
+                        window.defer(cx, move |_, cx| {
+                            files.update(cx, |files, cx| {
+                                if files.target.as_ref() == Some(&target) {
+                                    files.reveal_in_tree(path, cx);
+                                }
+                            });
+                        });
+                    }
                     DocumentEvent::Deleted(target, path) => {
                         for center in this.centers.values_mut() {
                             center.remove_files(target, path, window, cx);
@@ -91,6 +137,14 @@ impl Workspace {
 
     fn open_file(&mut self, request: OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         let preview = request.preview;
+        let project = (request.target.host.clone(), request.target.project.clone());
+        if request.position.is_some()
+            && !preview
+            && let Some(center) = self.centers.get_mut(&project)
+            && let Some(from) = center.current_file(window, cx)
+        {
+            center.navigation.record(from);
+        }
         let documents = AppState::get(cx).documents.clone();
         let document = documents.update(cx, |documents, cx| documents.get(&request, window, cx));
         self.activate_target(&request.target, cx);
@@ -105,6 +159,30 @@ impl Workspace {
             });
         }
         drop(document);
+        cx.notify();
+    }
+
+    pub(super) fn navigate_file(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(target) = self.projects.read(cx).target() else {
+            return;
+        };
+        let project = (target.host, target.project);
+        let Some(center) = self.centers.get_mut(&project) else {
+            return;
+        };
+        let current = center.current_file(window, cx);
+        let Some(request) = center.navigation.step(forward, current) else {
+            return;
+        };
+        self.activate_target(&request.target, cx);
+        self.center(&project, window, cx)
+            .show_file(request, window, cx);
+        self.save_center(&project, window, cx);
         cx.notify();
     }
 

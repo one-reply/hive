@@ -11,7 +11,14 @@ use std::sync::Arc;
 mod completions;
 mod definitions;
 mod document;
+pub(crate) mod history;
+mod language;
+mod language_features;
+mod source_preview;
 pub(crate) use document::{Changes, Content, Document, PreviewState, SvgMode};
+pub(crate) use document::{STICKY_BORDER_WIDTH, sticky_row_limit};
+pub(crate) use language::LanguageStatus;
+pub(crate) use source_preview::SourcePreview;
 
 #[derive(Clone)]
 pub(crate) struct OpenFile {
@@ -38,6 +45,9 @@ pub(crate) enum TabPlacement {
 
 pub(crate) enum DocumentEvent {
     Open(OpenFile),
+    Reveal(Target, PathBuf),
+    AgentDraft(Target, hive_core::agent::AgentKind, String),
+    External(Target, PathBuf, Position),
     Activated(Target, PathBuf),
     Changed(Target),
     Saved(Target),
@@ -52,6 +62,15 @@ pub(crate) struct Documents {
     store: Entity<Store>,
     /// Shared by every document so `package.json`/`tsconfig` parses are reused.
     navigator: Arc<Navigator>,
+    language_sessions: Vec<(
+        hive_core::host::Host,
+        PathBuf,
+        hive_core::language_service::Family,
+        WeakEntity<language::LanguageSession>,
+    )>,
+    /// The language-tools setting the open documents were last attached under.
+    language_tools: bool,
+    _subscriptions: Vec<Subscription>,
 }
 impl EventEmitter<DocumentEvent> for Documents {}
 
@@ -77,14 +96,22 @@ impl Documents {
     pub(crate) fn emit(&self, event: DocumentEvent, cx: &mut Context<Self>) {
         cx.emit(event);
     }
-    pub fn new(store: Entity<Store>, (records, errors): (Vec<Record>, Vec<String>)) -> Self {
+    pub fn new(
+        store: Entity<Store>,
+        (records, errors): (Vec<Record>, Vec<String>),
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let language_tools = store.read(cx).state.settings.files.language_tools;
         Self {
             open: Vec::new(),
             mutating_paths: Vec::new(),
             recovered: records,
             recovery_errors: errors,
+            _subscriptions: vec![cx.observe(&store, |this, _, cx| this.apply_language_tools(cx))],
             store,
             navigator: Arc::default(),
+            language_sessions: Vec::new(),
+            language_tools,
         }
     }
 
@@ -135,10 +162,22 @@ impl Documents {
                     && r.draft.path == request.path
             })
             .map(|index| self.recovered.remove(index));
-        let (store, navigator) = (self.store.clone(), self.navigator.clone());
-        let document =
-            cx.new(|cx| Document::new(request.clone(), recovered, store, navigator, window, cx));
+        let (store, navigator, registry) =
+            (self.store.clone(), self.navigator.clone(), cx.weak_entity());
+        let document = cx.new(|cx| {
+            Document::new(
+                request.clone(),
+                recovered,
+                store,
+                registry,
+                navigator,
+                window,
+                cx,
+            )
+        });
+        self.attach_language(&document, cx);
         definitions::install(&document, cx.weak_entity(), self.navigator.clone(), cx);
+        language_features::install(&document, cx.weak_entity(), cx);
         self.open.push(document.downgrade());
         document
     }

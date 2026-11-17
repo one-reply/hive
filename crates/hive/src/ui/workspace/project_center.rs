@@ -31,6 +31,7 @@ pub(super) struct ProjectCenter {
     _observer: Subscription,
     _layout: Subscription,
     focused: Option<PanelId>,
+    pub(super) navigation: crate::state::documents::history::History,
 }
 
 impl ProjectCenter {
@@ -71,6 +72,7 @@ impl ProjectCenter {
             _observer: observer,
             _layout: layout,
             focused: None,
+            navigation: Default::default(),
         }
     }
 
