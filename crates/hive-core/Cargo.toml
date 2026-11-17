@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["dep:alacritty_terminal", "dep:rustix-openpty", "dep:polling", "dep:ureq", "dep:async-channel", "dep:security-framework"]
+desktop = ["dep:alacritty_terminal", "dep:rustix-openpty", "dep:polling", "dep:ureq", "dep:async-channel", "dep:security-framework", "dep:markdown"]
 remote-helper = []
 
 [[bin]]
@@ -24,6 +24,7 @@ serde_json.workspace = true
 shlex.workspace = true
 sha2.workspace = true
 lsp-types.workspace = true
+markdown = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 base64.workspace = true
 chrono.workspace = true

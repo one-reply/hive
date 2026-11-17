@@ -167,12 +167,15 @@ pub(super) fn completion(
             None => return Ok(None),
         };
         let source = snapshot.text.to_string();
-        Ok(Some(CompletionResponse::Array(completion_items::prepare(
-            items,
-            &source,
-            offset,
-            hive_core::completion::Family::for_path(&snapshot.path),
-        ))))
+        let family = hive_core::completion::Family::for_path(&snapshot.path);
+        let items = cx
+            .background_executor()
+            .spawn(async move { completion_items::prepare(items, &source, offset, family) })
+            .await;
+        if !cx.update(|cx| snapshot.current(cx)) {
+            return Ok(Some(CompletionResponse::Array(Vec::new())));
+        }
+        Ok(Some(CompletionResponse::Array(items)))
     }))
 }
 
@@ -224,11 +227,7 @@ impl HoverProvider for Features {
             return Task::ready(Ok(None));
         };
         cx.spawn(async move |cx| {
-            let response = request.receive().await;
-            if !cx.update(|cx| snapshot.current(cx)) {
-                return Ok(None);
-            }
-            let mut hover = match response {
+            let Hover { contents, range } = match request.receive().await {
                 Ok(Some(hover)) => hover,
                 Ok(None) => return Ok(None),
                 Err(error) => {
@@ -236,11 +235,19 @@ impl HoverProvider for Features {
                     return Ok(None);
                 }
             };
-            if let Some(range) = hover.range {
-                let source = snapshot.text.to_string();
-                hover.range = position::editor_range(&source, range);
+            // The popover opens any link it renders; see `language_service::markdown`.
+            let contents = cx
+                .background_executor()
+                .spawn(async move { language_service::markdown::hover(contents) })
+                .await;
+            if !cx.update(|cx| snapshot.current(cx)) {
+                return Ok(None);
             }
-            Ok(Some(hover))
+            let range = range.and_then(|range| {
+                let source = snapshot.text.to_string();
+                position::editor_range(&source, range)
+            });
+            Ok(Some(Hover { contents, range }))
         })
     }
 }

@@ -1,5 +1,6 @@
 use super::*;
 use gpui_kit::component::input::RopeExt as _;
+use hive_core::language_service::markdown;
 
 /// Lines one diagnostic may span and still be compared across document versions.
 const CARRIED_LINES: u32 = 200;
@@ -61,8 +62,10 @@ fn same_lines(diagnosed: &Rope, text: &Rope, range: lsp_types::Range) -> bool {
         })
 }
 
-/// Editor ranges in ascending order: the editor's diagnostic set seeks by position and loses
-/// entries pushed out of order, and servers publish in no particular order.
+/// `diagnostics` as the editor shows them. Ranges are editor positions in ascending order:
+/// the editor's diagnostic set seeks by position and loses entries pushed out of order, and
+/// servers publish in no particular order. Messages keep only web links, since the popover
+/// renders a message as Markdown and opens any link in it.
 pub(super) fn for_editor(
     source: &str,
     diagnostics: &[lsp_types::Diagnostic],
@@ -73,6 +76,7 @@ pub(super) fn for_editor(
         .filter_map(|diagnostic| {
             let mut diagnostic = diagnostic.clone();
             diagnostic.range = lines.editor_range(diagnostic.range)?;
+            diagnostic.message = markdown::restrict_links(&diagnostic.message).into_owned();
             Some(diagnostic)
         })
         .collect();
@@ -258,6 +262,23 @@ mod tests {
         assert_eq!(starts, [(1, 0), (5, 15), (5, 24), (5, 38)]);
         // A range outside the buffer is dropped, not clamped onto other text.
         assert!(for_editor("short", &[at(9, 0, 1)]).is_empty());
+    }
+    #[test]
+    fn editor_messages_link_only_to_the_web_and_ranges_use_scalar_columns() {
+        let diagnostic = Diagnostic {
+            range: Range::new(Position::new(0, 2), Position::new(0, 3)),
+            message: "see [notes](file:///x.command) or <https://docs.rs>".into(),
+            ..Default::default()
+        };
+        let [shown] = <[Diagnostic; 1]>::try_from(for_editor("😀x", &[diagnostic])).unwrap();
+        assert_eq!(
+            shown.message,
+            r"see \[notes](file:///x.command) or <https://docs.rs>"
+        );
+        assert_eq!(
+            shown.range,
+            Range::new(Position::new(0, 1), Position::new(0, 2))
+        );
     }
     #[test]
     fn diagnostics_are_bounded_and_an_empty_publication_clears_the_file() {

@@ -1,0 +1,16 @@
+{
+ "contents": {
+  "kind": "markdown",
+  "value": "\n```rust\nalloc::vec::Vec\n```\n\n```rust\nimpl<T, A> Vec<T, A>\npub fn push(&mut self, value: T)\nwhere\n    // Bounds from impl:\n    A: Allocator + Destruct,\n```\n\n---\n\n`T` = `u8`, `A` = `Global`\n\n---\n\nAppends an element to the back of a collection.\n\n# Panics\n\nPanics if the new capacity exceeds `isize::MAX` *bytes*.\n\n# Examples\n\n```rust\nlet mut vec = vec![1, 2];\nvec.push(3);\nassert_eq!(vec, [1, 2, 3]);\n```\n\n# Time complexity\n\nTakes amortized *O*(1) time. If the vector's length would exceed its\ncapacity after the push, *O*(*capacity*) time is taken to copy the\nvector's elements to a larger allocation. This expensive operation is\noffset by the *capacity* *O*(1) insertions it allows."
+ },
+ "range": {
+  "start": {
+   "line": 22,
+   "character": 11
+  },
+  "end": {
+   "line": 22,
+   "character": 15
+  }
+ }
+}

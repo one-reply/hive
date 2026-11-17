@@ -1,0 +1,16 @@
+{
+ "contents": {
+  "kind": "markdown",
+  "value": "\n```typescript\n(parameter) amount: number\n```\nthe value [x](javascript:alert(1))\n\n*@param* `amount` — the value [x](javascript:alert(1))"
+ },
+ "range": {
+  "start": {
+   "line": 11,
+   "character": 9
+  },
+  "end": {
+   "line": 11,
+   "character": 15
+  }
+ }
+}

@@ -3049,6 +3049,7 @@ dependencies = [
  "image",
  "libc",
  "lsp-types",
+ "markdown",
  "polling",
  "regex",
  "resvg 0.46.0",

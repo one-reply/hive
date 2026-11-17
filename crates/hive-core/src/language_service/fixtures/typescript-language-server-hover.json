@@ -1,0 +1,16 @@
+{
+ "contents": {
+  "kind": "markdown",
+  "value": "\n```typescript\n(alias) total(amount: number): number\nimport total\n```\nDoubles the input."
+ },
+ "range": {
+  "start": {
+   "line": 1,
+   "character": 14
+  },
+  "end": {
+   "line": 1,
+   "character": 19
+  }
+ }
+}
