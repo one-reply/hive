@@ -1,6 +1,6 @@
 use hive_core::{
     completion::{self, Family},
-    language_service::position,
+    language_service::{markdown, position},
 };
 use lsp_types::{CompletionItem, CompletionTextEdit, InsertTextFormat, Range, TextEdit};
 
@@ -22,6 +22,11 @@ pub(super) fn prepare(
             .then_with(|| a.label.cmp(&b.label))
     });
     items.truncate(completion::MAX_ITEMS);
+    // The menu renders documentation as Markdown and opens any link in it. `detail` is drawn
+    // as a plain label, which has no links.
+    for item in &mut items {
+        item.documentation = item.documentation.take().map(markdown::documentation);
+    }
     items
 }
 
@@ -163,6 +168,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["display name", "total", "Totally"]
         );
+    }
+
+    #[test]
+    fn documentation_links_only_to_the_web_and_detail_stays_plain_text() {
+        let mut total = item("total");
+        total.detail = Some("[x](file:///x)".into());
+        total.documentation = Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: "[notes](file:///x.command) and [docs](https://docs.rs)".into(),
+        }));
+        let [prepared] =
+            <[CompletionItem; 1]>::try_from(prepare(vec![total], "tot", 3, Family::Other)).unwrap();
+        assert_eq!(
+            prepared.documentation,
+            Some(Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: r"\[notes](file:///x.command) and [docs](https://docs.rs)".into(),
+            }))
+        );
+        assert_eq!(prepared.detail.as_deref(), Some("[x](file:///x)"));
     }
 
     #[test]

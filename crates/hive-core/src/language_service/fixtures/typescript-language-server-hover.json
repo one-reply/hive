@@ -1,0 +1,16 @@
+{
+ "contents": {
+  "kind": "markdown",
+  "value": "\n```typescript\nfunction greet(name: string, times?: number): string\n```\nGreets a person by name.\n\n*@param* `name` — The person to greet.  \n\n*@param* `times` — How many times; defaults to `1`.  \n\n*@returns* — The greeting text.  \n\n*@example*  \n```\ngreet(\"Ada\", 2)\n```"
+ },
+ "range": {
+  "start": {
+   "line": 11,
+   "character": 9
+  },
+  "end": {
+   "line": 11,
+   "character": 14
+  }
+ }
+}

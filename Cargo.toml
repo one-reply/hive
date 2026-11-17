@@ -59,6 +59,9 @@ tree-sitter-typescript = "0.23"
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode"] }
 # Same version gpui-component uses for its DefinitionProvider contract.
 lsp-types = "0.97"
+# The Markdown parser behind gpui-kit's TextView, already built for it: hive-core finds links the
+# way the popover will. One copy in `cargo tree -i markdown` keeps the two parsers the same.
+markdown = "1.0.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSError", "NSString"] }

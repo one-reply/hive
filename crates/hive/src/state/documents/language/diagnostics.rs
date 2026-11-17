@@ -1,4 +1,5 @@
 use super::*;
+use hive_core::language_service::markdown;
 
 impl LanguageSession {
     pub(super) fn receive_diagnostics(&mut self, params: PublishDiagnosticsParams) {
@@ -16,6 +17,23 @@ impl LanguageSession {
 
 fn current(synced: &Synced, text: &Rope, version: Option<i32>) -> bool {
     synced.text == *text && version.is_none_or(|version| version == synced.version)
+}
+
+/// `diagnostics` as the editor shows them: editor positions, and messages restricted to web
+/// links, since the popover renders a message as Markdown and opens any link in it.
+pub(super) fn for_editor(
+    source: &str,
+    diagnostics: &[lsp_types::Diagnostic],
+) -> Vec<lsp_types::Diagnostic> {
+    diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            let mut diagnostic = diagnostic.clone();
+            diagnostic.range = position::editor_range(source, diagnostic.range)?;
+            diagnostic.message = markdown::restrict_links(&diagnostic.message).into_owned();
+            Some(diagnostic)
+        })
+        .collect()
 }
 
 impl Documents {
@@ -110,7 +128,7 @@ fn retain_bounded(
 
 #[cfg(test)]
 mod tests {
-    use super::{HashMap, Rope, Synced, current, retain_bounded};
+    use super::{HashMap, Rope, Synced, current, for_editor, retain_bounded};
     use lsp_types::*;
     #[test]
     fn stale_diagnostic_versions_and_unsynchronized_edits_are_not_displayed() {
@@ -124,6 +142,23 @@ mod tests {
         assert!(!current(&synced, &text, Some(2)));
         assert!(!current(&synced, &text, Some(4)));
         assert!(!current(&synced, &Rope::from("changed"), Some(3)));
+    }
+    #[test]
+    fn editor_messages_link_only_to_the_web_and_ranges_use_scalar_columns() {
+        let diagnostic = Diagnostic {
+            range: Range::new(Position::new(0, 2), Position::new(0, 3)),
+            message: "see [notes](file:///x.command) or <https://docs.rs>".into(),
+            ..Default::default()
+        };
+        let [shown] = <[Diagnostic; 1]>::try_from(for_editor("😀x", &[diagnostic])).unwrap();
+        assert_eq!(
+            shown.message,
+            r"see \[notes](file:///x.command) or <https://docs.rs>"
+        );
+        assert_eq!(
+            shown.range,
+            Range::new(Position::new(0, 1), Position::new(0, 2))
+        );
     }
     #[test]
     fn diagnostics_are_bounded_and_an_empty_publication_clears_the_file() {

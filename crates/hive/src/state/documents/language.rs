@@ -352,15 +352,7 @@ impl Document {
         if self.diagnostics == diagnostics {
             return;
         }
-        let source = text.to_string();
-        let converted: Vec<_> = diagnostics
-            .iter()
-            .filter_map(|diagnostic| {
-                let mut diagnostic = diagnostic.clone();
-                diagnostic.range = position::editor_range(&source, diagnostic.range)?;
-                Some(diagnostic)
-            })
-            .collect();
+        let converted = diagnostics::for_editor(&text.to_string(), &diagnostics);
         self.diagnostics = diagnostics;
         self.editor.update(cx, |editor, cx| {
             if let Some(diagnostics) = editor.diagnostics_mut() {

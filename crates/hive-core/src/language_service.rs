@@ -3,6 +3,7 @@ use crate::host::Host;
 use std::path::PathBuf;
 
 mod events;
+pub mod markdown;
 mod paths;
 pub mod position;
 mod process;
