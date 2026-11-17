@@ -8,7 +8,6 @@ use gpui_kit::component::{
     button::Button,
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
-    notification::Notification,
     tree::{Tree, TreeEvent, TreeState},
     v_flex,
 };
@@ -71,6 +70,9 @@ pub(crate) struct FilesPanel {
 impl FilesPanel {
     pub fn new(files: Entity<Files>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (search_input, search_subscription) = search::input(window, cx);
+        // A panel created while Hive is in the background must not poll until it returns.
+        let window_active = window.is_window_active();
+        files.update(cx, |files, cx| files.set_window_active(window_active, cx));
         let tree = cx.new(|cx| TreeState::new(cx));
         let mut motion = motion::TreeMotion::default();
         motion.observe(tree.read(cx), true);
@@ -98,26 +100,17 @@ impl FilesPanel {
                 if !state.loading {
                     this.manual_refresh = false;
                 }
-                if this
-                    .edit
-                    .as_ref()
-                    .is_some_and(|edit| Some(&edit.target) != state.target.as_ref())
-                {
-                    this.edit = None;
-                }
                 cx.notify();
             }),
             cx.subscribe_in(&files, window, |this, _, event: &FilesEvent, window, cx| {
-                if this
-                    .edit
-                    .as_ref()
-                    .is_some_and(|edit| edit.target == event.target)
-                {
+                if this.edit.is_some() {
                     match &event.result {
                         Ok(()) => {
                             // The rename field held focus; hand it back to its row. A new
                             // file opens in the editor instead, which takes focus itself.
-                            if this.edit.take().is_some_and(|e| e.renaming().is_some()) {
+                            // A panel hidden since then has no row on screen to focus.
+                            let renamed = this.edit.take().is_some_and(|e| e.renaming().is_some());
+                            if renamed && this.files.read(cx).is_visible() {
                                 this.focus_tree(window, cx);
                             }
                         }
@@ -246,7 +239,7 @@ impl Render for FilesPanel {
         let files = self.files.clone();
         let state = files.read(cx);
         let tree = self.tree.clone();
-        let target = state.target.clone();
+        let target = state.target().cloned();
         let title = target
             .as_ref()
             .and_then(|t| t.path.file_name())
@@ -375,8 +368,7 @@ impl Render for FilesPanel {
                                     .read(cx)
                                     .files
                                     .read(cx)
-                                    .target
-                                    .as_ref()
+                                    .target()
                                     .map(|t| t.path.clone());
                                 let copy_root = root.clone();
                                 menu.item(
@@ -466,7 +458,7 @@ impl Render for FilesPanel {
                         .disabled(!available || self.files.read(cx).content_query().text.is_empty())
                         .on_click(cx.listener(|this, _, window, cx| {
                             let files = this.files.read(cx);
-                            if let Some(target) = files.target.clone() {
+                            if let Some(target) = files.target().cloned() {
                                 let query = files.content_query().clone();
                                 crate::ui::excerpts::open(
                                     crate::state::excerpts::Query::Content(query),

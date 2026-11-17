@@ -55,7 +55,7 @@ fn placeholder(mode: SearchMode) -> &'static str {
 
 impl FilesPanel {
     pub(crate) fn focus_search(&self, window: &mut Window, cx: &mut App) {
-        if self.files.read(cx).target.is_none() {
+        if self.files.read(cx).target().is_none() {
             return;
         }
         self.search_input.update(cx, |input, cx| {

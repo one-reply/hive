@@ -43,7 +43,7 @@ pub(super) fn render(
         .then(|| state.decorations.get(&path))
         .flatten()
         .cloned();
-    let target = state.target.clone();
+    let target = state.target().cloned();
     let busy = state.busy;
     let style = search::match_highlight(cx);
     let highlights = state

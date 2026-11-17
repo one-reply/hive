@@ -5,6 +5,8 @@ use crate::ui::text_field::TextField;
 use crate::{
     app::AppState,
     state::git::{Git, Section},
+    state::store::Store,
+    state::worktree_memory::WorktreeMemory,
 };
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::Disableable as _;
@@ -33,6 +35,8 @@ mod files;
 mod header;
 mod operation;
 mod review;
+#[cfg(test)]
+mod tests;
 
 actions!(source_control, [CommitChanges]);
 
@@ -44,6 +48,13 @@ const BADGE_SIZE: Pixels = px(16.);
 const EMPTY_ICON: Pixels = px(28.);
 const TAB_HOVER_OPACITY: f32 = 0.05;
 
+/// How one worktree's file lists are narrowed: the filter text and the folded groups.
+#[derive(Default, PartialEq)]
+struct ListView {
+    filter: String,
+    collapsed: HashSet<&'static str>,
+}
+
 pub(crate) struct GitPanel {
     git: Entity<Git>,
     /// The agent the error card offers; the only setting this panel draws.
@@ -53,6 +64,8 @@ pub(crate) struct GitPanel {
     draft_target: Option<Target>,
     /// File groups the user folded; everything else is expanded.
     collapsed: HashSet<&'static str>,
+    /// Filter and folded groups of the worktrees that are not shown.
+    list_views: WorktreeMemory<ListView>,
     changes_list: ListState,
     change_rows: Vec<(usize, Option<usize>)>,
     /// Session-only height of the commit message box.
@@ -62,8 +75,17 @@ pub(crate) struct GitPanel {
 
 impl GitPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let git = AppState::get(cx).git.clone();
-        let store = AppState::get(cx).store.clone();
+        let app = AppState::get(cx);
+        Self::over(app.git.clone(), app.store.clone(), window, cx)
+    }
+
+    /// The panel of `git`, taking the one setting it draws from `store`.
+    fn over(
+        git: Entity<Git>,
+        store: Entity<Store>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
         let message = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -86,6 +108,9 @@ impl GitPanel {
                     .as_ref()
                     .map(|t| state.draft(t).to_string())
                     .unwrap_or_default();
+                if this.draft_target != target {
+                    this.follow_list_view(target.as_ref(), window, cx);
+                }
                 this.draft_target = target;
                 if this.message.read(cx).value().as_ref() != draft {
                     this.message
@@ -104,17 +129,41 @@ impl GitPanel {
                 }
             }),
         ];
+        let draft_target = git.read(cx).target.clone();
         Self {
             git,
             default_agent: store.read(cx).state.settings.default_cli_agent(),
             filter,
             message,
-            draft_target: None,
+            draft_target,
             collapsed: HashSet::new(),
+            list_views: WorktreeMemory::default(),
             changes_list: ListState::new(0, ListAlignment::Top, ROW_HEIGHT),
             change_rows: Vec::new(),
             message_size: commit::MessageSize::default(),
             _subscriptions: subscriptions,
+        }
+    }
+
+    /// Parks the filter and folded groups of the worktree shown so far (`draft_target`) and
+    /// shows the ones `target` had.
+    fn follow_list_view(
+        &mut self,
+        target: Option<&Target>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let shown = ListView {
+            filter: self.filter.read(cx).value().to_string(),
+            collapsed: std::mem::take(&mut self.collapsed),
+        };
+        let view = self
+            .list_views
+            .switch(self.draft_target.as_ref(), target, shown);
+        self.collapsed = view.collapsed;
+        if self.filter.read(cx).value().as_ref() != view.filter {
+            self.filter
+                .update(cx, |filter, cx| filter.set_value(view.filter, window, cx));
         }
     }
 

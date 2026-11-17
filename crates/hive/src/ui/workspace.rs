@@ -31,7 +31,7 @@ use crate::ui::status_bar::StatusBarView;
 use crate::ui::{conflict_panel::ConflictPanel, diff_panel::DiffPanel, git_panel::GitPanel};
 use crate::ui::{keymap, theme};
 use hive_core::agent::AgentStatus;
-use hive_core::projects::{Project, Worktree};
+use hive_core::projects::{Project, Target, Worktree};
 use switcher::attention::Attention;
 
 mod center;
@@ -41,12 +41,14 @@ mod git;
 pub(crate) mod history;
 mod persistence;
 mod project_center;
+mod right_tab;
 pub(crate) mod switcher;
 
 use crate::state::store::SaveError;
 pub(crate) use git::right_sidebar_toggle;
 use gpui_kit::component::{WindowExt as _, notification::Notification};
 use project_center::ProjectCenter;
+use right_tab::{RightTab, RightTabs};
 
 // Bound in `ui::keymap`, where the user can reassign them.
 actions!(
@@ -83,7 +85,13 @@ pub struct Workspace {
     /// The project whose center fills the window; `None` shows the welcome screen.
     shown: Option<(Host, PathBuf)>,
     git_panel: Entity<GitPanel>,
+    /// The Files panel of the selected worktree, one of `files_panels`.
     files_panel: Entity<crate::ui::files_panel::FilesPanel>,
+    /// One Files panel per worktree visited this session, so each keeps its tree, scroll
+    /// and search; `None` is the panel shown while nothing is selected.
+    files_panels: HashMap<Option<Target>, files::WorktreeFiles>,
+    /// The right sidebar's tab in the worktrees that are not shown.
+    right_tabs: RightTabs,
     git_open: bool,
     /// Set by the first toggle, so the right sidebar doesn't slide in on launch.
     git_animate: bool,
@@ -165,6 +173,7 @@ impl Workspace {
                 );
             }),
             cx.observe_in(&projects, window, |this, _, window, cx| {
+                this.sync_right_sidebar(window, cx);
                 this.sync_selection(window, cx)
             }),
             cx.subscribe_in(&agents, window, |this, _, event, window, cx| match event {
@@ -238,8 +247,9 @@ impl Workspace {
             }),
         ];
 
-        let files = cx.new(|cx| crate::state::files::Files::new(projects.clone(), None, cx));
-        let files_panel = cx.new(|cx| crate::ui::files_panel::FilesPanel::new(files, window, cx));
+        let target = projects.read(cx).target();
+        let shown_files = files::WorktreeFiles::new(target.clone(), window, cx);
+        let files_panel = shown_files.panel();
         let mut this = Self {
             focus: cx.focus_handle(),
             sidebar: cx.new(Sidebar::new),
@@ -255,6 +265,8 @@ impl Workspace {
             shown: None,
             git_panel: cx.new(|cx| GitPanel::new(window, cx)),
             files_panel,
+            files_panels: HashMap::from([(target, shown_files)]),
+            right_tabs: RightTabs::default(),
             git_open,
             git_animate: false,
             git_animation: None,
@@ -701,12 +713,14 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(|this, _: &ToggleGitPanel, _, cx| this.toggle_git(cx)))
-            .on_action(cx.listener(|this, _: &ShowGitPanel, _, cx| this.show_right_tab(false, cx)))
+            .on_action(
+                cx.listener(|this, _: &ShowGitPanel, _, cx| this.show_right_tab(RightTab::Git, cx)),
+            )
             .on_action(cx.listener(|this, _: &ShowFilesPanel, _, cx| {
                 // Show Files means the tree, as Explorer does: leave content search behind.
                 let files = this.files_panel.read(cx).files.clone();
                 files.update(cx, |files, cx| files.set_search_mode(SearchMode::Names, cx));
-                this.show_right_tab(true, cx)
+                this.show_right_tab(RightTab::Files, cx)
             }))
             .bg(bg)
             .text_color(cx.theme().foreground)
