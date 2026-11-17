@@ -1,7 +1,8 @@
 use super::{Document, Family, LanguageSession, OpenFile, Session, Store, Synced, Target};
 use gpui::component::input::Rope;
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, Render, Task, TestAppContext, Window, div,
+    AppContext as _, Context, Entity, IntoElement, Render, Task, TestAppContext, WeakEntity,
+    Window, div,
 };
 use gpui_kit as gpui;
 use hive_core::{files::Snapshot, host::Host, language_service::position};
@@ -64,10 +65,24 @@ fn unlocking_a_renamed_document_opens_its_new_uri_without_another_session_event(
             preview: false,
             placement: Default::default(),
         };
-        let document =
-            cx.new(|cx| Document::isolated_for_test(make("old.ts"), store.clone(), window, cx));
-        let other =
-            cx.new(|cx| Document::isolated_for_test(make("other.ts"), store.clone(), window, cx));
+        let document = cx.new(|cx| {
+            Document::isolated_for_test(
+                make("old.ts"),
+                store.clone(),
+                WeakEntity::new_invalid(),
+                window,
+                cx,
+            )
+        });
+        let other = cx.new(|cx| {
+            Document::isolated_for_test(
+                make("other.ts"),
+                store.clone(),
+                WeakEntity::new_invalid(),
+                window,
+                cx,
+            )
+        });
         for document in [&document, &other] {
             document.update(cx, |d, cx| {
                 d.base = Some(Snapshot::parse(Path::new("source"), b"").unwrap());

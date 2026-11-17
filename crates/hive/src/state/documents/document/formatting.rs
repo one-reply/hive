@@ -1,6 +1,8 @@
 use super::*;
 use gpui_kit::component::input::RopeExt as _;
 
+const FORMAT_DISABLED: &str = "Formatting is off: language tools are disabled in Settings → Files.";
+
 impl Document {
     pub(crate) fn format(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.loading
@@ -8,6 +10,13 @@ impl Document {
             || self.base.is_none()
             || !hive_core::formatting::supported(&self.path)
         {
+            return;
+        }
+        // Prettier comes from `node_modules`, cargo and rustfmt follow `rust-toolchain.toml`:
+        // formatting runs what the worktree chooses, exactly like a language server.
+        if !self.runs_language_tools(cx) {
+            self.format_error = Some(FORMAT_DISABLED.into());
+            cx.notify();
             return;
         }
         let target = self.target.clone();

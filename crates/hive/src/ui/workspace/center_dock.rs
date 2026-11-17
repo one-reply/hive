@@ -306,10 +306,11 @@ impl CenterTabs {
                                 .ok()
                         })
                     {
-                        editor.read(cx).document.clone().update(cx, |d, cx| {
-                            d.pinned = true;
-                            cx.notify();
-                        });
+                        editor
+                            .read(cx)
+                            .document
+                            .clone()
+                            .update(cx, |d, cx| d.pin(cx));
                     }
                     group.select_tab(ix, window, cx);
                 }

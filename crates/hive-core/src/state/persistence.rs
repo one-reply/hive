@@ -507,6 +507,26 @@ mod tests {
     }
 
     #[test]
+    fn state_without_the_language_tools_switch_keeps_them_on_and_an_opt_out_survives_restart() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("state.json");
+        // Files settings as 1.0.22 wrote them, before the switch existed.
+        fs::write(&path, br#"{"version":1,"settings":{"files":{"icons":"colored","density":"compact","git_decorations":true,"auto_reveal":true,"show_hidden":true,"show_ignored":true,"save_on_focus_change":true,"code_completion":false,"inline_blame":true,"sticky_scroll":true,"font_size":14.0}},"projects":[{"path":"/a"}]}"#).unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert!(loaded.recovery.is_none());
+        let mut state = loaded.state;
+        assert!(state.settings.files.language_tools);
+        assert!(!state.settings.files.code_completion);
+        state.settings.files.language_tools = false;
+        state.save_to(&path).unwrap();
+        let restored = State::load_from(&fixture.0).unwrap();
+        assert!(restored.recovery.is_none());
+        assert!(!restored.state.settings.files.language_tools);
+        assert!(!restored.state.settings.files.code_completion);
+        assert_eq!(restored.state.projects[0].path, Path::new("/a"));
+    }
+
+    #[test]
     fn reviewed_revisions_survive_restart_and_ignore_future_fields() {
         let fixture = Fixture::new();
         let path = fixture.0.join("state.json");
