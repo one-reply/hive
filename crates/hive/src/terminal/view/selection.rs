@@ -1,4 +1,5 @@
 //! Drag selection and history autoscroll, including pointer movement outside the pane.
+//! Pointer movement without a drag feeds link hover.
 use super::*;
 
 #[cfg(test)]
@@ -6,11 +7,17 @@ mod tests;
 
 impl TerminalView {
     /// Element-local move handlers stop at its hitbox, so a drag listens on the window.
-    pub(in crate::terminal) fn track_selection(view: &Entity<Self>, window: &mut Window) {
+    pub(in crate::terminal) fn track_pointer(
+        view: &Entity<Self>,
+        hitbox: &Hitbox,
+        window: &mut Window,
+    ) {
         let this = view.downgrade();
+        let hitbox = hitbox.clone();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             if phase == DispatchPhase::Capture {
-                let _ = this.update(cx, |this, cx| this.mouse_move(event, window, cx));
+                let hovered = hitbox.is_hovered(window);
+                let _ = this.update(cx, |this, cx| this.mouse_move(event, hovered, window, cx));
             }
         });
         let this = view.downgrade();
@@ -37,6 +44,10 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.focus_handle.focus(window, cx);
+        if event.modifiers.platform && self.open_link(event.position, cx) {
+            cx.stop_propagation();
+            return;
+        }
         let Some(grid) = self.grid else { return };
         let (point, side) = grid.cell_at(event.position);
         let kind = match event.click_count {
@@ -62,8 +73,16 @@ impl TerminalView {
             .update(cx, |session, cx| session.update_selection(point, side, cx));
     }
 
-    fn mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        hovered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.selecting {
+            let pointer = hovered.then_some(event.position);
+            self.hover_link(pointer, event.modifiers.platform, cx);
             return;
         }
         if event.pressed_button != Some(MouseButton::Left) || !window.is_window_active() {

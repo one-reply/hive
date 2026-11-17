@@ -10,6 +10,7 @@ use std::time::Instant;
 mod activity;
 mod directory;
 mod events;
+mod link;
 pub mod paste;
 mod process;
 pub mod program_status;
@@ -20,6 +21,7 @@ pub use activity::Activity;
 pub use directory::working_directory;
 use events::Publisher;
 pub use events::TerminalUpdate;
+pub use link::TerminalLink;
 pub use program_status::ProgramStatus;
 use pty::{Completion, ManagedPty};
 pub use scroll::ScrollModifiers;
@@ -147,6 +149,7 @@ pub struct Terminal {
     activity: Activity,
     program_status: ProgramStatus,
     control: TerminalControl,
+    url_search: link::UrlSearch,
 }
 
 impl Terminal {
@@ -225,6 +228,7 @@ impl Terminal {
             activity,
             program_status,
             control,
+            url_search: link::UrlSearch::default(),
         })
     }
 

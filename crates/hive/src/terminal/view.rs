@@ -24,6 +24,7 @@ use crate::ui::keymap;
 
 mod cursor;
 mod draft;
+mod link;
 mod menu;
 mod selection;
 mod session;
@@ -53,6 +54,7 @@ pub struct TerminalView {
     selecting: bool,
     selection_scroll: gpui_kit::base::AutoScroll,
     selection_scroll_remainder: f32,
+    link_hover: link::LinkHover,
     _subscriptions: Vec<Subscription>,
     _session_subscriptions: Vec<Subscription>,
 }
@@ -140,6 +142,7 @@ impl TerminalView {
                 this.restart_cursor_blink(cx);
                 if !window.is_window_active() {
                     this.stop_selection();
+                    this.clear_link_hover(cx);
                 }
             }),
         ];
@@ -158,6 +161,7 @@ impl TerminalView {
             selecting: false,
             selection_scroll: gpui_kit::base::AutoScroll::default(),
             selection_scroll_remainder: 0.,
+            link_hover: link::LinkHover::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -298,6 +302,7 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
         self.sync_cursor_blink(focused && window.is_window_active(), cx);
+        self.sync_link(cx);
         let host = self.session.read(cx).host.clone();
         let bg = cx.theme().background;
         let draft = self.render_agent_draft(window, cx);
@@ -349,6 +354,7 @@ impl Render for TerminalView {
                     })
                     .on_drop(cx.listener(Self::drop_file))
                     .on_key_down(cx.listener(Self::key_down))
+                    .on_modifiers_changed(cx.listener(Self::modifiers_changed))
                     .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
                     .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
                     .on_action(cx.listener(|this, _: &component::input::Copy, _, cx| this.copy(cx)))
