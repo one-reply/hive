@@ -5,6 +5,7 @@ use crate::ui::text_field::TextField;
 use crate::{
     app::AppState,
     state::git::{Git, Section},
+    state::store::Store,
     state::worktree_memory::WorktreeMemory,
 };
 use gpui_kit::assets::IconName as Lucide;
@@ -34,6 +35,8 @@ mod files;
 mod header;
 mod operation;
 mod review;
+#[cfg(test)]
+mod tests;
 
 actions!(source_control, [CommitChanges]);
 
@@ -72,8 +75,17 @@ pub(crate) struct GitPanel {
 
 impl GitPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let git = AppState::get(cx).git.clone();
-        let store = AppState::get(cx).store.clone();
+        let app = AppState::get(cx);
+        Self::over(app.git.clone(), app.store.clone(), window, cx)
+    }
+
+    /// The panel of `git`, taking the one setting it draws from `store`.
+    fn over(
+        git: Entity<Git>,
+        store: Entity<Store>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
         let message = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -117,12 +129,13 @@ impl GitPanel {
                 }
             }),
         ];
+        let draft_target = git.read(cx).target.clone();
         Self {
             git,
             default_agent: store.read(cx).state.settings.default_cli_agent(),
             filter,
             message,
-            draft_target: None,
+            draft_target,
             collapsed: HashSet::new(),
             list_views: WorktreeMemory::default(),
             changes_list: ListState::new(0, ListAlignment::Top, ROW_HEIGHT),

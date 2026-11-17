@@ -30,7 +30,7 @@ impl FilesPanel {
     ) {
         self.drag_hover = None;
         self._drag_expand = None;
-        if !drag.can_move_to(self.files.read(cx).target.as_ref(), directory) {
+        if !drag.can_move_to(self.files.read(cx).target(), directory) {
             return;
         }
         let [path] = drag.paths.as_ref() else { return };
@@ -52,7 +52,7 @@ impl FilesPanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !drag.can_move_to(self.files.read(cx).target.as_ref(), &path) {
+        if !drag.can_move_to(self.files.read(cx).target(), &path) {
             return;
         }
         if self
@@ -63,12 +63,10 @@ impl FilesPanel {
             return;
         }
         self.drag_hover = Some((path.clone(), Instant::now()));
-        let target = drag.target.clone();
         self._drag_expand = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(EXPAND_DELAY).await;
             let _ = this.update(cx, |this, cx| {
                 if cx.has_active_drag()
-                    && this.files.read(cx).target.as_ref() == Some(&target)
                     && this
                         .drag_hover
                         .as_ref()
@@ -143,12 +141,12 @@ impl FilesPanel {
         if state.busy {
             return;
         }
-        let Some(target) = state.target.clone() else {
+        let Some(target) = state.target().cloned() else {
             return;
         };
-        let destinations = cx.new(|cx| Files::new(Some(target.clone()), Some(source.clone()), cx));
-        let picker = cx
-            .new(|cx| DestinationPicker::new(destinations, self.files.clone(), target, source, cx));
+        let destinations = cx.new(|cx| Files::new(Some(target), Some(source.clone()), cx));
+        let picker =
+            cx.new(|cx| DestinationPicker::new(destinations, self.files.clone(), source, cx));
         window.open_dialog(cx, move |dialog, _, _| {
             dialog.title("Move to…").w(px(420.)).child(picker.clone())
         });
@@ -161,7 +159,6 @@ struct DestinationPicker {
     tree: Entity<TreeState>,
     synced_generation: Option<u64>,
     files: Entity<Files>,
-    target: Target,
     source: PathBuf,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -170,7 +167,6 @@ impl DestinationPicker {
     fn new(
         destinations: Entity<Files>,
         files: Entity<Files>,
-        target: Target,
         source: PathBuf,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -189,7 +185,7 @@ impl DestinationPicker {
                     .update(cx, |files, cx| files.set_expanded(path, expanded, cx));
             }),
             cx.subscribe(&files, |this, _, event: &FilesEvent, cx| {
-                if event.target == this.target && event.operation.path() == this.source {
+                if event.operation.path() == this.source {
                     this.error = event.result.as_ref().err().cloned();
                     cx.notify();
                 }
@@ -200,7 +196,6 @@ impl DestinationPicker {
             tree,
             synced_generation: None,
             files,
-            target,
             source,
             error: None,
             _subscriptions: subscriptions,
@@ -242,7 +237,6 @@ impl DestinationPicker {
 impl Render for DestinationPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tree = self.tree.clone();
-        let stale = self.files.read(cx).target.as_ref() != Some(&self.target);
         let [cancel_hover, move_hover] =
             ["cancel-move", "confirm-move"].map(|id| Hover::new(id, window, cx));
         v_flex()
@@ -299,7 +293,7 @@ impl Render for DestinationPicker {
                             .small()
                             .cursor_pointer()
                             .label("Move Here")
-                            .disabled(stale || self.files.read(cx).busy)
+                            .disabled(self.files.read(cx).busy)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let directory = this.selected_directory(cx);
                                 let Some(name) = this.source.file_name() else {

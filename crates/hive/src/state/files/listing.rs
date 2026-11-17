@@ -14,10 +14,8 @@ impl Files {
         let paths: Vec<_> = std::iter::once(PathBuf::new())
             .chain(self.expanded.iter().cloned())
             .collect();
-        let tracking = AppState::get(cx).git.read(cx).tracking(Some(&target));
-        let is_git = matches!(tracking, Tracking::Status(_));
-        // Without an answer from Git the paths ignored so far stay ignored.
-        let ignored_known = tracking != Tracking::Unknown;
+        let ignored_paths =
+            tracking::IgnoredPaths::of(&AppState::get(cx).git.read(cx).tracking(Some(&target)));
         self._read = Some(cx.spawn(async move |this, cx| {
             let read_target = target.clone();
             let result =
@@ -45,20 +43,20 @@ impl Files {
                         .flatten()
                         .map(|entry| entry.path.clone())
                         .collect::<Vec<_>>();
-                    let ignored = if is_git {
-                        match files::decorations::ignored(
-                            &read_target.host,
-                            &read_target.path,
-                            &paths,
-                        ) {
-                            Ok(ignored) => Some(ignored),
-                            Err(error) => {
+                    let ignored = match ignored_paths {
+                        tracking::IgnoredPaths::Unchanged => None,
+                        tracking::IgnoredPaths::Nothing => Some(HashSet::new()),
+                        tracking::IgnoredPaths::FromGit => Some(
+                            files::decorations::ignored(
+                                &read_target.host,
+                                &read_target.path,
+                                &paths,
+                            )
+                            .unwrap_or_else(|error| {
                                 errors.push(error.to_string());
-                                Some(HashSet::new())
-                            }
-                        }
-                    } else {
-                        ignored_known.then(HashSet::new)
+                                HashSet::new()
+                            }),
+                        ),
                     };
                     Ok((
                         directories,
@@ -68,7 +66,7 @@ impl Files {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.target.as_ref() != Some(&target) || this.generation != generation {
+                if this.generation != generation {
                     return;
                 }
                 this.loading = false;

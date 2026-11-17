@@ -24,7 +24,6 @@ use crate::app::AppState;
 use crate::state::agents::{AgentSession, AgentsEvent};
 use crate::state::files::SearchMode;
 use crate::state::projects::Projects;
-use crate::state::worktree_memory::WorktreeMemory;
 use crate::terminal::TerminalPanel;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
 use crate::ui::sidebar::Sidebar;
@@ -42,12 +41,14 @@ mod git;
 pub(crate) mod history;
 mod persistence;
 mod project_center;
+mod right_tab;
 pub(crate) mod switcher;
 
 use crate::state::store::SaveError;
 pub(crate) use git::right_sidebar_toggle;
 use gpui_kit::component::{WindowExt as _, notification::Notification};
 use project_center::ProjectCenter;
+use right_tab::{RightTab, RightTabs};
 
 // Bound in `ui::keymap`, where the user can reassign them.
 actions!(
@@ -89,9 +90,8 @@ pub struct Workspace {
     /// One Files panel per worktree visited this session, so each keeps its tree, scroll
     /// and search; `None` is the panel shown while nothing is selected.
     files_panels: HashMap<Option<Target>, files::WorktreeFiles>,
-    /// Whether Files (`true`) or Git was the right sidebar's tab in the worktrees that are
-    /// not shown; a worktree seen for the first time keeps the current tab.
-    right_tabs: WorktreeMemory<Option<bool>>,
+    /// The right sidebar's tab in the worktrees that are not shown.
+    right_tabs: RightTabs,
     git_open: bool,
     /// Set by the first toggle, so the right sidebar doesn't slide in on launch.
     git_animate: bool,
@@ -266,7 +266,7 @@ impl Workspace {
             git_panel: cx.new(|cx| GitPanel::new(window, cx)),
             files_panel,
             files_panels: HashMap::from([(target, shown_files)]),
-            right_tabs: WorktreeMemory::default(),
+            right_tabs: RightTabs::default(),
             git_open,
             git_animate: false,
             git_animation: None,
@@ -713,12 +713,14 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(|this, _: &ToggleGitPanel, _, cx| this.toggle_git(cx)))
-            .on_action(cx.listener(|this, _: &ShowGitPanel, _, cx| this.show_right_tab(false, cx)))
+            .on_action(
+                cx.listener(|this, _: &ShowGitPanel, _, cx| this.show_right_tab(RightTab::Git, cx)),
+            )
             .on_action(cx.listener(|this, _: &ShowFilesPanel, _, cx| {
                 // Show Files means the tree, as Explorer does: leave content search behind.
                 let files = this.files_panel.read(cx).files.clone();
                 files.update(cx, |files, cx| files.set_search_mode(SearchMode::Names, cx));
-                this.show_right_tab(true, cx)
+                this.show_right_tab(RightTab::Files, cx)
             }))
             .bg(bg)
             .text_color(cx.theme().foreground)

@@ -97,3 +97,22 @@ fn only_a_visible_navigator_polls(cx: &mut TestAppContext) {
         assert!(files._poll.is_none());
     });
 }
+
+#[gpui::test]
+fn returning_to_a_navigator_drops_the_snapshot_of_its_filename_search(cx: &mut TestAppContext) {
+    let files = navigator(cx);
+    files.update(cx, |files, cx| {
+        files.set_visible(true, cx);
+        files.set_search_text("lib".into(), cx);
+        files.search.entries = std::sync::Arc::new(files.entries.clone());
+        // Still on screen: choosing the tab again keeps the snapshot.
+        files.set_visible(true, cx);
+        assert!(!files.search.entries.is_empty());
+
+        // Files may have changed while another worktree was shown.
+        files.set_visible(false, cx);
+        files.set_visible(true, cx);
+        assert!(files.search.entries.is_empty());
+        assert_eq!(files.search_text(), "lib");
+    });
+}

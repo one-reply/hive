@@ -4,7 +4,7 @@
 //! search of a worktree survive while another one is shown.
 use super::{
     documents::{DocumentEvent, OpenFile},
-    git::{GitEvent, Tracking},
+    git::GitEvent,
 };
 use crate::app::AppState;
 use hive_core::{
@@ -16,6 +16,7 @@ mod listing;
 mod mutations;
 mod recent;
 mod search;
+mod tracking;
 mod tree;
 pub(crate) use content_search::{ContentStatus, SearchMode, SearchOption};
 pub(crate) use mutations::FileOperation;
@@ -43,7 +44,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 pub(crate) struct Files {
     /// Fixed at creation; `None` is the navigator shown while nothing is selected.
-    pub target: Option<Target>,
+    target: Option<Target>,
     pub error: Option<String>,
     visible: bool,
     window_active: bool,
@@ -76,15 +77,6 @@ pub(crate) struct Files {
     _subscriptions: Vec<Subscription>,
 }
 
-/// The badges `tracking` gives, or `None` while it cannot tell.
-fn decorations(tracking: Tracking<'_>) -> Option<BTreeMap<PathBuf, Decoration>> {
-    match tracking {
-        Tracking::Unknown => None,
-        Tracking::NoRepository => Some(BTreeMap::new()),
-        Tracking::Status(status) => Some(files::decorations::collect(&status.files)),
-    }
-}
-
 impl Files {
     /// A navigator for `target`, or, with `destination_for`, the folder picker for moving
     /// that path.
@@ -98,7 +90,7 @@ impl Files {
         let settings = store.read(cx).state.settings.files.clone();
         // A status already read for this worktree will not be announced again.
         let known_decorations =
-            decorations(git.read(cx).tracking(target.as_ref())).unwrap_or_default();
+            tracking::badges(&git.read(cx).tracking(target.as_ref())).unwrap_or_default();
         let subscriptions = vec![
             // The store notifies on every layout and cursor change; clone only a real change.
             cx.observe(&store, |this, store, cx| {
@@ -110,15 +102,18 @@ impl Files {
                         this.reveal(path, cx);
                     }
                     this.rebuild(cx);
-                    this.search(cx);
-                    this.refresh(cx);
+                    // A hidden navigator reads the disk again when it is shown.
+                    if this.visible {
+                        this.search(cx);
+                        this.refresh(cx);
+                    }
                     cx.notify();
                 }
             }),
             cx.observe(&git, |this, git, cx| {
                 // Badges stay as they were until this worktree's own status arrives.
                 let tracking = git.read(cx).tracking(this.target.as_ref());
-                let Some(decorations) = decorations(tracking) else {
+                let Some(decorations) = tracking::badges(&tracking) else {
                     return;
                 };
                 if decorations != this.decorations {
@@ -228,7 +223,7 @@ impl Files {
     /// Whether the navigator is on screen; a visible one keeps its listing fresh, a hidden
     /// one stops polling.
     pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        self.visible = visible;
+        let was_visible = std::mem::replace(&mut self.visible, visible);
         if !visible {
             self._poll = None;
             return;
@@ -236,7 +231,23 @@ impl Files {
         if self._poll.is_none() {
             self._poll = Some(Self::poll(cx));
         }
-        self.refresh(cx);
+        if !was_visible {
+            // Files changed while the navigator was hidden are missing from its index.
+            self.refresh_search(cx);
+        }
+        // A listing already on its way is as fresh as a new one.
+        if !self.loading {
+            self.refresh(cx);
+        }
+    }
+
+    pub(crate) fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// The worktree this navigator lists, the same for its whole life.
+    pub(crate) fn target(&self) -> Option<&Target> {
+        self.target.as_ref()
     }
 
     fn poll(cx: &mut Context<Self>) -> Task<()> {

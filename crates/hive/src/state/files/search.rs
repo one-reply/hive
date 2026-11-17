@@ -162,7 +162,7 @@ impl Files {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.target.as_ref() != Some(&target) || !this.search.accepts(generation) {
+                if !this.search.accepts(generation) {
                     return;
                 }
                 if this

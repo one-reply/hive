@@ -2,6 +2,7 @@ use super::*;
 use crate::state::documents::{DocumentEvent, OpenFile};
 use crate::state::files::{FileOperation, Files, FilesEvent, SearchMode};
 use crate::ui::files_panel::FilesPanel;
+use right_tab::keeps_panel;
 
 /// One worktree's Files panel. Dropping it drops the navigator and its listeners.
 pub(super) struct WorktreeFiles {
@@ -42,13 +43,12 @@ impl Workspace {
     pub(super) fn sync_right_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let projects = self.projects.read(cx);
         let target = projects.target();
-        self.files_panels.retain(|shown, _| {
-            *shown == target
-                || shown
-                    .as_ref()
-                    .is_none_or(|shown| projects.contains_target(shown))
+        self.files_panels.retain(|panel, _| {
+            keeps_panel(panel.as_ref(), target.as_ref(), |worktree| {
+                projects.contains_target(worktree)
+            })
         });
-        let previous = self.files_panel.read(cx).files.read(cx).target.clone();
+        let previous = self.files_panel.read(cx).files.read(cx).target().cloned();
         if previous == target {
             return;
         }
@@ -58,16 +58,10 @@ impl Workspace {
             .entry(target.clone())
             .or_insert_with(|| WorktreeFiles::new(target.clone(), window, cx))
             .panel();
-        let shown_tab = AppState::get(cx)
-            .store
-            .read(cx)
-            .state
-            .settings
-            .files_selected;
+        let shown_tab = RightTab::selected(cx);
         let tab = self
             .right_tabs
-            .switch(previous.as_ref(), target.as_ref(), Some(shown_tab))
-            .unwrap_or(shown_tab);
+            .follow(previous.as_ref(), target.as_ref(), shown_tab);
         self.set_right_tab(tab, cx);
         if tab != shown_tab {
             // The refresh `Git` started for this worktree counted on the other tab.
@@ -76,34 +70,38 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn choose_files(&mut self, selected: bool, cx: &mut Context<Self>) {
-        if !selected && AppState::get(cx).git.read(cx).has_no_repository() {
+    pub(super) fn choose_right_tab(&mut self, tab: RightTab, cx: &mut Context<Self>) {
+        if tab == RightTab::Git && AppState::get(cx).git.read(cx).has_no_repository() {
             return;
         }
-        self.set_right_tab(selected, cx);
+        self.set_right_tab(tab, cx);
         self.refresh_right_tab(cx);
         cx.notify();
     }
 
-    /// Makes Files (`true`) or Git the right sidebar's tab and tells both models which of
-    /// them is on screen.
-    fn set_right_tab(&mut self, files: bool, cx: &mut Context<Self>) {
-        let app = AppState::get(cx);
-        let (store, git) = (app.store.clone(), app.git.clone());
-        if store.read(cx).state.settings.files_selected != files {
-            store.update(cx, |store, cx| store.set_files_selected(files, cx));
+    /// Makes `tab` the right sidebar's tab.
+    fn set_right_tab(&self, tab: RightTab, cx: &mut Context<Self>) {
+        if RightTab::selected(cx) != tab {
+            let store = AppState::get(cx).store.clone();
+            store.update(cx, |store, cx| store.set_files_selected(tab.is_files(), cx));
         }
+        self.sync_right_tab_visibility(tab, cx);
+    }
+
+    /// Tells the Git and Files models which of them is on screen: the one behind `tab`
+    /// while the sidebar is open, neither while it is closed.
+    pub(super) fn sync_right_tab_visibility(&self, tab: RightTab, cx: &mut Context<Self>) {
         let open = self.git_open;
-        git.update(cx, |git, _| {
-            git.panel_visible = open && !files;
-            git.files_visible = open && files;
+        AppState::get(cx).git.clone().update(cx, |git, _| {
+            git.panel_visible = open && tab == RightTab::Git;
+            git.files_visible = open && tab == RightTab::Files;
         });
-        self.set_files_visible(open && files, cx);
+        self.set_files_visible(open && tab == RightTab::Files, cx);
     }
 
     /// Reads Git again for the tab that is shown: with change statistics for the Git tab,
     /// the plain status for Files' badges.
-    fn refresh_right_tab(&self, cx: &mut Context<Self>) {
+    pub(super) fn refresh_right_tab(&self, cx: &mut Context<Self>) {
         AppState::get(cx).git.clone().update(cx, |git, cx| {
             if git.files_visible {
                 git.refresh(false, cx);
@@ -114,7 +112,7 @@ impl Workspace {
         });
     }
 
-    pub(super) fn set_files_visible(&self, visible: bool, cx: &mut Context<Self>) {
+    fn set_files_visible(&self, visible: bool, cx: &mut Context<Self>) {
         self.files_panel
             .read(cx)
             .files
@@ -122,9 +120,9 @@ impl Workspace {
             .update(cx, |files, cx| files.set_visible(visible, cx));
     }
 
-    /// Selects the right sidebar's Files (`true`) or Git tab, opening the sidebar if closed.
-    pub(super) fn show_right_tab(&mut self, files: bool, cx: &mut Context<Self>) {
-        self.choose_files(files, cx);
+    /// Selects `tab` in the right sidebar, opening the sidebar if it is closed.
+    pub(super) fn show_right_tab(&mut self, tab: RightTab, cx: &mut Context<Self>) {
+        self.choose_right_tab(tab, cx);
         if !self.git_open {
             self.toggle_git(cx);
         }
@@ -137,7 +135,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.show_right_tab(true, cx);
+        self.show_right_tab(RightTab::Files, cx);
         let panel = self.files_panel.clone();
         window.defer(cx, move |window, cx| {
             panel.update(cx, |panel, cx| panel.open_search(mode, window, cx))
@@ -145,13 +143,7 @@ impl Workspace {
     }
 
     pub(super) fn watch_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let selected = AppState::get(cx)
-            .store
-            .read(cx)
-            .state
-            .settings
-            .files_selected;
-        self.set_files_visible(self.git_open && selected, cx);
+        self.set_files_visible(self.git_open && RightTab::selected(cx).is_files(), cx);
         let documents = AppState::get(cx).documents.clone();
         self._observers.push(
             cx.subscribe_in(
@@ -184,10 +176,10 @@ impl Workspace {
                         this.activate_target(target, cx);
                         // The file's worktree gets its panel now, not when observers run.
                         this.sync_right_sidebar(window, cx);
-                        this.show_right_tab(true, cx);
+                        this.show_right_tab(RightTab::Files, cx);
                         let files = this.files_panel.read(cx).files.clone();
                         files.update(cx, |files, cx| {
-                            if files.target.as_ref() == Some(target) {
+                            if files.target() == Some(target) {
                                 files.reveal_in_tree(path.clone(), cx);
                             }
                         });
