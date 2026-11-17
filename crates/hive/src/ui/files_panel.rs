@@ -463,8 +463,30 @@ impl Render for FilesPanel {
             .when(!picker, |body| body.child(self.mode_switch(cx)))
             .child(self.search_field(available, window, cx));
         if content_mode && target.is_some() {
+            let hover = Hover::new("content-excerpts", window, cx);
             return body
                 .child(self.render_content_status(cx))
+                .child(
+                    Button::new("content-excerpts")
+                        .small()
+                        .cursor_pointer()
+                        .label("View with context")
+                        .disabled(!available || self.files.read(cx).content_query().text.is_empty())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let files = this.files.read(cx);
+                            if let Some(target) = files.target.clone() {
+                                let query = files.content_query().clone();
+                                crate::ui::excerpts::open(
+                                    crate::state::excerpts::Query::Content(query),
+                                    target,
+                                    "Search results",
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }))
+                        .smooth_hover(ButtonLook::Ghost, &hover, cx),
+                )
                 .child(self.render_results(cx));
         }
         if self.selection.count() > 1 {

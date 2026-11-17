@@ -2,11 +2,28 @@ use super::*;
 
 impl Render for EditorPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let [save_hover, changes_hover, conflict_hover, sources_hover] =
-            ["file-save", "file-changes", "file-conflict", "file-sources"]
-                .map(|id| Hover::new(id, window, cx));
+        let [
+            save_hover,
+            changes_hover,
+            conflict_hover,
+            sources_hover,
+            format_hover,
+            agent_hover,
+        ] = [
+            "file-save",
+            "file-changes",
+            "file-conflict",
+            "file-sources",
+            "file-format",
+            "selection-agent",
+        ]
+        .map(|id| Hover::new(id, window, cx));
         let document = self.document.read(cx);
+        let language = document.language.clone();
         let editor = document.editor.clone();
+        let formatting = document.formatting;
+        let supports_format = hive_core::formatting::supported(&document.path);
+        let has_selection = !editor.read(cx).selected_range().is_empty();
         let header = format!(
             "{} · {}",
             document.path.display(),
@@ -21,7 +38,8 @@ impl Render for EditorPanel {
         let error = document
             .error
             .as_ref()
-            .map(|error| error.message().to_owned());
+            .map(|error| error.message().to_owned())
+            .or_else(|| document.format_error.clone());
         let conflict = document.conflict.is_some();
         let raster = document.content.is_raster();
         let svg_mode = match document.content {
@@ -47,10 +65,51 @@ impl Render for EditorPanel {
             .role(Role::Group)
             .aria_label(header.clone())
             .key_context("EditorPanel")
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && (this.peek.is_some() || this._peek.is_some())
+                {
+                    this.close_peek(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &FindReferences, window, cx| {
+                let target = this.document.read(cx).target.clone();
+                crate::ui::excerpts::open(
+                    crate::state::excerpts::Query::References(this.document.downgrade()),
+                    target,
+                    "References",
+                    window,
+                    cx,
+                );
+            }))
+            .on_action(cx.listener(|this, _: &ShowProblems, window, cx| {
+                let target = this.document.read(cx).target.clone();
+                crate::ui::excerpts::open(
+                    crate::state::excerpts::Query::Problems,
+                    target,
+                    "Problems",
+                    window,
+                    cx,
+                );
+            }))
+            .on_action(
+                cx.listener(|this, _: &PeekDefinition, window, cx| {
+                    this.peek_definition(window, cx)
+                }),
+            )
             .track_focus(&self.image_focus)
             .size_full()
             .min_w_0()
             .min_h_0()
+            .on_action(cx.listener(|this, _: &SelectionToAgent, window, cx| {
+                agent_context::open(&this.document, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FormatDocument, window, cx| {
+                this.document.update(cx, |d, cx| d.format(window, cx))
+            }))
+            .on_action(cx.listener(|this, _: &GoToSymbol, window, cx| {
+                navigation::open(&this.document, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &SaveFile, window, cx| {
                 this.document.update(cx, |d, cx| {
                     d.save(None, window, cx);
@@ -68,7 +127,82 @@ impl Render for EditorPanel {
                     .gap_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(div().flex_1().min_w_0().truncate().text_sm().child(header))
+                    .child(navigation::breadcrumbs(&self.document, window, cx))
+                    .child({
+                        let hover = Hover::new("editor-problems", window, cx);
+                        Button::new("editor-problems")
+                            .small()
+                            .cursor_pointer()
+                            .label("Problems")
+                            .tooltip("Problems in this worktree (⌘⇧M)")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let target = this.document.read(cx).target.clone();
+                                crate::ui::excerpts::open(
+                                    crate::state::excerpts::Query::Problems,
+                                    target,
+                                    "Problems",
+                                    window,
+                                    cx,
+                                );
+                            }))
+                            .smooth_hover(ButtonLook::Ghost, &hover, cx)
+                    })
+                    .when_some(language, |header, language| {
+                        let state = language.read(cx);
+                        let error = state.error.clone();
+                        let ready = state.capabilities.is_some();
+                        let retry = error.is_some();
+                        let hover = Hover::new("language-service", window, cx);
+                        header.child(
+                            Button::new("language-service")
+                                .small()
+                                .cursor_pointer()
+                                .label(if retry {
+                                    "Retry tools"
+                                } else if ready {
+                                    "Tools ready"
+                                } else {
+                                    "Starting…"
+                                })
+                                .tooltip(error.unwrap_or_else(|| {
+                                    "Completion, hover, definitions and diagnostics".into()
+                                }))
+                                .disabled(!retry)
+                                .on_click(move |_, _, cx| {
+                                    language.update(cx, |language, cx| language.retry(cx))
+                                })
+                                .smooth_hover(ButtonLook::Ghost, &hover, cx),
+                        )
+                    })
+                    .when(!raster, |header| {
+                        header.child(
+                            Button::new("selection-agent")
+                                .small()
+                                .cursor_pointer()
+                                .icon(Lucide::MessageSquare)
+                                .tooltip("Prepare agent draft from selection")
+                                .disabled(!has_selection)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    agent_context::open(&this.document, window, cx)
+                                }))
+                                .smooth_hover(ButtonLook::Ghost, &agent_hover, cx),
+                        )
+                    })
+                    .when(supports_format, |header| {
+                        header.child(
+                            Button::new("file-format")
+                                .small()
+                                .cursor_pointer()
+                                .icon(Lucide::Code)
+                                .tooltip("Format document (⌥⇧F)")
+                                .loading(formatting)
+                                .disabled(!ready || formatting)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.document.update(cx, |d, cx| d.format(window, cx))
+                                }))
+                                .smooth_hover(ButtonLook::Ghost, &format_hover, cx),
+                        )
+                    })
                     .when_some(svg_mode, |header, current| {
                         [SvgMode::Preview, SvgMode::Code].into_iter().fold(
                             header,
@@ -232,7 +366,9 @@ impl Render for EditorPanel {
                             .size_full(),
                     )
                     .child(blame)
-                    .children(self.render_blame_card(window, cx)),
+                    .children(sticky::render(&self.document, window, cx))
+                    .children(self.render_blame_card(window, cx))
+                    .children(self.render_peek(window, cx)),
             )
     }
 }

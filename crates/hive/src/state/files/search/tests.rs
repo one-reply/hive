@@ -370,7 +370,17 @@ fn large_directory_search_keeps_all_matching_rows() {
     else {
         panic!("folder expected")
     };
-    assert_eq!(children.len(), 1000);
+    assert_eq!(children.len(), 1271);
+    assert!(
+        children[..1000]
+            .iter()
+            .all(|node| node.name().starts_with("file-1"))
+    );
+    assert!(
+        children[1000..]
+            .iter()
+            .all(|node| !node.name().starts_with("file-1") && node.name().contains('1'))
+    );
 }
 
 #[test]

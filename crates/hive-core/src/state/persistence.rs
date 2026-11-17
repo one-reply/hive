@@ -89,6 +89,7 @@ struct Sections {
     projects: Option<Value>,
     workspace: Option<Value>,
     last_seen_release: Option<Value>,
+    reviewed: Option<Value>,
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> StateError {
@@ -132,6 +133,7 @@ impl State {
             projects: projects(sections.projects, &mut lost),
             workspace: section("workspace", sections.workspace, &mut lost),
             last_seen_release: section("last_seen_release", sections.last_seen_release, &mut lost),
+            reviewed: section("reviewed", sections.reviewed, &mut lost),
         };
         let cause = if sections.version > SCHEMA_VERSION {
             tracing::warn!(
@@ -482,12 +484,28 @@ mod tests {
         let loaded = State::load_from(&fixture.0).unwrap();
         assert!(loaded.recovery.is_none());
         assert!(loaded.state.last_seen_release.is_none());
+        assert!(loaded.state.reviewed.is_empty());
         let mut state = loaded.state;
         assert!(state.mark_release_seen("0.1.4"));
         state.save_to(&path).unwrap();
         let mut restored = State::load_from(&fixture.0).unwrap().state;
         assert!(!restored.mark_release_seen("0.1.4"));
         assert_eq!(restored.projects[0].path, Path::new("/a"));
+    }
+
+    #[test]
+    fn reviewed_revisions_survive_restart_and_ignore_future_fields() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("state.json");
+        fs::write(&path, br#"{"version":1,"projects":[{"path":"/a"}],"reviewed":[{"host":{"kind":"local"},"worktree":"/a","path":"src/a.rs","source":"WorkingTree","fingerprint":"revision","future":true}]}"#).unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert!(loaded.recovery.is_none());
+        assert_eq!(loaded.state.reviewed.len(), 1);
+        loaded.state.save_to(&path).unwrap();
+        assert_eq!(
+            State::load_from(&fixture.0).unwrap().state.reviewed,
+            loaded.state.reviewed
+        );
     }
 
     #[test]

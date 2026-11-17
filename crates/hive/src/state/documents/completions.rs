@@ -52,16 +52,23 @@ impl Completions {
         let task = cx.spawn(async move |cx| {
             cx.background_executor().timer(REFRESH_DELAY).await;
             let snapshot = cx.update(|cx| this.upgrade().and_then(|this| this.snapshot(cx)));
-            let index = match snapshot {
+            let (index, symbols, source) = match snapshot {
                 Some(snapshot) => {
+                    let source = snapshot.text.clone();
                     let build = async move { snapshot.build() };
-                    cx.background_executor().spawn(build).await
+                    let (index, symbols) = cx.background_executor().spawn(build).await;
+                    (index, symbols, Some(source))
                 }
                 // Turned off, or renamed to a language without a grammar: drop the old names.
-                None => Index::default(),
+                None => (Index::default(), Vec::new(), None),
             };
             if let Some(this) = this.upgrade() {
                 *this.index.borrow_mut() = index;
+                let _ = this.document.update(cx, |document, cx| {
+                    document.symbols = Arc::new(symbols);
+                    document.symbols_text = source;
+                    cx.notify();
+                });
             }
         });
         *self.refresh.borrow_mut() = Some(task);
@@ -78,10 +85,10 @@ impl Completions {
     fn snapshot(&self, cx: &App) -> Option<Snapshot> {
         let document = self.document.upgrade()?;
         let document = document.read(cx);
-        if !document.completes_code(cx) {
+        let name = files::editor_language(&document.path);
+        if !document.completes_code(cx) && !hive_core::symbols::supports(&name) {
             return None;
         }
-        let name = files::editor_language(&document.path);
         let grammar = LanguageRegistry::singleton().language(&name)?.language?;
         let editor = document.editor.read(cx);
         Some(Snapshot {
@@ -100,20 +107,23 @@ struct Snapshot {
 }
 
 impl Snapshot {
-    fn build(self) -> Index {
+    fn build(self) -> (Index, Vec<hive_core::symbols::Symbol>) {
         let started = Instant::now();
         let text = self.text.to_string();
         let index = match completion::parse(&text, &self.grammar) {
-            Some(tree) => Index::build(&tree, &text, Some(self.cursor)),
-            None => Index::default(),
+            Some(tree) => (
+                Index::build(&tree, &text, Some(self.cursor)),
+                hive_core::symbols::collect(&tree, &text),
+            ),
+            None => (Index::default(), Vec::new()),
         };
         tracing::debug!(bytes = text.len(), elapsed = ?started.elapsed(), "completion index built");
         index
     }
 }
 
-impl CompletionProvider for Completions {
-    fn completions(
+impl Completions {
+    fn local_completions(
         &self,
         text: &Rope,
         offset: usize,
@@ -172,7 +182,35 @@ impl CompletionProvider for Completions {
             }
         }
     }
+}
 
+impl CompletionProvider for Completions {
+    fn completions(
+        &self,
+        text: &Rope,
+        offset: usize,
+        context: CompletionContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Task<gpui_kit::Result<CompletionResponse>> {
+        if !self
+            .document
+            .upgrade()
+            .is_some_and(|d| d.read(cx).completes_code(cx))
+        {
+            return no_items();
+        }
+        let server =
+            super::language_features::completion(&self.document, text, offset, context.clone(), cx);
+        let fallback = self.local_completions(text, offset, context, window, cx);
+        match server {
+            Some(server) => cx.spawn(async move |_| match server.await {
+                Ok(Some(response)) => Ok(response),
+                _ => fallback.await,
+            }),
+            None => fallback,
+        }
+    }
     fn is_completion_trigger(&self, _: usize, new_text: &str, cx: &mut App) -> bool {
         self.document.upgrade().is_some_and(|document| {
             let document = document.read(cx);
@@ -308,6 +346,25 @@ mod tests {
     use hive_core::code_navigation::ImportPath;
     use lsp_types::Position;
     use std::path::Path;
+
+    #[test]
+    fn rust_outline_includes_impl_methods_and_nested_functions() {
+        let grammar = LanguageRegistry::singleton()
+            .language("rust")
+            .unwrap()
+            .language
+            .unwrap();
+        let text = "struct Café; impl Café { fn brew(&self) { fn inner() {} } }";
+        let tree = completion::parse(text, &grammar).unwrap();
+        let symbols = hive_core::symbols::collect(&tree, text);
+        assert_eq!(
+            symbols
+                .iter()
+                .map(|s| (s.name.as_str(), s.depth))
+                .collect::<Vec<_>>(),
+            [("Café", 0), ("Café", 0), ("brew", 1), ("inner", 2)]
+        );
+    }
 
     /// The answer at `|` in `marked`, with the index built from the same text as the editor
     /// builds it: without the word under the cursor.

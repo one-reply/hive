@@ -196,6 +196,7 @@ impl Document {
                             this.update_dirty(cx);
                             this._backup = None;
                             this.flush_recovery(cx);
+                            this.language_saved(cx);
                             this.emit(DocumentEvent::Saved(this.target.clone()), cx);
                         }
                         Err(error) => {

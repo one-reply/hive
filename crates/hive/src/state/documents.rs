@@ -11,7 +11,12 @@ use std::sync::Arc;
 mod completions;
 mod definitions;
 mod document;
+pub(crate) mod history;
+mod language;
+mod language_features;
+mod source_preview;
 pub(crate) use document::{Changes, Content, Document, PreviewState, SvgMode};
+pub(crate) use source_preview::SourcePreview;
 
 #[derive(Clone)]
 pub(crate) struct OpenFile {
@@ -38,6 +43,9 @@ pub(crate) enum TabPlacement {
 
 pub(crate) enum DocumentEvent {
     Open(OpenFile),
+    Reveal(Target, PathBuf),
+    AgentDraft(Target, hive_core::agent::AgentKind, String),
+    External(Target, PathBuf, Position),
     Activated(Target, PathBuf),
     Changed(Target),
     Saved(Target),
@@ -52,6 +60,12 @@ pub(crate) struct Documents {
     store: Entity<Store>,
     /// Shared by every document so `package.json`/`tsconfig` parses are reused.
     navigator: Arc<Navigator>,
+    language_sessions: Vec<(
+        hive_core::host::Host,
+        PathBuf,
+        hive_core::language_service::Family,
+        WeakEntity<language::LanguageSession>,
+    )>,
 }
 impl EventEmitter<DocumentEvent> for Documents {}
 
@@ -85,6 +99,7 @@ impl Documents {
             recovery_errors: errors,
             store,
             navigator: Arc::default(),
+            language_sessions: Vec::new(),
         }
     }
 
@@ -138,7 +153,9 @@ impl Documents {
         let (store, navigator) = (self.store.clone(), self.navigator.clone());
         let document =
             cx.new(|cx| Document::new(request.clone(), recovered, store, navigator, window, cx));
+        self.attach_language(&document, cx);
         definitions::install(&document, cx.weak_entity(), self.navigator.clone(), cx);
+        language_features::install(&document, cx.weak_entity(), cx);
         self.open.push(document.downgrade());
         document
     }

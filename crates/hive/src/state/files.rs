@@ -13,6 +13,7 @@ use hive_core::{
 mod content_search;
 mod listing;
 mod mutations;
+mod recent;
 mod search;
 mod tree;
 pub(crate) use content_search::{ContentStatus, SearchMode, SearchOption};
@@ -57,6 +58,7 @@ pub(crate) struct Files {
     pub dirty: HashSet<PathBuf>,
     pub missing: HashSet<PathBuf>,
     pub active: Option<PathBuf>,
+    recent: Vec<(Target, Vec<PathBuf>)>,
     destination_for: Option<PathBuf>,
     pending_reveal: Option<PathBuf>,
     pending_refresh: bool,
@@ -128,6 +130,7 @@ impl Files {
                 }
                 let target = match event {
                     DocumentEvent::Activated(target, path) => {
+                        recent::remember(&mut this.recent, target, path);
                         if this.target.as_ref() == Some(target) {
                             this.active = Some(path.clone());
                             if this.settings.auto_reveal {
@@ -139,7 +142,10 @@ impl Files {
                     DocumentEvent::Changed(target)
                     | DocumentEvent::Saved(target)
                     | DocumentEvent::Deleted(target, _) => target,
-                    DocumentEvent::Open(_) => return,
+                    DocumentEvent::Open(_)
+                    | DocumentEvent::Reveal(_, _)
+                    | DocumentEvent::External(_, _, _)
+                    | DocumentEvent::AgentDraft(_, _, _) => return,
                 };
                 if this.target.as_ref() != Some(target) {
                     return;
@@ -218,6 +224,7 @@ impl Files {
             dirty: HashSet::new(),
             missing: HashSet::new(),
             active: None,
+            recent: Vec::new(),
             destination_for,
             pending_reveal: None,
             pending_refresh: false,

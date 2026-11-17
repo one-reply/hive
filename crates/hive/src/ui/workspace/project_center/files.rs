@@ -6,6 +6,31 @@ use crate::{
 use gpui_kit::component::dock::InsertTarget;
 
 impl ProjectCenter {
+    pub(in crate::ui::workspace) fn current_file(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Option<OpenFile> {
+        use gpui_kit::component::input::RopeExt as _;
+        let panel = self
+            .editors
+            .iter()
+            .find(|panel| Focusable::focus_handle(*panel, cx).contains_focused(window, cx))
+            .or_else(|| {
+                self.editors
+                    .iter()
+                    .find(|panel| Some(PanelId::from(panel.entity_id())) == self.focused)
+            })?;
+        let document = panel.read(cx).document.read(cx);
+        let editor = document.editor.read(cx);
+        Some(OpenFile {
+            target: document.target.clone(),
+            path: document.path.clone(),
+            position: Some(editor.text().offset_to_position(editor.cursor())),
+            preview: false,
+            placement: Default::default(),
+        })
+    }
     pub(in crate::ui::workspace) fn remove_files(
         &mut self,
         target: &hive_core::projects::Target,
@@ -13,6 +38,7 @@ impl ProjectCenter {
         window: &mut Window,
         cx: &mut App,
     ) {
+        self.navigation.remove(target, path);
         let panels: Vec<_> = self
             .editors
             .iter()
