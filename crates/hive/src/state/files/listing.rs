@@ -14,8 +14,8 @@ impl Files {
         let paths: Vec<_> = std::iter::once(PathBuf::new())
             .chain(self.expanded.iter().cloned())
             .collect();
-        let git = AppState::get(cx).git.read(cx);
-        let is_git = git.target.as_ref() == Some(&target) && git.status.is_some();
+        let ignored_paths =
+            tracking::IgnoredPaths::of(&AppState::get(cx).git.read(cx).tracking(Some(&target)));
         self._read = Some(cx.spawn(async move |this, cx| {
             let read_target = target.clone();
             let result =
@@ -43,20 +43,20 @@ impl Files {
                         .flatten()
                         .map(|entry| entry.path.clone())
                         .collect::<Vec<_>>();
-                    let ignored = if is_git {
-                        match files::decorations::ignored(
-                            &read_target.host,
-                            &read_target.path,
-                            &paths,
-                        ) {
-                            Ok(ignored) => ignored,
-                            Err(error) => {
+                    let ignored = match ignored_paths {
+                        tracking::IgnoredPaths::Unchanged => None,
+                        tracking::IgnoredPaths::Nothing => Some(HashSet::new()),
+                        tracking::IgnoredPaths::FromGit => Some(
+                            files::decorations::ignored(
+                                &read_target.host,
+                                &read_target.path,
+                                &paths,
+                            )
+                            .unwrap_or_else(|error| {
                                 errors.push(error.to_string());
                                 HashSet::new()
-                            }
-                        }
-                    } else {
-                        HashSet::new()
+                            }),
+                        ),
                     };
                     Ok((
                         directories,
@@ -66,20 +66,25 @@ impl Files {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.target.as_ref() != Some(&target) || this.generation != generation {
+                if this.generation != generation {
                     return;
                 }
                 this.loading = false;
                 match result {
                     Ok((directories, ignored, error)) => {
-                        let changed = this.entries != directories || this.ignored != ignored;
+                        let changed = this.entries != directories
+                            || ignored
+                                .as_ref()
+                                .is_some_and(|ignored| this.ignored != *ignored);
                         if this.error != error
                             && let Some(error) = &error
                         {
                             tracing::warn!(%error, "file tree directory unavailable");
                         }
                         this.entries = directories;
-                        this.ignored = ignored;
+                        if let Some(ignored) = ignored {
+                            this.ignored = ignored;
+                        }
                         this.error = error;
                         if changed || this.pending_reveal.is_some() {
                             this.rebuild(cx);

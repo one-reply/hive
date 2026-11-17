@@ -42,6 +42,9 @@ pub struct Prepaint {
     glyphs: Vec<(Point<Pixels>, Arc<LineLayout>, DecorationRun)>,
     cursor: Option<(Bounds<Pixels>, Hsla, CursorShape)>,
     line_height: Pixels,
+    hitbox: Hitbox,
+    /// A ⌘-hovered link is under the pointer.
+    over_link: bool,
 }
 
 /// Font metrics and the theme-derived palette for one frame.
@@ -201,6 +204,7 @@ impl Element for TerminalElement {
         let mut cursor = None;
 
         let view = self.view.read(cx);
+        let link = view.hovered_link().cloned();
         let session = view.session().read(cx);
         let terminal = session
             .terminal()
@@ -281,7 +285,15 @@ impl Element for TerminalElement {
             let Some(text) = glyph_cache::cell_text(cell) else {
                 continue;
             };
-            let decoration = glyph_cache::decoration(flags, fg, text.len());
+            let in_link = link
+                .as_ref()
+                .is_some_and(|link| link.contains(indexed.point));
+            let decoration_flags = if in_link {
+                flags | Flags::UNDERLINE
+            } else {
+                flags
+            };
+            let decoration = glyph_cache::decoration(decoration_flags, fg, text.len());
             cells.push((origin, text, Variant::from(flags), decoration));
         }
         // Shaping happens after the grid is released, so the PTY reader never waits on it.
@@ -321,6 +333,8 @@ impl Element for TerminalElement {
             glyphs,
             cursor,
             line_height,
+            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            over_link: link.is_some(),
         }
     }
 
@@ -334,7 +348,10 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        TerminalView::track_selection(&self.view, window);
+        TerminalView::track_pointer(&self.view, &prepaint.hitbox, window);
+        if prepaint.over_link {
+            window.set_cursor_style(CursorStyle::PointingHand, &prepaint.hitbox);
+        }
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             // One layer per kind instead of one scene entry per quad and per cell: GPUI files
             // every layer and every layer-less primitive in its bounds tree, which cost more

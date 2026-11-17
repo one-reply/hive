@@ -1,6 +1,5 @@
 //! File groups are independent of the tree's single keyboard cursor.
 use super::*;
-use hive_core::projects::Target;
 use std::{collections::BTreeSet, sync::Arc};
 
 #[derive(Clone, Copy)]
@@ -24,7 +23,6 @@ impl Gesture {
 
 #[derive(Default)]
 pub(super) struct Selection {
-    target: Option<Target>,
     paths: BTreeSet<PathBuf>,
     /// One ordered snapshot shared by all selected drag sources, not copied per visible row.
     ordered: Arc<[PathBuf]>,
@@ -88,19 +86,8 @@ impl Selection {
         }
     }
 
-    fn sync(
-        &mut self,
-        target: Option<&Target>,
-        visible: &[PathBuf],
-        cursor: Option<PathBuf>,
-    ) -> bool {
+    fn sync(&mut self, visible: &[PathBuf], cursor: Option<PathBuf>) -> bool {
         let previous = self.ordered.clone();
-        if self.target.as_ref() != target {
-            *self = Self {
-                target: target.cloned(),
-                ..Default::default()
-            };
-        }
         if self.cursor != cursor {
             if let Some(path) = &cursor {
                 self.click(path, Gesture::Replace, visible);
@@ -157,8 +144,7 @@ impl FilesPanel {
         let cursor = tree
             .selected_item()
             .map(|item| tree::path(item.id.as_ref()));
-        let target = self.files.read(cx).target.clone();
-        self.selection.sync(target.as_ref(), &visible, cursor)
+        self.selection.sync(&visible, cursor)
     }
 
     pub(super) fn select_row(
@@ -183,19 +169,10 @@ impl FilesPanel {
 #[cfg(test)]
 mod tests {
     use super::{Gesture, Selection};
-    use hive_core::projects::Target;
     use std::path::{Path, PathBuf};
 
     fn paths(names: &[&str]) -> Vec<PathBuf> {
         names.iter().map(PathBuf::from).collect()
-    }
-
-    fn target(path: &str) -> Target {
-        Target {
-            project: "/repo".into(),
-            path: path.into(),
-            host: hive_core::host::Host::Local,
-        }
     }
 
     #[test]
@@ -236,34 +213,27 @@ mod tests {
     }
 
     #[test]
-    fn refresh_preserves_group_but_filtering_and_target_changes_remove_stale_paths() {
-        let first = target("/repo");
-        let second = target("/repo-worktrees/other");
+    fn refresh_preserves_group_but_filtering_removes_stale_paths() {
         let visible = paths(&["a", "b", "c"]);
         let mut selection = Selection::default();
-        selection.sync(Some(&first), &visible, None);
+        selection.sync(&visible, None);
         selection.click(Path::new("a"), Gesture::Replace, &visible);
         selection.click(Path::new("c"), Gesture::Toggle, &visible);
         let snapshot = selection.drag_paths(Path::new("a"));
-        assert!(!selection.sync(Some(&first), &visible, Some("c".into())));
-        assert!(selection.sync(Some(&first), &paths(&["a", "b"]), None));
+        assert!(!selection.sync(&visible, Some("c".into())));
+        assert!(selection.sync(&paths(&["a", "b"]), None));
         assert_eq!(selection.ordered.as_ref(), paths(&["a"]));
         assert_eq!(snapshot.as_ref(), paths(&["a", "c"]));
-        selection.sync(Some(&second), &visible, None);
-        assert_eq!(selection.count(), 0);
-        selection.click(Path::new("b"), Gesture::Range, &visible);
-        assert_eq!(selection.ordered.as_ref(), paths(&["b"]));
     }
 
     #[test]
     fn keyboard_navigation_and_ineligible_rows_end_group_selection() {
-        let target = target("/repo");
         let visible = paths(&["a", "b", "c"]);
         let mut selection = Selection::default();
-        selection.sync(Some(&target), &visible, None);
+        selection.sync(&visible, None);
         selection.click(Path::new("a"), Gesture::Replace, &visible);
         selection.click(Path::new("c"), Gesture::Toggle, &visible);
-        selection.sync(Some(&target), &visible, Some("b".into()));
+        selection.sync(&visible, Some("b".into()));
         assert_eq!(selection.ordered.as_ref(), paths(&["b"]));
         selection.click(Path::new("folder"), Gesture::Replace, &visible);
         assert_eq!(selection.count(), 0);

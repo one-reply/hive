@@ -1,4 +1,4 @@
-use super::{Column, Line, Listener, Point, SelectionType, Side, Terminal};
+use super::{Column, Line, Point, SelectionType, Side, Terminal};
 use alacritty_terminal::grid::Dimensions as _;
 use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::selection::Selection;
@@ -76,7 +76,7 @@ impl Terminal {
     }
 }
 
-fn grid_point(term: &Term<Listener>, point: Point<usize>) -> Point {
+pub(super) fn grid_point<T>(term: &Term<T>, point: Point<usize>) -> Point {
     let point = Point::new(
         point.line.min(term.screen_lines() - 1),
         Column(point.column.0.min(term.columns() - 1)),

@@ -1,7 +1,44 @@
 //! On-demand branch comparisons and paged commit history.
 use super::*;
 
+/// What the review sections show for one worktree: the user's choices, not the Git data
+/// behind them, which is read again when the worktree is selected.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct ReviewView {
+    section: Section,
+    base: Option<String>,
+    selected_commit: Option<Commit>,
+}
+
+/// The base to compare with once the branch list is known: the chosen one while its branch
+/// still exists, otherwise the repository's default.
+pub(super) fn resolve_base(
+    chosen: Option<String>,
+    default: Option<String>,
+    branches: &[Branch],
+) -> Option<String> {
+    chosen
+        .filter(|base| branches.iter().any(|branch| branch.reference == *base))
+        .or(default)
+}
+
 impl Git {
+    /// Parks the review choices of `previous` and shows the ones `target` had; a worktree
+    /// seen for the first time starts in Changes.
+    pub(super) fn follow_review(&mut self, previous: Option<&Target>) {
+        let shown = ReviewView {
+            section: self.section,
+            base: self.base.take(),
+            selected_commit: self.selected_commit.take(),
+        };
+        let view = self
+            .review_views
+            .switch(previous, self.target.as_ref(), shown);
+        self.section = view.section;
+        self.base = view.base;
+        self.selected_commit = view.selected_commit;
+    }
+
     pub fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
         self._review = None;
         self.review_loading = false;
@@ -120,5 +157,61 @@ impl Git {
     pub(crate) fn clear_notes(&mut self, target: &Target, cx: &mut Context<Self>) {
         self.review_notes.remove(target);
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_base;
+    use hive_core::git::branches::Branch;
+
+    fn branch(reference: &str) -> Branch {
+        Branch {
+            reference: reference.into(),
+            name: reference.rsplit('/').next().unwrap_or(reference).into(),
+            remote: reference.starts_with("refs/remotes/"),
+            worktree: None,
+        }
+    }
+
+    #[test]
+    fn a_chosen_base_is_kept_while_its_branch_exists() {
+        let branches = [branch("refs/heads/release"), branch("refs/heads/main")];
+        assert_eq!(
+            resolve_base(
+                Some("refs/heads/release".into()),
+                Some("refs/heads/main".into()),
+                &branches
+            )
+            .as_deref(),
+            Some("refs/heads/release")
+        );
+    }
+
+    #[test]
+    fn a_base_whose_branch_is_gone_gives_way_to_the_default() {
+        let branches = [branch("refs/heads/main")];
+        assert_eq!(
+            resolve_base(
+                Some("refs/heads/release".into()),
+                Some("refs/heads/main".into()),
+                &branches
+            )
+            .as_deref(),
+            Some("refs/heads/main")
+        );
+        assert_eq!(
+            resolve_base(Some("refs/heads/release".into()), None, &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn no_choice_takes_the_default() {
+        let branches = [branch("refs/heads/main")];
+        assert_eq!(
+            resolve_base(None, Some("refs/heads/main".into()), &branches).as_deref(),
+            Some("refs/heads/main")
+        );
     }
 }

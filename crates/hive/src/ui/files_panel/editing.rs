@@ -1,7 +1,7 @@
 use super::*;
 use crate::state::files::FileOperation;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use hive_core::projects::Target;
+use hive_core::host::Host;
 use std::{cell::Cell, ops::Range, rc::Rc};
 
 pub(super) enum EditKind {
@@ -10,7 +10,8 @@ pub(super) enum EditKind {
     Rename(PathBuf),
 }
 pub(super) struct Edit {
-    pub target: Target,
+    /// Decides whether names that differ only in case collide.
+    host: Host,
     kind: EditKind,
     input: Entity<InputState>,
     /// Why the current name cannot be used: checked while typing, then by the file system.
@@ -267,7 +268,7 @@ impl FilesPanel {
         if state.busy {
             return;
         }
-        let Some(target) = state.target.clone() else {
+        let Some(host) = state.target().map(|target| target.host.clone()) else {
             return;
         };
         let (initial, selection) = match &kind {
@@ -301,7 +302,7 @@ impl FilesPanel {
             input.set_selected_range(selection, cx);
         });
         self.edit = Some(Edit {
-            target,
+            host,
             kind,
             input,
             error: None,
@@ -316,7 +317,7 @@ impl FilesPanel {
         let parent = edit.parent();
         let path = hive_core::files::entry_path(parent, name).map_err(|e| e.to_string())?;
         let listed = self.files.read(cx).listed(parent);
-        if hive_core::files::name_taken(&edit.target.host, listed, name, edit.renaming()) {
+        if hive_core::files::name_taken(&edit.host, listed, name, edit.renaming()) {
             return Err(format!(
                 "A file or folder named {name} already exists in {}",
                 display_parent(parent)
@@ -376,7 +377,7 @@ impl FilesPanel {
         let Some(edit) = &self.edit else {
             return;
         };
-        if self.files.read(cx).busy || self.files.read(cx).target.as_ref() != Some(&edit.target) {
+        if self.files.read(cx).busy {
             return;
         }
         let (name, unchanged) = Self::edited_name(edit, cx);

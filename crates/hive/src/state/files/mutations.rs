@@ -16,6 +16,15 @@ impl FileOperation {
         }
     }
 
+    /// Paths that must not be opened or closed while the operation runs.
+    fn locked_paths(&self) -> impl Iterator<Item = &Path> {
+        let destination = match self {
+            Self::Move { to, .. } => Some(to.as_path()),
+            _ => None,
+        };
+        std::iter::once(self.path()).chain(destination)
+    }
+
     fn run(
         &self,
         target: &Target,
@@ -95,12 +104,7 @@ impl Files {
         self.loading = false;
         self.busy = true;
         registry.update(cx, |registry, _| {
-            registry
-                .mutating_paths
-                .push((target.clone(), operation.path().to_owned()));
-            if let FileOperation::Move { to, .. } = &operation {
-                registry.mutating_paths.push((target.clone(), to.clone()));
-            }
+            lock_paths(&mut registry.mutating_paths, &target, &operation)
         });
         self._operation = Some(cx.spawn_in(window, async move |this, cx| {
             let (background_operation, background_target) = (operation.clone(), target.clone());
@@ -130,7 +134,9 @@ impl Files {
                     });
                 }
                 this.busy = false;
-                registry.update(cx, |registry, _| registry.mutating_paths.clear());
+                registry.update(cx, |registry, _| {
+                    unlock_paths(&mut registry.mutating_paths, &target, &operation)
+                });
                 if result.is_ok() {
                     update_saved_paths(&target, &operation, cx);
                     if let FileOperation::Delete(path) = &operation {
@@ -138,25 +144,21 @@ impl Files {
                         let (target, path) = (target.clone(), path.clone());
                         cx.defer(move |cx| registry.update(cx, |registry, cx| registry.emit(DocumentEvent::Deleted(target, path), cx)));
                     }
-                    if this.target.as_ref() == Some(&target) {
-                        match &operation {
-                            FileOperation::CreateFile(path) => { this.reveal(path.clone(), cx); this.open(path.clone(), false, cx); }
-                            FileOperation::CreateDirectory(path) => { this.expand(path.clone(), cx); this.reveal(path.clone(), cx); }
-                            FileOperation::Move { from, to } => {
-                                this.expanded = this.expanded.iter().map(|path| files::relocated_path(path, from, to).unwrap_or_else(|| path.clone())).collect();
-                                this.reveal(to.clone(), cx);
-                            }
-                            FileOperation::Delete(path) => this.expanded.retain(|p| !p.starts_with(path)),
+                    match &operation {
+                        FileOperation::CreateFile(path) => { this.reveal(path.clone(), cx); this.open(path.clone(), false, cx); }
+                        FileOperation::CreateDirectory(path) => { this.expand(path.clone(), cx); this.reveal(path.clone(), cx); }
+                        FileOperation::Move { from, to } => {
+                            this.expanded = this.expanded.iter().map(|path| files::relocated_path(path, from, to).unwrap_or_else(|| path.clone())).collect();
+                            this.reveal(to.clone(), cx);
                         }
+                        FileOperation::Delete(path) => this.expanded.retain(|p| !p.starts_with(path)),
                     }
                 } else if let Err(error) = &result {
                     tracing::warn!(%error, path = ?target.path, "file operation failed");
                 }
-                if this.target.as_ref() == Some(&target) {
-                    this.sync_documents(false, cx);
-                    this.refresh_all(cx);
-                }
-                // A query in another worktree may have been waiting for this mutation.
+                this.sync_documents(false, cx);
+                this.refresh_all(cx);
+                // A query typed during the mutation has been waiting for it.
                 this.search(cx);
                 cx.emit(FilesEvent { target, operation, result, warning });
                 cx.notify();
@@ -164,6 +166,22 @@ impl Files {
         }));
         cx.notify();
     }
+}
+
+fn lock_paths(locked: &mut Vec<(Target, PathBuf)>, target: &Target, operation: &FileOperation) {
+    locked.extend(
+        operation
+            .locked_paths()
+            .map(|path| (target.clone(), path.to_owned())),
+    );
+}
+
+/// Releases the paths `operation` locked and no others: every worktree has its own
+/// navigator, so an operation in another worktree may still be running.
+fn unlock_paths(locked: &mut Vec<(Target, PathBuf)>, target: &Target, operation: &FileOperation) {
+    locked.retain(|(owner, path)| {
+        owner != target || !operation.locked_paths().any(|own| own == path)
+    });
 }
 
 fn update_saved_paths(target: &Target, operation: &FileOperation, cx: &mut App) {
@@ -206,5 +224,41 @@ fn update_saved_paths(target: &Target, operation: &FileOperation, cx: &mut App) 
             });
             store.update(cx, |store, cx| store.set_project_workspace(project, cx));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FileOperation, lock_paths, unlock_paths};
+    use hive_core::{host::Host, projects::Target};
+    use std::path::PathBuf;
+
+    fn worktree(path: &str) -> Target {
+        Target {
+            host: Host::Local,
+            project: "/project".into(),
+            path: path.into(),
+        }
+    }
+
+    #[test]
+    fn a_finished_operation_releases_only_its_own_paths() {
+        let (first, second) = (worktree("/project"), worktree("/worktree"));
+        let moving = FileOperation::Move {
+            from: "src/a.rs".into(),
+            to: "src/b.rs".into(),
+        };
+        let deleting = FileOperation::Delete("src/a.rs".into());
+        let mut locked = Vec::new();
+        lock_paths(&mut locked, &first, &moving);
+        lock_paths(&mut locked, &second, &deleting);
+        assert_eq!(locked.len(), 3);
+
+        unlock_paths(&mut locked, &first, &moving);
+        // The same relative path is still being deleted in the other worktree.
+        assert_eq!(locked, [(second.clone(), PathBuf::from("src/a.rs"))]);
+
+        unlock_paths(&mut locked, &second, &deleting);
+        assert!(locked.is_empty());
     }
 }

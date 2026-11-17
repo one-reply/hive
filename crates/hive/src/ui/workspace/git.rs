@@ -11,12 +11,7 @@ const RIGHT_TAB_TRANSITION: Duration = Duration::from_millis(180);
 
 impl Workspace {
     pub(super) fn watch_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let selected_files = AppState::get(cx)
-            .store
-            .read(cx)
-            .state
-            .settings
-            .files_selected;
+        let tab = RightTab::selected(cx);
         let git = AppState::get(cx).git.clone();
         let mut absent = git.read(cx).has_no_repository();
         self._observers.push(cx.observe(&git, move |_, git, cx| {
@@ -27,8 +22,8 @@ impl Workspace {
             }
         }));
         git.update(cx, |g, _| {
-            g.panel_visible = self.git_open && !selected_files;
-            g.files_visible = self.git_open && selected_files;
+            g.panel_visible = self.git_open && tab == RightTab::Git;
+            g.files_visible = self.git_open && tab == RightTab::Files;
             g.window_active = window.is_window_active();
         });
         self._observers.push(cx.subscribe_in(
@@ -123,18 +118,6 @@ impl Workspace {
 
     pub(super) fn toggle_git(&mut self, cx: &mut Context<Self>) {
         self.git_open = !self.git_open;
-        let selected_files = AppState::get(cx)
-            .store
-            .read(cx)
-            .state
-            .settings
-            .files_selected;
-        let files_visible = self.git_open && selected_files;
-        self.files_panel
-            .read(cx)
-            .files
-            .clone()
-            .update(cx, |files, cx| files.set_visible(files_visible, cx));
         self.git_animate = true;
         self.git_animation = Some(cx.spawn(async |this, cx| {
             cx.background_executor().timer(SIDEBAR_SLIDE_DURATION).await;
@@ -144,18 +127,10 @@ impl Workspace {
                 cx.notify();
             });
         }));
-        let app = AppState::get(cx);
-        let (store, git) = (app.store.clone(), app.git.clone());
+        let store = AppState::get(cx).store.clone();
         store.update(cx, |s, cx| s.set_git_panel_open(self.git_open, cx));
-        git.update(cx, |g, cx| {
-            g.panel_visible = self.git_open && !selected_files;
-            g.files_visible = self.git_open && selected_files;
-            if g.panel_visible {
-                g.refresh(true, cx);
-            } else if g.files_visible {
-                g.refresh(false, cx);
-            }
-        });
+        self.sync_right_tab_visibility(RightTab::selected(cx), cx);
+        self.refresh_right_tab(cx);
         cx.notify();
     }
 
@@ -171,12 +146,7 @@ impl Workspace {
         let toggle_hover = Hover::new("toggle-right-sidebar", window, cx);
         let border = cx.theme().border;
         let open = self.git_open;
-        let selected_files = AppState::get(cx)
-            .store
-            .read(cx)
-            .state
-            .settings
-            .files_selected;
+        let selected_files = RightTab::selected(cx).is_files();
         let git_absent = AppState::get(cx).git.read(cx).has_no_repository();
         let width = self.git_width;
         let indicator_position = transition(
@@ -187,59 +157,64 @@ impl Workspace {
             cx,
         );
         // The header sits where the macOS title bar would be, so it drags the window too.
-        let header = h_flex()
-            .id("right-sidebar-header")
-            .h(TAB_BAR_HEIGHT)
-            .flex_none()
-            .px_2()
-            .justify_between()
-            .items_center()
-            .border_b_1()
-            .border_color(border)
-            .child(
-                h_flex()
-                    .relative()
-                    .h_full()
-                    .flex_none()
-                    .child(
-                        render_right_tab(
-                            "choose-git",
-                            "Git",
-                            Lucide::GitBranch,
-                            !selected_files && !git_absent,
-                            !git_absent,
-                            window,
-                            cx,
+        let header =
+            h_flex()
+                .id("right-sidebar-header")
+                .h(TAB_BAR_HEIGHT)
+                .flex_none()
+                .px_2()
+                .justify_between()
+                .items_center()
+                .border_b_1()
+                .border_color(border)
+                .child(
+                    h_flex()
+                        .relative()
+                        .h_full()
+                        .flex_none()
+                        .child(
+                            render_right_tab(
+                                "choose-git",
+                                "Git",
+                                Lucide::GitBranch,
+                                !selected_files && !git_absent,
+                                !git_absent,
+                                window,
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.choose_right_tab(RightTab::Git, cx)
+                            })),
                         )
-                        .on_click(cx.listener(|this, _, _, cx| this.choose_files(false, cx))),
-                    )
-                    .child(
-                        render_right_tab(
-                            "choose-files",
-                            "Files",
-                            Lucide::Folder,
-                            selected_files,
-                            true,
-                            window,
-                            cx,
+                        .child(
+                            render_right_tab(
+                                "choose-files",
+                                "Files",
+                                Lucide::Folder,
+                                selected_files,
+                                true,
+                                window,
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.choose_right_tab(RightTab::Files, cx)
+                            })),
                         )
-                        .on_click(cx.listener(|this, _, _, cx| this.choose_files(true, cx))),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .bottom_0()
-                            .left(RIGHT_TAB_WIDTH * indicator_position)
-                            .w(RIGHT_TAB_WIDTH)
-                            .h(RIGHT_TAB_UNDERLINE)
-                            .bg(cx.theme().primary),
-                    ),
-            )
-            .child(right_sidebar_toggle().small().smooth_hover(
-                ButtonLook::Ghost,
-                &toggle_hover,
-                cx,
-            ));
+                        .child(
+                            div()
+                                .absolute()
+                                .bottom_0()
+                                .left(RIGHT_TAB_WIDTH * indicator_position)
+                                .w(RIGHT_TAB_WIDTH)
+                                .h(RIGHT_TAB_UNDERLINE)
+                                .bg(cx.theme().primary),
+                        ),
+                )
+                .child(right_sidebar_toggle().small().smooth_hover(
+                    ButtonLook::Ghost,
+                    &toggle_hover,
+                    cx,
+                ));
         let header = self.window_drag_band(header, |_| true, cx);
         let content = v_flex()
             .h_full()

@@ -32,10 +32,7 @@ pub(super) fn menu(
         .decorations
         .get(&path)
         .is_some_and(|d| d.staged.is_some() || d.unstaged.is_some());
-    let local = files
-        .target
-        .as_ref()
-        .is_some_and(|target| target.host.is_local());
+    let local = files.target().is_some_and(|target| target.host.is_local());
     let actions = [
         ("Open", EntryAction::Open, existing && !folder),
         ("Show Changes", EntryAction::Changes, changes),
@@ -115,7 +112,7 @@ impl FilesPanel {
                 path.to_string_lossy().into_owned(),
             )),
             EntryAction::CopyAbsolute | EntryAction::Reveal => {
-                if let Some(target) = &self.files.read(cx).target {
+                if let Some(target) = self.files.read(cx).target() {
                     let absolute = target.path.join(path);
                     if matches!(action, EntryAction::Reveal) && target.host.is_local() {
                         cx.reveal_path(&absolute);
@@ -137,7 +134,7 @@ impl FilesPanel {
 
     fn confirm_delete(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.files.read(cx);
-        let Some(target) = state.target.clone() else {
+        let Some(target) = state.target().cloned() else {
             return;
         };
         let Some(entry) = state.entry(&path) else {
@@ -190,15 +187,6 @@ impl FilesPanel {
                 return;
             }
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.files.read(cx).target.as_ref() != Some(&target) {
-                    window.push_notification(
-                        Notification::error(
-                            "Worktree changed. Select the entry again before deleting.",
-                        ),
-                        cx,
-                    );
-                    return;
-                }
                 this.files.update(cx, |files, cx| {
                     files.perform(FileOperation::Delete(path), window, cx)
                 });

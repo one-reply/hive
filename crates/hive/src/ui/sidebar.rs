@@ -173,10 +173,15 @@ impl Sidebar {
                 .copied(),
             Instant::now(),
         );
+        // The whole project, its cards included, reveals the header actions.
+        let hover = Hover::new(("project", ix), window, cx);
         let header = self
-            .render_header(ix, project, open, window, cx)
+            .render_header(ix, project, open, &hover, window, cx)
             .into_any_element();
-        let group = self.project_drop_target(Some(project)).child(header);
+        let group = self
+            .project_drop_target(Some(project))
+            .on_hover(hover.listener())
+            .child(header);
         if !open && !animate {
             return group.into_any_element();
         }
@@ -290,6 +295,7 @@ impl Sidebar {
         ix: usize,
         project: &Project,
         open: bool,
+        project_hover: &Hover,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -313,7 +319,6 @@ impl Sidebar {
             cx,
         );
         let fg = cx.theme().sidebar_foreground;
-        let header_hover = Hover::new(("project", ix), window, cx);
         let new_worktree_hover = Hover::new(("new-worktree", ix), window, cx);
         let collapse_hover = Hover::new(("collapse-project", ix), window, cx);
         let menu_open = window.use_keyed_state(
@@ -393,7 +398,7 @@ impl Sidebar {
             .opacity(if holds_selection || is_menu_open || keyboard_focus {
                 1.
             } else {
-                header_hover.progress()
+                project_hover.progress()
             });
         h_flex()
             .id(("project", ix))
@@ -405,7 +410,6 @@ impl Sidebar {
             })
             .track_focus(&header_focus)
             .tab_index(0)
-            .on_hover(header_hover.listener())
             .h(HEADER_HEIGHT)
             .gap_1p5()
             .pl(HEADER_INSET)
