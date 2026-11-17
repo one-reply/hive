@@ -9,6 +9,7 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is a transitive compile-time macro; replace when GPUI and its dependencies migrate." },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz is used by GPUI's usvg renderer; no drop-in fixed version, revisit with GPUI's harfrust migration." },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is used by GPUI and usvg; no fixed version, revisit with upstream fontations migration." },
+    { id = "RUSTSEC-2026-0543", reason = "chrono's maintenance notice affects every version; GPUI, rmcp and Hive still require it. No reported vulnerability in this advisory; revisit when upgrading those dependencies and migrate Hive's date handling with them." },
 ]
 
 [licenses]
