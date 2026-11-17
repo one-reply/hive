@@ -16,6 +16,7 @@ mod language;
 mod language_features;
 mod source_preview;
 pub(crate) use document::{Changes, Content, Document, PreviewState, SvgMode};
+pub(crate) use document::{STICKY_BORDER_WIDTH, sticky_row_limit};
 pub(crate) use language::LanguageStatus;
 pub(crate) use source_preview::SourcePreview;
 

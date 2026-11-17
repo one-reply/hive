@@ -11,10 +11,12 @@ mod blame;
 mod formatting;
 mod image;
 mod io;
+mod navigation;
 mod relocation;
 pub(crate) use blame::LineBlame;
 pub(crate) use image::{Content, PreviewState, SvgMode};
 pub(crate) use io::Changes;
+pub(crate) use navigation::{STICKY_BORDER_WIDTH, sticky_row_limit};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum DocumentError {
@@ -332,21 +334,6 @@ impl Document {
                 cx,
             );
         }
-    }
-
-    pub fn goto(&mut self, position: Position, window: &mut Window, cx: &mut Context<Self>) {
-        if self.content.is_raster() {
-            return;
-        }
-        self.set_svg_mode(SvgMode::Code, window, cx);
-        if self.base.is_none() {
-            self.pending_position = Some(position);
-            return;
-        }
-        self.editor.update(cx, |editor, cx| {
-            editor.unfold_at(position, cx);
-            editor.set_cursor_position(position, window, cx);
-        });
     }
 
     fn schedule_recovery(&mut self, cx: &mut Context<Self>) {

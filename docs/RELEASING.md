@@ -142,8 +142,8 @@ The `licenses/` directory covers bundled artwork and supplemental dependency not
 cargo-about generates the dependency license inventory from `Cargo.lock`; MPL-covered
 crate sources are included alongside the executable. Recheck notices on dependency updates.
 
-Four cargo-deny exceptions currently cover upstream maintenance advisories for
-`instant`, `paste`, `rustybuzz`, and `ttf-parser`. Each has an explicit reason in
+Five cargo-deny exceptions currently cover upstream maintenance advisories for
+`instant`, `paste`, `rustybuzz`, `ttf-parser`, and `chrono`. Each has an explicit reason in
 `deny.toml`; revisit them when upgrading GPUI. These do not suppress new advisories.
 `tree-sitter-graphql` declares `license-file` instead of an SPDX field; its packaged
 MIT license is verified by the tools, which may still print a metadata warning.

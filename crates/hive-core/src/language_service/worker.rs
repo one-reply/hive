@@ -22,6 +22,7 @@ use std::{
 // Tests wait for a real deadline; the production value would make them minutes long.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 15 });
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
+const DIAGNOSTIC_MESSAGE_CHARS: usize = 2048;
 type Pending = BTreeMap<i64, (Instant, async_channel::Sender<Result<Value, Error>>)>;
 
 pub(super) fn run(
@@ -227,7 +228,20 @@ fn serve(
                 } if method == "textDocument/publishDiagnostics" => {
                     super::paths::inbound(&mut params, physical, root);
                     match serde_json::from_value::<PublishDiagnosticsParams>(params) {
-                        Ok(diagnostics) => {
+                        Ok(mut diagnostics) => {
+                            // Parse Markdown once on this worker, never while applying it in UI.
+                            for diagnostic in &mut diagnostics.diagnostics {
+                                if stopped.load(Ordering::Acquire) {
+                                    return Err(Error::Cancelled);
+                                }
+                                let message: String = diagnostic
+                                    .message
+                                    .chars()
+                                    .take(DIAGNOSTIC_MESSAGE_CHARS)
+                                    .collect();
+                                diagnostic.message =
+                                    super::markdown::restrict_links(&message).into_owned();
+                            }
                             super::events::send(events, Event::Diagnostics(diagnostics), stopped)?
                         }
                         // One publication the client cannot type is not a dead server.

@@ -69,6 +69,61 @@ impl lsp_types::request::Request for Burst {
 }
 
 #[test]
+fn diagnostic_events_are_bounded_and_sanitized_before_reaching_the_consumer() {
+    enum Publish {}
+    impl lsp_types::request::Request for Publish {
+        type Params = PublishDiagnosticsParams;
+        type Result = bool;
+        const METHOD: &'static str = "test/diagnostics";
+    }
+    let fixture = Fixture::new();
+    let (session, events) = Session::start(Host::Local, fixture.0.clone(), Family::TypeScript);
+    ready(&events);
+    let uri = position::uri(&fixture.0.join("file.ts")).unwrap();
+    let messages = [
+        "see [notes](file:///x.command) or <https://docs.rs>".to_owned(),
+        "😀".repeat(3000),
+        format!("{}[x](file:///x)", "a".repeat(2047)),
+    ];
+    let publish = session
+        .request::<Publish>(PublishDiagnosticsParams::new(
+            uri.clone(),
+            messages
+                .into_iter()
+                .map(|message| Diagnostic {
+                    range: Range::new(Position::new(0, 2), Position::new(0, 3)),
+                    message,
+                    ..Default::default()
+                })
+                .collect(),
+            Some(7),
+        ))
+        .unwrap();
+    let Event::Diagnostics(params) = events.recv_blocking().unwrap() else {
+        panic!("expected a prepared diagnostic publication");
+    };
+    assert_eq!(params.uri, uri);
+    assert_eq!(params.version, Some(7));
+    assert_eq!(params.diagnostics.len(), 3);
+    assert_eq!(
+        params.diagnostics[0].message,
+        r"see \[notes](file:///x.command) or <https://docs.rs>"
+    );
+    assert_eq!(params.diagnostics[1].message, "😀".repeat(2048));
+    assert_eq!(
+        params.diagnostics[2].message,
+        format!("{}[", "a".repeat(2047))
+    );
+    assert_eq!(
+        params.diagnostics[0].range,
+        Range::new(Position::new(0, 2), Position::new(0, 3))
+    );
+    assert!(receive(publish).unwrap());
+    drop(session);
+    while events.recv_blocking().is_ok() {}
+}
+
+#[test]
 fn a_diagnostics_burst_preserves_the_session_and_all_file_updates() {
     let fixture = Fixture::new();
     let (session, events) = Session::start(Host::Local, fixture.0.clone(), Family::TypeScript);
@@ -295,6 +350,7 @@ while True:
     elif method=='test/burst':
         for i in range(100): send({'jsonrpc':'2.0','method':'textDocument/publishDiagnostics','params':{'uri':'file:///file%d.ts'%i,'diagnostics':[]}})
         result=True
+    elif method=='test/diagnostics': send({'jsonrpc':'2.0','method':'textDocument/publishDiagnostics','params':request['params']}); result=True
     elif method=='test/crash': sys.exit(0)
     elif method=='shutdown': result=None
     elif method=='exit': sys.exit(0)

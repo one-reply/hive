@@ -108,7 +108,15 @@ impl Workspace {
                         this.activate_target(target, cx);
                         this.show_right_tab(true, cx);
                         let files = this.files_panel.read(cx).files.clone();
-                        files.update(cx, |files, cx| files.reveal(path.clone(), cx));
+                        let (target, path) = (target.clone(), path.clone());
+                        // Projects observers first install the selected worktree in Files.
+                        window.defer(cx, move |_, cx| {
+                            files.update(cx, |files, cx| {
+                                if files.target.as_ref() == Some(&target) {
+                                    files.reveal_in_tree(path, cx);
+                                }
+                            });
+                        });
                     }
                     DocumentEvent::Deleted(target, path) => {
                         for center in this.centers.values_mut() {

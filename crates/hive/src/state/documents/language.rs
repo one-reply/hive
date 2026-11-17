@@ -9,6 +9,8 @@ use std::collections::HashMap;
 
 mod diagnostics;
 #[cfg(test)]
+mod diagnostics_tests;
+#[cfg(test)]
 mod relocation_tests;
 #[cfg(test)]
 mod trust_tests;
@@ -412,7 +414,11 @@ impl Document {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(150))
                 .await;
-            let _ = this.update(cx, |this, cx| this.sync_language(cx));
+            let _ = this.update(cx, |this, cx| {
+                this.sync_language(cx);
+                // Servers may stay silent when an edit leaves the diagnosed lines unchanged.
+                this.apply_diagnostics(cx);
+            });
         }));
     }
 

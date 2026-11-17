@@ -99,6 +99,13 @@ impl Files {
         }
     }
 
+    /// An explicit breadcrumb reveal leaves search; automatic reveals keep its filter.
+    pub(crate) fn reveal_in_tree(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.set_search_text(String::new(), cx);
+        self.set_search_mode(SearchMode::Names, cx);
+        self.reveal(path, cx);
+    }
+
     pub(crate) fn reveal(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         for parent in path
             .ancestors()
@@ -165,3 +172,6 @@ impl Files {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
