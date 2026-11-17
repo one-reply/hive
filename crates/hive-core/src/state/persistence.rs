@@ -133,7 +133,7 @@ impl State {
             projects: projects(sections.projects, &mut lost),
             workspace: section("workspace", sections.workspace, &mut lost),
             last_seen_release: section("last_seen_release", sections.last_seen_release, &mut lost),
-            reviewed: section("reviewed", sections.reviewed, &mut lost),
+            reviewed: reviewed(sections.reviewed, &mut lost),
         };
         let cause = if sections.version > SCHEMA_VERSION {
             tracing::warn!(
@@ -275,6 +275,19 @@ fn projects(value: Option<Value>, lost: &mut Vec<String>) -> Vec<ProjectRef> {
                 .ok()
         })
         .collect()
+}
+
+/// Review marks, dropping only the ones that cannot be read. A mark is one click to restore;
+/// losing the whole list, with a recovery notice, for one of them is not proportionate.
+fn reviewed(value: Option<Value>, lost: &mut Vec<String>) -> Vec<crate::git::reviewed::Revision> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    super::lenient::elements(value).unwrap_or_else(|error: serde_json::Error| {
+        tracing::warn!(section = "reviewed", %error, "unreadable state section reset to defaults");
+        lost.push("reviewed".to_owned());
+        Vec::new()
+    })
 }
 
 /// Writes an exact copy of the file as found, durably, before anything replaces it.
@@ -505,6 +518,27 @@ mod tests {
         assert_eq!(
             State::load_from(&fixture.0).unwrap().state.reviewed,
             loaded.state.reviewed
+        );
+    }
+
+    #[test]
+    fn one_unreadable_review_mark_is_dropped_without_losing_the_others() {
+        let fixture = Fixture::new();
+        fs::write(fixture.0.join("state.json"), br#"{"version":1,"reviewed":[{"host":{"kind":"local"},"worktree":"/a","path":"src/a.rs","source":{"FromTheFuture":1},"fingerprint":"x"},{"host":{"kind":"local"},"worktree":"/a","path":"src/b.rs","source":"WorkingTree","fingerprint":"y"},7]}"#).unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert!(loaded.recovery.is_none());
+        assert_eq!(loaded.state.reviewed.len(), 1);
+
+        fs::write(
+            fixture.0.join("state.json"),
+            br#"{"version":1,"reviewed":"all"}"#,
+        )
+        .unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert!(loaded.state.reviewed.is_empty());
+        assert_eq!(
+            loaded.recovery.unwrap().cause,
+            RecoveryCause::Partial(vec!["reviewed".into()])
         );
     }
 

@@ -75,7 +75,9 @@ impl Matches {
     }
 }
 
-/// Finds case-insensitive subsequences, ranking exact names, prefixes and substrings first.
+/// Finds case-insensitive substrings of the path and subsequences of the file name, ranking
+/// exact names, prefixes and substrings first. A query with `/` also matches as a subsequence
+/// of the whole path.
 /// Hidden ancestors hide a whole path.
 /// An empty query has no matches: callers use the ordinary tree in that case.
 pub fn find(paths: &[PathBuf], query: &str, show_hidden: bool) -> Matches {
@@ -107,7 +109,14 @@ pub fn find(paths: &[PathBuf], query: &str, show_hidden: bool) -> Matches {
                         .map(|r| r.start + name_start..r.end + name_start)
                         .collect()
                 })
-                .or_else(|| subsequence(&text, &query))
+                // Across directories only when the query names a path: the letters of a short
+                // word appear, in order, somewhere along most paths of a repository.
+                .or_else(|| {
+                    query
+                        .contains('/')
+                        .then(|| subsequence(&text, &query))
+                        .flatten()
+                })
         };
         if !contiguous && fuzzy.is_none() {
             continue;
@@ -257,6 +266,30 @@ mod tests {
         assert!(matches.rows[&paths[1]].score > matches.rows[&paths[2]].score);
         matches.prefer_recent(&[paths[2].clone()]);
         assert!(matches.rows[&paths[1]].score > matches.rows[&paths[2]].score);
+    }
+
+    #[test]
+    fn a_word_is_not_matched_letter_by_letter_across_directories() {
+        let paths: Vec<PathBuf> = vec![
+            "crates/hive/src/state/files.rs".into(),
+            "crates/hive/src/state/tests.rs".into(),
+            "crates/hive/src/terminal_session_input.rs".into(),
+        ];
+        // "t…e…s…t" runs through "crates/…/state" of every path; only names may be fuzzy.
+        let found = find(&paths, "test", true);
+        assert!(!found.rows.contains_key(&paths[0]));
+        assert!(found.rows[&paths[1]].score > found.rows[&paths[2]].score);
+        // A path-shaped query asks for exactly that.
+        assert!(
+            find(&paths, "hive/stfil", true)
+                .rows
+                .contains_key(&paths[0])
+        );
+        assert!(
+            find(&paths, "state/files", true)
+                .rows
+                .contains_key(&paths[0])
+        );
     }
 
     #[test]
