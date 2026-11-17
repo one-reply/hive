@@ -14,7 +14,8 @@ use std::{
 mod snapshot;
 
 const MAGIC: &[u8] = b"HIVE-REMOTE\n";
-pub(super) const PREAMBLE_LIMIT: usize = 8192;
+/// sshd's shell may print before the helper does, as before any remote tool.
+pub(super) use crate::host::preamble::LIMIT as PREAMBLE_LIMIT;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]

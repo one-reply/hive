@@ -1,7 +1,7 @@
 //! Installed formatters on the document's host. Source is passed only through stdin.
 use crate::{
     command::{self, Cancellation},
-    host::Host,
+    host::{Host, preamble},
 };
 use serde::Deserialize;
 use std::{
@@ -118,27 +118,25 @@ fn run(
     limit: usize,
     cancellation: &Cancellation,
 ) -> Result<String, String> {
-    // "Installed tools only": a rustup proxy reports a missing toolchain instead of fetching it.
-    let script = format!("export RUSTUP_AUTO_INSTALL=0; {script}");
-    // The inner POSIX shell also works when an SSH account uses fish or csh.
-    let script = if host.is_local() {
-        script
-    } else {
-        let action = quote_args(&["sh".into(), "-c".into(), script])?;
-        format!(
-            "exec \"${{SHELL:-/bin/sh}}\" -lc {}",
-            shlex::try_quote(&action).map_err(|e| e.to_string())?
-        )
-    };
     let output = command::run(
-        host.command("sh", &["-c", &script], Some(directory)),
+        command(host, directory, script),
         input.as_bytes(),
         cancellation,
         TIMEOUT,
-        limit,
+        // Startup files may print before the formatter does; `decode` drops that.
+        limit + preamble::OVERHEAD,
     )
     .map_err(|e| e.to_string())?;
     decode(output)
+}
+
+/// `script` in the login environment, where installed formatters resolve as in a terminal.
+fn command(host: &Host, directory: &Path, script: &str) -> std::process::Command {
+    // "Installed tools only": a rustup proxy reports a missing toolchain instead of fetching it.
+    host.login_command(
+        &format!("export RUSTUP_AUTO_INSTALL=0; {script}"),
+        Some(directory),
+    )
 }
 
 fn decode(output: command::Output) -> Result<String, String> {
@@ -155,12 +153,15 @@ fn decode(output: command::Output) -> Result<String, String> {
             &stderr[..end]
         ));
     }
-    let text = String::from_utf8(output.stdout)
-        .map_err(|_| "Formatter returned invalid UTF-8".to_owned())?;
+    // A banner from `.zprofile` must never become part of the buffer.
+    let stdout = preamble::strip(&output.stdout)
+        .map_err(|error| format!("Formatter did not start: {error}"))?;
+    let text =
+        std::str::from_utf8(stdout).map_err(|_| "Formatter returned invalid UTF-8".to_owned())?;
     if text.contains('\0') {
         return Err("Formatter returned binary data".into());
     }
-    Ok(text)
+    Ok(text.to_owned())
 }
 
 #[derive(Deserialize, Default)]
@@ -331,13 +332,20 @@ mod tests {
         assert_eq!(edition("{}", Path::new("/standalone.rs")).unwrap(), None);
         assert!(edition("{", Path::new("/work/a.rs")).is_err());
     }
+    /// stdout as the login shell leaves it: startup noise, the marker, the formatter's output.
+    fn marked(noise: &[u8], output: &[u8]) -> Vec<u8> {
+        [noise, preamble::MARKER.as_bytes(), output].concat()
+    }
     #[test]
     fn formatter_failure_and_binary_output_are_not_source() {
         for (code, stdout) in [
-            (Some(1), b"source".to_vec()),
+            (Some(1), marked(b"", b"source")),
             (None, vec![]),
-            (Some(0), vec![255]),
-            (Some(0), vec![0]),
+            (Some(0), marked(b"", &[255])),
+            (Some(0), marked(b"", &[0])),
+            // The shell exited before the formatter started.
+            (Some(0), b"a\n".to_vec()),
+            (Some(0), marked(&[b'x'; preamble::LIMIT + 1], b"a\n")),
         ] {
             assert!(
                 decode(command::Output {
@@ -351,7 +359,7 @@ mod tests {
         assert_eq!(
             decode(command::Output {
                 code: Some(0),
-                stdout: b"a\n".to_vec(),
+                stdout: marked(b"Welcome to build-01\n", b"a\n"),
                 stderr: vec![]
             })
             .unwrap(),
@@ -364,6 +372,50 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(long.matches('é').count(), STDERR_LIMIT);
+    }
+    #[test]
+    fn a_remote_login_banner_never_reaches_the_formatted_text() {
+        use std::{fs, os::unix::fs::PermissionsExt as _};
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(
+            std::env::temp_dir().join(format!("hive-format-banner-{}", std::process::id())),
+        );
+        let (root, home) = (scratch.0.join("work tree's"), scratch.0.join("home"));
+        fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let executable = |path: &Path, script: &str| {
+            fs::write(path, script).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        executable(&root.join("node_modules/.bin/prettier"), "#!/bin/sh\ncat\n");
+        // An account whose profile greets every shell, login or not, on stdout.
+        let shell = scratch.0.join("login-shell");
+        executable(
+            &shell,
+            "#!/bin/sh\necho 'Welcome to build-01'\ncase $1 in -c|-lc) exec /bin/sh -c \"$2\" ;; esac\nexit 64\n",
+        );
+        let host = Host::Ssh {
+            target: "build-01".into(),
+        };
+        let path = root.join("src/a.ts");
+        let script = prettier_script(root.to_str().unwrap(), path.to_str().unwrap()).unwrap();
+        let text = "const banner = 'not mine';\n";
+        let output = command::run(
+            crate::host::as_login_shell(&command(&host, &root.join("src"), &script), &shell, &home),
+            text.as_bytes(),
+            &Cancellation::default(),
+            TIMEOUT,
+            LIMIT + preamble::OVERHEAD,
+        )
+        .unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).starts_with("Welcome to build-01\n"));
+        assert_eq!(decode(output).unwrap(), text);
     }
     #[test]
     fn unsafe_paths_fail_before_any_process() {
