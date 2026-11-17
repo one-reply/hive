@@ -1,6 +1,5 @@
 use super::*;
 use gpui_kit::component::input::RopeExt as _;
-use hive_core::language_service::markdown;
 
 /// Lines one diagnostic may span and still be compared across document versions.
 const CARRIED_LINES: u32 = 200;
@@ -64,8 +63,7 @@ fn same_lines(diagnosed: &Rope, text: &Rope, range: lsp_types::Range) -> bool {
 
 /// `diagnostics` as the editor shows them. Ranges are editor positions in ascending order:
 /// the editor's diagnostic set seeks by position and loses entries pushed out of order, and
-/// servers publish in no particular order. Messages keep only web links, since the popover
-/// renders a message as Markdown and opens any link in it.
+/// servers publish in no particular order. Messages arrive sanitized by the LSP worker.
 pub(super) fn for_editor(
     source: &str,
     diagnostics: &[lsp_types::Diagnostic],
@@ -76,7 +74,6 @@ pub(super) fn for_editor(
         .filter_map(|diagnostic| {
             let mut diagnostic = diagnostic.clone();
             diagnostic.range = lines.editor_range(diagnostic.range)?;
-            diagnostic.message = markdown::restrict_links(&diagnostic.message).into_owned();
             Some(diagnostic)
         })
         .collect();
@@ -164,7 +161,6 @@ fn retain_bounded(
     let limited = params.diagnostics.len() > available;
     params.diagnostics.truncate(available);
     for diagnostic in &mut params.diagnostics {
-        diagnostic.message = diagnostic.message.chars().take(2048).collect();
         diagnostic.data = None;
         diagnostic.related_information = None;
         diagnostic.code_description = None;
@@ -264,10 +260,10 @@ mod tests {
         assert!(for_editor("short", &[at(9, 0, 1)]).is_empty());
     }
     #[test]
-    fn editor_messages_link_only_to_the_web_and_ranges_use_scalar_columns() {
+    fn editor_keeps_prepared_messages_and_ranges_use_scalar_columns() {
         let diagnostic = Diagnostic {
             range: Range::new(Position::new(0, 2), Position::new(0, 3)),
-            message: "see [notes](file:///x.command) or <https://docs.rs>".into(),
+            message: r"see \[notes](file:///x.command) or <https://docs.rs>".into(),
             ..Default::default()
         };
         let [shown] = <[Diagnostic; 1]>::try_from(for_editor("😀x", &[diagnostic])).unwrap();
@@ -280,6 +276,30 @@ mod tests {
             Range::new(Position::new(0, 1), Position::new(0, 2))
         );
     }
+    #[test]
+    fn retaining_prepared_messages_does_not_cut_their_markdown_escapes() {
+        let message = format!("{}\\[x](file:///x)", "a".repeat(2047));
+        let uri: Uri = "file:///work/a.ts".parse().unwrap();
+        let mut map = HashMap::new();
+        assert!(!retain_bounded(
+            &mut map,
+            PublishDiagnosticsParams::new(
+                uri.clone(),
+                vec![Diagnostic {
+                    message: message.clone(),
+                    ..Default::default()
+                }],
+                Some(1)
+            ),
+            None
+        ));
+        assert_eq!(map[uri.as_str()].params.diagnostics[0].message, message);
+        assert_eq!(
+            for_editor("source", &map[uri.as_str()].params.diagnostics)[0].message,
+            message
+        );
+    }
+
     #[test]
     fn diagnostics_are_bounded_and_an_empty_publication_clears_the_file() {
         let uri: Uri = "file:///work/a.ts".parse().unwrap();

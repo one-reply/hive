@@ -267,6 +267,9 @@ pub fn run_with_progress(
             && pipes.output_closed()
         {
             running.exited = true;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
             return Ok(Output {
                 code: status.exit_status(),
                 stdout: output,
@@ -335,6 +338,60 @@ mod tests {
         );
         assert!(seen);
         assert!(matches!(result, Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn cancellation_during_a_completed_output_pass_is_not_reported_as_success() {
+        let cancellation = Cancellation::default();
+        let mut command = crate::host::Host::Local.command("/bin/sleep", &["30"], None);
+        // spawn returns only after exec: both output streams are already closed when
+        // run_with_progress begins draining, but the child is still running.
+        unsafe {
+            command.pre_exec(|| {
+                let ready = b"ready";
+                if libc::write(libc::STDOUT_FILENO, ready.as_ptr().cast(), ready.len())
+                    != ready.len() as isize
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::close(libc::STDOUT_FILENO) != 0 || libc::close(libc::STDERR_FILENO) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut seen = false;
+        let result = run_with_progress(
+            command,
+            &[],
+            &cancellation,
+            Duration::from_secs(5),
+            1024,
+            |output, _| {
+                assert_eq!(output, b"ready");
+                seen = true;
+                let pid = cancellation.group.lock().unwrap().unwrap();
+                cancellation.cancel();
+                // Wait for our cancellation to take effect without reaping the child;
+                // run_with_progress remains its owner and can inspect the same status.
+                let status = process::waitid(
+                    WaitId::Pid(pid),
+                    WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+                )
+                .unwrap()
+                .unwrap();
+                assert!(status.killed());
+            },
+        );
+        assert!(seen);
+        match result {
+            Err(Error::Cancelled) => {}
+            Err(error) => panic!("expected Cancelled, got {error:?}"),
+            Ok(output) => panic!(
+                "expected Cancelled, got Ok with exit code {:?}",
+                output.code
+            ),
+        }
     }
 
     #[test]

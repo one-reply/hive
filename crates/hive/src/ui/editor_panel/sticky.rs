@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::documents::{STICKY_BORDER_WIDTH, sticky_row_limit};
 
 pub(super) fn render(
     document: &Entity<Document>,
@@ -60,6 +61,7 @@ pub(super) fn render(
             .map(|(_, _, start, end)| (*start, *end))
             .collect::<Vec<_>>(),
         first_display,
+        sticky_row_limit(editor.input_bounds().size.height, height),
     );
     if chosen.is_empty() {
         return None;
@@ -85,7 +87,7 @@ pub(super) fn render(
         .left_0()
         .right_0()
         .bg(cx.theme().background)
-        .border_b_1()
+        .border_b(STICKY_BORDER_WIDTH)
         .border_color(cx.theme().border)
         .overflow_hidden();
     for (line, label, position) in rows {
@@ -135,7 +137,10 @@ pub(super) fn render(
     Some(header.into_any_element())
 }
 
-fn visible_scopes(scopes: &[(usize, usize)], first_row: usize) -> Vec<usize> {
+fn visible_scopes(scopes: &[(usize, usize)], first_row: usize, limit: usize) -> Vec<usize> {
+    if limit == 0 {
+        return Vec::new();
+    }
     let mut selected: Vec<usize> = Vec::new();
     for (index, (start, end)) in scopes.iter().enumerate().rev() {
         if *start < first_row
@@ -143,7 +148,7 @@ fn visible_scopes(scopes: &[(usize, usize)], first_row: usize) -> Vec<usize> {
             && !selected.iter().any(|other| scopes[*other].0 == *start)
         {
             selected.push(index);
-            if selected.len() == 2 {
+            if selected.len() == limit {
                 break;
             }
         }
@@ -162,16 +167,18 @@ mod tests {
     #[test]
     fn two_innermost_scopes_stick_only_after_their_display_rows_scroll_away() {
         let scopes = [(0, 100), (4, 90), (10, 50)];
-        assert_eq!(visible_scopes(&scopes, 0), Vec::<usize>::new());
-        assert_eq!(visible_scopes(&scopes, 4), [0]);
-        assert_eq!(visible_scopes(&scopes, 11), [1, 2]);
-        assert_eq!(visible_scopes(&scopes, 49), [0, 1]);
-        assert!(visible_scopes(&scopes, 99).is_empty());
+        assert_eq!(visible_scopes(&scopes, 0, 2), Vec::<usize>::new());
+        assert_eq!(visible_scopes(&scopes, 4, 2), [0]);
+        assert_eq!(visible_scopes(&scopes, 11, 2), [1, 2]);
+        assert_eq!(visible_scopes(&scopes, 11, 1), [2]);
+        assert!(visible_scopes(&scopes, 11, 0).is_empty());
+        assert_eq!(visible_scopes(&scopes, 49, 2), [0, 1]);
+        assert!(visible_scopes(&scopes, 99, 2).is_empty());
     }
     #[test]
     fn wrapped_or_folded_geometry_uses_display_rows_and_leaves_room_for_the_closing_line() {
-        assert_eq!(visible_scopes(&[(0, 20), (3, 8)], 6), [0]);
-        assert_eq!(visible_scopes(&[(0, 20), (3, 12)], 6), [0, 1]);
-        assert_eq!(visible_scopes(&[(0, 50), (0, 40), (3, 20)], 6), [1, 2]);
+        assert_eq!(visible_scopes(&[(0, 20), (3, 8)], 6, 2), [0]);
+        assert_eq!(visible_scopes(&[(0, 20), (3, 12)], 6, 2), [0, 1]);
+        assert_eq!(visible_scopes(&[(0, 50), (0, 40), (3, 20)], 6, 2), [1, 2]);
     }
 }

@@ -1,6 +1,7 @@
 //! Projects the model's rows into gpui-component tree items. Row identity is the
 //! worktree-relative path; placeholder rows under a folder get the folder's path plus `/`.
-use gpui_kit::component::tree::TreeItem;
+use gpui_kit::component::tree::{TreeItem, TreeState};
+use gpui_kit::{Context, ScrollStrategy};
 use hive_core::files::tree::{Contents, Node, NodeKind};
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,23 @@ pub(super) fn path(key: &str) -> PathBuf {
 
 pub(super) fn items(nodes: &[Node]) -> Vec<TreeItem> {
     nodes.iter().map(item).collect()
+}
+
+pub(super) fn reveal(tree: &mut TreeState, path: &Path, cx: &mut Context<TreeState>) -> bool {
+    // The navigator has no root row: its breadcrumb reveals the top of the tree.
+    if path.as_os_str().is_empty() {
+        tree.set_selected_index(None, cx);
+        if tree.entry(0).is_some() {
+            tree.scroll_to_item(0, ScrollStrategy::Top);
+        }
+        return true;
+    }
+    let Some(index) = tree.index_of(&key(path)) else {
+        return false;
+    };
+    tree.set_selected_index(Some(index), cx);
+    tree.scroll_to_item(index, ScrollStrategy::Nearest);
+    true
 }
 
 fn item(node: &Node) -> TreeItem {
@@ -46,4 +64,26 @@ pub(super) fn destination_items(nodes: &[Node]) -> Vec<TreeItem> {
             .children(children)
             .expanded(true),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Path, TreeItem, TreeState, key, reveal};
+    use gpui::{AppContext as _, TestAppContext};
+    use gpui_kit as gpui;
+
+    #[gpui::test]
+    fn root_reveal_is_consumed_without_waiting_for_a_nonexistent_row(cx: &mut TestAppContext) {
+        let tree = cx.new(|cx| TreeState::new(cx));
+        tree.update(cx, |tree, cx| {
+            tree.set_items(vec![TreeItem::new(key(Path::new("lib.rs")), "lib.rs")], cx);
+            assert!(reveal(tree, Path::new("lib.rs"), cx));
+            assert_eq!(tree.selected_index(), Some(0));
+            assert!(!reveal(tree, Path::new("missing.rs"), cx));
+            assert!(reveal(tree, Path::new(""), cx));
+            assert!(tree.selected_index().is_none());
+            tree.set_items(Vec::new(), cx);
+            assert!(reveal(tree, Path::new(""), cx));
+        });
+    }
 }

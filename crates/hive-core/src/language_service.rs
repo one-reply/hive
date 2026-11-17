@@ -27,7 +27,9 @@ use std::sync::{
 pub enum Event {
     /// The server has completed initialization and its capabilities are available.
     Ready(Box<ServerCapabilities>),
-    /// A versioned diagnostics snapshot for a server-host file URI.
+    /// A versioned diagnostics snapshot for a server-host file URI. Messages are bounded
+    /// before Markdown sanitization on the worker and contain only web links; consumers
+    /// must not truncate or otherwise transform that Markdown before rendering it.
     Diagnostics(PublishDiagnosticsParams),
     /// Process failure; one automatic restart may follow.
     Failed(Error),

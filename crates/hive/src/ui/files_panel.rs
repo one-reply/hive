@@ -198,15 +198,7 @@ impl FilesPanel {
             let Some(path) = reveal else {
                 return false;
             };
-            let id: SharedString = tree::key(&path);
-            match tree.index_of(&id) {
-                Some(ix) => {
-                    tree.set_selected_index(Some(ix), cx);
-                    tree.scroll_to_item(ix, ScrollStrategy::Nearest);
-                    true
-                }
-                None => false,
-            }
+            tree::reveal(tree, &path, cx)
         });
         if suppress_motion {
             self.motion.observe(self.tree.read(cx), true);
@@ -426,7 +418,7 @@ impl Render for FilesPanel {
                                                     .read(cx)
                                                     .files
                                                     .clone()
-                                                    .update(cx, |f, cx| f.reveal(path, cx));
+                                                    .update(cx, |f, cx| f.reveal_in_tree(path, cx));
                                             }
                                         }),
                                 )
