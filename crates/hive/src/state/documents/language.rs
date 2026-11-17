@@ -11,6 +11,9 @@ mod diagnostics;
 #[cfg(test)]
 mod relocation_tests;
 
+/// How long a full queue to the server is given before documents send their text again.
+const RESYNC_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
 struct Synced {
     text: Rope,
     version: i32,
@@ -22,11 +25,12 @@ pub(crate) struct LanguageSession {
     pub family: Family,
     pub capabilities: Option<ServerCapabilities>,
     pub error: Option<String>,
-    pub diagnostics: HashMap<String, PublishDiagnosticsParams>,
+    pub diagnostics: HashMap<String, diagnostics::Publication>,
     diagnostics_limited: bool,
     client: Session,
     documents: HashMap<Uri, Synced>,
     _events: Option<Task<()>>,
+    _resync: Option<Task<()>>,
 }
 
 impl LanguageSession {
@@ -74,6 +78,7 @@ impl LanguageSession {
             client,
             documents: HashMap::new(),
             _events: None,
+            _resync: None,
         };
         this.listen(events, cx);
         this
@@ -120,6 +125,15 @@ impl LanguageSession {
                 }
                 cx.notify();
             });
+        }));
+    }
+
+    /// The queue to a healthy server was full. Documents observe the session, so one delayed
+    /// notification makes each of them send its unsynced text again.
+    fn resync_later(&mut self, cx: &mut Context<Self>) {
+        self._resync = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(RESYNC_DELAY).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
         }));
     }
 
@@ -310,7 +324,9 @@ impl Document {
     }
 
     pub(super) fn sync_language(&mut self, cx: &mut Context<Self>) {
-        if self.base.is_none() || self.loading || self.path_busy {
+        // Not `loading`: it is also set by every disk poll, and a debounced sync that fires
+        // during one would be dropped with nothing to send it again.
+        if self.base.is_none() || self.path_busy {
             return;
         }
         let text = self.editor.read(cx).text().clone();
@@ -327,6 +343,10 @@ impl Document {
         let client = session.update(cx, |session, cx| {
             match session.sync(uri.clone(), &self.path, text) {
                 Ok(client) => Some(client),
+                Err(language_service::Error::Busy) => {
+                    session.resync_later(cx);
+                    None
+                }
                 Err(error) => {
                     tracing::warn!(%error, "language buffer synchronization failed");
                     session.error = Some(error.to_string());
@@ -352,15 +372,7 @@ impl Document {
         if self.diagnostics == diagnostics {
             return;
         }
-        let source = text.to_string();
-        let converted: Vec<_> = diagnostics
-            .iter()
-            .filter_map(|diagnostic| {
-                let mut diagnostic = diagnostic.clone();
-                diagnostic.range = position::editor_range(&source, diagnostic.range)?;
-                Some(diagnostic)
-            })
-            .collect();
+        let converted = diagnostics::for_editor(&text.to_string(), &diagnostics);
         self.diagnostics = diagnostics;
         self.editor.update(cx, |editor, cx| {
             if let Some(diagnostics) = editor.diagnostics_mut() {
