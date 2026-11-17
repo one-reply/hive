@@ -38,14 +38,34 @@ pub(super) fn physical_root(host: &Host, root: &Path) -> PathBuf {
     })
 }
 
+/// Outbound: file URIs under the user-facing root move into the server's physical namespace.
 pub(super) fn rebase(value: &mut Value, from: &Path, to: &Path) {
     if from == to {
         return;
     }
+    map_uris(value, &|path| {
+        path.strip_prefix(from)
+            .ok()
+            .map(|relative| to.join(relative))
+    });
+}
+
+/// Inbound: back into the user-facing namespace, and into the one spelling [`position::uri`]
+/// writes. Servers percent-encode differently; documents and diagnostics are matched by URI.
+pub(super) fn inbound(value: &mut Value, physical: &Path, root: &Path) {
+    map_uris(value, &|path| {
+        Some(match path.strip_prefix(physical) {
+            Ok(relative) => root.join(relative),
+            Err(_) => path,
+        })
+    });
+}
+
+fn map_uris(value: &mut Value, map: &dyn Fn(PathBuf) -> Option<PathBuf>) {
     match value {
         Value::Array(values) => {
             for value in values {
-                rebase(value, from, to);
+                map_uris(value, map);
             }
         }
         Value::Object(fields) => {
@@ -53,19 +73,14 @@ pub(super) fn rebase(value: &mut Value, from: &Path, to: &Path) {
                 if matches!(key.as_str(), "uri" | "targetUri" | "rootUri") {
                     let mapped = value
                         .as_str()
-                        .and_then(|text| text.parse().ok())
-                        .and_then(|uri| position::path(&uri))
-                        .and_then(|path| {
-                            path.strip_prefix(from)
-                                .ok()
-                                .map(|relative| to.join(relative))
-                        })
+                        .and_then(position::decode)
+                        .and_then(map)
                         .and_then(|path| position::uri(&path));
                     if let Some(uri) = mapped {
                         *value = Value::String(uri.as_str().into());
                     }
                 } else {
-                    rebase(value, from, to);
+                    map_uris(value, map);
                 }
             }
         }
@@ -90,5 +105,24 @@ mod tests {
         assert_eq!(payload["other"], original["other"]);
         rebase(&mut payload, Path::new("/physical"), Path::new("/visible"));
         assert_eq!(payload, original);
+    }
+    #[test]
+    fn inbound_uris_get_one_spelling_even_when_the_root_is_not_an_alias() {
+        let root = Path::new("/work/rs (proj)+@[x]");
+        let mut payload = json!({"uri":"file:///work/rs%20(proj)+@[x]/src/a.rs", "items":[{"targetUri":"file:///elsewhere/b%20(c).rs"}], "other":{"uri":"untitled:a"}, "text":"file:///work/rs%20(proj)/x"});
+        inbound(&mut payload, root, root);
+        assert_eq!(
+            payload["uri"],
+            position::uri(&root.join("src/a.rs")).unwrap().as_str()
+        );
+        assert_eq!(
+            payload["items"][0]["targetUri"],
+            "file:///elsewhere/b%20%28c%29.rs"
+        );
+        assert_eq!(payload["other"]["uri"], "untitled:a");
+        assert_eq!(payload["text"], "file:///work/rs%20(proj)/x");
+        let mut aliased = json!({"uri":"file:///physical/a%20(b).rs"});
+        inbound(&mut aliased, Path::new("/physical"), Path::new("/visible"));
+        assert_eq!(aliased["uri"], "file:///visible/a%20%28b%29.rs");
     }
 }

@@ -11,6 +11,10 @@ use std::{
 
 const LIMIT: usize = 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// `cargo metadata` describes every workspace member; only two fields of each are read.
+const METADATA_LIMIT: usize = 32 * 1024 * 1024;
+/// Enough for a formatter's first diagnostic; the rest of stderr may quote the unsaved buffer.
+const STDERR_LIMIT: usize = 2048;
 
 /// A formatter failure, with the source file and host retained for diagnosis.
 #[derive(Debug, thiserror::Error)]
@@ -64,9 +68,9 @@ pub fn format(
         .to_str()
         .ok_or_else(|| fail("Formatter requires a UTF-8 path".into()))?;
     let script = if relative.extension().is_some_and(|ext| ext == "rs") {
-        let metadata = run(host, directory, "d=$PWD; while [ ! -f \"$d/Cargo.toml\" ]; do [ \"$d\" = / ] && { printf '{}'; exit; }; d=${d%/*}; [ -n \"$d\" ] || d=/; done; exec cargo metadata --no-deps --offline --locked --format-version 1", "", cancellation).map_err(fail)?;
+        let metadata = run(host, directory, "d=$PWD; while [ ! -f \"$d/Cargo.toml\" ]; do [ \"$d\" = / ] && { printf '{}'; exit; }; d=${d%/*}; [ -n \"$d\" ] || d=/; done; exec cargo metadata --no-deps --offline --locked --format-version 1", "", METADATA_LIMIT, cancellation).map_err(fail)?;
         // Cargo reports physical manifest paths, including when the worktree was opened via an alias.
-        let physical = run(host, directory, "pwd -P", "", cancellation).map_err(fail)?;
+        let physical = run(host, directory, "pwd -P", "", LIMIT, cancellation).map_err(fail)?;
         let physical = Path::new(physical.strip_suffix('\n').unwrap_or(&physical));
         if !physical.is_absolute() {
             return Err(fail(
@@ -83,19 +87,26 @@ pub fn format(
         }
         format!("exec {}", quote_args(&args).map_err(fail)?)
     } else {
-        prettier_script(filename).map_err(fail)?
+        let root = root
+            .to_str()
+            .ok_or_else(|| fail("Formatter requires a UTF-8 path".into()))?;
+        prettier_script(root, filename).map_err(fail)?
     };
-    run(host, directory, &script, text, cancellation).map_err(fail)
+    run(host, directory, &script, text, LIMIT, cancellation).map_err(fail)
 }
 
 fn quote_args(args: &[String]) -> Result<String, String> {
     shlex::try_join(args.iter().map(String::as_str)).map_err(|e| e.to_string())
 }
 
-fn prettier_script(path: &str) -> Result<String, String> {
+/// Prefers the nearest `node_modules/.bin/prettier` between the file and the worktree root,
+/// then PATH. Directories above the worktree are outside the project and never searched.
+fn prettier_script(root: &str, path: &str) -> Result<String, String> {
+    let root = shlex::try_quote(root).map_err(|e| e.to_string())?;
     let path = shlex::try_quote(path).map_err(|e| e.to_string())?;
+    // Physical paths on both sides: `$PWD` is physical when the worktree was opened via an alias.
     Ok(format!(
-        "d=$PWD; tool=prettier; while :; do if [ -x \"$d/node_modules/.bin/prettier\" ]; then tool=\"$d/node_modules/.bin/prettier\"; break; fi; [ \"$d\" = / ] && break; d=${{d%/*}}; [ -n \"$d\" ] || d=/; done; exec \"$tool\" --stdin-filepath {path}"
+        "root=$(cd {root} && pwd -P) || exit 127; d=$(pwd -P); tool=prettier; while :; do case \"$d/\" in \"$root/\"*) ;; *) break ;; esac; if [ -x \"$d/node_modules/.bin/prettier\" ]; then tool=\"$d/node_modules/.bin/prettier\"; break; fi; [ \"$d\" = \"$root\" ] && break; d=${{d%/*}}; done; exec \"$tool\" --stdin-filepath {path}"
     ))
 }
 
@@ -104,13 +115,16 @@ fn run(
     directory: &Path,
     script: &str,
     input: &str,
+    limit: usize,
     cancellation: &Cancellation,
 ) -> Result<String, String> {
+    // "Installed tools only": a rustup proxy reports a missing toolchain instead of fetching it.
+    let script = format!("export RUSTUP_AUTO_INSTALL=0; {script}");
     // The inner POSIX shell also works when an SSH account uses fish or csh.
     let script = if host.is_local() {
-        script.to_owned()
+        script
     } else {
-        let action = quote_args(&["sh".into(), "-c".into(), script.into()])?;
+        let action = quote_args(&["sh".into(), "-c".into(), script])?;
         format!(
             "exec \"${{SHELL:-/bin/sh}}\" -lc {}",
             shlex::try_quote(&action).map_err(|e| e.to_string())?
@@ -121,7 +135,7 @@ fn run(
         input.as_bytes(),
         cancellation,
         TIMEOUT,
-        LIMIT,
+        limit,
     )
     .map_err(|e| e.to_string())?;
     decode(output)
@@ -129,10 +143,16 @@ fn run(
 
 fn decode(output: command::Output) -> Result<String, String> {
     if output.code != Some(0) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        let end = stderr
+            .char_indices()
+            .nth(STDERR_LIMIT)
+            .map_or(stderr.len(), |(offset, _)| offset);
         return Err(format!(
             "Installed formatter failed (exit {:?}): {}",
             output.code,
-            String::from_utf8_lossy(&output.stderr).trim()
+            &stderr[..end]
         ));
     }
     let text = String::from_utf8(output.stdout)
@@ -256,6 +276,50 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn formatter_above_the_worktree_is_never_executed() {
+        use std::{fs, os::unix::fs::PermissionsExt as _};
+        let outer = std::env::temp_dir().join(format!("hive-format-outer-{}", std::process::id()));
+        let root = outer.join("project");
+        fs::create_dir_all(outer.join("node_modules/.bin")).unwrap();
+        fs::create_dir_all(root.join("packages/app/node_modules/.bin")).unwrap();
+        let script = |marker: &str| format!("#!/bin/sh\n: > {marker}\ncat\n");
+        for (tool, marker) in [
+            (outer.join("node_modules/.bin/prettier"), "ran-outside"),
+            (
+                root.join("packages/app/node_modules/.bin/prettier"),
+                "ran-nested",
+            ),
+        ] {
+            fs::write(&tool, script(marker)).unwrap();
+            fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::create_dir_all(root.join("packages/app/src")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        // The result depends on whether this machine has prettier on PATH; the marker does not.
+        let _ = format(
+            &Host::Local,
+            &root,
+            Path::new("src/a.ts"),
+            "x",
+            &Cancellation::default(),
+        );
+        assert!(!root.join("src/ran-outside").exists());
+        assert_eq!(
+            format(
+                &Host::Local,
+                &root,
+                Path::new("packages/app/src/a.ts"),
+                "x",
+                &Cancellation::default()
+            )
+            .unwrap(),
+            "x"
+        );
+        assert!(root.join("packages/app/src/ran-nested").exists());
+        assert!(!root.join("packages/app/src/ran-outside").exists());
+        fs::remove_dir_all(outer).unwrap();
+    }
+    #[test]
     fn rust_edition_comes_from_the_nearest_package_and_unknown_fields_are_allowed() {
         let metadata = r#"{"packages":[{"manifest_path":"/work/Cargo.toml","edition":"2018"},{"manifest_path":"/work/nested/Cargo.toml","edition":"2024","other":true}],"version":1}"#;
         assert_eq!(
@@ -293,6 +357,13 @@ mod tests {
             .unwrap(),
             "a\n"
         );
+        let long = decode(command::Output {
+            code: Some(2),
+            stdout: vec![],
+            stderr: "é".repeat(STDERR_LIMIT * 4).into_bytes(),
+        })
+        .unwrap_err();
+        assert_eq!(long.matches('é').count(), STDERR_LIMIT);
     }
     #[test]
     fn unsafe_paths_fail_before_any_process() {

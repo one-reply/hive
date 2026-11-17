@@ -22,19 +22,93 @@ pub fn offset(text: &str, position: Position) -> Option<usize> {
     for _ in 0..position.line {
         start += text.get(start..)?.find('\n')? + 1;
     }
+    column_offset(text, start, position.character)
+}
+
+/// The byte offset of a UTF-16 column on the line that begins at `start`.
+fn column_offset(text: &str, start: usize, character: u32) -> Option<usize> {
     let line = text
         .get(start..)?
         .split('\n')
         .next()?
         .trim_end_matches('\r');
     let mut column = 0;
-    for (byte, character) in line.char_indices() {
-        if column == position.character {
+    for (byte, scalar) in line.char_indices() {
+        if column == character {
             return Some(start + byte);
         }
-        column += character.len_utf16() as u32;
+        column += scalar.len_utf16() as u32;
     }
-    (column == position.character).then_some(start + line.len())
+    (column == character).then_some(start + line.len())
+}
+
+/// The line starts of one text. A completion list or a diagnostics set converts hundreds of
+/// positions in the same buffer; walking from the top for each one is quadratic.
+pub struct Lines<'a> {
+    text: &'a str,
+    starts: Vec<usize>,
+}
+
+impl<'a> Lines<'a> {
+    /// Indexes `text` once; each conversion afterwards costs one line.
+    pub fn new(text: &'a str) -> Self {
+        let starts = std::iter::once(0)
+            .chain(text.match_indices('\n').map(|(offset, _)| offset + 1))
+            .collect();
+        Self { text, starts }
+    }
+
+    /// The indexed text.
+    pub fn text(&self) -> &'a str {
+        self.text
+    }
+
+    /// Same result as [`at`].
+    pub fn at(&self, offset: usize) -> Option<Position> {
+        let prefix = self.text.get(..offset)?;
+        // `starts[0]` is 0, so at least one start is not after `offset`.
+        let line = self.starts.partition_point(|start| *start <= offset) - 1;
+        Some(Position::new(
+            line.try_into().ok()?,
+            prefix[self.starts[line]..]
+                .encode_utf16()
+                .count()
+                .try_into()
+                .ok()?,
+        ))
+    }
+
+    /// Same result as [`offset`].
+    pub fn offset(&self, position: Position) -> Option<usize> {
+        column_offset(self.text, self.start(position)?, position.character)
+    }
+
+    /// Same result as [`editor_position`].
+    pub fn editor_position(&self, position: Position) -> Option<Position> {
+        let start = self.start(position)?;
+        let offset = column_offset(self.text, start, position.character)?;
+        Some(Position::new(
+            position.line,
+            self.text[start..offset].chars().count().try_into().ok()?,
+        ))
+    }
+
+    /// Same result as [`editor_range`].
+    pub fn editor_range(&self, range: lsp_types::Range) -> Option<lsp_types::Range> {
+        if range.start > range.end {
+            return None;
+        }
+        Some(lsp_types::Range::new(
+            self.editor_position(range.start)?,
+            self.editor_position(range.end)?,
+        ))
+    }
+
+    fn start(&self, position: Position) -> Option<usize> {
+        self.starts
+            .get(usize::try_from(position.line).ok()?)
+            .copied()
+    }
 }
 
 /// Converts a protocol position to the scalar-column positions expected by the editor widget.
@@ -77,7 +151,13 @@ pub fn uri(path: &Path) -> Option<Uri> {
 
 /// Decodes only absolute file URIs without authority, query, fragment or NUL bytes.
 pub fn path(uri: &Uri) -> Option<PathBuf> {
-    let encoded = uri.as_str().strip_prefix("file://")?;
+    decode(uri.as_str())
+}
+
+/// [`path`] for a URI as a server wrote it. rust-analyzer leaves `[`, `(` or `+` raw, which the
+/// typed [`Uri`] either rejects or keeps in a spelling that differs from [`uri`].
+pub(super) fn decode(uri: &str) -> Option<PathBuf> {
+    let encoded = uri.strip_prefix("file://")?;
     if !encoded.starts_with('/') || encoded.contains(['?', '#']) {
         return None;
     }
@@ -127,6 +207,47 @@ mod tests {
         );
     }
     use super::*;
+    #[test]
+    fn a_line_index_converts_exactly_like_the_single_position_functions() {
+        use lsp_types::Range;
+        for text in ["", "a😀e\u{301}\r\n日本語\n", "one\ntwo", "\n\n", "\r\n x"] {
+            let lines = Lines::new(text);
+            for offset in 0..=text.len() + 1 {
+                assert_eq!(lines.at(offset), at(text, offset), "{text:?} at {offset}");
+            }
+            for line in 0..5 {
+                for character in 0..8 {
+                    let position = Position::new(line, character);
+                    assert_eq!(lines.offset(position), offset(text, position));
+                    assert_eq!(
+                        lines.editor_position(position),
+                        editor_position(text, position)
+                    );
+                    for end in [Position::new(line, character + 1), Position::new(0, 0)] {
+                        let range = Range::new(position, end);
+                        assert_eq!(lines.editor_range(range), editor_range(text, range));
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn server_spellings_of_a_file_uri_decode_to_the_same_path() {
+        let source = Path::new("/work/rs (proj)+@[x]/a.rs");
+        let ours = uri(source).unwrap();
+        assert_eq!(
+            ours.as_str(),
+            "file:///work/rs%20%28proj%29%2B%40%5Bx%5D/a.rs"
+        );
+        for spelling in [
+            ours.as_str(),
+            "file:///work/rs%20(proj)+@[x]/a.rs",
+            "file:///work/rs%20(proj)+@%5bx%5d/a.rs",
+        ] {
+            assert_eq!(decode(spelling).as_deref(), Some(source), "{spelling}");
+        }
+        assert!(decode("untitled:a").is_none());
+    }
     #[test]
     fn emoji_combining_characters_crlf_and_empty_last_lines_round_trip() {
         let text = "a😀e\u{301}\r\n日本語\n";
