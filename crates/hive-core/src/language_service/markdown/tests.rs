@@ -5,11 +5,19 @@ fn hover_fixture(json: &str) -> Hover {
     serde_json::from_str(json).expect("captured hover")
 }
 
+// Captured from rust-analyzer 1.99.1 and from typescript-language-server 6.1.0 with
+// TypeScript 5.9.3, on macOS arm64 on 2026-11-17, with the client capabilities of `worker.rs`.
 const VEC: &str = include_str!("../fixtures/rust-analyzer-hover-vec.json");
 const PUSH: &str = include_str!("../fixtures/rust-analyzer-hover-push.json");
 const DOC_LINKS: &str = include_str!("../fixtures/rust-analyzer-hover-doc-links.json");
-const TYPESCRIPT: &str = include_str!("../fixtures/typescript-language-server-hover.json");
 const COMPLETION: &str = include_str!("../fixtures/rust-analyzer-completion-item.json");
+const TYPESCRIPT: &str = include_str!("../fixtures/typescript-language-server-hover.json");
+const TYPESCRIPT_JSDOC: &str =
+    include_str!("../fixtures/typescript-language-server-hover-jsdoc-links.json");
+const TYPESCRIPT_PARAMETER: &str =
+    include_str!("../fixtures/typescript-language-server-hover-parameter.json");
+const TYPESCRIPT_COMPLETION: &str =
+    include_str!("../fixtures/typescript-language-server-completion-item.json");
 
 fn markup(contents: &HoverContents) -> &str {
     match contents {
@@ -116,6 +124,52 @@ fn doc_comment_links_to_files_and_shares_become_text() {
     assert!(restricted.contains(r"\[the share](smb://host/share)"));
     assert!(restricted.contains(r"\<smb://host/share>"));
     assert_eq!(code_blocks(restricted), code_blocks(&original));
+}
+
+#[test]
+fn typescript_jsdoc_links_to_files_shares_and_scripts_become_text() {
+    // typescript-language-server passes JSDoc Markdown through as written; it only turns
+    // `{@link url | text}` into `[text](url)`.
+    for json in [TYPESCRIPT_JSDOC, TYPESCRIPT_PARAMETER] {
+        let captured = hover_fixture(json);
+        let original = markup(&captured.contents).to_owned();
+        assert!(clickable(&original).iter().any(|target| !is_web(target)));
+        let restricted = hover(captured.contents);
+        let restricted = markup(&restricted);
+
+        let web: Vec<_> = clickable(&original)
+            .into_iter()
+            .filter(|target| is_web(target))
+            .collect();
+        assert_eq!(clickable(restricted), web);
+        assert_eq!(code_blocks(restricted), code_blocks(&original));
+        assert_eq!(restricted.replace('\\', ""), original.replace('\\', ""));
+        // The `@param` line repeats the description; both copies are escaped.
+        assert_eq!(
+            restricted.matches(r"\[x](javascript:alert(1))").count(),
+            original.matches("[x](javascript:alert(1))").count(),
+        );
+    }
+
+    let restricted = hover(hover_fixture(TYPESCRIPT_JSDOC).contents);
+    let restricted = markup(&restricted);
+    assert_eq!(
+        clickable(restricted),
+        [
+            "https://example.com/api",
+            "https://example.com/bare",
+            "https://example.com/docs",
+            "https://example.com/see",
+        ]
+    );
+    for escaped in [
+        r"\[design notes](file:///tmp/notes.command)",
+        r#"\<a href="smb://host/share">"#,
+        r"\<file:///etc/hosts>",
+        r"\[reference]\[ref]",
+    ] {
+        assert!(restricted.contains(escaped), "{escaped} in {restricted:?}");
+    }
 }
 
 #[test]
@@ -263,4 +317,22 @@ fn completion_documentation_is_restricted_in_both_forms() {
         panic!("a string stays a string");
     };
     assert_eq!(plain, r"see \<smb://host/share>");
+}
+
+#[test]
+fn typescript_resolved_completion_documentation_links_only_to_the_web() {
+    let item: CompletionItem = serde_json::from_str(TYPESCRIPT_COMPLETION).expect("captured item");
+    let Some(Documentation::MarkupContent(restricted)) = item.documentation.map(documentation)
+    else {
+        panic!("markup stays markup");
+    };
+    assert_eq!(
+        clickable(&restricted.value),
+        [
+            "https://example.com/api",
+            "https://example.com/bare",
+            "https://example.com/docs",
+            "https://example.com/see",
+        ]
+    );
 }

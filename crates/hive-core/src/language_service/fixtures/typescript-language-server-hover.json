@@ -1,16 +1,16 @@
 {
  "contents": {
   "kind": "markdown",
-  "value": "\n```typescript\nfunction greet(name: string, times?: number): string\n```\nGreets a person by name.\n\n*@param* `name` — The person to greet.  \n\n*@param* `times` — How many times; defaults to `1`.  \n\n*@returns* — The greeting text.  \n\n*@example*  \n```\ngreet(\"Ada\", 2)\n```"
+  "value": "\n```typescript\n(alias) total(amount: number): number\nimport total\n```\nDoubles the input."
  },
  "range": {
   "start": {
-   "line": 11,
-   "character": 9
+   "line": 1,
+   "character": 14
   },
   "end": {
-   "line": 11,
-   "character": 14
+   "line": 1,
+   "character": 19
   }
  }
 }

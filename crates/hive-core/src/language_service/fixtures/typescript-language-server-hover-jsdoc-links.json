@@ -1,0 +1,16 @@
+{
+ "contents": {
+  "kind": "markdown",
+  "value": "\n```typescript\nfunction linked(amount: number): number\n```\nDoubles the input. See [design notes](file:///tmp/notes.command) and\n[docs](https://example.com/docs), [the API](https://example.com/api), total .\nRaw: <a href=\"smb://host/share\">share</a> and <file:///etc/hosts> and https://example.com/bare.\n[reference][ref]\n\n[ref]: file:///tmp/ref.command\n\n*@see* — https://example.com/see  \n\n*@param* `amount` — the value [x](javascript:alert(1))"
+ },
+ "range": {
+  "start": {
+   "line": 13,
+   "character": 19
+  },
+  "end": {
+   "line": 13,
+   "character": 25
+  }
+ }
+}

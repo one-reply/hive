@@ -1,0 +1,18 @@
+{
+ "label": "linked",
+ "kind": 3,
+ "sortText": "11",
+ "data": {
+  "file": "/work/ts-proj/src/c.ts",
+  "line": 14,
+  "offset": 24,
+  "entryNames": [
+   "linked"
+  ]
+ },
+ "detail": "function linked(amount: number): number",
+ "documentation": {
+  "kind": "markdown",
+  "value": "Doubles the input. See [design notes](file:///tmp/notes.command) and\n[docs](https://example.com/docs), [the API](https://example.com/api), total .\nRaw: <a href=\"smb://host/share\">share</a> and <file:///etc/hosts> and https://example.com/bare.\n[reference][ref]\n\n[ref]: file:///tmp/ref.command\n\n*@see* — https://example.com/see  \n\n*@param* `amount` — the value [x](javascript:alert(1))"
+ }
+}
