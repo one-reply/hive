@@ -10,10 +10,50 @@ use std::collections::HashMap;
 mod diagnostics;
 #[cfg(test)]
 mod relocation_tests;
+#[cfg(test)]
+mod trust_tests;
+
+/// How long a full queue to the server is given before documents send their text again.
+const RESYNC_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 
 struct Synced {
     text: Rope,
     version: i32,
+}
+
+/// What language tools are doing for one document, or why they are not running.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LanguageStatus {
+    /// No language server handles this file type.
+    Unsupported,
+    /// Language tools are turned off in Settings → Files.
+    Disabled,
+    /// A preview tab: its server starts once the user keeps the tab.
+    Preview,
+    Starting,
+    Ready,
+    /// The server stopped; the message says why.
+    Failed(String),
+}
+
+impl LanguageStatus {
+    fn new(
+        supported: bool,
+        enabled: bool,
+        pinned: bool,
+        session: Option<(Option<String>, bool)>,
+    ) -> Self {
+        match session {
+            Some((Some(error), _)) => Self::Failed(error),
+            Some((None, true)) => Self::Ready,
+            Some((None, false)) => Self::Starting,
+            None if !supported => Self::Unsupported,
+            None if !enabled => Self::Disabled,
+            None if !pinned => Self::Preview,
+            // Attaching waits for the update that kept the tab or enabled the tools to end.
+            None => Self::Starting,
+        }
+    }
 }
 
 pub(crate) struct LanguageSession {
@@ -22,11 +62,12 @@ pub(crate) struct LanguageSession {
     pub family: Family,
     pub capabilities: Option<ServerCapabilities>,
     pub error: Option<String>,
-    pub diagnostics: HashMap<String, PublishDiagnosticsParams>,
+    pub diagnostics: HashMap<String, diagnostics::Publication>,
     diagnostics_limited: bool,
     client: Session,
     documents: HashMap<Uri, Synced>,
     _events: Option<Task<()>>,
+    _resync: Option<Task<()>>,
 }
 
 impl LanguageSession {
@@ -74,6 +115,7 @@ impl LanguageSession {
             client,
             documents: HashMap::new(),
             _events: None,
+            _resync: None,
         };
         this.listen(events, cx);
         this
@@ -120,6 +162,15 @@ impl LanguageSession {
                 }
                 cx.notify();
             });
+        }));
+    }
+
+    /// The queue to a healthy server was full. Documents observe the session, so one delayed
+    /// notification makes each of them send its unsynced text again.
+    fn resync_later(&mut self, cx: &mut Context<Self>) {
+        self._resync = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(RESYNC_DELAY).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
         }));
     }
 
@@ -218,9 +269,19 @@ impl LanguageSession {
 }
 
 impl Documents {
+    fn language_tools_enabled(&self, cx: &App) -> bool {
+        self.store.read(cx).state.settings.files.language_tools
+    }
+
+    /// Connects a document to its worktree's language server, starting one when needed.
+    /// A server runs programs the worktree controls, so nothing starts while language tools
+    /// are off in settings, or for a preview tab the user has not kept.
     pub(super) fn attach_language(&mut self, document: &Entity<Document>, cx: &mut Context<Self>) {
         let (target, path) = {
             let d = document.read(cx);
+            if !d.pinned || d.language.is_some() || !self.language_tools_enabled(cx) {
+                return;
+            }
             (d.target.clone(), d.path.clone())
         };
         let Some(family) = Family::for_path(&path) else {
@@ -249,9 +310,43 @@ impl Documents {
             });
         document.update(cx, |document, cx| document.attach_language(session, cx));
     }
+
+    /// Settings changed: once language tools are on, kept tabs start their servers; once
+    /// they are off, every document lets go of its session, which stops the server.
+    pub(super) fn apply_language_tools(&mut self, cx: &mut Context<Self>) {
+        let enabled = self.language_tools_enabled(cx);
+        if self.language_tools == enabled {
+            return;
+        }
+        self.language_tools = enabled;
+        let open: Vec<_> = self.open.iter().filter_map(WeakEntity::upgrade).collect();
+        for document in open {
+            if enabled {
+                self.attach_language(&document, cx);
+            } else {
+                document.update(cx, |document, cx| document.detach_language(cx));
+            }
+            // The editor's tools button and Format follow the setting even for a tab whose
+            // server did not change (a preview, a file type no server handles).
+            document.update(cx, |_, cx| cx.notify());
+        }
+    }
 }
 
 impl Document {
+    pub(crate) fn language_status(&self, cx: &App) -> LanguageStatus {
+        let session = self.language.as_ref().map(|session| {
+            let session = session.read(cx);
+            (session.error.clone(), session.capabilities.is_some())
+        });
+        LanguageStatus::new(
+            Family::for_path(&self.path).is_some(),
+            self.runs_language_tools(cx),
+            self.pinned,
+            session,
+        )
+    }
+
     pub(super) fn language_saved(&self, cx: &App) {
         if let Some(session) = &self.language
             && let Some(uri) = position::uri(&self.target.path.join(&self.path))
@@ -264,6 +359,12 @@ impl Document {
     }
 
     pub(super) fn reset_language(&mut self, cx: &mut Context<Self>) {
+        self.detach_language(cx);
+        self.request_language(cx);
+    }
+
+    /// Drops this document's session; the last document to do so stops the server.
+    pub(super) fn detach_language(&mut self, cx: &mut Context<Self>) {
         self.close_language(cx);
         self._language_subscription = None;
         self._language_sync = None;
@@ -275,14 +376,19 @@ impl Document {
             }
             cx.notify();
         });
-        let document = cx.entity();
+        cx.notify();
+    }
+
+    /// Asks the registry to attach this document once the current update has ended; the
+    /// registry decides whether a server may start.
+    pub(super) fn request_language(&self, cx: &mut Context<Self>) {
+        let (registry, document) = (self.registry.clone(), cx.entity());
         cx.defer(move |cx| {
-            crate::app::AppState::get(cx)
-                .documents
-                .clone()
-                .update(cx, |documents, cx| documents.attach_language(&document, cx))
+            // Gone only while the app quits, when no server should start anyway.
+            let _ = registry.update(cx, |documents, cx| documents.attach_language(&document, cx));
         });
     }
+
     fn attach_language(&mut self, session: Entity<LanguageSession>, cx: &mut Context<Self>) {
         self._language_subscription = Some(cx.observe(&session, |this, _, cx| {
             this.sync_language(cx);
@@ -291,6 +397,7 @@ impl Document {
         }));
         self.language = Some(session);
         self.sync_language(cx);
+        cx.notify();
     }
 
     pub(super) fn schedule_language(&mut self, cx: &mut Context<Self>) {
@@ -310,7 +417,9 @@ impl Document {
     }
 
     pub(super) fn sync_language(&mut self, cx: &mut Context<Self>) {
-        if self.base.is_none() || self.loading || self.path_busy {
+        // Not `loading`: it is also set by every disk poll, and a debounced sync that fires
+        // during one would be dropped with nothing to send it again.
+        if self.base.is_none() || self.path_busy {
             return;
         }
         let text = self.editor.read(cx).text().clone();
@@ -327,6 +436,10 @@ impl Document {
         let client = session.update(cx, |session, cx| {
             match session.sync(uri.clone(), &self.path, text) {
                 Ok(client) => Some(client),
+                Err(language_service::Error::Busy) => {
+                    session.resync_later(cx);
+                    None
+                }
                 Err(error) => {
                     tracing::warn!(%error, "language buffer synchronization failed");
                     session.error = Some(error.to_string());
@@ -387,7 +500,7 @@ fn synchronizes_buffers(sync: Option<&TextDocumentSyncCapability>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::synchronizes_buffers;
+    use super::{LanguageStatus, synchronizes_buffers};
     use lsp_types::{
         TextDocumentSyncCapability as Sync, TextDocumentSyncKind as Kind, TextDocumentSyncOptions,
     };
@@ -403,5 +516,28 @@ mod tests {
         assert!(!synchronizes_buffers(Some(&Sync::Options(options.clone()))));
         options.open_close = Some(true);
         assert!(synchronizes_buffers(Some(&Sync::Options(options))));
+    }
+
+    #[test]
+    fn language_status_explains_why_no_server_runs_before_reporting_one() {
+        use LanguageStatus::*;
+        assert_eq!(LanguageStatus::new(false, true, true, None), Unsupported);
+        assert_eq!(LanguageStatus::new(false, false, false, None), Unsupported);
+        assert_eq!(LanguageStatus::new(true, false, true, None), Disabled);
+        assert_eq!(LanguageStatus::new(true, false, false, None), Disabled);
+        assert_eq!(LanguageStatus::new(true, true, false, None), Preview);
+        assert_eq!(LanguageStatus::new(true, true, true, None), Starting);
+        assert_eq!(
+            LanguageStatus::new(true, true, true, Some((None, false))),
+            Starting
+        );
+        assert_eq!(
+            LanguageStatus::new(true, true, true, Some((None, true))),
+            Ready
+        );
+        assert_eq!(
+            LanguageStatus::new(true, true, true, Some((Some("gone".into()), true))),
+            Failed("gone".into())
+        );
     }
 }

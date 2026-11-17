@@ -98,13 +98,17 @@ impl Render for Results {
                         this.state.update(cx, |state, cx| state.refresh(cx));
                     })).smooth_hover(ButtonLook::Ghost, &refresh, cx)))
             .child(div().id("excerpts-list").role(Role::List).aria_label("Read-only source excerpts").track_focus(&self.focus).flex_1().min_h_0()
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                // The dialog binds Enter to Confirm, and bindings run before on_key_down: take
+                // the action here, below the dialog, or Enter only closes the list.
+                .on_action(cx.listener(|this, _: &gpui_kit::base::actions::Confirm, window, cx| {
+                    if this.selected.is_some() { this.open_selected(window, cx) } else { cx.propagate() }
+                }))
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                     let count = this.state.read(cx).rows.len();
                     if count == 0 { return; }
                     match event.keystroke.key.as_str() {
                         "up" => this.selected = Some(this.selected.unwrap_or(0).saturating_sub(1)),
                         "down" => this.selected = Some(this.selected.map_or(0, |i| (i + 1).min(count - 1))),
-                        "enter" => { this.open_selected(window, cx); cx.stop_propagation(); return; },
                         _ => return,
                     }
                     this.scroll.scroll_to_item(this.selected.unwrap_or(0), ScrollStrategy::Nearest);

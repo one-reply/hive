@@ -10,9 +10,11 @@ pub(super) fn prepare(
     cursor: usize,
     family: Family,
 ) -> Vec<CompletionItem> {
+    // Every item carries a range in the same buffer; a list of a thousand is ordinary.
+    let lines = position::Lines::new(text);
     let mut items: Vec<_> = items
         .into_iter()
-        .filter_map(|item| adapt(item, text, cursor, family))
+        .filter_map(|item| adapt(item, &lines, cursor, family))
         .collect();
     items.sort_by(|a, b| {
         a.sort_text
@@ -32,10 +34,11 @@ pub(super) fn prepare(
 
 fn adapt(
     mut item: CompletionItem,
-    text: &str,
+    lines: &position::Lines,
     cursor: usize,
     family: Family,
 ) -> Option<CompletionItem> {
+    let text = lines.text();
     if item.command.is_some()
         || item
             .additional_text_edits
@@ -51,7 +54,7 @@ fn adapt(
                 return None;
             }
             (
-                position::offset(text, edit.range.start)?..position::offset(text, edit.range.end)?,
+                lines.offset(edit.range.start)?..lines.offset(edit.range.end)?,
                 edit.new_text,
             )
         }
@@ -73,15 +76,18 @@ fn adapt(
     ) {
         return None;
     }
+    // The menu paints `filter_text.len()` leading bytes of the label as the match; a server's
+    // filter text is the whole lookup string.
+    item.filter_text = Some(
+        if completion::starts_with_ignoring_case(&item.label, prefix) {
+            prefix.to_owned()
+        } else {
+            String::new()
+        },
+    );
     // GPUI's implicit completion range can include '.', and insertText alone inserts at its end.
     item.text_edit = Some(CompletionTextEdit::Edit(TextEdit {
-        range: position::editor_range(
-            text,
-            Range::new(
-                position::at(text, bytes.start)?,
-                position::at(text, bytes.end)?,
-            ),
-        )?,
+        range: lines.editor_range(Range::new(lines.at(bytes.start)?, lines.at(bytes.end)?))?,
         new_text,
     }));
     Some(item)
@@ -89,7 +95,7 @@ fn adapt(
 
 #[cfg(test)]
 mod tests {
-    use super::{Family, adapt, prepare};
+    use super::{Family, adapt, position, prepare};
     use gpui::component::input::{Editor, EditorState};
     use gpui::{
         AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
@@ -121,7 +127,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> String {
         cx.update(gpui::init);
-        let item = adapt(item, source, cursor, Family::Script).unwrap();
+        let item = adapt(item, &position::Lines::new(source), cursor, Family::Script).unwrap();
         let mut editor = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
             let state = cx.new(|cx| EditorState::new(window, cx));
@@ -146,6 +152,21 @@ mod tests {
         let mut item = item("café");
         item.insert_text = Some("café()".into());
         assert_eq!(accepted("😀.cax", 7, item, cx), "😀.café()");
+    }
+
+    #[test]
+    fn the_menu_highlights_what_was_typed_not_the_servers_filter_text() {
+        let item = |label: &str| CompletionItem {
+            label: label.into(),
+            filter_text: Some("totalCount".into()),
+            ..CompletionItem::default()
+        };
+        let lines = position::Lines::new("tot");
+        let named = adapt(item("totalCount"), &lines, 3, Family::Other).unwrap();
+        assert_eq!(named.filter_text.as_deref(), Some("tot"));
+        // A label the typed text does not begin has no leading bytes to paint.
+        let aliased = adapt(item("display name"), &lines, 3, Family::Other).unwrap();
+        assert_eq!(aliased.filter_text.as_deref(), Some(""));
     }
 
     #[test]
@@ -197,15 +218,23 @@ mod tests {
             range: Range::new(Position::new(0, 3), Position::new(0, 3)),
             new_text: "!".into(),
         }));
-        assert!(adapt(insert, "tot", 3, Family::Other).is_some());
+        assert!(adapt(insert, &position::Lines::new("tot"), 3, Family::Other).is_some());
         let mut replace = item("alpha");
         replace.text_edit = Some(CompletionTextEdit::Edit(TextEdit {
             range: Range::new(Position::new(0, 0), Position::new(0, 3)),
             new_text: "alpha".into(),
         }));
-        assert!(adapt(replace.clone(), "tot", 3, Family::Other).is_none());
+        assert!(
+            adapt(
+                replace.clone(),
+                &position::Lines::new("tot"),
+                3,
+                Family::Other
+            )
+            .is_none()
+        );
         replace.filter_text = Some("total".into());
-        assert!(adapt(replace, "tot", 3, Family::Other).is_some());
+        assert!(adapt(replace, &position::Lines::new("tot"), 3, Family::Other).is_some());
     }
 
     #[test]
@@ -215,18 +244,18 @@ mod tests {
             range: Range::new(Position::new(0, 2), Position::new(0, 3)),
             new_text: "name".into(),
         }));
-        let safe = adapt(item.clone(), "😀x", 4, Family::Other).unwrap();
+        let safe = adapt(item.clone(), &position::Lines::new("😀x"), 4, Family::Other).unwrap();
         assert!(
             matches!(safe.text_edit, Some(CompletionTextEdit::Edit(edit)) if edit.range.start.character == 1 && edit.range.end.character == 2)
         );
         let mut snippet = item.clone();
         snippet.insert_text_format = Some(InsertTextFormat::SNIPPET);
-        assert!(adapt(snippet, "😀x", 4, Family::Other).is_none());
+        assert!(adapt(snippet, &position::Lines::new("😀x"), 4, Family::Other).is_none());
         item.additional_text_edits = Some(vec![TextEdit {
             range: Range::default(),
             new_text: "import name".into(),
         }]);
-        assert!(adapt(item, "😀x", 4, Family::Other).is_none());
+        assert!(adapt(item, &position::Lines::new("😀x"), 4, Family::Other).is_none());
         for range in [
             Range::new(Position::new(0, 3), Position::new(0, 2)),
             Range::new(Position::new(0, 1), Position::new(0, 3)),
@@ -237,7 +266,7 @@ mod tests {
                 range,
                 new_text: "name".into(),
             }));
-            assert!(adapt(invalid, "😀x", 4, Family::Other).is_none());
+            assert!(adapt(invalid, &position::Lines::new("😀x"), 4, Family::Other).is_none());
         }
     }
 }

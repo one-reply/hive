@@ -74,8 +74,7 @@ impl ProjectCenter {
         {
             panel.read(cx).document.clone().update(cx, |document, cx| {
                 if !request.preview {
-                    document.pinned = true;
-                    cx.notify();
+                    document.pin(cx);
                 }
                 if let Some(position) = request.position {
                     document.goto(position, window, cx);

@@ -13,15 +13,20 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::SyncSender,
+        mpsc::{Receiver, SyncSender, sync_channel},
     },
     time::{Duration, Instant},
 };
+
+/// The first stderr bytes say why a server could not start (rustup's missing component, a
+/// shell's "not found"); later output may quote source and is never kept.
+const STDERR_HEAD: usize = 1024;
 
 pub(super) struct Process {
     child: Child,
     input: ChildStdin,
     stopped: Arc<AtomicBool>,
+    stderr_head: Receiver<Vec<u8>>,
 }
 
 impl Process {
@@ -34,9 +39,11 @@ impl Process {
         stopped: Arc<AtomicBool>,
     ) -> Result<Self, Error> {
         let script = match family {
-            Family::Rust => "exec rust-analyzer",
+            // A rustup proxy must report a missing toolchain, never download one.
+            Family::Rust => "export RUSTUP_AUTO_INSTALL=0; exec rust-analyzer",
+            // Only the worktree's own install or PATH: a parent directory is outside the project.
             Family::TypeScript => {
-                "d=$PWD; tool=typescript-language-server; while :; do if [ -x \"$d/node_modules/.bin/typescript-language-server\" ]; then tool=\"$d/node_modules/.bin/typescript-language-server\"; break; fi; [ \"$d\" = / ] && break; d=${d%/*}; [ -n \"$d\" ] || d=/; done; exec \"$tool\" --stdio"
+                "if [ -x node_modules/.bin/typescript-language-server ]; then exec node_modules/.bin/typescript-language-server --stdio; fi; exec typescript-language-server --stdio"
             }
         };
         let script = if host.is_local() {
@@ -67,10 +74,12 @@ impl Process {
             let _ = child.wait();
             return Err(Error::Unavailable("server has no stdin"));
         };
+        let (head_sender, stderr_head) = sync_channel(1);
         let mut process = Self {
             child,
             input,
             stopped,
+            stderr_head,
         };
         fcntl_setfl(
             &process.input,
@@ -106,10 +115,14 @@ impl Process {
                 // Drain without retaining arbitrary server logs or source-bearing diagnostics.
                 let mut reader = stderr;
                 let mut buffer = [0; 4096];
+                let mut head = Vec::new();
                 loop {
                     match reader.read(&mut buffer) {
                         Ok(0) => break,
-                        Ok(_) => {}
+                        Ok(count) => {
+                            let kept = count.min(STDERR_HEAD - head.len());
+                            head.extend_from_slice(&buffer[..kept]);
+                        }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                         Err(error) => {
                             tracing::debug!(%error,"language-server stderr closed");
@@ -117,9 +130,27 @@ impl Process {
                         }
                     }
                 }
+                // The session may already be gone; nobody is waiting then.
+                let _ = head_sender.send(head);
             })
             .map_err(fail)?;
         Ok(process)
+    }
+
+    /// What the server printed first, once it has exited; `None` while it still runs.
+    pub(super) fn startup_output(&self) -> Option<String> {
+        let head = self
+            .stderr_head
+            .recv_timeout(Duration::from_millis(200))
+            .ok()?;
+        let text: String = String::from_utf8_lossy(&head)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect();
+        (!text.is_empty()).then_some(text)
     }
 
     pub(super) fn write(&mut self, message: &impl serde::Serialize) -> Result<(), Error> {
@@ -153,11 +184,14 @@ impl Process {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     let timeout = Timespec::try_from(Duration::from_millis(25))
                         .map_err(|e| Error::Protocol(e.to_string()))?;
-                    poll(
+                    // A signal only ends this wait early; the loop checks the deadline again.
+                    match poll(
                         &mut [PollFd::new(&self.input, PollFlags::OUT)],
                         Some(&timeout),
-                    )
-                    .map_err(|e| Error::Protocol(e.to_string()))?;
+                    ) {
+                        Ok(_) | Err(rustix::io::Errno::INTR) => {}
+                        Err(error) => return Err(Error::Protocol(error.to_string())),
+                    }
                 }
                 Err(e) => return Err(Error::Protocol(e.to_string())),
             }

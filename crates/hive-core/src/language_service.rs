@@ -118,7 +118,7 @@ impl Session {
                 params,
                 reply,
             })
-            .map_err(|_| Error::Unavailable("request queue full or process stopped"))?;
+            .map_err(queue_error)?;
         Ok(Request {
             id,
             session: self.clone(),
@@ -128,7 +128,7 @@ impl Session {
         })
     }
 
-    /// Sends a typed synchronization notification. A full queue is an explicit error.
+    /// Sends a typed synchronization notification. A full queue is [`Error::Busy`]: retry later.
     pub fn notify<N: Notification>(&self, params: N::Params) -> Result<(), Error> {
         let params = serde_json::to_value(params).map_err(|e| Error::Protocol(e.to_string()))?;
         self.0
@@ -137,7 +137,15 @@ impl Session {
                 method: N::METHOD,
                 params,
             })
-            .map_err(|_| Error::Unavailable("notification queue full or process stopped"))
+            .map_err(queue_error)
+    }
+}
+
+/// A full queue is a healthy server that is behind; only a closed one has stopped.
+fn queue_error(error: mpsc::TrySendError<Message>) -> Error {
+    match error {
+        mpsc::TrySendError::Full(_) => Error::Busy,
+        mpsc::TrySendError::Disconnected(_) => Error::Unavailable("process stopped"),
     }
 }
 
@@ -224,9 +232,12 @@ pub enum Error {
         /// Server explanation.
         message: String,
     },
-    /// No ready process, bounded queue full, or closed session.
+    /// No ready process or a closed session.
     #[error("Language server unavailable: {0}")]
     Unavailable(&'static str),
+    /// The bounded queue to a running server is full; the same message can be sent again.
+    #[error("Language server is busy")]
+    Busy,
     /// A request exceeded its deadline.
     #[error("Language-server request timed out")]
     TimedOut,

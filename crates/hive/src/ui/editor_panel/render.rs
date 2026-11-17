@@ -19,10 +19,10 @@ impl Render for EditorPanel {
         ]
         .map(|id| Hover::new(id, window, cx));
         let document = self.document.read(cx);
-        let language = document.language.clone();
         let editor = document.editor.clone();
         let formatting = document.formatting;
         let supports_format = hive_core::formatting::supported(&document.path);
+        let runs_tools = document.runs_language_tools(cx);
         let has_selection = !editor.read(cx).selected_range().is_empty();
         let header = format!(
             "{} · {}",
@@ -147,33 +147,7 @@ impl Render for EditorPanel {
                             }))
                             .smooth_hover(ButtonLook::Ghost, &hover, cx)
                     })
-                    .when_some(language, |header, language| {
-                        let state = language.read(cx);
-                        let error = state.error.clone();
-                        let ready = state.capabilities.is_some();
-                        let retry = error.is_some();
-                        let hover = Hover::new("language-service", window, cx);
-                        header.child(
-                            Button::new("language-service")
-                                .small()
-                                .cursor_pointer()
-                                .label(if retry {
-                                    "Retry tools"
-                                } else if ready {
-                                    "Tools ready"
-                                } else {
-                                    "Starting…"
-                                })
-                                .tooltip(error.unwrap_or_else(|| {
-                                    "Completion, hover, definitions and diagnostics".into()
-                                }))
-                                .disabled(!retry)
-                                .on_click(move |_, _, cx| {
-                                    language.update(cx, |language, cx| language.retry(cx))
-                                })
-                                .smooth_hover(ButtonLook::Ghost, &hover, cx),
-                        )
-                    })
+                    .children(language_tools::button(&self.document, window, cx))
                     .when(!raster, |header| {
                         header.child(
                             Button::new("selection-agent")
@@ -194,9 +168,13 @@ impl Render for EditorPanel {
                                 .small()
                                 .cursor_pointer()
                                 .icon(Lucide::Code)
-                                .tooltip("Format document (⌥⇧F)")
+                                .tooltip(if runs_tools {
+                                    "Format document (⌥⇧F)"
+                                } else {
+                                    "Formatting is off with language tools (Settings → Files)"
+                                })
                                 .loading(formatting)
-                                .disabled(!ready || formatting)
+                                .disabled(!ready || formatting || !runs_tools)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.document.update(cx, |d, cx| d.format(window, cx))
                                 }))

@@ -56,6 +56,8 @@ pub(crate) struct Document {
     pub pinned: bool,
     pub path_busy: bool,
     store: Entity<Store>,
+    /// Starts language tools for this document; it owns the shared servers.
+    pub(super) registry: WeakEntity<Documents>,
     recovery_key: String,
     pending_position: Option<Position>,
     position: Option<([u32; 2], [f32; 2])>,
@@ -74,6 +76,7 @@ impl Document {
     pub(super) fn isolated_for_test(
         request: OpenFile,
         store: Entity<Store>,
+        registry: WeakEntity<Documents>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -81,6 +84,7 @@ impl Document {
             request,
             None,
             store,
+            registry,
             Arc::new(Navigator::default()),
             window,
             cx,
@@ -96,6 +100,7 @@ impl Document {
         request: OpenFile,
         recovered: Option<Record>,
         store: Entity<Store>,
+        registry: WeakEntity<Documents>,
         navigator: Arc<Navigator>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -120,7 +125,7 @@ impl Document {
                     this.revision = this.revision.wrapping_add(1);
                     this.symbols = Arc::default();
                     this.invalidate_image(cx);
-                    this.pinned = true;
+                    this.pin(cx);
                     this.update_dirty(cx);
                     this.schedule_recovery(cx);
                     this.completions.schedule_refresh(cx);
@@ -191,6 +196,7 @@ impl Document {
             pinned: !request.preview || recovered.is_some(),
             path_busy: false,
             store,
+            registry,
             recovery_key,
             pending_position: request.position,
             position: None,
@@ -246,6 +252,17 @@ impl Document {
         )
     }
 
+    /// The user keeps this tab: the next opened file no longer replaces it, and it may
+    /// start language tools, which a preview never does.
+    pub(crate) fn pin(&mut self, cx: &mut Context<Self>) {
+        if self.pinned {
+            return;
+        }
+        self.pinned = true;
+        self.request_language(cx);
+        cx.notify();
+    }
+
     pub fn saves_on_focus_change(&self, cx: &App) -> bool {
         self.store
             .read(cx)
@@ -257,6 +274,11 @@ impl Document {
 
     pub fn completes_code(&self, cx: &App) -> bool {
         self.store.read(cx).state.settings.files.code_completion
+    }
+
+    /// Whether language servers and formatters may run programs from this worktree.
+    pub fn runs_language_tools(&self, cx: &App) -> bool {
+        self.store.read(cx).state.settings.files.language_tools
     }
 
     fn should_poll(&self, cx: &App) -> bool {

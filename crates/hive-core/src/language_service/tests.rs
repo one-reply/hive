@@ -147,6 +147,73 @@ fn fake_server_synchronizes_unicode_cancels_requests_and_shuts_down_cleanly() {
 }
 
 #[test]
+fn a_request_past_its_deadline_fails_alone_and_the_server_keeps_running() {
+    let fixture = Fixture::new();
+    let (session, events) = Session::start(Host::Local, fixture.0.clone(), Family::TypeScript);
+    ready(&events);
+    // The fake peer skips methods it does not know, as a server still loading a project would.
+    enum Silent {}
+    impl lsp_types::request::Request for Silent {
+        type Params = Value;
+        type Result = Value;
+        const METHOD: &'static str = "test/silent";
+    }
+    assert!(matches!(
+        receive(session.request::<Silent>(Value::Null).unwrap()),
+        Err(Error::TimedOut)
+    ));
+    let hover = session
+        .request::<HoverRequest>(HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: "file:///a.ts".parse().unwrap(),
+                },
+                position: Position::new(0, 0),
+            },
+            work_done_progress_params: Default::default(),
+        })
+        .unwrap();
+    assert!(receive(hover).unwrap().is_some());
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("starts"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_full_queue_is_busy_and_only_a_stopped_worker_is_unavailable() {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let session = Session(Arc::new(Client {
+        sender,
+        next_id: AtomicI64::new(1),
+        stopped: Arc::new(AtomicBool::new(false)),
+    }));
+    let closed = || DidCloseTextDocumentParams {
+        text_document: TextDocumentIdentifier {
+            uri: "file:///a.ts".parse().unwrap(),
+        },
+    };
+    type Close = lsp_types::notification::DidCloseTextDocument;
+    session.notify::<Close>(closed()).unwrap();
+    assert!(matches!(
+        session.notify::<Close>(closed()),
+        Err(Error::Busy)
+    ));
+    assert!(matches!(
+        session.request::<Never>(Value::Null),
+        Err(Error::Busy)
+    ));
+    drop(receiver);
+    assert!(matches!(
+        session.notify::<Close>(closed()),
+        Err(Error::Unavailable(_))
+    ));
+}
+
+#[test]
 fn a_crash_restarts_once_then_leaves_retry_to_the_caller() {
     let fixture = Fixture::new();
     let (session, events) = Session::start(Host::Local, fixture.0.clone(), Family::TypeScript);
@@ -164,6 +231,42 @@ fn a_crash_restarts_once_then_leaves_retry_to_the_caller() {
             .count(),
         2
     );
+}
+
+#[test]
+fn a_server_that_cannot_start_reports_what_it_printed_and_parents_are_not_searched() {
+    let outer = Fixture::new();
+    let bin = outer.0.join("node_modules/.bin/typescript-language-server");
+    // Stands in for a rustup proxy without its component, or a shell's "not found".
+    let noise = "x".repeat(4096);
+    fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\necho \"error: Unknown binary\n'tool'\" >&2\necho {noise} >&2\nexit 1\n"
+        ),
+    )
+    .unwrap();
+    let (_session, events) = Session::start(Host::Local, outer.0.clone(), Family::TypeScript);
+    let Event::Failed(error) = events.recv_blocking().unwrap() else {
+        panic!("a server that exits at once cannot become ready");
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("error: Unknown binary 'tool' xxx"),
+        "{message}"
+    );
+    assert!(message.len() < 2048, "stderr is bounded: {}", message.len());
+
+    // The same executable one directory above the worktree is not this project's server.
+    let nested = outer.0.join("project");
+    fs::create_dir(&nested).unwrap();
+    fs::write(&bin, "#!/bin/sh\n: > ran-from-parent\nexit 1\n").unwrap();
+    let (session, events) = Session::start(Host::Local, nested.clone(), Family::TypeScript);
+    // Failed without a server on PATH, Ready with one: either way the lookup has happened.
+    let _ = events.recv_blocking();
+    drop(session);
+    while events.recv_blocking().is_ok() {}
+    assert!(!nested.join("ran-from-parent").exists());
 }
 
 // Python is only the fake stdio peer; it reads/writes this test's temporary directory.

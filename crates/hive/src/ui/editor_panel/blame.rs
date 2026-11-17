@@ -263,16 +263,31 @@ fn visible_line_end(editor: &EditorState, line: usize) -> Option<Bounds<Pixels>>
     let rows = editor
         .display_map()
         .buffer_line_to_display_row_range(line)?;
-    let height = editor.line_height()?;
     let text_bounds = editor.text_bounds()?;
-    let top = text_bounds.top() + editor.scroll_offset().y + height * (rows.end - 1) as f32;
-    // Upstream saturates offsets before the viewport to its first laid-out row.
-    if top < text_bounds.top() || top + height > text_bounds.bottom() {
-        return None;
-    }
+    let top = row_top(
+        text_bounds,
+        editor.scroll_offset().y,
+        editor.line_height()?,
+        rows.end - 1,
+    )?;
     let end = editor.text().line_end_offset(line);
     let bounds = editor.range_to_bounds(&(end..end))?;
+    // Upstream saturates offsets before the viewport to its first laid-out row.
     ((bounds.top() - top).abs() < px(1.)).then_some(bounds)
+}
+
+/// Where display `row` is painted, when all of it is inside the viewport. `text` is the laid-out
+/// text, which the editor has already moved by `scroll` (negative once scrolled down), so a
+/// row's position needs no second offset; only the viewport edges do.
+fn row_top(
+    text: Bounds<Pixels>,
+    scroll: Pixels,
+    line_height: Pixels,
+    row: usize,
+) -> Option<Pixels> {
+    let top = text.top() + line_height * row as f32;
+    let viewport_top = text.top() - scroll;
+    (top >= viewport_top && top + line_height <= viewport_top + text.size.height).then_some(top)
 }
 
 /// The caret line, its origin and the bounds of its end, when the label should show.
@@ -505,9 +520,28 @@ impl EditorPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::{SCROLLBAR_WIDTH, fits_label, label, label_area, short_oid};
+    use super::{SCROLLBAR_WIDTH, fits_label, label, label_area, row_top, short_oid};
     use gpui_kit::{Bounds, point, px, size};
     use hive_core::git::blame::{Commit, Origin};
+
+    #[test]
+    fn a_scrolled_row_is_found_where_the_editor_paints_it() {
+        let (line, viewport) = (px(20.), size(px(300.), px(200.)));
+        // Unscrolled: the text starts at the viewport top.
+        let text = Bounds::new(point(px(10.), px(50.)), viewport);
+        assert_eq!(row_top(text, px(0.), line, 0), Some(px(50.)));
+        assert_eq!(row_top(text, px(0.), line, 9), Some(px(230.)));
+        assert_eq!(row_top(text, px(0.), line, 10), None);
+        // Scrolled down five rows: the editor reports the text 100px higher, and row 7 is
+        // painted at `text.top() + 7 rows`, the third row of the viewport.
+        let scroll = px(-100.);
+        let text = Bounds::new(point(px(10.), px(50.) + scroll), viewport);
+        assert_eq!(row_top(text, scroll, line, 7), Some(px(90.)));
+        assert_eq!(row_top(text, scroll, line, 5), Some(px(50.)));
+        assert_eq!(row_top(text, scroll, line, 4), None);
+        assert_eq!(row_top(text, scroll, line, 14), Some(px(230.)));
+        assert_eq!(row_top(text, scroll, line, 15), None);
+    }
 
     #[test]
     fn labels_stay_out_of_the_scrollbar_track() {

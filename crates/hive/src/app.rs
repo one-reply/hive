@@ -50,7 +50,7 @@ impl AppState {
         let agents = cx.new(|cx| Agents::new(endpoint, cx));
         let git = cx.new(|cx| Git::new(projects.clone(), cx));
         let documents =
-            cx.new(|_| crate::state::documents::Documents::new(store.clone(), recovery));
+            cx.new(|cx| crate::state::documents::Documents::new(store.clone(), recovery, cx));
         let updates = cx.new(Updates::new);
         let notifications = cx.new(crate::state::notifications::Notifications::new);
         let keep_awake = cx.new(|cx| crate::state::keep_awake::KeepAwake::new(&agents, &store, cx));
