@@ -205,6 +205,9 @@ impl CompletionProvider for Completions {
         let fallback = self.local_completions(text, offset, context, window, cx);
         match server {
             Some(server) => cx.spawn(async move |_| match server.await {
+                // Nothing usable from the server is not "no completions": names in this file
+                // and import paths were offered before a server existed.
+                Ok(Some(CompletionResponse::Array(items))) if items.is_empty() => fallback.await,
                 Ok(Some(response)) => Ok(response),
                 _ => fallback.await,
             }),

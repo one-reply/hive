@@ -155,7 +155,8 @@ pub(crate) static SHORTCUTS: [Shortcut; 37] = [
     },
     Shortcut {
         label: "Navigate forward",
-        default: "ctrl-shift--",
+        // macOS reports Shift with a symbol key as the shifted symbol, without the modifier.
+        default: "ctrl-_",
         category: Category::Workspace,
         context: CONTEXT,
         action: || Box::new(crate::ui::editor_panel::NavigateForward),
@@ -432,9 +433,11 @@ fn content_results_bindings() -> [KeyBinding; 7] {
     ]
 }
 
-fn terminal_input_bindings() -> [KeyBinding; 2] {
-    // Root's focus traversal runs before on_key_down; let a focused PTY receive these keys.
-    ["tab", "shift-tab"].map(|key| KeyBinding::new(key, NoAction, Some(TERMINAL_VIEW_CONTEXT)))
+fn terminal_input_bindings() -> [KeyBinding; 4] {
+    // Bindings run before on_key_down. A focused PTY keeps Tab from Root's focus traversal and
+    // ^_ (undo in readline, zle and agent prompts) from the workspace's Navigate back/forward.
+    ["tab", "shift-tab", "ctrl--", "ctrl-_"]
+        .map(|key| KeyBinding::new(key, NoAction, Some(TERMINAL_VIEW_CONTEXT)))
 }
 
 /// Replaces Hive's bindings in the keymap, leaving every other binding in its order.
@@ -753,6 +756,56 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn no_default_asks_for_shift_with_a_symbol_key() {
+        // The platform delivers `ctrl-_`, never `ctrl-shift--`; such a default cannot fire.
+        for shortcut in &SHORTCUTS {
+            let keystroke = keystroke(shortcut.default);
+            // ⌘ shortcuts with a menu item fire through the menu's key equivalent instead.
+            if keystroke.modifiers.platform {
+                continue;
+            }
+            let symbol = keystroke.key.chars().count() == 1
+                && !keystroke.key.chars().all(char::is_alphanumeric);
+            assert!(
+                !(keystroke.modifiers.shift && symbol),
+                "{} ({}) can never match",
+                shortcut.label,
+                shortcut.default
+            );
+        }
+    }
+
+    #[test]
+    fn default_shortcuts_leave_pty_keys_to_a_focused_terminal() {
+        use gpui_kit::{KeyBinding, KeyContext, Keymap};
+        use hive_core::terminal::TermMode;
+
+        let mut keymap = Keymap::default();
+        keymap.add_bindings(super::terminal_input_bindings());
+        // The action is immaterial: a matching binding consumes the key before on_key_down.
+        keymap.add_bindings(SHORTCUTS.iter().map(|shortcut| {
+            KeyBinding::new(shortcut.default, super::NewTerminal, Some(shortcut.context))
+        }));
+        let terminal: Vec<_> = ["Root", "Workspace", "TerminalPanel", "Terminal"]
+            .iter()
+            .map(|name| KeyContext::parse(name).expect("context"))
+            .collect();
+        for shortcut in &SHORTCUTS {
+            let keystroke = keystroke(shortcut.default);
+            if crate::terminal::keys::to_bytes(&keystroke, TermMode::default()).is_none() {
+                continue;
+            }
+            let (bindings, pending) = keymap.bindings_for_input(&[keystroke], &terminal);
+            assert!(
+                bindings.is_empty() && !pending,
+                "{} ({}) takes a key the shell expects",
+                shortcut.label,
+                shortcut.default
+            );
+        }
     }
 
     #[test]

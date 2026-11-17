@@ -55,6 +55,7 @@ fn unlocking_a_renamed_document_opens_its_new_uri_without_another_session_event(
             client,
             documents: HashMap::<_, Synced>::new(),
             _events: None,
+            _resync: None,
         });
         let make = |path: &str| OpenFile {
             target: target.clone(),

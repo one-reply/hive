@@ -19,7 +19,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+// Tests wait for a real deadline; the production value would make them minutes long.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 15 });
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 type Pending = BTreeMap<i64, (Instant, async_channel::Sender<Result<Value, Error>>)>;
 
@@ -45,6 +46,7 @@ pub(super) fn run(
             sender.clone(),
             stopped.clone(),
         )
+        .map_err(|error| (error, None))
         .and_then(|mut process| {
             serve(
                 &mut process,
@@ -55,14 +57,24 @@ pub(super) fn run(
                 &events,
                 &stopped,
             )
+            .map_err(|error| {
+                let output = (!matches!(error, Error::Cancelled))
+                    .then(|| process.startup_output())
+                    .flatten();
+                (error, output)
+            })
         });
         match result {
-            Ok(()) | Err(Error::Cancelled) => break,
-            Err(error) => {
+            Ok(()) | Err((Error::Cancelled, _)) => break,
+            Err((error, output)) => {
+                let message = match output {
+                    Some(output) => format!("{family:?}: {error}: {output}"),
+                    None => format!("{family:?}: {error}"),
+                };
                 let error = Error::Session {
                     host: host.clone(),
                     root: root.clone(),
-                    message: format!("{family:?}: {error}"),
+                    message,
                 };
                 tracing::warn!(%error, attempt=generation+1,"language server stopped");
                 if super::events::send(&events, Event::Failed(error), &stopped).is_err() {
@@ -117,16 +129,13 @@ fn serve(
         if !ready && now >= initialize_deadline {
             return Err(Error::TimedOut);
         }
-        let timed_out = expired(&pending, now);
-        let unresponsive = !timed_out.is_empty();
-        for id in timed_out {
+        // A slow answer is not a dead server: restarting one that is still loading a large
+        // project only makes it start over. Exit, a closed pipe or a stuck write end a session.
+        for id in expired(&pending, now) {
             if let Some((_, reply)) = pending.remove(&id) {
                 let _ = reply.try_send(Err(Error::TimedOut));
             }
             cancel(process, id)?;
-        }
-        if unresponsive {
-            return Err(Error::TimedOut);
         }
         let wait = pending
             .values()
@@ -200,7 +209,7 @@ fn serve(
                 Incoming::Response(Id::Number(id), result) => {
                     if let Some((_, reply)) = pending.remove(&id) {
                         let _ = reply.try_send(result.map(|mut value| {
-                            super::paths::rebase(&mut value, physical, root);
+                            super::paths::inbound(&mut value, physical, root);
                             value
                         }));
                     }
@@ -216,10 +225,14 @@ fn serve(
                     method,
                     mut params,
                 } if method == "textDocument/publishDiagnostics" => {
-                    super::paths::rebase(&mut params, physical, root);
-                    let diagnostics: PublishDiagnosticsParams = serde_json::from_value(params)
-                        .map_err(|e| Error::Protocol(e.to_string()))?;
-                    super::events::send(events, Event::Diagnostics(diagnostics), stopped)?;
+                    super::paths::inbound(&mut params, physical, root);
+                    match serde_json::from_value::<PublishDiagnosticsParams>(params) {
+                        Ok(diagnostics) => {
+                            super::events::send(events, Event::Diagnostics(diagnostics), stopped)?
+                        }
+                        // One publication the client cannot type is not a dead server.
+                        Err(error) => tracing::debug!(%error, "skipped unreadable diagnostics"),
+                    }
                 }
                 Incoming::Call { .. } => {}
             },
