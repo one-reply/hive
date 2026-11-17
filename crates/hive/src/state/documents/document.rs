@@ -70,6 +70,28 @@ pub(crate) struct Document {
 }
 
 impl Document {
+    #[cfg(test)]
+    pub(super) fn isolated_for_test(
+        request: OpenFile,
+        store: Entity<Store>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut document = Self::new(
+            request,
+            None,
+            store,
+            Arc::new(Navigator::default()),
+            window,
+            cx,
+        );
+        document._read = None;
+        document._poll = Task::ready(());
+        document._subscriptions.clear();
+        document.loading = false;
+        document
+    }
+
     pub fn new(
         request: OpenFile,
         recovered: Option<Record>,

@@ -23,4 +23,17 @@ not that every platform/server combination has been exercised.
 - [x] Self-review, release microbenchmarks, wiki and final fmt/clippy/tests/dependency gates.
 - [ ] Real installed TypeScript server / rust-analyzer and live SSH formatter/LSP smoke (unavailable environment; no installation authorized).
 - [ ] Exhaustive native wrap/fold/resize stress and release UI frame-time measurement (beyond the completed smoke/microbenchmarks).
-- [x] Commit `60ccdba` and [draft PR #92](https://github.com/one-reply/hive/pull/92) against develop.
+- [x] Commit `60ccdba` and [PR #92](https://github.com/one-reply/hive/pull/92) against develop.
+
+## Review corrections (2026-11-17)
+
+- [x] Explicit completion replacement ranges for label-only / insertText-only items; real GPUI acceptance tests.
+- [x] Cancellable event backpressure, deterministic saturated-queue tests and a 100-file diagnostics burst.
+- [x] Client completion filtering and sortText ordering; native menu/acceptance checks.
+- [x] Lossless Unix byte paths in selection drafts; remote-byte-path regression.
+- [x] Synchronize after path unlock; delayed-recovery GPUI test with a second shared document and mutation check.
+- [x] Resolve formatter source directory on its host before selecting Cargo edition; real rustfmt through symlink regression.
+- [x] Remap both navigation stacks after successful file/directory moves; target isolation test and native Rename/Back.
+- [x] Final fmt, clippy, 856 tests, no-GPUI core, remote-helper check and native QA.
+
+PR #92 contains the merge/CI status; real SSH/server and exhaustive stress limits above remain explicit.

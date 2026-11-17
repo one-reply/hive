@@ -65,7 +65,18 @@ pub fn format(
         .ok_or_else(|| fail("Formatter requires a UTF-8 path".into()))?;
     let script = if relative.extension().is_some_and(|ext| ext == "rs") {
         let metadata = run(host, directory, "d=$PWD; while [ ! -f \"$d/Cargo.toml\" ]; do [ \"$d\" = / ] && { printf '{}'; exit; }; d=${d%/*}; [ -n \"$d\" ] || d=/; done; exec cargo metadata --no-deps --offline --locked --format-version 1", "", cancellation).map_err(fail)?;
-        let edition = edition(&metadata, &path).map_err(fail)?;
+        // Cargo reports physical manifest paths, including when the worktree was opened via an alias.
+        let physical = run(host, directory, "pwd -P", "", cancellation).map_err(fail)?;
+        let physical = Path::new(physical.strip_suffix('\n').unwrap_or(&physical));
+        if !physical.is_absolute() {
+            return Err(fail(
+                "Formatter could not resolve the source directory".into(),
+            ));
+        }
+        let name = path
+            .file_name()
+            .ok_or_else(|| fail("Source has no filename".into()))?;
+        let edition = edition(&metadata, &physical.join(name)).map_err(fail)?;
         let mut args = vec!["rustfmt".to_owned(), "--emit".into(), "stdout".into()];
         if let Some(edition) = edition {
             args.extend(["--edition".into(), edition]);
@@ -166,6 +177,50 @@ fn edition(metadata: &str, path: &Path) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rust_formatting_uses_the_package_edition_through_a_symlink_root() {
+        use std::{fs, os::unix::fs::symlink};
+        let root = std::env::temp_dir().join(format!("hive-format-alias-{}", std::process::id()));
+        fs::create_dir_all(root.join("actual/src")).unwrap();
+        fs::write(
+            root.join("actual/Cargo.toml"),
+            "[package]\nname = 'alias-fixture'\nversion = '0.0.0'\nedition = '2021'\n[workspace]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("actual/Cargo.lock"),
+            "version = 4\n[[package]]\nname = 'alias-fixture'\nversion = '0.0.0'\n",
+        )
+        .unwrap();
+        fs::write(root.join("actual/rustfmt.toml"), "newline_style = 'Unix'\n").unwrap();
+        let source = "pub async fn example(){}\n";
+        fs::write(root.join("actual/src/lib.rs"), source).unwrap();
+        symlink(root.join("actual"), root.join("alias")).unwrap();
+        let canonical = fs::canonicalize(root.join("actual")).unwrap();
+        let direct = format(
+            &Host::Local,
+            &canonical,
+            Path::new("src/lib.rs"),
+            source,
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let aliased = format(
+            &Host::Local,
+            &root.join("alias"),
+            Path::new("src/lib.rs"),
+            source,
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(aliased, direct);
+        assert!(aliased.contains("async fn example() {}"));
+        assert_eq!(
+            fs::read_to_string(root.join("actual/src/lib.rs")).unwrap(),
+            source
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn project_formatter_receives_unsaved_stdin_and_failure_preserves_disk() {
         use std::{

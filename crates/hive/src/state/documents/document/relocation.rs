@@ -19,6 +19,7 @@ impl Document {
 
     pub(crate) fn unlock_path(&mut self, cx: &mut Context<Self>) {
         self.path_busy = false;
+        self.sync_language(cx);
         self.editor
             .update(cx, |editor, cx| editor.set_disabled(false, cx));
         self.flush_recovery(cx);

@@ -1,6 +1,6 @@
 use super::*;
 use crate::state::documents::{DocumentEvent, OpenFile};
-use crate::state::files::SearchMode;
+use crate::state::files::{FileOperation, FilesEvent, SearchMode};
 
 impl Workspace {
     pub(super) fn choose_files(&mut self, selected: bool, cx: &mut Context<Self>) {
@@ -66,6 +66,17 @@ impl Workspace {
             .clone()
             .update(cx, |files, cx| files.set_visible(visible, cx));
         let documents = AppState::get(cx).documents.clone();
+        let files = self.files_panel.read(cx).files.clone();
+        self._observers
+            .push(cx.subscribe(&files, |this, _, event: &FilesEvent, _| {
+                if event.result.is_ok()
+                    && let FileOperation::Move { from, to } = &event.operation
+                {
+                    for center in this.centers.values_mut() {
+                        center.navigation.relocate(&event.target, from, to);
+                    }
+                }
+            }));
         self._observers.push(
             cx.subscribe_in(
                 &documents,

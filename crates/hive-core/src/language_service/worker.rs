@@ -65,7 +65,7 @@ pub(super) fn run(
                     message: format!("{family:?}: {error}"),
                 };
                 tracing::warn!(%error, attempt=generation+1,"language server stopped");
-                if events.try_send(Event::Failed(error)).is_err() {
+                if super::events::send(&events, Event::Failed(error), &stopped).is_err() {
                     break;
                 }
             }
@@ -103,7 +103,7 @@ fn serve(
     let mut pending = Pending::new();
     let result = (|| loop {
         if stopped.load(Ordering::Acquire) {
-            return shutdown(process, receiver, generation);
+            return Err(Error::Cancelled);
         }
         let now = Instant::now();
         let abandoned: Vec<_> = pending
@@ -191,9 +191,11 @@ fn serve(
                     }
                     process.write(&json!({"jsonrpc":"2.0","method":"initialized","params":{}}))?;
                     ready = true;
-                    events
-                        .try_send(Event::Ready(Box::new(initialized.capabilities)))
-                        .map_err(|_| Error::Unavailable("event queue unavailable"))?;
+                    super::events::send(
+                        events,
+                        Event::Ready(Box::new(initialized.capabilities)),
+                        stopped,
+                    )?;
                 }
                 Incoming::Response(Id::Number(id), result) => {
                     if let Some((_, reply)) = pending.remove(&id) {
@@ -217,14 +219,17 @@ fn serve(
                     super::paths::rebase(&mut params, physical, root);
                     let diagnostics: PublishDiagnosticsParams = serde_json::from_value(params)
                         .map_err(|e| Error::Protocol(e.to_string()))?;
-                    events
-                        .try_send(Event::Diagnostics(diagnostics))
-                        .map_err(|_| Error::Unavailable("diagnostics queue unavailable"))?;
+                    super::events::send(events, Event::Diagnostics(diagnostics), stopped)?;
                 }
                 Incoming::Call { .. } => {}
             },
         }
     })();
+    let result = if matches!(result, Err(Error::Cancelled)) {
+        shutdown(process, receiver, generation)
+    } else {
+        result
+    };
     for (_, (_, reply)) in pending {
         let _ = reply.try_send(Err(result
             .as_ref()

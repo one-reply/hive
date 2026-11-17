@@ -7,6 +7,8 @@ use lsp_types::{
 };
 use std::{path::Path, rc::Rc};
 
+mod completion_items;
+
 impl Document {
     pub(crate) fn references(
         document: &Entity<Self>,
@@ -165,32 +167,13 @@ pub(super) fn completion(
             None => return Ok(None),
         };
         let source = snapshot.text.to_string();
-        Ok(Some(CompletionResponse::Array(
-            items
-                .into_iter()
-                .filter_map(|item| safe_completion(item, &source))
-                .collect(),
-        )))
+        Ok(Some(CompletionResponse::Array(completion_items::prepare(
+            items,
+            &source,
+            offset,
+            hive_core::completion::Family::for_path(&snapshot.path),
+        ))))
     }))
-}
-
-fn safe_completion(mut item: CompletionItem, text: &str) -> Option<CompletionItem> {
-    if item.command.is_some()
-        || item
-            .additional_text_edits
-            .as_ref()
-            .is_some_and(|edits| !edits.is_empty())
-        || item.insert_text_format == Some(InsertTextFormat::SNIPPET)
-    {
-        return None;
-    }
-    if let Some(edit) = item.text_edit.as_mut() {
-        let CompletionTextEdit::Edit(edit) = edit else {
-            return None;
-        };
-        edit.range = position::editor_range(text, edit.range)?;
-    }
-    Some(item)
 }
 
 struct Features {
@@ -390,34 +373,5 @@ fn location_link(location: Location) -> LocationLink {
         target_uri: location.uri,
         target_range: location.range,
         target_selection_range: location.range,
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::safe_completion;
-    use lsp_types::*;
-    #[test]
-    fn unsupported_edits_are_omitted_and_utf16_ranges_become_scalar_columns() {
-        let item = CompletionItem {
-            label: "name".into(),
-            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                range: Range::new(Position::new(0, 2), Position::new(0, 3)),
-                new_text: "name".into(),
-            })),
-            ..Default::default()
-        };
-        let safe = safe_completion(item.clone(), "😀x").unwrap();
-        assert!(
-            matches!(safe.text_edit,Some(CompletionTextEdit::Edit(edit)) if edit.range.start.character==1 && edit.range.end.character==2)
-        );
-        let mut snippet = item.clone();
-        snippet.insert_text_format = Some(InsertTextFormat::SNIPPET);
-        assert!(safe_completion(snippet, "😀x").is_none());
-        let mut auto_import = item;
-        auto_import.additional_text_edits = Some(vec![TextEdit {
-            range: Range::default(),
-            new_text: "import name".into(),
-        }]);
-        assert!(safe_completion(auto_import, "😀x").is_none());
     }
 }

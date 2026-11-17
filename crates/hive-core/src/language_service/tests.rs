@@ -61,6 +61,42 @@ impl lsp_types::request::Request for Crash {
     const METHOD: &'static str = "test/crash";
 }
 
+enum Burst {}
+impl lsp_types::request::Request for Burst {
+    type Params = Value;
+    type Result = Value;
+    const METHOD: &'static str = "test/burst";
+}
+
+#[test]
+fn a_diagnostics_burst_preserves_the_session_and_all_file_updates() {
+    let fixture = Fixture::new();
+    let (session, events) = Session::start(Host::Local, fixture.0.clone(), Family::TypeScript);
+    ready(&events);
+    let burst = session.request::<Burst>(Value::Null).unwrap();
+    for line in 0..100 {
+        let Event::Diagnostics(params) = events.recv_blocking().unwrap() else {
+            panic!("a healthy session must not restart during a diagnostics burst");
+        };
+        assert_eq!(params.uri.as_str(), format!("file:///file{line}.ts"));
+    }
+    assert_eq!(receive(burst).unwrap(), Value::Bool(true));
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("starts"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    drop(session);
+    while events.recv_blocking().is_ok() {}
+    assert!(
+        fs::read_to_string(fixture.0.join("messages"))
+            .unwrap()
+            .contains("shutdown\nexit\n")
+    );
+}
+
 #[test]
 fn fake_server_synchronizes_unicode_cancels_requests_and_shuts_down_cleanly() {
     let fixture = Fixture::new();
@@ -153,6 +189,9 @@ while True:
     elif method=='textDocument/didOpen': source=request['params']['textDocument']['text']; uri=request['params']['textDocument']['uri']; continue
     elif method=='textDocument/hover': result={'contents':{'kind':'plaintext','value':source}}
     elif method=='test/never': send({'jsonrpc':'2.0','method':'textDocument/publishDiagnostics','params':{'uri':uri,'version':1,'diagnostics':[]}}); continue
+    elif method=='test/burst':
+        for i in range(100): send({'jsonrpc':'2.0','method':'textDocument/publishDiagnostics','params':{'uri':'file:///file%d.ts'%i,'diagnostics':[]}})
+        result=True
     elif method=='test/crash': sys.exit(0)
     elif method=='shutdown': result=None
     elif method=='exit': sys.exit(0)

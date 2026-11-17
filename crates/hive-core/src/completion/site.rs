@@ -167,7 +167,7 @@ fn import_path(text: &str, content: usize, cursor: usize) -> Option<Site> {
 
 /// A name inside the braces of `import { … } from '…'`, once the statement names its module.
 fn import_name(text: &str, cursor: usize) -> Option<Site> {
-    let word = word_around(text, cursor, Family::Script);
+    let word = word_range(text, cursor, Family::Script)?;
     let reach = floor_char_boundary(text, word.start.saturating_sub(IMPORT_LIST_REACH));
     let before = &text[reach..word.start];
     let open = before.rfind(|c: char| !is_import_list_char(c))?;
@@ -202,7 +202,7 @@ fn import_name(text: &str, cursor: usize) -> Option<Site> {
 }
 
 fn name(text: &str, cursor: usize, family: Family) -> Option<Site> {
-    let word = word_around(text, cursor, family);
+    let word = word_range(text, cursor, family)?;
     let prefix = &text[word.start..cursor];
     if prefix.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
@@ -238,7 +238,11 @@ fn is_member_access(before: &str) -> bool {
     }
 }
 
-fn word_around(text: &str, cursor: usize, family: Family) -> Range<usize> {
+/// The identifier surrounding a UTF-8 cursor boundary, excluding member punctuation.
+pub fn word_range(text: &str, cursor: usize, family: Family) -> Option<Range<usize>> {
+    if !text.is_char_boundary(cursor) {
+        return None;
+    }
     let start = text[..cursor]
         .char_indices()
         .rev()
@@ -250,7 +254,7 @@ fn word_around(text: &str, cursor: usize, family: Family) -> Range<usize> {
         .take_while(|&(_, c)| family.is_name_char(c))
         .last()
         .map_or(cursor, |(ix, c)| cursor + ix + c.len_utf8());
-    start..end
+    Some(start..end)
 }
 
 fn is_import_list_char(c: char) -> bool {

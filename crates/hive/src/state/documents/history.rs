@@ -34,6 +34,21 @@ impl History {
             stack.retain(|entry| entry.target != *target || !entry.path.starts_with(path));
         }
     }
+
+    pub(crate) fn relocate(
+        &mut self,
+        target: &hive_core::projects::Target,
+        from: &std::path::Path,
+        to: &std::path::Path,
+    ) {
+        for entry in self.past.iter_mut().chain(&mut self.future) {
+            if entry.target == *target
+                && let Some(path) = hive_core::files::relocated_path(&entry.path, from, to)
+            {
+                entry.path = path;
+            }
+        }
+    }
 }
 
 fn same(a: &OpenFile, b: &OpenFile) -> bool {
@@ -90,5 +105,46 @@ mod tests {
         }
         assert_eq!(history.past.len(), LIMIT);
         assert_eq!(history.past[0].path, location(50).path);
+    }
+
+    #[test]
+    fn moves_remap_both_stacks_and_leave_other_hosts_and_worktrees_unchanged() {
+        let mut source = location(1);
+        source.path = "src/nested/a.rs".into();
+        let mut other_root = source.clone();
+        other_root.target.path = "/other".into();
+        let mut other_host = source.clone();
+        other_host.target.host = hive_core::host::Host::Ssh {
+            target: "remote".into(),
+        };
+        let mut history = History {
+            past: vec![other_root.clone(), source.clone()],
+            future: vec![other_host.clone(), source.clone()],
+        };
+        history.relocate(
+            &source.target,
+            std::path::Path::new("src"),
+            std::path::Path::new("lib"),
+        );
+        assert_eq!(
+            history.step(false, None).unwrap().path,
+            std::path::Path::new("lib/nested/a.rs")
+        );
+        assert_eq!(
+            history.step(true, None).unwrap().path,
+            std::path::Path::new("lib/nested/a.rs")
+        );
+        assert_eq!(history.step(false, None).unwrap().path, other_root.path);
+        assert_eq!(history.step(true, None).unwrap().path, other_host.path);
+        history.record(source.clone());
+        history.relocate(
+            &source.target,
+            &source.path,
+            std::path::Path::new("src/c.rs"),
+        );
+        assert_eq!(
+            history.step(false, None).unwrap().path,
+            std::path::Path::new("src/c.rs")
+        );
     }
 }

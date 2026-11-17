@@ -2,6 +2,7 @@
 use crate::host::Host;
 use std::path::PathBuf;
 
+mod events;
 mod paths;
 pub mod position;
 mod process;

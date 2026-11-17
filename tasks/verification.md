@@ -5,7 +5,7 @@ Scope and exclusions: [plan.md](plan.md). Base: develop
 
 ## Automated gates
 
-All passed on the final implementation:
+Initial feature checkpoint (before the review corrections below):
 
 - `cargo fmt --all` and `git diff --check`.
 - `cargo clippy --workspace --all-targets --offline -- -D warnings`.
@@ -90,3 +90,33 @@ These figures do **not** establish release UI frame rate or typing latency.
 
 Refactoring, auto-import, quick fixes, format-on-save, remote content search,
 editable multibuffers and automatic installations remain outside the agreed scope.
+
+## Seven review corrections — 2026-11-17
+
+All seven findings against `d815e10` were corrected before the requested merge.
+No dependency was added.
+
+| Finding | Correction | Regression evidence |
+| --- | --- | --- |
+| Completion corrupts member punctuation or duplicates the prefix | Every accepted item carries an explicit scalar-column edit; absent edits use the existing language word-boundary rules | Two real `EditorState::insert_completion` GPUI tests, including Unicode and a cursor inside a word; native `object.fo` → `object.foo`, `object.tot` → `object.total` |
+| Full diagnostics queue kills a healthy session | Bounded event delivery waits for capacity, wakes when drained and observes cancellation while waiting | Deterministic pending/ready polling of a saturated queue, cancellation/closed receiver, 100-file fake-server burst followed by a successful response and graceful shutdown |
+| LSP menu ignores typed prefix | Filter by filterText/label and the item's replacement prefix, then sort by sortText/label | Prefix/case/filterText/sortText tests, explicit zero-width insert versus replace tests; native menu excludes `alpha` while typing `tot` |
+| Byte-path selection draft panics | Existing tagged lossless persisted-path serializer encodes both worktree and relative path | Non-UTF-8 SSH path round-trip without process/network access |
+| Renamed document misses didOpen | `unlock_path` synchronizes after clearing path_busy | GPUI test holds recovery completion with another document on the ready session and no session events; removing the new sync call makes the test fail; native peer records didClose(old) then didOpen(new) |
+| Alias root loses Rust edition | Resolve `pwd -P` on the document's host before matching Cargo manifest paths | Actual installed Cargo/rustfmt in an offline temporary edition-2021 package through canonical and symlink roots; async fn formats identically and disk source stays unchanged |
+| History points to paths before rename/move | Successful Files move events remap both history stacks, including descendants, within the same Target | File/directory remapping and host/worktree isolation tests; native Back from the definition opens the renamed origin |
+
+Final gates: fmt, workspace/all-target clippy `-D warnings`, **298 app + 6 integration
++ 552 core = 856 passed**, 3 existing opt-in tests ignored; no GPUI in core;
+remote-helper feature check and debug build passed. The initial sandbox run blocked
+existing local socket/process tests; the authorized full workspace run passed.
+The temporary missing-sync mutation was restored before these gates.
+
+Native checks used the existing disposable QA profile and a stdio peer, with no
+real agent submission. Its wire log confirms the renamed URI opens without an
+additional hover/completion/definition request. Real SSH and real TypeScript /
+rust-analyzer checks remain unavailable; the earlier stress/performance limitations
+still apply. The owner requested merge with those validation limits stated.
+
+The completion adapter follows the [LSP completion contract](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.18/language/completion.md)
+and the installed GPUI insertion API; it does not add snippets or workspace edits.

@@ -8,6 +8,8 @@ use lsp_types::{
 use std::collections::HashMap;
 
 mod diagnostics;
+#[cfg(test)]
+mod relocation_tests;
 
 struct Synced {
     text: Rope,
@@ -307,7 +309,7 @@ impl Document {
         }));
     }
 
-    fn sync_language(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn sync_language(&mut self, cx: &mut Context<Self>) {
         if self.base.is_none() || self.loading || self.path_busy {
             return;
         }
