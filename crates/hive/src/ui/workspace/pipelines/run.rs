@@ -184,23 +184,25 @@ impl RunView {
 impl Render for RunView {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some((ticket, session)) = &self.session {
+            let back_hover = Hover::new("session-back", w, cx);
             return v_flex()
                 .size_full()
                 .child(
                     h_flex()
                         .p_2()
                         .gap_2()
-                        .child(button(
-                            "session-back",
-                            "Back to run",
-                            ButtonLook::Ghost,
-                            w,
-                            cx,
-                            |this, _, cx| {
-                                this.session = None;
-                                cx.notify();
-                            },
-                        ))
+                        .child(
+                            Button::new("session-back")
+                                .cursor_pointer()
+                                .small()
+                                .icon(Lucide::ArrowLeft)
+                                .label("Back to run")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.session = None;
+                                    cx.notify();
+                                }))
+                                .smooth_hover(ButtonLook::Ghost, &back_hover, cx),
+                        )
                         .child(subtle(
                             format!("Live session · Attempt {}", ticket.attempt),
                             cx,
