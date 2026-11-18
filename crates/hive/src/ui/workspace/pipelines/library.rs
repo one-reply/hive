@@ -7,9 +7,6 @@ use gpui_kit::component::{
     menu::{ContextMenuExt as _, PopupMenu},
 };
 
-fn count(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
-}
 impl PipelinePanel {
     pub(super) fn library(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let state = AppState::get(cx);

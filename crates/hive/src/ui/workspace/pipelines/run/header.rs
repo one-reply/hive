@@ -84,39 +84,25 @@ impl RunView {
                     .child(SelectableText::new("full-task", run.task().to_owned())),
             );
         }
-        let mut meta = h_flex()
-            .gap_3()
-            .flex_wrap()
-            .child(status_pill(phase, status_color(status, cx)))
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Icon::new(Lucide::GitBranch)
-                            .size_3p5()
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .child(subtle(run.template().name.clone(), cx)),
-            );
         let repos = run
             .lanes()
             .iter()
             .map(|l| &l.project)
             .collect::<HashSet<_>>()
             .len();
-        meta = meta.child(subtle(
-            format!(
-                "{repos} {}",
-                if repos == 1 {
-                    "repository"
-                } else {
-                    "repositories"
-                }
-            ),
-            cx,
-        ));
+        let mut meta = h_flex()
+            .gap_2()
+            .flex_wrap()
+            .child(status_pill(phase, status_color(status, cx)))
+            .child(meta_chip(Lucide::Workflow, run.template().name.clone(), cx))
+            .child(meta_chip(
+                Lucide::FolderGit2,
+                count(repos, "repository", "repositories"),
+                cx,
+            ));
         if let Some((start, end)) = range {
-            meta = meta.child(subtle(
+            meta = meta.child(meta_chip(
+                Lucide::Timer,
                 format!("{} elapsed", elapsed::duration(end.saturating_sub(start))),
                 cx,
             ));
@@ -126,15 +112,9 @@ impl RunView {
                 .filter(|row| row.attempt.is_some())
                 .count();
             if invocations > 0 {
-                meta = meta.child(subtle(
-                    format!(
-                        "{invocations} agent {}",
-                        if invocations == 1 {
-                            "session"
-                        } else {
-                            "sessions"
-                        }
-                    ),
+                meta = meta.child(meta_chip(
+                    Lucide::Bot,
+                    count(invocations, "agent session", "agent sessions"),
                     cx,
                 ));
             }
@@ -257,6 +237,23 @@ fn task_title(task: &str) -> String {
     } else {
         full.to_owned()
     }
+}
+
+/// A neutral fact about the run, shaped like the status pill so the row reads as one set.
+fn meta_chip(icon: Lucide, text: impl Into<SharedString>, cx: &App) -> Div {
+    let muted = cx.theme().muted_foreground;
+    h_flex()
+        .flex_none()
+        .gap_1p5()
+        .px_2()
+        .py_0p5()
+        .rounded_full()
+        .border_1()
+        .border_color(cx.theme().border)
+        .text_xs()
+        .text_color(muted)
+        .child(Icon::new(icon).size_3().text_color(muted))
+        .child(text.into())
 }
 
 #[cfg(test)]

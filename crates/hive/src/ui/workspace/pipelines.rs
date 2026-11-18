@@ -153,6 +153,9 @@ fn phase_label(run: &Run) -> String {
         Cancelled => "Cancelled".into(),
     }
 }
+fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
 /// Status tints are washed out so the colored label on top stays readable.
 const STATUS_TINT_OPACITY: f32 = 0.12;
 fn status_color(status: RunStatus, cx: &App) -> Hsla {
