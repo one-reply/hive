@@ -16,6 +16,8 @@ use gpui_kit::*;
 use std::time::Duration;
 
 const HOVER_DURATION: Duration = Duration::from_millis(140);
+/// For [`Hover::with_duration`] on rows that span a whole panel.
+pub(crate) const WIDE_HOVER_DURATION: Duration = Duration::from_millis(240);
 
 /// The eased hover state of one element, sampled for the frame being rendered.
 #[derive(Clone)]
@@ -29,13 +31,24 @@ pub(crate) struct Hover {
 impl Hover {
     /// `id` must be unique among the hoverable elements the current view renders.
     pub(crate) fn new(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> Self {
+        Self::with_duration(id, HOVER_DURATION, window, cx)
+    }
+
+    /// A wide surface changes a lot of pixels at once, so it eases over a longer `duration`
+    /// than the default to avoid reading as a flash.
+    pub(crate) fn with_duration(
+        id: impl Into<ElementId>,
+        duration: Duration,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
         let id: ElementId = id.into();
         let hovered = window.use_keyed_state((id.clone(), "hovered"), cx, |_, _| false);
         let target = if *hovered.read(cx) { 1. } else { 0. };
         let progress = transition(
             (id.clone(), "hover"),
             target,
-            Transition::new(HOVER_DURATION).ease(ease_in_out),
+            Transition::new(duration).ease(ease_in_out),
             window,
             cx,
         );

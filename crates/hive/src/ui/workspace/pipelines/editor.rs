@@ -291,9 +291,7 @@ impl Render for TemplateEditor {
             body = body.child(self.canvas(window, cx));
         }
         if !self.compact || self.show_inspector {
-            let fields = self
-                .inspector_fields(window, cx)
-                .children(self.ordering(cx));
+            let fields = self.inspector_fields(window, cx);
             body = body.child(
                 div()
                     .h_full()

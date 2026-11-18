@@ -1,6 +1,7 @@
 //! Adding, reordering and removing stages: the first QA review is a fixed barrier, and lanes
 //! and reviews only move among their own kind.
 use super::*;
+use gpui_kit::component::button::ButtonVariants as _;
 
 #[derive(Clone, Copy)]
 pub(super) enum StageChoice {
@@ -64,13 +65,17 @@ impl TemplateEditor {
                 .small()
                 .cursor_pointer()
                 .icon(Lucide::Plus)
+                .dropdown_caret(true)
                 .label("Add stage"),
             options,
             cx,
             |s, stage, w, cx| s.add(stage, w, cx),
         )
     }
-    pub(super) fn ordering(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(in crate::ui::workspace::pipelines) fn ordering(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let (min, count, index, make): (usize, usize, usize, fn(usize) -> Item) =
             match self.selected {
                 Item::Lane(i) if self.template.lanes.len() > 1 => {
@@ -89,9 +94,12 @@ impl TemplateEditor {
         options.push(("Remove stage".to_owned(), false, None));
         Some(options_menu(
             Button::new("selected-stage-actions")
+                .ghost()
                 .small()
                 .cursor_pointer()
-                .label("Stage actions"),
+                .icon(Lucide::Ellipsis)
+                .accessibility_label("Stage actions")
+                .tooltip("Stage actions"),
             options,
             cx,
             move |s, dest, w, cx| match dest {

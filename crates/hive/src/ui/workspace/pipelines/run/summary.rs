@@ -7,6 +7,7 @@ use gpui_kit::base::{
 use hive_core::pipeline::CheckTally;
 
 const REVEAL_DURATION: Duration = Duration::from_millis(260);
+const REPORTS_UNFOLD_DURATION: Duration = Duration::from_millis(220);
 const REPORTS_MAX_HEIGHT: f32 = 12.;
 
 fn check_outcome(tally: CheckTally) -> String {
@@ -41,6 +42,14 @@ impl RunView {
             .map(|i| usize::from(run.cycles(i)))
             .sum();
         let success = cx.theme().success;
+        // Sampled every frame, so the reports keep their progress while they fold away.
+        let unfolded = transition(
+            ("completion-reports-unfold", "progress"),
+            if self.summary_expanded { 1.0_f32 } else { 0. },
+            Transition::new(REPORTS_UNFOLD_DURATION).ease(ease_in_out),
+            w,
+            cx,
+        );
         let toggle = button(
             "completion-reports",
             if self.summary_expanded {
@@ -71,17 +80,28 @@ impl RunView {
             ))
             .child(div().flex_1())
             .child(toggle);
+        // No card gap: the spacing above the reports unfolds with them instead of jumping.
         let card = card(cx)
+            .gap_0()
             .border_color(success.opacity(0.35))
             .child(header)
-            .when(self.summary_expanded, |card| {
-                card.child(
-                    div()
-                        .id("completion-reports-scroll")
-                        .max_h(rems(REPORTS_MAX_HEIGHT))
-                        .overflow_y_scroll()
-                        .child(reports(run, cx)),
-                )
+            .when(self.summary_expanded || unfolded > 0., |card| {
+                let reports = div()
+                    .pt_2()
+                    .opacity(unfolded)
+                    .child(
+                        div()
+                            .id("completion-reports-scroll")
+                            .max_h(rems(REPORTS_MAX_HEIGHT))
+                            .overflow_y_scroll()
+                            .child(reports(run, cx)),
+                    )
+                    .into_any_element();
+                card.child(MotionReveal::new(
+                    "completion-reports-reveal",
+                    unfolded,
+                    reports,
+                ))
             });
         let block = div()
             .px_5()

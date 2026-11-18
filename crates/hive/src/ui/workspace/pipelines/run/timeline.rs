@@ -1,9 +1,11 @@
 //! A common elapsed-time scale keeps parallel attempts and repair rounds comparable.
 use super::elapsed::{duration, observed_end, span, stopwatch};
 use super::*;
-use crate::ui::hover::SmoothHoverBg as _;
+use crate::ui::hover::{SmoothHoverBg as _, WIDE_HOVER_DURATION};
 use crate::ui::stepped_spinner::SteppedSpinner;
 use gpui_kit::base::animation::Lerp as _;
+use gpui_kit::base::motion::{MotionReveal, Transition, transition};
+use std::time::Duration;
 
 const LABEL_FRACTION: f32 = 0.30;
 const LABEL_MIN: f32 = 142.;
@@ -29,7 +31,14 @@ fn live_color(cx: &App) -> Hsla {
 
 const ROW_HEIGHT: f32 = 47.;
 const TRACK_HEIGHT: f32 = 23.;
+const TRACK_OPACITY: f32 = 0.65;
+/// A hovered row lifts only partway to `muted`, and its track sinks only partway to the
+/// background, so the two separate without a hard jump in contrast.
+const ROW_HOVER_OPACITY: f32 = 0.6;
+const TRACK_HOVER_OPACITY: f32 = 0.55;
 const GRID_PARTS: usize = 4;
+const UNFOLD_DURATION: Duration = Duration::from_millis(220);
+const QUARTER_TURN: f32 = std::f32::consts::FRAC_PI_2;
 
 struct WorkingIcon(SteppedSpinner);
 
@@ -93,7 +102,16 @@ impl RunView {
                 && !stage.is_human()
                 && agent.is_none_or(|s| s == AgentStatus::Working);
             let open = self.selected_stage == Some(stage);
-            let hover = Hover::new(("stage-hover", i), w, cx);
+            // Sampled for every stage on every frame: keyed state that a frame skips is dropped,
+            // and a closing detail must keep its progress until it has folded away.
+            let unfolded = transition(
+                (("stage-unfold", i), "progress"),
+                if open { 1.0_f32 } else { 0. },
+                Transition::new(UNFOLD_DURATION).ease(ease_in_out),
+                w,
+                cx,
+            );
+            let hover = Hover::with_duration(("stage-hover", i), WIDE_HOVER_DURATION, w, cx);
             let failed = match agent {
                 Some(agent) => agent == AgentStatus::Failed,
                 None => stage_status.is_failure(),
@@ -170,7 +188,12 @@ impl RunView {
                 .h(px(TRACK_HEIGHT))
                 .rounded_md()
                 .overflow_hidden()
-                .bg(cx.theme().muted.opacity(0.65));
+                // The row lifts toward `muted` under the pointer; a track of the same color would
+                // dissolve into it, so the track darkens toward the background instead.
+                .bg(hover.mix(
+                    cx.theme().muted.opacity(TRACK_OPACITY),
+                    cx.theme().background.opacity(TRACK_HOVER_OPACITY),
+                ));
             if let Some(scale) = scale {
                 for tick in 1..GRID_PARTS {
                     track = track.child(
@@ -263,18 +286,15 @@ impl RunView {
                         } else {
                             cx.theme().background
                         },
-                        cx.theme().muted,
+                        cx.theme().muted.opacity(ROW_HOVER_OPACITY),
                     )
                     .child(label)
                     .child(track)
                     .child(
-                        Icon::new(if open {
-                            Lucide::ChevronDown
-                        } else {
-                            Lucide::ChevronRight
-                        })
-                        .size_3p5()
-                        .text_color(cx.theme().muted_foreground),
+                        Icon::new(Lucide::ChevronRight)
+                            .rotate(radians(QUARTER_TURN * unfolded))
+                            .size_3p5()
+                            .text_color(cx.theme().muted_foreground),
                     )
                     .map(|row| {
                         actionable(row, accessible, Some(open), cx, move |v, cx| {
@@ -287,8 +307,14 @@ impl RunView {
                         })
                     }),
             );
-            if open {
-                table = table.child(self.stage_detail(stage, run, w, cx));
+            // A detail that is still folding away renders until its height reaches zero.
+            if open || unfolded > 0. {
+                let detail = self.stage_detail(stage, run, w, cx).opacity(unfolded);
+                table = table.child(MotionReveal::new(
+                    ("stage-detail", i),
+                    unfolded,
+                    detail.into_any_element(),
+                ));
             }
         }
         if let Some((a, b)) = scale {

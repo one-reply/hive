@@ -111,7 +111,7 @@ impl ModelPicker {
     pub(super) fn render(&self) -> AnyElement {
         Select::new(&self.select)
             .small()
-            .w(rems(9.5))
+            .w_full()
             .accessibility_label("Model")
             .search_placeholder("Search models")
             .menu_width(rems(17.))

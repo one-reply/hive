@@ -42,13 +42,11 @@ impl RunView {
         if let Some(status) = request {
             phase = format!("{phase} · {}", status.label());
         }
-        let status_color = match run.phase() {
-            _ if request.is_some() => cx.theme().warning,
-            Phase::Accepted => cx.theme().success,
-            Phase::ApprovePlan | Phase::Decision(_) | Phase::Acceptance => cx.theme().warning,
-            Phase::Cancelled => cx.theme().muted_foreground,
-            _ => cx.theme().info,
-        };
+        let status = RunStatus::of(
+            run.phase(),
+            pipelines.read(cx).error(run.id()).is_some(),
+            request.is_some(),
+        );
         let mut top = v_flex().px_5().pt_4().pb_3().gap_2();
         let mut title = h_flex().gap_2().items_start().child(
             div()
@@ -89,16 +87,7 @@ impl RunView {
         let mut meta = h_flex()
             .gap_3()
             .flex_wrap()
-            .child(
-                h_flex()
-                    .gap_1p5()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_full()
-                    .bg(status_color.opacity(0.12))
-                    .child(div().size_1p5().rounded_full().bg(status_color))
-                    .child(div().text_xs().text_color(status_color).child(phase)),
-            )
+            .child(status_pill(phase, status_color(status, cx)))
             .child(
                 h_flex()
                     .gap_1()
@@ -196,11 +185,16 @@ impl RunView {
                     .position(|t| *t == self.tab)
                     .unwrap_or_default(),
             )
-            .children(
-                RunTab::ALL
-                    .iter()
-                    .map(|tab| Tab::new().label(tab.label()).cursor_pointer()),
-            )
+            .children(RunTab::ALL.iter().map(|tab| {
+                // `Tab::icon` would drop the label, so the icon goes in as content.
+                // Without its own color it follows the tab's selected and idle text.
+                Tab::new().aria_label(tab.label()).cursor_pointer().child(
+                    h_flex()
+                        .gap_1p5()
+                        .child(Icon::new(tab.icon()).size_3p5())
+                        .child(tab.label()),
+                )
+            }))
             .on_click(cx.listener(|this, ix: &usize, _, cx| {
                 if let Some(tab) = RunTab::ALL.get(*ix) {
                     this.tab = *tab;

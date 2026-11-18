@@ -19,8 +19,10 @@ mod reports;
 mod review;
 mod runtime;
 mod sessions;
+mod status;
 mod templates;
 
+pub(crate) use status::RunStatus;
 pub(crate) use workspace::ReviewRepo;
 
 type PatchPreview = (

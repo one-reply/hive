@@ -1,5 +1,6 @@
 use super::editor::{Item, TemplateEditor};
 use super::*;
+use crate::ui::hover::SmoothHoverBg as _;
 use hive_core::agent::{
     AgentKind,
     launch::{AGENTS, pipeline_efforts},
@@ -7,6 +8,7 @@ use hive_core::agent::{
 use hive_core::pipeline::Profile;
 
 mod agents;
+mod findings;
 mod models;
 use models::ModelPicker;
 pub(super) struct Inspector {
@@ -135,15 +137,27 @@ impl TemplateEditor {
         let mut identity = v_flex().gap_2().child(
             h_flex()
                 .gap_2()
-                .child(Icon::new(kind.icon()).size_4().text_color(color))
-                .child(subtle(
-                    if lane {
-                        "Development lane"
-                    } else {
-                        kind.label()
-                    },
-                    cx,
-                )),
+                .child(
+                    h_flex()
+                        .size_7()
+                        .flex_none()
+                        .justify_center()
+                        .rounded_md()
+                        .bg(color.opacity(ROLE_TINT_OPACITY))
+                        .child(Icon::new(kind.icon()).size_4().text_color(color)),
+                )
+                .child(
+                    subtle(
+                        if lane {
+                            "Development lane"
+                        } else {
+                            kind.label()
+                        },
+                        cx,
+                    )
+                    .flex_1(),
+                )
+                .children(self.ordering(cx)),
         );
         if form.rename {
             identity = identity.child(
@@ -198,45 +212,47 @@ impl TemplateEditor {
         let form = &self.inspector;
         let prompt = form.instruction.read(cx).value();
         let lane = matches!(self.selected, Item::Lane(_));
-        let mut prompt_box = v_flex()
-            .gap_2()
-            .pt_3()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .child(div().flex_1().child(heading(if lane {
-                        "Required QA command"
-                    } else {
-                        "Instructions"
-                    })))
-                    .child(icon_action(
-                        "edit-stage-prompt",
-                        if form.edit_prompt {
-                            "Finish editing"
-                        } else {
-                            "Edit"
-                        },
-                        if form.edit_prompt {
-                            Lucide::Check
-                        } else {
-                            Lucide::Pencil
-                        },
-                        w,
-                        cx,
-                        |s: &mut Self, w, cx| {
-                            s.inspector.edit_prompt = !s.inspector.edit_prompt;
-                            if s.inspector.edit_prompt {
-                                s.inspector
-                                    .instruction
-                                    .read(cx)
-                                    .focus_handle(cx)
-                                    .focus(w, cx);
-                            }
-                            cx.notify()
-                        },
-                    )),
-            );
+        let mut prompt_box = section(cx).child(
+            section_title(
+                if lane {
+                    Lucide::SquareTerminal
+                } else {
+                    Lucide::MessageSquare
+                },
+                if lane {
+                    "Required QA command"
+                } else {
+                    "Instructions"
+                },
+                cx,
+            )
+            .child(icon_action(
+                "edit-stage-prompt",
+                if form.edit_prompt {
+                    "Finish editing"
+                } else {
+                    "Edit"
+                },
+                if form.edit_prompt {
+                    Lucide::Check
+                } else {
+                    Lucide::Pencil
+                },
+                w,
+                cx,
+                |s: &mut Self, w, cx| {
+                    s.inspector.edit_prompt = !s.inspector.edit_prompt;
+                    if s.inspector.edit_prompt {
+                        s.inspector
+                            .instruction
+                            .read(cx)
+                            .focus_handle(cx)
+                            .focus(w, cx);
+                    }
+                    cx.notify()
+                },
+            )),
+        );
         if form.edit_prompt {
             prompt_box = prompt_box.child(TextField::textarea(
                 Textarea::new(&form.instruction),
@@ -244,94 +260,81 @@ impl TemplateEditor {
                 cx,
             ));
         } else {
+            let empty = prompt.is_empty();
+            let hover = Hover::new("stage-prompt-preview", w, cx);
+            // The text itself opens the editor: the pencil is easy to miss in a narrow panel.
+            let preview = div()
+                .id("stage-prompt-preview")
+                .role(Role::Button)
+                .aria_label(if lane {
+                    "Edit required QA command"
+                } else {
+                    "Edit instructions"
+                })
+                .tab_index(0)
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .border_1()
+                .border_color(cx.theme().border)
+                .cursor_pointer()
+                .text_sm()
+                .when(empty, |el| el.italic())
+                .text_color(if empty {
+                    cx.theme().muted_foreground
+                } else {
+                    cx.theme().foreground
+                })
+                .child(match (empty, lane) {
+                    (false, _) => prompt,
+                    (true, true) => "No command required".into(),
+                    (true, false) => "No instructions".into(),
+                });
             prompt_box = prompt_box.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(if prompt.is_empty() {
-                        if lane {
-                            "No command required".into()
-                        } else {
-                            "No instructions".into()
-                        }
-                    } else {
-                        prompt
-                    }),
+                on_activate(preview, cx, |s: &mut Self, w, cx| {
+                    s.inspector.edit_prompt = true;
+                    s.inspector
+                        .instruction
+                        .read(cx)
+                        .focus_handle(cx)
+                        .focus(w, cx);
+                    cx.notify()
+                })
+                .hover_bg(&hover, cx.theme().transparent, cx.theme().muted),
             );
         }
         prompt_box
     }
-    fn review_routing(&self, cx: &mut Context<Self>) -> Div {
-        let form = &self.inspector;
-        let mut routes = vec![(None, "Affected lanes".into())];
-        routes.extend(
-            self.template
-                .lanes
-                .iter()
-                .map(|l| (Some(l.name.clone()), l.name.clone())),
-        );
-        let mut limits = vec![1, 2, 3, 4, 5];
-        if !limits.contains(&form.limit) {
-            limits.push(form.limit);
-        }
-        let options = limits
-            .into_iter()
-            .map(|n| {
-                (
-                    n,
-                    format!("{n} {}", if n == 1 { "round" } else { "rounds" }),
-                )
-            })
-            .collect();
-        v_flex()
-            .gap_2()
-            .pt_3()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Icon::new(Lucide::CornerUpLeft)
-                            .size_3p5()
-                            .text_color(cx.theme().warning),
-                    )
-                    .child(heading("Findings")),
-            )
-            .child(setting(
-                "Return to",
-                choice(
-                    "stage-route",
-                    &form.route,
-                    routes,
-                    cx,
-                    |s: &mut Self, r, _, _| {
-                        if let Item::Review(i) = s.selected {
-                            s.template.reviews[i].return_lane = r.clone();
-                        }
-                        s.inspector.route = r
-                    },
-                ),
-                cx,
-            ))
-            .child(setting(
-                "Ask after",
-                choice(
-                    "stage-limit",
-                    &form.limit,
-                    options,
-                    cx,
-                    |s: &mut Self, n, _, _| s.inspector.limit = n,
-                ),
-                cx,
-            ))
-    }
 }
 
-fn setting(label: &'static str, value: AnyElement, cx: &App) -> Div {
+/// The role icon's tile is washed out so the icon on top keeps its contrast.
+const ROLE_TINT_OPACITY: f32 = 0.12;
+
+/// One block of the inspector, divided from the block above it.
+fn section(cx: &App) -> Div {
+    v_flex()
+        .gap_3()
+        .pt_4()
+        .border_t_1()
+        .border_color(cx.theme().border)
+}
+
+/// A section's icon and name. Trailing actions added by the caller sit at the far end.
+fn section_title(icon: Lucide, title: &'static str, cx: &App) -> Div {
     h_flex()
         .gap_2()
-        .justify_between()
-        .child(subtle(label, cx).flex_none())
-        .child(div().min_w_0().overflow_hidden().child(value))
+        .child(
+            Icon::new(icon)
+                .size_3p5()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(heading(title).flex_1())
+}
+
+/// A label above its control: the panel is too narrow for both on one line.
+fn setting(label: &'static str, value: AnyElement, cx: &App) -> Div {
+    v_flex()
+        .gap_1p5()
+        .child(subtle(label, cx))
+        .child(div().w_full().min_w_0().child(value))
 }

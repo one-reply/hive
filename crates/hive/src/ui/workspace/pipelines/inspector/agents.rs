@@ -3,7 +3,7 @@ impl TemplateEditor {
     pub(super) fn agent_settings(&self, w: &mut Window, cx: &mut Context<Self>) -> Div {
         let form = &self.inspector;
         let color = self.role(self.selected).color(cx);
-        let mut provider = v_flex().gap_1p5().child(heading("Agent"));
+        let mut provider = v_flex().gap_1p5();
         for pair in AGENTS.chunks(2) {
             let mut row = h_flex().gap_1p5();
             for &agent in pair {
@@ -64,11 +64,10 @@ impl TemplateEditor {
             .options
             .get(&agent);
         let load_error = loaded.and_then(|r| r.as_ref().err()).cloned();
-        let mut config =
-            v_flex()
-                .gap_2()
-                .child(provider)
-                .child(setting("Model", form.picker.render(), cx));
+        let mut config = section(cx)
+            .child(section_title(Lucide::Bot, "Agent", cx))
+            .child(provider)
+            .child(setting("Model", form.picker.render(), cx));
         if form.custom_model {
             config = config.child(TextField::input(Input::new(&form.model), &form.model, cx));
         }

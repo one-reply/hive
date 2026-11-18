@@ -1,5 +1,6 @@
 //! The drawer covers the selected project's dock and inspector; its view survives project switches.
 use super::*;
+use crate::state::pipelines::RunStatus;
 use crate::ui::text_field::TextField;
 use gpui_kit::component::{
     Size as ButtonSize,
@@ -151,6 +152,38 @@ fn phase_label(run: &Run) -> String {
         Accepted => "Accepted".into(),
         Cancelled => "Cancelled".into(),
     }
+}
+/// Status tints are washed out so the colored label on top stays readable.
+const STATUS_TINT_OPACITY: f32 = 0.12;
+fn status_color(status: RunStatus, cx: &App) -> Hsla {
+    match status {
+        RunStatus::Running => cx.theme().info,
+        RunStatus::NeedsYou => cx.theme().warning,
+        RunStatus::Failed => cx.theme().danger,
+        RunStatus::Completed => cx.theme().success,
+        RunStatus::Cancelled => cx.theme().muted_foreground,
+    }
+}
+fn status_icon(status: RunStatus) -> Lucide {
+    match status {
+        RunStatus::Running => Lucide::Activity,
+        RunStatus::NeedsYou => Lucide::UserRoundCheck,
+        RunStatus::Failed => Lucide::CircleAlert,
+        RunStatus::Completed => Lucide::CircleCheck,
+        RunStatus::Cancelled => Lucide::CircleX,
+    }
+}
+/// A tinted pill with a dot, so a status reads by color before its label is read.
+fn status_pill(label: impl Into<SharedString>, color: Hsla) -> Div {
+    h_flex()
+        .flex_none()
+        .gap_1p5()
+        .px_2()
+        .py_0p5()
+        .rounded_full()
+        .bg(color.opacity(STATUS_TINT_OPACITY))
+        .child(div().size_1p5().rounded_full().bg(color))
+        .child(div().text_xs().text_color(color).child(label.into()))
 }
 fn path_name(path: &Path) -> String {
     path.file_name()
@@ -309,8 +342,15 @@ fn choice<V: 'static, T: Clone + PartialEq + 'static>(
         .into_iter()
         .map(|(v, label)| (label, &v == current, v))
         .collect();
+    // Full width and outlined, so it lines up with the model picker as one form.
     options_menu(
-        Button::new(id).small().cursor_pointer().label(label),
+        Button::new(id)
+            .small()
+            .outline()
+            .w_full()
+            .cursor_pointer()
+            .dropdown_caret(true)
+            .label(label),
         options,
         cx,
         select,
@@ -326,7 +366,6 @@ fn options_menu<V: 'static, T: Clone + 'static>(
     let view = cx.weak_entity();
     let select = Rc::new(select);
     trigger
-        .dropdown_caret(true)
         .dropdown_menu(move |mut menu, _, _| {
             for (label, checked, item) in &options {
                 let view = view.clone();
