@@ -21,12 +21,87 @@ fn in_group(file: &FileChange, group: &str) -> bool {
 }
 
 impl GitPanel {
+    fn discard_group_button(
+        &self,
+        label: &str,
+        files: &[&FileChange],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let (kind, icon, tooltip, ok_text) = match label {
+            "Changes" => (
+                Discard::Restore,
+                Lucide::Undo2,
+                "Discard all unstaged changes",
+                "Discard",
+            ),
+            "Untracked" => (
+                Discard::Delete,
+                Lucide::Trash,
+                "Delete all untracked files",
+                "Delete",
+            ),
+            _ => return None,
+        };
+        let paths: Vec<_> = files
+            .iter()
+            .filter(|file| Discard::for_file(file) == Some(kind))
+            .map(|file| file.path.clone())
+            .collect();
+        if paths.is_empty() {
+            return None;
+        }
+        let target = self.git.read(cx).target.clone()?;
+        let count = paths.len();
+        let noun = if count == 1 { "file" } else { "files" };
+        let mut description = match kind {
+            Discard::Restore => format!(
+                "Restore {count} {noun} from the index? Staged changes are preserved. Unstaged edits will be lost."
+            ),
+            Discard::Delete => {
+                format!("Permanently delete {count} untracked {noun}? Git cannot recover them.")
+            }
+        };
+        if !self.filter.read(cx).value().is_empty() {
+            description.push_str(" This includes files hidden by the filter.");
+        }
+        let busy = self.git.read(cx).is_busy();
+        let id: SharedString = format!("discard-group-{label}").into();
+        let hover = Hover::new(id.clone(), window, cx).enabled(!busy);
+        let button = Button::new(id)
+            .cursor_pointer()
+            .xsmall()
+            .icon(icon)
+            .tooltip(tooltip)
+            .disabled(busy)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                // The header behind would otherwise fold the group.
+                cx.stop_propagation();
+                git_controls::confirm_at(
+                    this.git.clone(),
+                    target.clone(),
+                    Action::Discard {
+                        kind,
+                        paths: paths.clone(),
+                    },
+                    git_controls::Confirmation {
+                        title: tooltip,
+                        description: description.clone(),
+                        ok_text,
+                        danger: true,
+                    },
+                    window,
+                    cx,
+                );
+            }))
+            .smooth_hover(ButtonLook::Ghost, &hover, cx);
+        Some(button.into_any_element())
+    }
+
     fn group_header(
         &self,
         label: &'static str,
-        count: usize,
-        open: bool,
-        bulk: Option<(&'static str, Action)>,
+        files: Vec<&FileChange>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -36,7 +111,7 @@ impl GitPanel {
         let stage_id: SharedString = format!("stage-group-{label}").into();
         let header_hover = Hover::new(header_id.clone(), window, cx);
         let stage_hover = Hover::new(stage_id.clone(), window, cx).enabled(!busy);
-        let chevron = if open {
+        let chevron = if !self.collapsed.contains(label) {
             Lucide::ChevronDown
         } else {
             Lucide::ChevronRight
@@ -65,9 +140,26 @@ impl GitPanel {
                     .text_color(muted)
                     .child(label),
             )
-            .child(count_tag(count))
+            .child(count_tag(files.len()))
             .child(div().flex_1())
-            .when_some(bulk, |row, (text, action)| {
+            .when_some(
+                self.discard_group_button(label, &files, window, cx),
+                |row, button| row.child(div().opacity(header_hover.progress()).child(button)),
+            )
+            .when(label != "Conflicts", |row| {
+                let staged = label == "Staged";
+                let paths = files
+                    .iter()
+                    .flat_map(|file| {
+                        std::iter::once(file.path.clone())
+                            .chain(file.old_path.iter().filter(|_| staged).cloned())
+                    })
+                    .collect();
+                let (text, action) = if staged {
+                    ("Unstage all", Action::Unstage(paths))
+                } else {
+                    ("Stage all", Action::Stage(paths))
+                };
                 row.child(
                     div().opacity(header_hover.progress()).child(
                         Button::new(stage_id)
@@ -146,29 +238,9 @@ impl GitPanel {
                 if let Some(file) = file {
                     return this.file_row(&files[file], source.clone(), index, window, cx);
                 }
-                let bulk = (*label != "Conflicts").then(|| {
-                    let paths = groups[group]
-                        .iter()
-                        .flat_map(|index| {
-                            let file = &files[*index];
-                            std::iter::once(file.path.clone()).chain(
-                                (*label == "Staged")
-                                    .then_some(file.old_path.clone())
-                                    .flatten(),
-                            )
-                        })
-                        .collect();
-                    if *label == "Staged" {
-                        ("Unstage all", Action::Unstage(paths))
-                    } else {
-                        ("Stage all", Action::Stage(paths))
-                    }
-                });
                 this.group_header(
                     label,
-                    groups[group].len(),
-                    !this.collapsed.contains(label),
-                    bulk,
+                    groups[group].iter().map(|&index| &files[index]).collect(),
                     window,
                     cx,
                 )

@@ -21,7 +21,7 @@ use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hive_core::git::{
-    changes::Action,
+    changes::{Action, Discard},
     diff::DiffSource,
     status::{Change, FileChange, Status},
 };

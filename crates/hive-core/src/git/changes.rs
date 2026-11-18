@@ -1,13 +1,15 @@
 //! Explicit index, commit and remote operations. No force, implicit staging or automatic stash.
 use super::{
-    GitError, READ_LIMIT, branches, bytes_mutation, conflicts, diff, run, run_mutation,
-    run_stoppable, status,
+    GitError, READ_LIMIT, branches, bytes_mutation, conflicts, diff, run, run_stoppable, status,
 };
 use crate::command::Cancellation;
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::Path;
+
+mod discard;
+pub use discard::Discard;
 
 /// A user-requested Git mutation, scoped by the caller to one host and worktree.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -16,8 +18,8 @@ pub enum Action {
     Stage(Vec<String>),
     /// Restore the listed index paths to HEAD, preserving working files.
     Unstage(Vec<String>),
-    /// Restore one tracked working file from its index version, or delete it when untracked.
-    Discard(String),
+    /// Apply the confirmed operation to these exact working-tree paths.
+    Discard { kind: Discard, paths: Vec<String> },
     /// Commit only the index, honoring hooks and signing configuration.
     Commit(String),
     /// Commit the index, then push; a push failure leaves the local commit intact.
@@ -212,37 +214,7 @@ pub fn execute(
                 )
             }
         }
-        Action::Discard(path) => {
-            let state = status::read(host, cwd)?;
-            let file = state
-                .files
-                .iter()
-                .find(|f| f.path == *path)
-                .ok_or_else(|| GitError::Invalid("This file no longer has changes.".into()))?;
-            if matches!(file.unstaged, None | Some(status::Change::Conflicted)) || file.submodule {
-                return Err(GitError::Invalid(
-                    "Only unstaged files can be discarded here.".into(),
-                ));
-            }
-            if file.unstaged == Some(status::Change::Untracked) {
-                diff::validate_path(path)?;
-                // `clean` has no --pathspec-from-file; status lists untracked files one by one,
-                // so a single literal file path never needs `-d`.
-                run_mutation(
-                    host,
-                    cwd,
-                    &["--literal-pathspecs", "clean", "-f", "-q", "--", path],
-                )
-                .map(drop)
-            } else {
-                paths(
-                    host,
-                    cwd,
-                    &["restore", "--worktree"],
-                    std::slice::from_ref(path),
-                )
-            }
-        }
+        Action::Discard { kind, paths } => kind.execute(host, cwd, paths),
         Action::Commit(message) => commit(host, cwd, message, stop),
         Action::CommitAndPush {
             message,
