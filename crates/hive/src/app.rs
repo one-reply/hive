@@ -20,6 +20,7 @@ pub struct AppState {
     pub(crate) ai_providers: Entity<AiProviders>,
     pub(crate) git_hosting: Entity<crate::state::git_hosting::GitHosting>,
     pub(crate) agents: Entity<Agents>,
+    pub(crate) pipelines: Entity<crate::state::pipelines::Pipelines>,
     pub(crate) git: Entity<Git>,
     pub(crate) documents: Entity<crate::state::documents::Documents>,
     pub(crate) pull_requests: Entity<crate::state::pull_requests::PullRequests>,
@@ -48,6 +49,8 @@ impl AppState {
         let git_hosting =
             cx.new(|cx| crate::state::git_hosting::GitHosting::new(hosting_servers, cx));
         let agents = cx.new(|cx| Agents::new(endpoint, cx));
+        let pipelines =
+            cx.new(|cx| crate::state::pipelines::Pipelines::new(store.clone(), &agents, cx));
         let git = cx.new(|cx| Git::new(projects.clone(), cx));
         let documents =
             cx.new(|cx| crate::state::documents::Documents::new(store.clone(), recovery, cx));
@@ -63,8 +66,10 @@ impl AppState {
             let store = app.store.clone();
             let terminals = app.terminals.clone();
             app.git.read(cx).stop_generations();
+            let pipelines = app.pipelines.clone();
             let hosting = app.git_hosting.clone();
             let documents = app.documents.clone();
+            pipelines.update(cx, |pipelines, cx| pipelines.stop(cx));
             hosting.update(cx, |hosting, _| hosting.stop());
             documents.update(cx, |documents, cx| documents.flush(cx));
             store.update(cx, |store, _| store.stop());
@@ -98,6 +103,7 @@ impl AppState {
             ai_providers,
             git_hosting,
             agents,
+            pipelines,
             git,
             documents,
             terminals: Arc::default(),

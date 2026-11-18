@@ -20,14 +20,20 @@ const INSTRUCTIONS: &str = "You are in a Hive terminal pane. Use list to discove
 struct Server {
     socket: PathBuf,
     terminal: u64,
+    grant: Option<api::ReportGrant>,
     calls: Arc<Semaphore>,
 }
 
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
+        let instructions = if self.grant.is_some() {
+            "You are in an isolated Hive pipeline step. Submit its typed result once with the report tool and the exact ticket from Hive. Hive schedules other agents. Approval and trust decisions belong to the user."
+        } else {
+            INSTRUCTIONS
+        };
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("hive", env!("CARGO_PKG_VERSION")))
-            .with_instructions(format!("{INSTRUCTIONS}\nThis connection belongs to terminal {} at Hive socket {}. Tool arguments cannot change this identity.", self.terminal, self.socket.display()))
+            .with_instructions(format!("{instructions}\nThis connection belongs to terminal {} at Hive socket {}. Tool arguments cannot change this identity.", self.terminal, self.socket.display()))
     }
     async fn list_tools(
         &self,
@@ -35,22 +41,39 @@ impl ServerHandler for Server {
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult {
-            tools: tools::list(),
+            tools: tools::list(self.grant.is_some()),
             ..Default::default()
         })
     }
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        tools::list().into_iter().find(|tool| tool.name == name)
+        tools::list(self.grant.is_some())
+            .into_iter()
+            .find(|tool| tool.name == name)
     }
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let (request, timeout) = tools::invocation(
+        if self.grant.is_some() && request.name != "report" {
+            return Err(ErrorData::invalid_params(
+                "A pipeline pane can only submit its own report",
+                None,
+            ));
+        }
+        let (mut request, timeout) = tools::invocation(
             &request.name,
             serde_json::Value::Object(request.arguments.unwrap_or_default()),
         )?;
+        if let api::Request::Report { grant, .. } = &mut request {
+            let Some(bound) = &self.grant else {
+                return Err(ErrorData::invalid_params(
+                    "Report requires a pipeline pane",
+                    None,
+                ));
+            };
+            *grant = Some(bound.clone());
+        }
         let permit = match self.calls.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => return Ok(tool_error("unavailable: too many concurrent Hive calls").into()),
@@ -178,6 +201,7 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         let server = Server {
             socket,
             terminal,
+            grant: api::ReportGrant::inherited(),
             calls: Arc::new(Semaphore::new(MAX_CALLS)),
         };
         let service = tokio::time::timeout(Duration::from_secs(30), server.serve(transport))

@@ -43,6 +43,8 @@ pub(crate) struct TerminalSession {
     pub(crate) exited: bool,
     pub(crate) directory: Option<PathBuf>,
     worktree: Option<PathBuf>,
+    /// Present only in pipeline PTYs and rotated on every launch, including resume.
+    pub(super) report_grant: Option<api::ReportGrant>,
     /// The conversation this terminal's agent is running, kept so a restart can resume it.
     pub(crate) resume: Option<ResumeSession>,
     focused: bool,
@@ -76,6 +78,7 @@ impl TerminalSession {
             directory: None,
             worktree: None,
             resume: None,
+            report_grant: None,
             focused: false,
             last_focused: None,
             launched_agent: None,
@@ -110,6 +113,7 @@ impl TerminalSession {
         } else {
             launch
         };
+        let pipeline = matches!(launch, Some(Launch::Pipeline(_)));
         let launched_agent = launch.as_ref().map(Launch::agent);
         let resume = launch.as_ref().and_then(Launch::session).cloned();
         let remote_host = host.clone();
@@ -121,6 +125,24 @@ impl TerminalSession {
             }
             let Some(starting) = starting else {
                 return Err("Hive is shutting down".to_owned());
+            };
+            let report_grant = if pipeline {
+                if endpoint
+                    .as_ref()
+                    .and_then(|endpoint| endpoint.api.as_ref())
+                    .is_none()
+                {
+                    return Err(
+                        "Pipeline reporting is unavailable. Reopen Hive before retrying this step."
+                            .to_owned(),
+                    );
+                }
+                Some(
+                    api::ReportGrant::generate()
+                        .map_err(|e| format!("Could not prepare pipeline reporting: {e}"))?,
+                )
+            } else {
+                None
             };
             let result = if !remote_host.is_local() {
                 let directory = cwd.as_deref().ok_or("Choose a remote directory")?;
@@ -158,6 +180,9 @@ impl TerminalSession {
                         .map_err(|error| error.to_string())?,
                 };
                 api::clear_environment(&mut command);
+                if let Some(grant) = &report_grant {
+                    grant.attach(&mut command);
+                }
                 if let (Some(endpoint), Some(executable)) = (&endpoint, &executable)
                     && let Some(socket) = &endpoint.api
                 {
@@ -184,7 +209,9 @@ impl TerminalSession {
             if let Ok(terminal) = &result {
                 starting.register(terminal);
             }
-            result.map_err(|error| error.to_string())
+            result
+                .map(|terminal| (terminal, report_grant))
+                .map_err(|error| error.to_string())
         });
         let registered_worktree = worktree.clone();
         let start = cx.spawn(async move |this, cx| {
@@ -192,7 +219,8 @@ impl TerminalSession {
             // If the view closed while spawning, dropping the result closes the late PTY.
             let _ = this.update(cx, |this, cx| {
                 this.status = match result {
-                    Ok(mut terminal) => {
+                    Ok((mut terminal, grant)) => {
+                        this.report_grant = grant;
                         if this.host.is_local() { this.watch_directory(terminal.shell_pid(), cx); }
                         terminal.set_focused(this.focused);
                         if let Some(worktree) = &registered_worktree {
@@ -248,6 +276,7 @@ impl TerminalSession {
             directory,
             worktree,
             resume,
+            report_grant: None,
             focused: false,
             last_focused: None,
             launched_agent,
@@ -321,6 +350,20 @@ impl TerminalSession {
                 }
             }
         }));
+    }
+
+    /// Release a pipeline's process even if an open card still displays its scrollback.
+    pub(crate) fn stop_pipeline(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.status, SessionStatus::Starting) {
+            self._start = Task::ready(());
+            self.status = SessionStatus::Failed("Pipeline stopped before launch completed.".into());
+        }
+        if let Some(terminal) = self.terminal() {
+            terminal.control().shutdown();
+        }
+        self.exited = true;
+        self.fail_inbox(cx);
+        cx.notify();
     }
 
     pub(crate) fn terminal(&self) -> Option<&Terminal> {

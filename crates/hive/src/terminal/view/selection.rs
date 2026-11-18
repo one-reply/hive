@@ -1,5 +1,5 @@
 //! Drag selection and history autoscroll, including pointer movement outside the pane.
-//! Pointer movement without a drag feeds link hover.
+//! Pointer movement without a drag feeds link hover; a release without one opens a link.
 use super::*;
 
 #[cfg(test)]
@@ -26,6 +26,7 @@ impl TerminalView {
                 let _ = this.update(cx, |this, cx| {
                     this.extend_selection(event.position, cx);
                     this.stop_selection();
+                    this.release_link(event.position, cx);
                 });
             }
         });
@@ -44,10 +45,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.focus_handle.focus(window, cx);
-        if event.modifiers.platform && self.open_link(event.position, cx) {
-            cx.stop_propagation();
-            return;
-        }
+        self.press_link(event, cx);
         let Some(grid) = self.grid else { return };
         let (point, side) = grid.cell_at(event.position);
         let kind = match event.click_count {
@@ -82,7 +80,7 @@ impl TerminalView {
     ) {
         if !self.selecting {
             let pointer = hovered.then_some(event.position);
-            self.hover_link(pointer, event.modifiers.platform, cx);
+            self.hover_link(pointer, cx);
             return;
         }
         if event.pressed_button != Some(MouseButton::Left) || !window.is_window_active() {

@@ -7,7 +7,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// What [`environment`] sets; a Hive started from another Hive's pane inherits them.
-const VARIABLES: [&str; 3] = ["HIVE_SOCKET", "HIVE_TERMINAL", "HIVE_BIN"];
+const VARIABLES: [&str; 4] = [
+    "HIVE_SOCKET",
+    "HIVE_TERMINAL",
+    "HIVE_BIN",
+    super::REPORT_GRANT_ENV,
+];
 
 /// Blocking: create `directory` with a `hive` link to `executable`, for terminals' `PATH`.
 ///

@@ -64,7 +64,7 @@ fn provider_storage_and_endpoints_are_stable() {
     }
 }
 
-fn server(status: u16, delay: Duration) -> (String, thread::JoinHandle<String>) {
+fn server(status: u16) -> (String, thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let handle = thread::spawn(move || {
@@ -79,7 +79,6 @@ fn server(status: u16, delay: Duration) -> (String, thread::JoinHandle<String>) 
             assert!(count > 0);
             request.extend_from_slice(&buffer[..count]);
         }
-        thread::sleep(delay);
         // A response body containing a secret must never become a UI/log error.
         let response = format!(
             "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nLocation: http://127.0.0.1:1/leak\r\nConnection: close\r\n\r\n{TEST_KEY}",
@@ -94,7 +93,7 @@ fn server(status: u16, delay: Duration) -> (String, thread::JoinHandle<String>) 
 #[test]
 fn verification_sends_provider_headers_before_saving() {
     for provider in Provider::ALL {
-        let (origin, server) = server(200, Duration::ZERO);
+        let (origin, server) = server(200);
         let uri: ureq::http::Uri = provider.verification_url().parse().unwrap();
         let path = uri.path_and_query().unwrap().as_str();
         let saved = Cell::new(false);
@@ -129,7 +128,7 @@ fn verification_sends_provider_headers_before_saving() {
 #[test]
 fn unsuccessful_verification_never_saves_or_exposes_response() {
     for status in [301, 302, 307, 400, 401, 403, 429, 500, 503] {
-        let (url, server) = server(status, Duration::ZERO);
+        let (url, server) = server(status);
         let error = verify_and_save_with(
             Provider::OpenAi,
             &key(),
@@ -145,8 +144,10 @@ fn unsuccessful_verification_never_saves_or_exposes_response() {
 }
 
 #[test]
-fn timeout_does_not_save_and_next_attempt_can_succeed() {
-    let (url, server) = server(200, Duration::from_millis(250));
+fn verification_timeout_skips_saving_and_retry_reaches_keychain() {
+    // Keep the port open without a response, even if the client times out before sending headers.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
     let error = verify_and_save_with(
         Provider::GoogleAi,
         &key(),
@@ -156,8 +157,8 @@ fn timeout_does_not_save_and_next_attempt_can_succeed() {
     )
     .unwrap_err();
     assert!(matches!(error, Error::Timeout { .. }));
-    server.join().unwrap();
-    let (url, server) = self::server(200, Duration::ZERO);
+    drop(listener);
+    let (url, server) = server(200);
     let error = verify_and_save_with(
         Provider::GoogleAi,
         &key(),

@@ -1,0 +1,361 @@
+use super::inspector::Inspector;
+use super::map::{Layout, RoleKind};
+use super::*;
+use hive_core::pipeline::unique_name;
+use hive_core::pipeline::{LanePreset, Step};
+mod nodes;
+mod structure;
+use structure::{StageChoice, move_item};
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub(super) enum Item {
+    Planner,
+    Development,
+    Lane(usize),
+    Review(usize),
+}
+
+#[derive(Clone)]
+struct Dragged {
+    editor: EntityId,
+    item: Item,
+    label: String,
+}
+impl Render for Dragged {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        card(cx).child(self.label.clone())
+    }
+}
+
+pub(super) struct TemplateEditor {
+    original: Option<Template>,
+    parent: WeakEntity<PipelinePanel>,
+    pub(super) template: Template,
+    name: Entity<InputState>,
+    pub(super) selected: Item,
+    pub(super) inspector: Inspector,
+    error: Option<String>,
+    renaming: bool,
+    compact: bool,
+    show_inspector: bool,
+    _models: Subscription,
+}
+
+impl TemplateEditor {
+    pub(super) fn new(
+        original: Option<Template>,
+        parent: WeakEntity<PipelinePanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut template = original.clone().unwrap_or_default();
+        if original.is_none() {
+            template.name = unique_name(
+                "Custom workflow",
+                AppState::get(cx)
+                    .store
+                    .read(cx)
+                    .state
+                    .pipelines
+                    .templates
+                    .iter()
+                    .map(|t| t.name.as_str()),
+            );
+        }
+        let name = input(&template.name, "Template name", window, cx);
+        let inspector = Inspector::new(Item::Planner, &template, window, cx);
+        let models = cx.observe_in(
+            &AppState::get(cx).pipelines.clone(),
+            window,
+            |s, _, w, cx| {
+                s.sync_models(w, cx);
+                cx.notify()
+            },
+        );
+        Self {
+            original,
+            parent,
+            template,
+            name,
+            selected: Item::Planner,
+            inspector,
+            error: None,
+            renaming: false,
+            compact: false,
+            show_inspector: false,
+            _models: models,
+        }
+    }
+    fn apply(&mut self, cx: &App) -> bool {
+        match self.inspector.apply(self.selected, &mut self.template, cx) {
+            Ok(()) => {
+                self.error = None;
+                true
+            }
+            Err(e) => {
+                self.error = Some(e);
+                false
+            }
+        }
+    }
+    fn select(&mut self, item: Item, w: &mut Window, cx: &mut Context<Self>) {
+        self.show_inspector = true;
+        if item != self.selected && self.apply(cx) {
+            self.load(item, w, cx);
+        }
+        cx.notify();
+    }
+    fn load(&mut self, item: Item, w: &mut Window, cx: &mut Context<Self>) {
+        self.inspector = Inspector::new(item, &self.template, w, cx);
+        self.selected = item;
+    }
+    fn move_to(&mut self, from: Item, to: Item, w: &mut Window, cx: &mut Context<Self>) {
+        if self.apply(cx) && move_item(&mut self.template, from, to) {
+            self.load(to, w, cx);
+        }
+        cx.notify();
+    }
+    fn add(&mut self, kind: StageChoice, w: &mut Window, cx: &mut Context<Self>) {
+        if !self.apply(cx) {
+            cx.notify();
+            return;
+        }
+        let item = if matches!(kind, StageChoice::Lane) {
+            let i = self.template.lanes.len();
+            self.template.lanes.push(LanePreset {
+                name: unique_name(
+                    "Development lane",
+                    self.template.lanes.iter().map(|l| l.name.as_str()),
+                ),
+                profile: self.template.development.profile.clone(),
+                command: String::new(),
+            });
+            Item::Lane(i)
+        } else {
+            let i = self.template.reviews.len();
+            let (name, prompt) = kind.recipe();
+            self.template.reviews.push(Step {
+                name: unique_name(name, self.template.reviews.iter().map(|s| s.name.as_str())),
+                instruction: prompt.into(),
+                profile: self.template.planner.profile.clone(),
+                limit: 3,
+                return_lane: None,
+            });
+            Item::Review(i)
+        };
+        self.load(item, w, cx);
+        self.show_inspector = true;
+        cx.notify();
+    }
+    fn remove(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        match self.selected {
+            Item::Lane(i) => {
+                if self.template.remove_lane(i).is_err() {
+                    return;
+                }
+            }
+            Item::Review(i) => {
+                if self.template.remove_review(i).is_err() {
+                    return;
+                }
+            }
+            Item::Planner | Item::Development => return,
+        }
+        self.error = None;
+        self.load(Item::Development, w, cx);
+        cx.notify();
+    }
+    fn save(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if !self.apply(cx) {
+            cx.notify();
+            return;
+        }
+        self.template.name = self.name.read(cx).value().trim().to_owned();
+        let result = AppState::get(cx)
+            .pipelines
+            .clone()
+            .update(cx, |pipelines, cx| {
+                pipelines.save_template(self.original.as_ref(), self.template.clone(), cx)
+            });
+        match result {
+            Ok(()) => {
+                let _ = self.parent.update(cx, |p, cx| {
+                    p.selected_template = Some(self.template.name.clone());
+                    p.home(w, cx)
+                });
+            }
+            Err(e) => {
+                self.error = Some(e);
+                cx.notify();
+            }
+        }
+    }
+    pub(super) fn role(&self, item: Item) -> RoleKind {
+        match item {
+            Item::Planner => RoleKind::Plan,
+            Item::Development | Item::Lane(_) => RoleKind::Build,
+            Item::Review(i) => RoleKind::review(i, &self.template.reviews[i]),
+        }
+    }
+}
+
+impl Render for TemplateEditor {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = if self.renaming {
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .child(div().flex_1().child(TextField::input(
+                    Input::new(&self.name),
+                    &self.name,
+                    cx,
+                )))
+                .child(button(
+                    "finish-template-name",
+                    "Done",
+                    ButtonLook::Ghost,
+                    window,
+                    cx,
+                    |s, _, cx| {
+                        s.renaming = false;
+                        cx.notify()
+                    },
+                ))
+        } else {
+            let name = self.name.read(cx).value();
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .child(
+                    div()
+                        .text_base()
+                        .truncate()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(name),
+                )
+                .child(icon_action(
+                    "rename-template",
+                    "Rename template",
+                    Lucide::Pencil,
+                    window,
+                    cx,
+                    |s: &mut Self, w, cx| {
+                        s.renaming = true;
+                        s.name.read(cx).focus_handle(cx).focus(w, cx);
+                        cx.notify()
+                    },
+                ))
+        };
+        let mut bar = h_flex()
+            .w_full()
+            .flex_none()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(title);
+        if self.compact {
+            bar = bar.child(icon_action(
+                "toggle-stage-inspector",
+                if self.show_inspector {
+                    "Show canvas"
+                } else {
+                    "Show stage details"
+                },
+                if self.show_inspector {
+                    Lucide::Workflow
+                } else {
+                    Lucide::SlidersHorizontal
+                },
+                window,
+                cx,
+                |s: &mut Self, _, cx| {
+                    s.show_inspector = !s.show_inspector;
+                    cx.notify()
+                },
+            ));
+        }
+        bar = bar.child(self.add_menu(cx)).child(button(
+            "save-template",
+            "Save",
+            ButtonLook::Primary,
+            window,
+            cx,
+            |s, w, cx| s.save(w, cx),
+        ));
+        let mut body = h_flex().flex_1().min_h_0().items_stretch();
+        if !self.compact || !self.show_inspector {
+            body = body.child(self.canvas(window, cx));
+        }
+        if !self.compact || self.show_inspector {
+            let fields = self
+                .inspector_fields(window, cx)
+                .children(self.ordering(cx));
+            body = body.child(
+                div()
+                    .h_full()
+                    .min_w_0()
+                    .when(self.compact, |el| el.flex_1())
+                    .when(!self.compact, |el| {
+                        el.w(rems(17.))
+                            .flex_none()
+                            .border_l_1()
+                            .border_color(cx.theme().border)
+                    })
+                    .child(scroll("pipeline-inspector", fields)),
+            );
+        }
+        let compact = self.compact;
+        let split_width = map::units(600.).to_pixels(window.rem_size());
+        let view = cx.weak_entity();
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .child(bar)
+            .on_children_prepainted(move |bounds, _, cx| {
+                if let Some(first) = bounds.first() {
+                    let narrow = first.size.width < split_width;
+                    if narrow != compact {
+                        let view = view.clone();
+                        cx.defer(move |cx| {
+                            let _ = view.update(cx, |s, cx| {
+                                if s.compact != narrow {
+                                    s.compact = narrow;
+                                    cx.notify();
+                                }
+                            });
+                        });
+                    }
+                }
+            })
+            .when_some(self.error.clone(), |el, e| {
+                el.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(e),
+                )
+            })
+            .child(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unique_name;
+    #[test]
+    fn new_drafts_get_a_free_numbered_name() {
+        assert_eq!(
+            unique_name(
+                "Custom workflow",
+                ["custom workflow", "Custom workflow 3"].into_iter()
+            ),
+            "Custom workflow 2"
+        );
+    }
+}
