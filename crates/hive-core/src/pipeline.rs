@@ -30,6 +30,12 @@ pub enum Error {
     /// The input cannot be turned into a valid task or report.
     #[error("{0}")]
     InvalidInput(&'static str),
+    /// A planner assignment is out of range, repeated or has no task or criteria.
+    #[error("Assignment for lane {0} is out of range, repeated or missing its task or criteria")]
+    InvalidAssignment(usize),
+    /// A reviewer finding names a lane without work in this run.
+    #[error("Finding for lane {0} names a lane without an assignment, or has no description")]
+    InvalidFinding(usize),
     /// A configured return route has no active development lane.
     #[error("Bind and assign return lane {0} before proceeding")]
     MissingLane(String),
@@ -157,6 +163,7 @@ pub struct LanePreset {
 
 /// Ordered stage recipe shared between projects.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct Template {
     /// Library display name.
     pub name: String,
@@ -257,7 +264,7 @@ impl Template {
                 return Err(Error::InvalidInput("Give every stage a name"));
             }
             if let Some(name) = &step.return_lane
-                && !names.contains(name.as_str())
+                && !names.contains(name.trim())
             {
                 return Err(Error::MissingLane(name.clone()));
             }

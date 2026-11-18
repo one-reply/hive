@@ -11,18 +11,19 @@ impl Run {
         let handoff = (*ticket, self.phase, report.clone());
         match (self.phase, report) {
             (Phase::Planning, Report::Plan { assignments }) => {
-                let mut indices = HashSet::new();
-                if assignments.is_empty()
-                    || assignments.iter().any(|a| {
-                        a.lane >= self.lanes.len()
-                            || !indices.insert(a.lane)
-                            || a.task.trim().is_empty()
-                            || a.criteria.trim().is_empty()
-                    })
-                {
+                if assignments.is_empty() {
                     return Err(Error::InvalidInput(
                         "Provide one task and acceptance criteria per selected lane",
                     ));
+                }
+                let mut indices = HashSet::new();
+                if let Some(invalid) = assignments.iter().find(|a| {
+                    a.lane >= self.lanes.len()
+                        || !indices.insert(a.lane)
+                        || a.task.trim().is_empty()
+                        || a.criteria.trim().is_empty()
+                }) {
+                    return Err(Error::InvalidAssignment(invalid.lane));
                 }
                 for lane in &mut self.lanes {
                     lane.assignment.clear();
@@ -52,18 +53,17 @@ impl Run {
                 }
             }
             (Phase::Review(ix), Report::Review { summary, findings }) => {
-                if summary.trim().is_empty()
-                    || findings.iter().any(|f| {
-                        f.description.trim().is_empty()
-                            || self
-                                .lanes
-                                .get(f.lane)
-                                .is_none_or(|l| l.assignment.trim().is_empty())
-                    })
-                {
-                    return Err(Error::InvalidInput(
-                        "Include review evidence and address each finding to an assigned lane",
-                    ));
+                if summary.trim().is_empty() {
+                    return Err(Error::InvalidInput("Include review evidence"));
+                }
+                if let Some(invalid) = findings.iter().find(|f| {
+                    f.description.trim().is_empty()
+                        || self
+                            .lanes
+                            .get(f.lane)
+                            .is_none_or(|l| l.assignment.trim().is_empty())
+                }) {
+                    return Err(Error::InvalidFinding(invalid.lane));
                 }
                 self.history
                     .push(format!("{}: {summary}", self.template.reviews[ix].name));

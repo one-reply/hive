@@ -33,9 +33,7 @@ impl RunView {
                     w,
                     cx,
                     move |v, _, cx| {
-                        if !v.expanded_reports.remove(&ticket.attempt) {
-                            v.expanded_reports.insert(ticket.attempt);
-                        }
+                        toggle(&mut v.expanded_reports, ticket.attempt);
                         cx.notify();
                     },
                 )));

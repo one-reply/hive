@@ -19,7 +19,7 @@ mod evidence;
 mod handoff;
 mod header;
 mod interaction;
-use interaction::actionable;
+use interaction::{actionable, toggle};
 mod sessions;
 use sessions::LiveSession;
 mod stage;

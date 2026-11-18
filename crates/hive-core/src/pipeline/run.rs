@@ -6,6 +6,8 @@ use std::fmt::Write;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 /// Current execution gate; a run has exactly one gate even when lanes run in parallel.
+/// No catch-all variant: this build cannot drive a gate it does not know, so loading drops
+/// such a run alone and reports it in the recovery notice.
 pub enum Phase {
     /// Waiting for the planner to report.
     Planning,
@@ -74,11 +76,12 @@ pub struct Run {
     pub(super) phase: Phase,
     /// Chronological handoffs, decisions and test outcomes.
     pub(super) history: Vec<String>,
-    /// Accepted handoffs tied to their actual agent invocation and phase.
-    #[serde(default)]
+    /// Accepted handoffs tied to their actual agent invocation and phase. A report kind or
+    /// phase from a newer Hive drops that entry only, not the run.
+    #[serde(default, deserialize_with = "crate::state::lenient::elements")]
     pub(super) reports: Vec<(Ticket, Phase, Report)>,
     /// Observed stage intervals; older runs contain only their handoff history.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::state::lenient::elements")]
     pub(super) timings: Vec<StageTiming>,
     /// Open findings for the most recent review.
     pub(super) findings: Vec<Finding>,
@@ -116,9 +119,10 @@ impl Run {
         }
         let mut names = HashSet::new();
         for lane in &lanes {
+            // Trimmed like `Template::validate_structure`, so " Web" and "Web" are one name.
             if !lane.project.is_absolute()
                 || lane.name.trim().is_empty()
-                || !names.insert(lane.name.as_str())
+                || !names.insert(lane.name.trim())
             {
                 return Err(Error::InvalidInput(
                     "Bind every lane to a local repository and give it a unique name",
@@ -128,7 +132,7 @@ impl Run {
         }
         for step in &template.reviews {
             if let Some(lane) = &step.return_lane
-                && !names.contains(lane.as_str())
+                && !names.contains(lane.trim())
             {
                 return Err(Error::MissingLane(lane.clone()));
             }

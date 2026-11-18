@@ -253,6 +253,30 @@ fn reviewer_prompt_lists_only_lanes_with_assigned_work() {
     let prompt = run.prompt(&run.pending()[0]).unwrap();
     assert!(prompt.contains("Lane 1: Role 1"), "{prompt}");
     assert!(!prompt.contains("Lane 0:"), "{prompt}");
+    let ticket = run.pending()[0];
+    let error = run.report(&ticket, review(vec![issue(0)])).unwrap_err();
+    assert!(matches!(error, Error::InvalidFinding(0)), "{error}");
+    assert_eq!(run.pending(), [ticket]);
+}
+
+#[test]
+fn a_report_or_recipe_field_from_a_newer_hive_does_not_drop_the_run() {
+    let mut run = run_with(&["/repo"], 3);
+    plan(&mut run);
+    let mut saved = serde_json::to_value(&run).unwrap();
+    saved["reports"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!([run.pending()[0], "development", {"kind": "future"}]));
+    saved["timings"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"phase": "future_gate", "start_ms": 1}));
+    saved["template"].as_object_mut().unwrap().remove("lanes");
+    let loaded: Run = serde_json::from_value(saved).unwrap();
+    assert_eq!(loaded.reports, run.reports);
+    assert_eq!(loaded.timings, run.timings);
+    assert_eq!(loaded.template.lanes, Template::default().lanes);
 }
 
 #[test]
@@ -287,4 +311,22 @@ fn repair_handoff_keeps_diagnostic_tail_on_a_character_boundary() {
     let excerpt = super::transitions::check_excerpt(&log);
     assert!(excerpt.ends_with("test failed"));
     assert!(excerpt.len() < 4200);
+}
+
+#[test]
+fn lane_names_differing_only_by_whitespace_are_duplicates_like_in_the_template() {
+    let lane = |name: &str| Lane {
+        name: name.into(),
+        project: "/repo".into(),
+        base: "HEAD".into(),
+        ..Default::default()
+    };
+    let result = Run::new(
+        19,
+        "/owner".into(),
+        "Task".into(),
+        Template::default(),
+        vec![lane("Web"), lane("Web ")],
+    );
+    assert!(matches!(result, Err(Error::InvalidInput(_))));
 }

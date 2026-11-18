@@ -235,6 +235,12 @@ impl Pipelines {
         mut lanes: Vec<Lane>,
         cx: &mut Context<Self>,
     ) -> Result<u64, String> {
+        // Every stage waits for a checkpoint, so an unsaved run could only fail.
+        if !self.store.read(cx).can_save() {
+            return Err(
+                "Workspace state cannot be saved. Restart Hive before starting pipelines.".into(),
+            );
+        }
         if !self.registered(&owner, cx) {
             return Err("Choose a registered local project.".into());
         }
@@ -310,7 +316,10 @@ impl Pipelines {
     ) -> Result<(), String> {
         let mut run = self.run(id, cx)?.clone();
         let previous = run.phase();
-        change(&mut run)?;
+        if let Err(error) = change(&mut run) {
+            tracing::warn!(run = id, phase = ?previous, %error, "pipeline transition rejected");
+            return Err(error);
+        }
         run.record_stage(Some(previous), now_ms());
         if run.phase() != Phase::Accepted {
             self.clear_review(id);

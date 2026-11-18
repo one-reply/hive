@@ -125,6 +125,42 @@ fn restarted_attempt_requires_explicit_retry_and_failed_checkpoint_prevents_proc
 }
 
 #[gpui::test]
+fn refuses_to_start_a_run_that_cannot_be_saved(cx: &mut TestAppContext) {
+    recovering(cx).update(cx, |p, cx| {
+        let before = p.store.read(cx).state.pipelines.runs.clone();
+        let owner = before[0].owner().to_path_buf();
+        let lanes = before[0].lanes().to_vec();
+        let error = p
+            .start(owner, "Another".into(), Template::default(), lanes, cx)
+            .unwrap_err();
+        assert!(error.contains("cannot be saved"));
+        assert_eq!(p.store.read(cx).state.pipelines.runs, before);
+    });
+}
+
+#[gpui::test]
+fn retrying_a_failed_checkpoint_keeps_the_number_of_a_ticket_that_never_launched(
+    cx: &mut TestAppContext,
+) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| p.retry(42, cx).unwrap());
+    cx.run_until_parked();
+    let ticket = pipelines.update(cx, |p, cx| {
+        assert!(p.error(42).unwrap().contains("checkpoint"));
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        p.retry(42, cx).unwrap();
+        ticket
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, cx| {
+        let run = p.run(42, cx).unwrap();
+        assert_eq!(run.pending()[0], ticket);
+        let retries = run.history().iter().filter(|h| h.starts_with("Retried"));
+        assert_eq!(retries.count(), 1);
+    });
+}
+
+#[gpui::test]
 fn cancelling_while_checkpoint_is_pending_ignores_late_dispatch_and_clears_attention(
     cx: &mut TestAppContext,
 ) {

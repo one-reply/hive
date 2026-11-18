@@ -8,23 +8,23 @@ pub(super) fn actionable<V: 'static>(
     cx: &Context<V>,
     activate: impl Fn(&mut V, &mut Context<V>) + 'static,
 ) -> Stateful<Div> {
-    let click = Rc::new(activate);
-    let key = click.clone();
     let focus = cx.theme().ring;
-    row.role(Role::Button)
+    let row = row
+        .role(Role::Button)
         .aria_label(label)
         .when_some(expanded, |row, open| row.aria_expanded(open))
         .tab_index(0)
         .border_1()
         .border_color(transparent_black())
-        .focus_visible(move |s| s.border_color(focus))
-        .on_click(cx.listener(move |v, _, _, cx| click(v, cx)))
-        .on_key_down(cx.listener(move |v, event: &KeyDownEvent, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                key(v, cx);
-            }
-        }))
+        .focus_visible(move |s| s.border_color(focus));
+    on_activate(row, cx, move |v, _, cx| activate(v, cx))
+}
+
+/// Flips a disclosure row between expanded and collapsed.
+pub(super) fn toggle<T: std::hash::Hash + Eq>(expanded: &mut HashSet<T>, key: T) {
+    if !expanded.remove(&key) {
+        expanded.insert(key);
+    }
 }
 
 #[cfg(test)]

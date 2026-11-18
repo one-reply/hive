@@ -68,6 +68,10 @@ impl Agents {
         let caller = from
             .and_then(|id| self.watched.iter().find(|w| w.id.as_u64() == id))
             .and_then(|w| self.live_session(w.id, cx));
+        // Advisory, not isolation: `from` is the caller's own HIVE_TERMINAL, which a pipeline
+        // agent can unset (`env -u HIVE_TERMINAL hive agent start ..`), and its shell can start
+        // a CLI directly anyway. This keeps a well-behaved step from scheduling work; only
+        // `report` is enforced, by the grant.
         if !matches!(incoming.call().request, Request::Report { .. })
             && caller
                 .as_ref()

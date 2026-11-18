@@ -69,9 +69,7 @@ impl RunView {
                             Some(open),
                             cx,
                             move |v, cx| {
-                                if !v.expanded_checks.remove(&i) {
-                                    v.expanded_checks.insert(i);
-                                }
+                                toggle(&mut v.expanded_checks, i);
                                 cx.notify();
                             },
                         )
@@ -173,9 +171,7 @@ impl RunView {
                             Some(expanded),
                             cx,
                             move |v, cx| {
-                                if !v.expanded_reviews.remove(&i) {
-                                    v.expanded_reviews.insert(i);
-                                }
+                                toggle(&mut v.expanded_reviews, i);
                                 cx.notify();
                             },
                         )
@@ -240,9 +236,7 @@ impl RunView {
                     )
                     .map(|row| {
                         actionable(row, first.to_owned(), Some(open), cx, move |v, cx| {
-                            if !v.expanded_events.remove(&i) {
-                                v.expanded_events.insert(i);
-                            }
+                            toggle(&mut v.expanded_events, i);
                             cx.notify();
                         })
                     });

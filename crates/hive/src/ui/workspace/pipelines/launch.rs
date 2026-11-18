@@ -60,7 +60,7 @@ impl LaunchForm {
     fn apply_template(&mut self, template: Template, window: &mut Window, cx: &mut Context<Self>) {
         let projects = repositories(cx);
         let mut old = std::mem::take(&mut self.bindings);
-        self.template = template;
+        let previous = std::mem::replace(&mut self.template, template);
         let defaults = default_projects(&self.template.lanes, &self.project, &projects);
         for (preset, project) in self.template.lanes.iter().zip(defaults) {
             if let Some(index) = old.iter().position(|b| b.preset.name == preset.name) {
@@ -72,6 +72,9 @@ impl LaunchForm {
                     .push(Binding::new(preset.clone(), project, window, cx));
             }
         }
+        // Repositories the user added survive a recipe change; only the old recipe's lanes go.
+        old.retain(|b| !previous.lanes.iter().any(|lane| lane.name == b.preset.name));
+        self.bindings.append(&mut old);
         for binding in &self.bindings {
             binding.preview(cx);
         }

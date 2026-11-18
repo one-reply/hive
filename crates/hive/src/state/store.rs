@@ -55,6 +55,11 @@ impl Store {
         result
     }
 
+    /// False after a failed load (saving would overwrite the original file) or during shutdown.
+    pub(crate) fn can_save(&self) -> bool {
+        self.writer.is_some() && !self.stopping
+    }
+
     /// Wait asynchronously for this pipeline state (or a later snapshot) to reach disk.
     pub(crate) fn pipeline_checkpoint(&self) -> async_channel::Receiver<Result<(), String>> {
         if !self.stopping
@@ -101,7 +106,7 @@ impl Store {
     }
 
     pub(crate) fn take_release_notes(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.writer.is_none() || self.stopping {
+        if !self.can_save() {
             return false;
         }
         if !self

@@ -194,15 +194,24 @@ impl Pipelines {
             .pending()
             .into_iter()
             .filter(|ticket| {
-                self.session_errors.contains_key(ticket)
-                    || self.session(ticket).is_none_or(|session| {
-                        let session = session.read(cx);
-                        session.exited
-                            || matches!(
-                                session.status,
-                                super::super::terminal_session::SessionStatus::Failed(_)
-                            )
-                    })
+                // A new number fences off a process that may still report. A ticket that never
+                // launched keeps its number, so the history lists only real retries.
+                self.suspended.contains(ticket)
+                    || self.session_errors.contains_key(ticket)
+                    || match self.session(ticket) {
+                        Some(session) => {
+                            let session = session.read(cx);
+                            session.exited
+                                || matches!(
+                                    session.status,
+                                    super::super::terminal_session::SessionStatus::Failed(_)
+                                )
+                        }
+                        None => run
+                            .timings()
+                            .iter()
+                            .any(|row| row.attempt == Some(ticket.attempt)),
+                    }
             })
             .collect();
         for ticket in interrupted {

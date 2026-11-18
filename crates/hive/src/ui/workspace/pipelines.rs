@@ -219,6 +219,23 @@ fn button_with_size<V: 'static>(
         .on_click(cx.listener(move |this, _, w, cx| click(this, w, cx)))
         .smooth_hover(look, &hover, cx)
 }
+/// A focusable card or row: pointer, Enter and Space run the same transition.
+fn on_activate<V: 'static, E: StatefulInteractiveElement>(
+    element: E,
+    cx: &Context<V>,
+    activate: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+) -> E {
+    let click = std::rc::Rc::new(activate);
+    let key = click.clone();
+    element
+        .on_click(cx.listener(move |v, _, w, cx| click(v, w, cx)))
+        .on_key_down(cx.listener(move |v, event: &KeyDownEvent, w, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                key(v, w, cx);
+            }
+        }))
+}
 fn icon_action<V: 'static>(
     id: impl Into<ElementId>,
     label: &'static str,

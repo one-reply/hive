@@ -141,14 +141,8 @@ impl TemplateEditor {
                         .size_3()
                         .text_color(cx.theme().muted_foreground),
                 )
-            })
-            .on_click(cx.listener(move |s, _, w, cx| s.select(item, w, cx)))
-            .on_key_down(cx.listener(move |s, e: &KeyDownEvent, w, cx| {
-                if matches!(e.keystroke.key.as_str(), "enter" | "space") {
-                    cx.stop_propagation();
-                    s.select(item, w, cx)
-                }
-            }));
+            });
+        node = on_activate(node, cx, move |s, w, cx| s.select(item, w, cx));
         if drag {
             node = node
                 .on_drag(

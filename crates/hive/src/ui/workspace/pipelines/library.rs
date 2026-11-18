@@ -58,11 +58,10 @@ impl PipelinePanel {
             let hover = Hover::new(id.clone(), window, cx);
             let selected = selected == i;
             let name = t.name.clone();
-            let pick = move |this: &mut Self, cx: &mut Context<Self>| {
+            let pick = move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                 this.selected_template = Some(name.clone());
                 cx.notify()
             };
-            let click = pick.clone();
             let summary = format!(
                 "{}   ·   {}",
                 count(t.lanes.len(), "lane", "lanes"),
@@ -117,35 +116,29 @@ impl PipelinePanel {
                         .child(subtle(summary, cx))
                         .child(more),
                 );
+            let card = v_flex()
+                .id(id)
+                .role(Role::Button)
+                .aria_label(t.name.clone())
+                .aria_toggled(if selected {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
+                .tab_index(0)
+                .min_w(rems(11.))
+                .max_w(rems(20.))
+                .flex_1()
+                .border_1()
+                .border_color(if selected { accent } else { cx.theme().border })
+                .rounded_lg()
+                .overflow_hidden()
+                .cursor_pointer()
+                .focus_visible(move |s| s.border_color(accent))
+                .child(map::miniature(t, cx))
+                .child(bottom);
             cards = cards.child(
-                v_flex()
-                    .id(id)
-                    .role(Role::Button)
-                    .aria_label(t.name.clone())
-                    .aria_toggled(if selected {
-                        Toggled::True
-                    } else {
-                        Toggled::False
-                    })
-                    .tab_index(0)
-                    .min_w(rems(11.))
-                    .max_w(rems(20.))
-                    .flex_1()
-                    .border_1()
-                    .border_color(if selected { accent } else { cx.theme().border })
-                    .rounded_lg()
-                    .overflow_hidden()
-                    .cursor_pointer()
-                    .focus_visible(move |s| s.border_color(accent))
-                    .child(map::miniature(t, cx))
-                    .child(bottom)
-                    .on_click(cx.listener(move |this, _, _, cx| click(this, cx)))
-                    .on_key_down(cx.listener(move |this, e: &KeyDownEvent, _, cx| {
-                        if matches!(e.keystroke.key.as_str(), "enter" | "space") {
-                            cx.stop_propagation();
-                            pick(this, cx)
-                        }
-                    }))
+                on_activate(card, cx, pick)
                     .hover_bg(&hover, cx.theme().sidebar, cx.theme().accent)
                     .context_menu(menu),
             );

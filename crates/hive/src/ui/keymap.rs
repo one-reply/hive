@@ -213,6 +213,8 @@ pub(crate) static SHORTCUTS: [Shortcut; 38] = [
     },
     Shortcut {
         label: "Toggle pipelines",
+        // Deliberately wins over a focused terminal, which then never sees NUL: toggling from
+        // a terminal is the common case, and emacs or tmux users can reassign the shortcut.
         default: "ctrl-`",
         category: Category::Workspace,
         context: CONTEXT,

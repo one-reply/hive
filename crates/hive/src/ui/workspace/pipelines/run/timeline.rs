@@ -8,6 +8,14 @@ use gpui_kit::base::animation::Lerp as _;
 const LABEL_FRACTION: f32 = 0.30;
 const LABEL_MIN: f32 = 142.;
 const LABEL_MAX: f32 = 260.;
+/// A sub-second attempt still gets a visible bar.
+const BAR_MIN_WIDTH: f32 = 3.;
+/// Waiting and live bars are washed out so their stripes or playhead stay readable.
+const BAR_PENDING_OPACITY: f32 = 0.21;
+const BAR_DONE_OPACITY: f32 = 0.84;
+const HUMAN_STRIPE_OPACITY: f32 = 0.61;
+/// Narrower bars have no room for their duration label.
+const BAR_LABEL_MIN_FRACTION: f32 = 0.24;
 fn label_column() -> Div {
     h_flex()
         .flex_none()
@@ -190,17 +198,21 @@ impl RunView {
                         .absolute()
                         .h_full()
                         .w(relative(width))
-                        .min_w(px(3.))
+                        .min_w(px(BAR_MIN_WIDTH))
                         .rounded_sm()
                         .overflow_hidden()
-                        .bg(color.opacity(if stage.is_human() || live { 0.21 } else { 0.84 }));
+                        .bg(color.opacity(if stage.is_human() || live {
+                            BAR_PENDING_OPACITY
+                        } else {
+                            BAR_DONE_OPACITY
+                        }));
                     bar = if x >= 1. {
                         bar.right_0()
                     } else {
                         bar.left(relative(x))
                     };
                     if stage.is_human() {
-                        bar = bar.child(stripes(color.opacity(0.61)));
+                        bar = bar.child(stripes(color.opacity(HUMAN_STRIPE_OPACITY)));
                     }
                     if live {
                         bar = bar.child(
@@ -213,7 +225,10 @@ impl RunView {
                                 .bg(color),
                         );
                     }
-                    if !live && width >= 0.24 && (!row.failed || row.end_ms.is_some()) {
+                    if !live
+                        && width >= BAR_LABEL_MIN_FRACTION
+                        && (!row.failed || row.end_ms.is_some())
+                    {
                         bar = bar.child(
                             h_flex()
                                 .absolute()

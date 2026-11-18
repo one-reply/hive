@@ -22,46 +22,37 @@ impl TemplateEditor {
                     }
                 };
                 use crate::ui::hover::SmoothHoverBg as _;
-                row = row.child(
-                    h_flex()
-                        .id(id)
-                        .role(Role::Button)
-                        .tab_index(0)
-                        .aria_label(agent.name())
-                        .aria_toggled(if selected {
-                            Toggled::True
-                        } else {
-                            Toggled::False
-                        })
-                        .flex_1()
-                        .min_w_0()
-                        .gap_1p5()
-                        .px_2()
-                        .py_1p5()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(if selected { color } else { cx.theme().border })
-                        .cursor_pointer()
-                        .focus_visible(move |s| s.border_color(color))
-                        .child(crate::ui::agent_logo::icon(agent, cx).size_3p5())
-                        .child(div().text_xs().truncate().child(agent.name()))
-                        .on_click(cx.listener(move |s, _, w, cx| pick(s, w, cx)))
-                        .on_key_down(cx.listener(move |s, e: &KeyDownEvent, w, cx| {
-                            if matches!(e.keystroke.key.as_str(), "enter" | "space") {
-                                cx.stop_propagation();
-                                pick(s, w, cx)
-                            }
-                        }))
-                        .hover_bg(
-                            &hover,
-                            if selected {
-                                color.alpha(0.12)
-                            } else {
-                                cx.theme().sidebar
-                            },
-                            cx.theme().accent,
-                        ),
-                );
+                let card = h_flex()
+                    .id(id)
+                    .role(Role::Button)
+                    .tab_index(0)
+                    .aria_label(agent.name())
+                    .aria_toggled(if selected {
+                        Toggled::True
+                    } else {
+                        Toggled::False
+                    })
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1p5()
+                    .px_2()
+                    .py_1p5()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if selected { color } else { cx.theme().border })
+                    .cursor_pointer()
+                    .focus_visible(move |s| s.border_color(color))
+                    .child(crate::ui::agent_logo::icon(agent, cx).size_3p5())
+                    .child(div().text_xs().truncate().child(agent.name()));
+                row = row.child(on_activate(card, cx, pick).hover_bg(
+                    &hover,
+                    if selected {
+                        color.alpha(0.12)
+                    } else {
+                        cx.theme().sidebar
+                    },
+                    cx.theme().accent,
+                ));
             }
             provider = provider.child(row);
         }
@@ -82,6 +73,7 @@ impl TemplateEditor {
             config = config.child(TextField::input(Input::new(&form.model), &form.model, cx));
         }
         if let Some(error) = load_error {
+            let retry_hover = Hover::new("reload-provider-models", w, cx);
             config = config.child(
                 h_flex()
                     .gap_1()
@@ -97,7 +89,8 @@ impl TemplateEditor {
                                     .pipelines
                                     .clone()
                                     .update(cx, |p, cx| p.load_models(agent, cx))
-                            })),
+                            }))
+                            .smooth_hover(ButtonLook::Outline, &retry_hover, cx),
                     ),
             );
         }

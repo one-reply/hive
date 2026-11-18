@@ -3,6 +3,8 @@ use super::*;
 
 /// Longest task title shown on one line before it is cut with an ellipsis.
 const TITLE_CHARS: usize = 110;
+/// Stage clocks show whole seconds.
+const CLOCK_TICK: Duration = Duration::from_secs(1);
 
 impl RunView {
     /// Repaints once a second while a stage is being timed, so its clock moves.
@@ -13,7 +15,7 @@ impl RunView {
         }
         if self.timer.is_none() {
             self.timer = Some(cx.spawn(async |view, cx| {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
+                cx.background_executor().timer(CLOCK_TICK).await;
                 let _ = view.update(cx, |this, cx| {
                     this.timer.take();
                     cx.notify();
