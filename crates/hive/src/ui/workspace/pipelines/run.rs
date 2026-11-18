@@ -7,6 +7,7 @@ use gpui_kit::component::{
     searchable_list::SearchableVec,
     select::{Select, SelectState},
 };
+use hive_core::agent::AgentStatus;
 use hive_core::pipeline::{Phase, Ticket};
 
 mod changes;
@@ -17,6 +18,8 @@ mod evidence;
 mod handoff;
 mod interaction;
 use interaction::actionable;
+mod sessions;
+use sessions::LiveSession;
 mod stage;
 mod timeline;
 use stage::Stage;
@@ -72,6 +75,7 @@ impl RunView {
         let app = AppState::get(cx);
         let store = app.store.clone();
         let pipelines = app.pipelines.clone();
+        let agents = app.agents.clone();
         let run = saved_run(store.read(cx), id).cloned().map(Rc::new);
         let subscriptions = vec![
             cx.observe(&store, move |this, store, cx| {
@@ -79,6 +83,13 @@ impl RunView {
                 let saved = saved_run(state, id);
                 if this.run.as_deref() != saved {
                     this.run = saved.cloned().map(Rc::new);
+                    cx.notify();
+                }
+            }),
+            cx.observe(&agents, |view, _, cx| {
+                if view.session.is_none()
+                    && view.run.as_ref().is_some_and(|r| !r.pending().is_empty())
+                {
                     cx.notify();
                 }
             }),
@@ -237,7 +248,17 @@ impl Render for RunView {
         }
         let pipelines = AppState::get(cx).pipelines.clone();
         let stopped = matches!(run.phase, Phase::Accepted | Phase::Cancelled);
+        let sessions = LiveSession::for_run(&run, cx);
+        let request = sessions
+            .iter()
+            .find(|s| s.request_action().is_some())
+            .and_then(|s| s.status);
+        let mut phase = phase_label(&run);
+        if let Some(status) = request {
+            phase = format!("{phase} · {}", status.label());
+        }
         let status_color = match run.phase {
+            _ if request.is_some() => cx.theme().warning,
             Phase::Accepted => cx.theme().success,
             Phase::ApprovePlan | Phase::Decision(_) | Phase::Acceptance => cx.theme().warning,
             Phase::Cancelled => cx.theme().muted_foreground,
@@ -291,12 +312,7 @@ impl Render for RunView {
                     .rounded_full()
                     .bg(status_color.opacity(0.12))
                     .child(div().size_1p5().rounded_full().bg(status_color))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(status_color)
-                            .child(phase_label(&run)),
-                    ),
+                    .child(div().text_xs().text_color(status_color).child(phase)),
             )
             .child(
                 h_flex()
@@ -365,7 +381,7 @@ impl Render for RunView {
         }
         top = top.child(meta);
         if !stopped {
-            top = top.child(self.actions(&run, w, cx));
+            top = top.child(self.actions(&run, &sessions, w, cx));
         }
         if let Some(msg) = self.error.clone() {
             top = top.child(div().text_sm().text_color(cx.theme().danger).child(msg));
@@ -419,7 +435,7 @@ impl Render for RunView {
         let content = match self.tab {
             RunTab::Timeline => {
                 let scale = range.map(|range| elapsed::chart_range(range, recording));
-                self.timeline(&run, now, scale, w, cx)
+                self.timeline(&run, &sessions, now, scale, w, cx)
             }
             RunTab::Changes => self.changes(&run, w, cx),
             RunTab::Checks => self.checks(&run, w, cx),

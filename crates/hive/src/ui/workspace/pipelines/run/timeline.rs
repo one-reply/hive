@@ -4,8 +4,6 @@ use super::*;
 use crate::ui::hover::SmoothHoverBg as _;
 use crate::ui::stepped_spinner::SteppedSpinner;
 use gpui_kit::base::animation::Lerp as _;
-use hive_core::agent::AgentStatus;
-use hive_core::pipeline::StageTiming;
 
 const LABEL_FRACTION: f32 = 0.30;
 const LABEL_MIN: f32 = 142.;
@@ -33,22 +31,6 @@ impl Render for WorkingIcon {
         self.0.keep_ticking(cx);
         icon
     }
-}
-
-fn session_status(run: u64, row: &StageTiming, cx: &App) -> Option<AgentStatus> {
-    let app = AppState::get(cx);
-    let session = app.pipelines.read(cx).session(&Ticket {
-        run,
-        lane: row.lane,
-        attempt: row.attempt?,
-    })?;
-    let observed = app.agents.read(cx).recipient(session.entity_id());
-    // Quiet output alone cannot distinguish an agent thinking from one waiting for input.
-    observed_status(observed.status, observed.exact)
-}
-
-fn observed_status(status: Option<AgentStatus>, exact: bool) -> Option<AgentStatus> {
-    status.filter(|s| exact || *s != AgentStatus::Idle)
 }
 
 fn stripes(color: Hsla) -> impl IntoElement {
@@ -79,6 +61,7 @@ impl RunView {
     pub(super) fn timeline(
         &mut self,
         run: &Run,
+        sessions: &[LiveSession],
         now: u64,
         scale: Option<(u64, u64)>,
         w: &mut Window,
@@ -92,7 +75,10 @@ impl RunView {
                 .last()
                 .copied()
                 .filter(|r| active && r.end_ms.is_none() && !r.failed);
-            let agent = current.and_then(|r| session_status(run.id, r, cx));
+            let agent = sessions
+                .iter()
+                .find(|s| s.stage == stage)
+                .and_then(|s| s.status);
             let status = agent.map_or_else(|| stage.state(run, &rows), AgentStatus::label);
             let working = current.is_some()
                 && !stage.human()
@@ -326,22 +312,5 @@ impl RunView {
             );
         }
         scroll("run-timeline", table)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{AgentStatus, observed_status};
-
-    #[test]
-    fn agent_feedback_distinguishes_silent_tools_from_confirmed_waits() {
-        use AgentStatus::*;
-        assert_eq!(observed_status(None, false), None);
-        assert_eq!(observed_status(Some(Idle), false), None);
-        assert_eq!(observed_status(Some(Idle), true), Some(Idle));
-        for status in [Working, WaitingInput, WaitingApproval, Done, Failed] {
-            assert_eq!(observed_status(Some(status), true), Some(status));
-        }
-        assert_eq!(observed_status(Some(Working), false), Some(Working));
     }
 }

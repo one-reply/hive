@@ -2,7 +2,13 @@
 use super::*;
 
 impl RunView {
-    pub(super) fn actions(&mut self, run: &Run, w: &mut Window, cx: &mut Context<Self>) -> Div {
+    pub(super) fn actions(
+        &mut self,
+        run: &Run,
+        sessions: &[LiveSession],
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let mut row = h_flex().gap_2().flex_wrap();
         match run.phase {
             Phase::ApprovePlan => {
@@ -107,21 +113,34 @@ impl RunView {
                 ));
             }
             _ => {
-                let mut active = run
-                    .pending()
-                    .into_iter()
-                    .filter(|t| AppState::get(cx).pipelines.read(cx).session(t).is_some());
-                if let Some(ticket) = active.next()
-                    && active.next().is_none()
-                {
-                    row = row.child(button(
-                        "open-active-session",
-                        "Open agent session",
-                        ButtonLook::Outline,
-                        w,
-                        cx,
-                        move |v, w, cx| v.terminal(ticket, w, cx),
-                    ));
+                for session in sessions {
+                    let ticket = session.ticket;
+                    if let Some(action) = session.request_action() {
+                        let mut title = session.stage.title(run);
+                        if let Stage::Develop(i) = session.stage {
+                            let repo = path_name(&run.lanes[i].project);
+                            if title != repo {
+                                title = format!("{title} · {repo}");
+                            }
+                        }
+                        row = row.child(button(
+                            ("open-agent-request", ticket.attempt as usize),
+                            format!("{action} · {title}"),
+                            ButtonLook::Primary,
+                            w,
+                            cx,
+                            move |v, w, cx| v.terminal(ticket, w, cx),
+                        ));
+                    } else if sessions.len() == 1 {
+                        row = row.child(button(
+                            "open-active-session",
+                            "Open agent session",
+                            ButtonLook::Outline,
+                            w,
+                            cx,
+                            move |v, w, cx| v.terminal(ticket, w, cx),
+                        ));
+                    }
                 }
             }
         }

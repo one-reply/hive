@@ -345,6 +345,9 @@ impl Agents {
         let Some(watched) = self.watched.iter_mut().find(|watched| watched.id == id) else {
             return;
         };
+        if watched.reported != status {
+            cx.notify();
+        }
         let Some(status) = status else {
             watched.reported = None;
             return;
@@ -569,6 +572,52 @@ fn update_status(
 #[cfg(test)]
 mod tests {
     use super::{AgentStatus, HelperEvent, helper_event, update_status};
+    use gpui_kit as gpui;
+
+    #[gpui::test]
+    fn background_request_changes_notify_observers_without_a_terminal_view(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use super::{Agents, Host, Path, Terminal, TerminalSession};
+        use gpui_kit::AppContext as _;
+        use hive_core::terminal::TerminalSize;
+
+        let terminal = Terminal::spawn(None, Some("/bin/cat"), TerminalSize::new(80, 24)).unwrap();
+        let session = cx.new(|_| TerminalSession::for_test(terminal));
+        let id = session.entity_id();
+        let agents = cx.new(|cx| Agents::new(None, cx));
+        agents.update(cx, |agents, cx| {
+            agents.watch(
+                &session,
+                &Host::Local,
+                None,
+                Path::new("/"),
+                session.read(cx).terminal().unwrap(),
+            );
+        });
+        let changes = cx.new(|cx| {
+            cx.observe(
+                &agents,
+                move |changes: &mut Vec<Option<AgentStatus>>, agents, cx| {
+                    changes.push(agents.read(cx).recipient(id).status);
+                },
+            )
+            .detach();
+            Vec::new()
+        });
+        use AgentStatus::{WaitingApproval, Working};
+        for status in [
+            Some(WaitingApproval),
+            Some(WaitingApproval),
+            Some(Working),
+            None,
+        ] {
+            agents.update(cx, |agents, cx| agents.report_status(id, status, cx));
+        }
+        changes.read_with(cx, |changes, _| {
+            assert_eq!(changes, &[Some(WaitingApproval), Some(Working), None]);
+        });
+    }
 
     #[test]
     fn parents_hear_about_blocked_and_failed_helpers_once_but_not_finished_turns() {
