@@ -20,6 +20,25 @@ pub(super) fn range(rows: &[StageTiming], now: u64) -> Option<(u64, u64)> {
         rows.iter().map(|r| observed_end(r, now)).max()?,
     ))
 }
+/// While recording, leave time ahead of the playhead. Keep the axis fixed between zoom-outs.
+pub(super) fn chart_range((start, end): (u64, u64), live: bool) -> (u64, u64) {
+    if !live {
+        return (start, end);
+    }
+    const MINUTE: u64 = 60_000;
+    let minutes = end.saturating_sub(start) / MINUTE + 1;
+    let window = minutes.next_power_of_two().saturating_mul(MINUTE);
+    (start, start.saturating_add(window))
+}
+pub(super) fn stopwatch(ms: u64) -> String {
+    let seconds = ms / 1000;
+    let minutes = seconds / 60;
+    if minutes >= 60 {
+        format!("{}:{:02}:{:02}", minutes / 60, minutes % 60, seconds % 60)
+    } else {
+        format!("{minutes}:{:02}", seconds % 60)
+    }
+}
 pub(super) fn span(row: &StageTiming, scale: (u64, u64), now: u64) -> (f32, f32) {
     let length = scale.1.saturating_sub(scale.0).max(1) as f64;
     let x = row.start_ms.saturating_sub(scale.0) as f64 / length;
@@ -68,5 +87,22 @@ mod tests {
         assert_eq!(duration(87), "87ms");
         assert_eq!(duration(61_200), "1m 1s");
         assert_eq!(duration(3_660_000), "1h 1m");
+    }
+    #[test]
+    fn live_track_advances_with_the_clock_and_finished_history_uses_its_exact_extent() {
+        let row = sample(1000, None, false);
+        let bounds = |end| chart_range((1000, end), true);
+        assert_eq!(bounds(1000), bounds(42_000));
+        assert_eq!(span(&row, bounds(16_000), 16_000), (0., 0.25));
+        assert_eq!(span(&row, bounds(31_000), 31_000), (0., 0.5));
+        assert_eq!(bounds(61_000), (1000, 121_000));
+        assert_eq!(chart_range((1000, 42_000), false), (1000, 42_000));
+        assert_eq!(chart_range((3, u64::MAX), true), (3, u64::MAX));
+    }
+    #[test]
+    fn stopwatch_counts_whole_seconds_even_after_an_hour() {
+        assert_eq!(stopwatch(999), "0:00");
+        assert_eq!(stopwatch(41_999), "0:41");
+        assert_eq!(stopwatch(3_722_099), "1:02:02");
     }
 }

@@ -1,8 +1,11 @@
 //! A common elapsed-time scale keeps parallel attempts and repair rounds comparable.
-use super::elapsed::{duration, now_ms, observed_end, range, span};
+use super::elapsed::{duration, observed_end, span, stopwatch};
 use super::*;
 use crate::ui::hover::SmoothHoverBg as _;
+use crate::ui::stepped_spinner::SteppedSpinner;
 use gpui_kit::base::animation::Lerp as _;
+use hive_core::agent::AgentStatus;
+use hive_core::pipeline::StageTiming;
 
 const LABEL_FRACTION: f32 = 0.30;
 const LABEL_MIN: f32 = 142.;
@@ -21,6 +24,32 @@ fn live_color(cx: &App) -> Hsla {
 const ROW_HEIGHT: f32 = 47.;
 const TRACK_HEIGHT: f32 = 23.;
 const GRID_PARTS: usize = 4;
+
+struct WorkingIcon(SteppedSpinner);
+
+impl Render for WorkingIcon {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let icon = self.0.icon(cx).size_4().text_color(live_color(cx));
+        self.0.keep_ticking(cx);
+        icon
+    }
+}
+
+fn session_status(run: u64, row: &StageTiming, cx: &App) -> Option<AgentStatus> {
+    let app = AppState::get(cx);
+    let session = app.pipelines.read(cx).session(&Ticket {
+        run,
+        lane: row.lane,
+        attempt: row.attempt?,
+    })?;
+    let observed = app.agents.read(cx).recipient(session.entity_id());
+    // Quiet output alone cannot distinguish an agent thinking from one waiting for input.
+    observed_status(observed.status, observed.exact)
+}
+
+fn observed_status(status: Option<AgentStatus>, exact: bool) -> Option<AgentStatus> {
+    status.filter(|s| exact || *s != AgentStatus::Idle)
+}
 
 fn stripes(color: Hsla) -> impl IntoElement {
     canvas(
@@ -50,35 +79,32 @@ impl RunView {
     pub(super) fn timeline(
         &mut self,
         run: &Run,
+        now: u64,
+        scale: Option<(u64, u64)>,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let now = now_ms();
-        let scale = range(&run.timings, now);
-        if self.timer.is_none()
-            && run
-                .timings
-                .iter()
-                .any(|row| row.end_ms.is_none() && !row.failed)
-        {
-            self.timer = Some(cx.spawn(async |view, cx| {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
-                let _ = view.update(cx, |this, cx| {
-                    this.timer.take();
-                    cx.notify();
-                });
-            }));
-        }
         let mut table = v_flex().min_w_0().w_full();
         for (i, stage) in Stage::recipe(run).into_iter().enumerate() {
             let rows = stage.observations(run);
             let active = stage.active(run);
-            let status = stage.state(run, &rows);
+            let current = rows
+                .last()
+                .copied()
+                .filter(|r| active && r.end_ms.is_none() && !r.failed);
+            let agent = current.and_then(|r| session_status(run.id, r, cx));
+            let status = agent.map_or_else(|| stage.state(run, &rows), AgentStatus::label);
+            let working = current.is_some()
+                && !stage.human()
+                && agent.is_none_or(|s| s == AgentStatus::Working);
             let open = self.selected_stage == Some(stage);
             let hover = Hover::new(("stage-hover", i), w, cx);
-            let ink = if status == "Interrupted" || status == "Failed" {
+            let ink = if status == "Interrupted"
+                || status == "Failed"
+                || agent == Some(AgentStatus::Failed)
+            {
                 cx.theme().danger
-            } else if active && stage.human() {
+            } else if active && stage.human() || agent.is_some_and(AgentStatus::needs_attention) {
                 cx.theme().warning
             } else if active {
                 live_color(cx)
@@ -91,7 +117,23 @@ impl RunView {
                 }
                 _ => status.to_owned(),
             };
-            let accessible = format!("{}, {subtitle}", stage.title(run));
+            let clock = current.map(|row| stopwatch(now.saturating_sub(row.start_ms)));
+            let title = stage.title(run);
+            let accessible = match &clock {
+                Some(clock) => format!("{title}, {subtitle}, {clock} elapsed"),
+                None => format!("{title}, {subtitle}"),
+            };
+            let icon = if working {
+                w.use_keyed_state(("working-stage-icon", i), cx, |_, cx| {
+                    WorkingIcon(SteppedSpinner::new(cx))
+                })
+                .into_any_element()
+            } else {
+                Icon::new(stage.icon(run))
+                    .size_4()
+                    .text_color(ink)
+                    .into_any_element()
+            };
             let label = label_column()
                 .gap_2()
                 .child(
@@ -101,14 +143,28 @@ impl RunView {
                         .justify_center()
                         .rounded_md()
                         .bg(ink.opacity(0.12))
-                        .child(Icon::new(stage.icon(run)).size_4().text_color(ink)),
+                        .child(icon),
                 )
                 .child(
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .child(div().text_sm().truncate().child(stage.title(run)))
-                        .child(div().text_xs().truncate().text_color(ink).child(subtitle)),
+                        .child(div().text_sm().truncate().child(title))
+                        .child(
+                            h_flex()
+                                .gap_1p5()
+                                .text_xs()
+                                .text_color(ink)
+                                .when_some(clock, |el, clock| {
+                                    el.child(
+                                        div()
+                                            .flex_none()
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .child(clock),
+                                    )
+                                })
+                                .child(div().min_w_0().truncate().child(subtitle)),
+                        ),
                 );
             let mut track = div()
                 .relative()
@@ -137,7 +193,7 @@ impl RunView {
                     } else if stage.human() {
                         cx.theme().warning
                     } else if live {
-                        live_color(cx)
+                        ink
                     } else {
                         cx.theme().muted_foreground
                     };
@@ -148,7 +204,7 @@ impl RunView {
                         .min_w(px(3.))
                         .rounded_sm()
                         .overflow_hidden()
-                        .bg(color.opacity(if stage.human() { 0.21 } else { 0.84 }));
+                        .bg(color.opacity(if stage.human() || live { 0.21 } else { 0.84 }));
                     bar = if x >= 1. {
                         bar.right_0()
                     } else {
@@ -157,7 +213,18 @@ impl RunView {
                     if stage.human() {
                         bar = bar.child(stripes(color.opacity(0.61)));
                     }
-                    if width >= 0.24 && (!row.failed || row.end_ms.is_some()) {
+                    if live {
+                        bar = bar.child(
+                            div()
+                                .absolute()
+                                .right_0()
+                                .top_0()
+                                .h_full()
+                                .w_0p5()
+                                .bg(color),
+                        );
+                    }
+                    if !live && width >= 0.24 && (!row.failed || row.end_ms.is_some()) {
                         bar = bar.child(
                             h_flex()
                                 .absolute()
@@ -259,5 +326,22 @@ impl RunView {
             );
         }
         scroll("run-timeline", table)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentStatus, observed_status};
+
+    #[test]
+    fn agent_feedback_distinguishes_silent_tools_from_confirmed_waits() {
+        use AgentStatus::*;
+        assert_eq!(observed_status(None, false), None);
+        assert_eq!(observed_status(Some(Idle), false), None);
+        assert_eq!(observed_status(Some(Idle), true), Some(Idle));
+        for status in [Working, WaitingInput, WaitingApproval, Done, Failed] {
+            assert_eq!(observed_status(Some(status), true), Some(status));
+        }
+        assert_eq!(observed_status(Some(Working), false), Some(Working));
     }
 }

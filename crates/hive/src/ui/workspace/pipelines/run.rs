@@ -323,7 +323,21 @@ impl Render for RunView {
             ),
             cx,
         ));
-        if let Some((start, end)) = elapsed::range(&run.timings, elapsed::now_ms()) {
+        let now = elapsed::now_ms();
+        let range = elapsed::range(&run.timings, now);
+        let recording = !stopped && run.timings.iter().any(|r| r.end_ms.is_none() && !r.failed);
+        if recording && self.timer.is_none() {
+            self.timer = Some(cx.spawn(async |view, cx| {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let _ = view.update(cx, |this, cx| {
+                    this.timer.take();
+                    cx.notify();
+                });
+            }));
+        } else if !recording {
+            self.timer = None;
+        }
+        if let Some((start, end)) = range {
             meta = meta.child(subtle(
                 format!("{} elapsed", elapsed::duration(end.saturating_sub(start))),
                 cx,
@@ -401,7 +415,10 @@ impl Render for RunView {
                 cx.notify();
             }));
         let content = match self.tab {
-            RunTab::Timeline => self.timeline(&run, w, cx),
+            RunTab::Timeline => {
+                let scale = range.map(|range| elapsed::chart_range(range, recording));
+                self.timeline(&run, now, scale, w, cx)
+            }
             RunTab::Changes => self.changes(&run, w, cx),
             RunTab::Checks => self.checks(&run, w, cx),
             RunTab::Activity => self.activity(&run, w, cx),
