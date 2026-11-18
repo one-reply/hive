@@ -263,6 +263,16 @@ impl RunView {
                     detail =
                         detail.child(subtle("The planner has not submitted assignments yet.", cx));
                 }
+                if r.phase == Phase::ApprovePlan {
+                    detail = detail.child(h_flex().pt_1().child(button(
+                        "approve-plan-inline",
+                        "Approve plan and start development",
+                        ButtonLook::Primary,
+                        w,
+                        cx,
+                        |view, _, cx| view.approve(cx),
+                    )));
+                }
             }
             Stage::Develop(i) => {
                 let lane = &r.lanes[i];

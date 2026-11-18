@@ -98,10 +98,10 @@ impl Stage {
             return "Failed";
         }
         if self.active(run) {
-            return if self.human() {
-                "Needs you"
-            } else {
-                "In progress"
+            return match self {
+                Self::Approval => "Awaiting your approval",
+                Self::Decision(_) | Self::Accept => "Needs you",
+                _ => "In progress",
             };
         }
         if !records.is_empty() {
@@ -164,6 +164,23 @@ mod tests {
         run.phase = Phase::Decision(1);
         assert!(Stage::recipe(&run).contains(&Stage::Decision(1)));
         assert_eq!(Stage::Decision(1).state(&run, &[]), "Needs you");
+    }
+    #[test]
+    fn approval_is_requested_only_after_planning_and_until_development_starts() {
+        let mut run = sample();
+        assert_eq!(Stage::Approval.state(&run, &[]), "Pending");
+        run.phase = Phase::ApprovePlan;
+        assert_eq!(Stage::Approval.state(&run, &[]), "Awaiting your approval");
+        let approval = StageTiming {
+            phase: Phase::ApprovePlan,
+            lane: None,
+            attempt: None,
+            start_ms: 1,
+            end_ms: Some(2),
+            failed: false,
+        };
+        run.phase = Phase::Development;
+        assert_eq!(Stage::Approval.state(&run, &[&approval]), "Complete");
     }
     #[test]
     fn plan_uses_its_actual_pty_interval_and_a_failed_attempt_takes_precedence_over_the_current_phase()
