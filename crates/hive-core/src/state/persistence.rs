@@ -88,6 +88,7 @@ struct Sections {
     settings: Option<Value>,
     projects: Option<Value>,
     workspace: Option<Value>,
+    pipelines: Option<Value>,
     last_seen_release: Option<Value>,
     reviewed: Option<Value>,
 }
@@ -132,6 +133,7 @@ impl State {
             settings: section("settings", sections.settings, &mut lost),
             projects: projects(sections.projects, &mut lost),
             workspace: section("workspace", sections.workspace, &mut lost),
+            pipelines: pipelines(sections.pipelines, &mut lost),
             last_seen_release: section("last_seen_release", sections.last_seen_release, &mut lost),
             reviewed: reviewed(sections.reviewed, &mut lost),
         };
@@ -236,7 +238,81 @@ impl State {
     }
 }
 
-/// A top-level section, or its default when it is absent or unreadable (then listed in `lost`).
+/// Retain independent runs and templates when a sibling checkpoint cannot be recovered.
+fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::Library {
+    use crate::pipeline::{Library, Run, Template};
+    use std::collections::HashSet;
+    let Some(value) = value else {
+        return Library::default();
+    };
+    let Some(object) = value.as_object() else {
+        lost.push("pipelines".into());
+        return Library::default();
+    };
+    fn items<T: serde::de::DeserializeOwned>(
+        value: Option<&Value>,
+        name: &str,
+        lost: &mut Vec<String>,
+        mut valid: impl FnMut(&T) -> bool,
+    ) -> Vec<T> {
+        let Some(value) = value else {
+            return vec![];
+        };
+        let Some(array) = value.as_array() else {
+            lost.push(name.into());
+            return vec![];
+        };
+        array
+            .iter()
+            .enumerate()
+            .filter_map(|(index, v)| {
+                let parsed = serde_json::from_value::<T>(v.clone())
+                    .ok()
+                    .filter(&mut valid);
+                if parsed.is_none() {
+                    lost.push(format!("{name}[{index}]"));
+                }
+                parsed
+            })
+            .collect()
+    }
+    let mut ids = HashSet::new();
+    let mut names = HashSet::new();
+    let mut templates = if object.contains_key("templates") {
+        items(
+            object.get("templates"),
+            "pipelines.templates",
+            lost,
+            |t: &Template| t.validate().is_ok() && names.insert(t.name.to_lowercase()),
+        )
+    } else {
+        Library::default().templates
+    };
+    let runs = items(object.get("runs"), "pipelines.runs", lost, |r: &Run| {
+        r.valid_snapshot() && ids.insert(r.id)
+    });
+    let catalog_version = object
+        .get("catalog_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if catalog_version == 0 {
+        for starter in Template::presets().into_iter().skip(1) {
+            if !templates
+                .iter()
+                .any(|t| t.name.eq_ignore_ascii_case(&starter.name))
+            {
+                templates.push(starter);
+            }
+        }
+    }
+    Library {
+        templates,
+        runs,
+        catalog_version: catalog_version.max(1),
+    }
+}
+
+/// A top-level section, or its default when absent or unreadable.
 fn section<T: Default + DeserializeOwned>(
     name: &str,
     value: Option<Value>,
@@ -380,6 +456,69 @@ mod tests {
         assert_eq!(reloaded.state.projects.len(), 1);
         let saved: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(saved["version"], 1);
+    }
+
+    #[test]
+    fn pipeline_library_migrates_old_state_and_preserves_damaged_run_records() {
+        use crate::pipeline::{Lane, Library, Run, Template};
+        let fixture = Fixture::new();
+        let path = fixture.0.join("state.json");
+        fs::write(&path, br#"{"version":1,"projects":[{"path":"/api"}]}"#).unwrap();
+        let mut state = State::load_from(&fixture.0).unwrap().state;
+        assert_eq!(state.pipelines, Library::default());
+        let run = Run::new(
+            17,
+            "/api".into(),
+            "Test".into(),
+            Template::default(),
+            vec![Lane {
+                name: "Development".into(),
+                project: "/api".into(),
+                base: "HEAD".into(),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        state.pipelines.runs.push(run.clone());
+        state.save_to(&path).unwrap();
+        let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        saved["pipelines"]["unknown_future_field"] = 42.into();
+        let mut malformed = saved["pipelines"]["runs"][0].clone();
+        malformed["id"] = 18.into();
+        malformed["phase"] = serde_json::json!({"review":9000});
+        saved["pipelines"]["runs"]
+            .as_array_mut()
+            .unwrap()
+            .push(malformed);
+        let original = serde_json::to_vec(&saved).unwrap();
+        fs::write(&path, &original).unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert_eq!(loaded.state.pipelines.runs, [run]);
+        assert_eq!(loaded.state.projects.len(), 1);
+        let recovery = loaded.recovery.unwrap();
+        assert_eq!(
+            recovery.cause,
+            RecoveryCause::Partial(vec!["pipelines.runs[1]".into()])
+        );
+        assert_eq!(fs::read(recovery.backup).unwrap(), original);
+    }
+
+    #[test]
+    fn upgrading_recipe_catalog_preserves_edits_and_does_not_restore_renamed_recipes() {
+        use crate::pipeline::Template;
+        let mut original = Template::default();
+        original.planner.instruction = "Custom planning instructions".into();
+        let mut lost = vec![];
+        let mut library = pipelines(
+            Some(serde_json::json!({"templates": [original]})),
+            &mut lost,
+        );
+        assert!(lost.is_empty());
+        assert_eq!(library.templates[0], original);
+        assert_eq!(library.templates.len(), 3);
+        library.templates[1].name = "Hotfix".into();
+        let reloaded = pipelines(Some(serde_json::to_value(&library).unwrap()), &mut lost);
+        assert_eq!(reloaded, library);
     }
 
     #[test]

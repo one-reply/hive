@@ -23,13 +23,25 @@ struct Client {
 }
 impl Client {
     fn new(socket: &std::path::Path, terminal: u64) -> Self {
+        Self::with_grant(socket, terminal, None)
+    }
+    fn with_grant(
+        socket: &std::path::Path,
+        terminal: u64,
+        grant: Option<&hive_core::agent::api::ReportGrant>,
+    ) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "hm-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&directory).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_hive"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_hive"));
+        command.env_remove(hive_core::agent::api::REPORT_GRANT_ENV);
+        if let Some(grant) = grant {
+            grant.attach(&mut command);
+        }
+        let mut child = command
             .args(["mcp", "--socket"])
             .arg(socket)
             .args(["--terminal", &terminal.to_string()])
@@ -316,7 +328,7 @@ fn all_mutating_tools_forward_typed_calls_and_preserve_api_errors() {
             Request::Read { lines, .. } => assert_eq!(lines, Some(20)),
             Request::Wait { timeout_ms, .. } => assert_eq!(timeout_ms, Some(2500)),
             Request::Interrupt { .. } => {}
-            Request::List => panic!("unexpected list"),
+            Request::List | Request::Report { .. } => panic!("unexpected request"),
         }
         writeln!(
             stream,
@@ -331,4 +343,40 @@ fn all_mutating_tools_forward_typed_calls_and_preserve_api_errors() {
                 .unwrap();
         assert_eq!(content["error"]["code"], "agent_blocked");
     }
+}
+
+#[test]
+fn pipeline_client_forwards_the_pane_grant_without_exposing_it_in_tool_arguments() {
+    use hive_core::agent::api::ReportGrant;
+    let grant = ReportGrant::generate().unwrap();
+    let socket = Socket::new();
+    let mut client = Client::with_grant(&socket.path, 15, Some(&grant));
+    client.initialize();
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
+    let list = client.receive();
+    assert!(
+        list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "report")
+    );
+    client.call(
+        3,
+        "report",
+        json!({"ticket":{"run":1,"attempt":2},"result":{"kind":"developed","summary":"done"}}),
+    );
+    let (mut stream, _) = socket.listener.accept().unwrap();
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).unwrap();
+    let call: Call = serde_json::from_str(&line).unwrap();
+    assert_eq!(call.from, Some(15));
+    assert!(matches!(call.request,Request::Report{grant:Some(ref actual),..} if actual==&grant));
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&Outcome::Result(Response::Reported)).unwrap()
+    )
+    .unwrap();
+    assert_eq!(client.receive()["result"]["isError"], false);
 }

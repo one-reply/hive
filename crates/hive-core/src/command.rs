@@ -107,8 +107,41 @@ fn nonblocking(fd: &impl AsFd) -> io::Result<()> {
     fcntl_setfl(fd, fcntl_getfl(fd)? | OFlags::NONBLOCK).map_err(Into::into)
 }
 
+#[derive(Clone, Copy)]
+enum Capture {
+    Exact(usize),
+    #[cfg(feature = "desktop")]
+    LogTail(usize),
+}
+
+impl Capture {
+    fn append(self, output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
+        match self {
+            Self::Exact(limit) if output.len().saturating_add(bytes.len()) > limit => {
+                Err(Error::TooLarge(limit))
+            }
+            #[cfg(feature = "desktop")]
+            Self::LogTail(limit) if output.len().saturating_add(bytes.len()) > limit => {
+                let start = output
+                    .len()
+                    .saturating_sub(limit.saturating_sub(bytes.len()));
+                output.drain(..start);
+                output.extend_from_slice(&bytes[bytes.len().saturating_sub(limit)..]);
+                Ok(())
+            }
+            _ => {
+                output.extend_from_slice(bytes);
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Reads what `stream` has ready and closes it at end of file, so it stops being waited on.
-fn drain(stream: &mut Option<impl Read>, output: &mut Vec<u8>, limit: usize) -> Result<(), Error> {
+fn drain(
+    stream: &mut Option<impl Read>,
+    mut consume: impl FnMut(&[u8]) -> Result<(), Error>,
+) -> Result<(), Error> {
     let Some(reader) = stream else {
         return Ok(());
     };
@@ -120,12 +153,7 @@ fn drain(stream: &mut Option<impl Read>, output: &mut Vec<u8>, limit: usize) -> 
                 *stream = None;
                 break;
             }
-            Ok(count) => {
-                if output.len() + count > limit {
-                    return Err(Error::TooLarge(limit));
-                }
-                output.extend_from_slice(&buffer[..count]);
-            }
+            Ok(count) => consume(&buffer[..count])?,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(Error::Io(e)),
@@ -185,11 +213,73 @@ pub fn run(
 /// Like [`run`], reporting bounded cumulative stdout/stderr when either stream changes.
 /// The callback must not block; authentication callers use it to expose a device code.
 pub fn run_with_progress(
-    mut command: Command,
+    command: Command,
     input: &[u8],
     cancellation: &Cancellation,
     timeout: Duration,
     limit: usize,
+    progress: impl FnMut(&[u8], &[u8]),
+) -> Result<Output, Error> {
+    supervise(
+        command,
+        input,
+        cancellation,
+        timeout,
+        Capture::Exact(limit),
+        |output, bytes| Capture::Exact(limit).append(output, bytes),
+        progress,
+    )
+}
+
+/// A test command can legitimately print megabytes. Retain its diagnostic tail without changing its exit status.
+#[cfg(feature = "desktop")]
+pub(crate) fn run_with_log_tail(
+    command: Command,
+    cancellation: &Cancellation,
+    timeout: Duration,
+    limit: usize,
+) -> Result<Output, Error> {
+    supervise(
+        command,
+        &[],
+        cancellation,
+        timeout,
+        Capture::LogTail(limit),
+        |output, bytes| Capture::LogTail(limit).append(output, bytes),
+        |_, _| {},
+    )
+}
+
+/// Feed large read-only command output to a bounded incremental consumer and retain only stderr.
+#[cfg(feature = "desktop")]
+pub(crate) fn stream_stdout(
+    command: Command,
+    cancellation: &Cancellation,
+    timeout: Duration,
+    stderr_limit: usize,
+    mut sink: impl FnMut(&[u8]),
+) -> Result<Output, Error> {
+    supervise(
+        command,
+        &[],
+        cancellation,
+        timeout,
+        Capture::Exact(stderr_limit),
+        |_, bytes| {
+            sink(bytes);
+            Ok(())
+        },
+        |_, _| {},
+    )
+}
+
+fn supervise(
+    mut command: Command,
+    input: &[u8],
+    cancellation: &Cancellation,
+    timeout: Duration,
+    capture: Capture,
+    mut consume: impl FnMut(&mut Vec<u8>, &[u8]) -> Result<(), Error>,
     mut progress: impl FnMut(&[u8], &[u8]),
 ) -> Result<Output, Error> {
     let io_error = Error::Io;
@@ -235,8 +325,10 @@ pub fn run_with_progress(
             return Err(Error::TimedOut);
         }
         let previous = (output.len(), errors.len());
-        drain(&mut pipes.stdout, &mut output, limit)?;
-        drain(&mut pipes.stderr, &mut errors, limit)?;
+        drain(&mut pipes.stdout, |chunk| consume(&mut output, chunk))?;
+        drain(&mut pipes.stderr, |chunk| {
+            capture.append(&mut errors, chunk)
+        })?;
         if previous != (output.len(), errors.len()) {
             progress(&output, &errors);
         }
@@ -314,6 +406,25 @@ pub fn executable(name: &str) -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use crate::host::Host;
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn verbose_checks_keep_their_true_exit_code_and_diagnostic_tail() {
+        let result = run_with_log_tail(
+            Host::Local.command(
+                "/bin/sh",
+                &["-c", "printf abcdef; printf 123456 >&2; exit 19"],
+                None,
+            ),
+            &Cancellation::default(),
+            Duration::from_secs(5),
+            3,
+        )
+        .unwrap();
+        assert_eq!(result.code, Some(19));
+        assert_eq!(result.stdout, b"def");
+        assert_eq!(result.stderr, b"456");
+    }
 
     #[test]
     fn progress_is_available_before_a_waiting_child_completes_and_can_cancel_it() {

@@ -93,7 +93,11 @@ pub fn commit_files(host: &Host, cwd: &Path, commit: &str) -> Result<Vec<FileCha
     files(host, cwd, commit_args(host, cwd, commit)?)
 }
 
-fn files(host: &Host, cwd: &Path, mut args: Vec<String>) -> Result<Vec<FileChange>, GitError> {
+pub(crate) fn files(
+    host: &Host,
+    cwd: &Path,
+    mut args: Vec<String>,
+) -> Result<Vec<FileChange>, GitError> {
     let counts = numstat::read(
         host,
         cwd,

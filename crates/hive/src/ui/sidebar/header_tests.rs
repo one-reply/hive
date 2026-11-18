@@ -92,7 +92,7 @@ fn project_names_expand_on_selection_and_toggle_when_active(cx: &mut TestAppCont
         toggled: HashMap::new(),
         agents_open: HashSet::new(),
         working: crate::ui::stepped_spinner::SteppedSpinner::new(cx),
-        _observers: [
+        _observers: vec![
             cx.observe(&projects, |_, _, cx| cx.notify()),
             cx.observe(&store, |_, _, _| {}),
             cx.observe(&store, |_, _, _| {}),

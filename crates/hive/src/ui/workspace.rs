@@ -40,6 +40,7 @@ mod files;
 mod git;
 pub(crate) mod history;
 mod persistence;
+mod pipelines;
 mod project_center;
 mod right_tab;
 pub(crate) mod switcher;
@@ -59,6 +60,7 @@ actions!(
         NewTerminal,
         ToggleSidebar,
         ToggleGitPanel,
+        TogglePipelines,
         ShowGitPanel,
         ShowFilesPanel
     ]
@@ -84,6 +86,7 @@ pub struct Workspace {
     centers: HashMap<(Host, PathBuf), ProjectCenter>,
     /// The project whose center fills the window; `None` shows the welcome screen.
     shown: Option<(Host, PathBuf)>,
+    pipeline_panels: HashMap<PathBuf, pipelines::PanelSlot>,
     git_panel: Entity<GitPanel>,
     /// The Files panel of the selected worktree, one of `files_panels`.
     files_panel: Entity<crate::ui::files_panel::FilesPanel>,
@@ -162,7 +165,15 @@ impl Workspace {
                 window.push_notification(Notification::error(notice).title("State recovery"), cx);
             });
         }
+        let pipeline_runs = AppState::get(cx).pipelines.clone();
         let observers = vec![
+            cx.subscribe_in(
+                &pipeline_runs,
+                window,
+                |this, _, event: &crate::state::pipelines::RevealRun, window, cx| {
+                    this.show_pipeline_run(event.0, window, cx)
+                },
+            ),
             cx.observe_in(&updates, window, |_, _, window, cx| {
                 crate::ui::update_available::sync(window, cx);
             }),
@@ -181,6 +192,7 @@ impl Workspace {
                 AgentsEvent::Launch(host, path, launch) => {
                     if let Some(project) = this.project_of(host, path, cx) {
                         this.shown = Some(project.clone());
+                        this.restore_dock(window, cx);
                         this.center(&project, window, cx).open_agent(
                             path,
                             launch.clone(),
@@ -262,6 +274,7 @@ impl Workspace {
             status_bar: cx.new(StatusBarView::new),
             projects,
             centers: HashMap::new(),
+            pipeline_panels: HashMap::new(),
             shown: None,
             git_panel: cx.new(|cx| GitPanel::new(window, cx)),
             files_panel,
@@ -308,9 +321,13 @@ impl Workspace {
             && self
                 .saved_center(&project, cx)
                 .is_some_and(|saved| saved.worktree.as_ref() == Some(&cwd));
+        let panel = self.open_pipeline_panel();
         let center = self.center(&project, window, cx);
-        if !restore {
+        if !restore && panel.is_none() {
             center.show_terminal(&cwd, window, cx);
+        }
+        if let Some(panel) = panel {
+            panel.read(cx).focus.clone().focus(window, cx);
         }
         self.sync_active_worktrees(cx);
         self.save_center(&project, window, cx);
@@ -338,6 +355,17 @@ impl Workspace {
     fn reveal_session(&mut self, session: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         // The agent is seen now, however the user got here: its notification would only be stale.
         window.remove_notification1::<AgentsEvent>(attention_notice_key(session), cx);
+        if let Some(ticket) = AppState::get(cx)
+            .pipelines
+            .read(cx)
+            .ticket_for_session(session)
+        {
+            self.show_pipeline_run(ticket.run, window, cx);
+            if let Some(panel) = self.open_pipeline_panel() {
+                panel.update(cx, |panel, cx| panel.show_attempt(ticket, window, cx));
+            }
+            return;
+        }
         self.select_place_of(session, cx);
         let project = self.centers.iter_mut().find_map(|(project, center)| {
             center
@@ -345,6 +373,11 @@ impl Workspace {
                 .then(|| project.clone())
         });
         if let Some(project) = project {
+            if project.0.is_local()
+                && let Some(slot) = self.pipeline_panels.get_mut(&project.1)
+            {
+                slot.hide_for_reveal();
+            }
             self.shown = Some(project);
             cx.notify();
         }
@@ -396,6 +429,8 @@ impl Workspace {
     /// A project removed from the sidebar takes its tabs (and their shells) with it.
     fn drop_removed_centers(&mut self, cx: &App) {
         let projects = self.projects.read(cx);
+        self.pipeline_panels
+            .retain(|path, _| projects.project(&Host::Local, path).is_some());
         self.centers
             .retain(|(host, path), _| projects.project(host, path).is_some());
     }
@@ -478,6 +513,7 @@ impl Workspace {
             return;
         };
         self.shown = Some(project.clone());
+        self.restore_dock(window, cx);
         self.center(&project, window, cx)
             .open_terminal(Some(&cwd), window, cx);
         self.sync_active_worktrees(cx);
@@ -659,15 +695,30 @@ impl Render for Workspace {
                 center(center_el, 1.).into_any_element(),
             )
         };
+        let overlay = self.pipeline_overlay(window, cx);
+        let covered = overlay.as_ref().is_some_and(|(covered, _)| *covered);
+        let mut content = h_flex()
+            .relative()
+            .h_full()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .when(!covered, |el| el.child(center_el))
+            .when(!covered && (self.git_open || self.git_animate), |el| {
+                el.child(self.render_right_sidebar(window, cx))
+            })
+            .when(!covered && self.git_open, |el| {
+                el.child(self.render_git_resize_handle(cx))
+            });
+        if let Some((_, overlay)) = overlay {
+            content = content.child(overlay);
+        }
         let body = h_flex()
             .relative()
             .flex_1()
             .min_h_0()
             .child(left_el)
-            .child(center_el)
-            .when(self.git_open || self.git_animate, |el| {
-                el.child(self.render_right_sidebar(window, cx))
-            })
+            .child(content)
             .child(
                 div()
                     .absolute()
@@ -676,10 +727,7 @@ impl Render for Workspace {
                     .map(|el| if open { el.w(width) } else { el.w(title_width) })
                     .child(title_bar),
             )
-            .when(open, |el| el.child(self.render_sidebar_resize_handle(cx)))
-            .when(self.git_open, |el| {
-                el.child(self.render_git_resize_handle(cx))
-            });
+            .when(open, |el| el.child(self.render_sidebar_resize_handle(cx)));
         v_flex()
             .size_full()
             .track_focus(&self.focus)
@@ -711,12 +759,18 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|_, _: &OpenHistory, window, cx| history::open_selected(window, cx)),
             )
+            .on_action(cx.listener(Self::toggle_pipelines))
             .on_action(cx.listener(Self::toggle_sidebar))
-            .on_action(cx.listener(|this, _: &ToggleGitPanel, _, cx| this.toggle_git(cx)))
-            .on_action(
-                cx.listener(|this, _: &ShowGitPanel, _, cx| this.show_right_tab(RightTab::Git, cx)),
-            )
-            .on_action(cx.listener(|this, _: &ShowFilesPanel, _, cx| {
+            .on_action(cx.listener(|this, _: &ToggleGitPanel, window, cx| {
+                this.restore_dock(window, cx);
+                this.toggle_git(cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowGitPanel, window, cx| {
+                this.restore_dock(window, cx);
+                this.show_right_tab(RightTab::Git, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowFilesPanel, window, cx| {
+                this.restore_dock(window, cx);
                 // Show Files means the tree, as Explorer does: leave content search behind.
                 let files = this.files_panel.read(cx).files.clone();
                 files.update(cx, |files, cx| files.set_search_mode(SearchMode::Names, cx));

@@ -48,6 +48,7 @@ Older builds need one manual installation of a version that includes the updater
 | --- | --- |
 | **Organize your work** | Add local or SSH Linux projects, create and remove Git worktrees, reorder projects, and customize their names, colors, and icons. |
 | **Start a task** | Create a worktree from a chosen base branch and launch a terminal, Claude Code, Codex, OpenCode, or Antigravity with **Create & Start**. |
+| **Run a pipeline** | Plan a task across local repositories, approve parallel development lanes, and review fixes with QA and security agents. Choose a CLI and model for each role. |
 | **Run agents in terminals** | Use terminal tabs and split panes, with text selection, scrollback, and clipboard image paste. See running agents on their worktree cards. |
 | **Let agents work together** | Codex and Claude Code receive pane-specific MCP tools to list, start, message, read, wait for, and interrupt sibling agents. The `hive agent` CLI also supports coordination. |
 | **Edit files** | Find files with **⌘P** or search local file contents with **⌘⇧F**. Use syntax highlighting, completion, inline Git blame, image previews, explicit saves, and recovery drafts. |
@@ -81,6 +82,29 @@ Code, Codex, OpenCode, or Antigravity starts that agent again and continues the 
 conversation; other processes and scrollback are not restored. Shell directories are
 sampled once per second, so quitting immediately after `cd` may restore the previous
 directory.
+
+### Run a task across repositories
+
+Open **View → Toggle Pipelines** (Control + grave accent). The drawer covers the editor
+and Git/Files. Projects stays accessible on the left, so you can work in another
+project while agents run.
+
+1. Pick **Feature delivery**, **Quick fix**, or **Cross-repository** and choose **Start run**.
+   **Edit workflow** opens the stage map with draggable reviews and parallel lanes.
+2. Describe the task and choose **Start planning**. The launch sheet selects your
+   project and starting branch, and suggests checks from committed manifests.
+   Use the repository, branch and check menus to override those choices or add
+   another repository. Each run gets its own Git worktrees.
+3. Review the planner’s assignments and acceptance criteria, then choose **Approve
+   plan**. Different repositories can develop in parallel. Click **Open live
+   session** to see a running CLI and respond to questions or permission requests.
+4. QA and subsequent reviewers inspect the work together. A finding returns to
+   its development lane, followed by a fresh QA pass. After the configured repair
+   limit, **Needs attention** takes you to the decision. Required commands must pass.
+5. Open **Timeline** to see stage durations, parallel lanes and decision points.
+   **Changes** groups files by repository and loads the selected diff. **Checks**
+   shows test outcomes, and **Activity** retains the handoff history. Accept the
+   changes or return them to development. The task worktrees remain available for commits and pull requests.
 
 ## A closer look
 
@@ -298,6 +322,7 @@ require the credentials described in [Releasing](docs/RELEASING.md#developer-id-
 | Focus the terminal pane on that side | ⌘← ⌘→ ⌘↑ ⌘↓ |
 | Close focused terminal pane, editor, or diff | ⌘W |
 | Toggle project sidebar | ⌘⇧\ |
+| Toggle Pipelines for the current project | ⌃ + grave accent |
 | Toggle right sidebar (Git / Files) | ⌘\ |
 | Show Git | ⌘⇧G |
 | Show Files | ⌘⇧E |
@@ -309,6 +334,7 @@ Shortcuts can be changed in **Settings → Application → Shortcuts**.
 ## Data and credentials
 
 - Project references, workspace layouts, shell directories, and settings are stored in `~/.hive/state.json`.
+- Pipeline templates, task prompts, assignments, review findings, decisions and bounded QA command output are saved locally in the same state file. Each selected agent receives the task context for its role.
 - Unsaved editor drafts are stored under `~/.hive/editor-recovery/`; they can contain
   source code that has not been saved to the project yet.
 - Worktrees created by Hive live beside the repository in `<repo>-worktrees/`.

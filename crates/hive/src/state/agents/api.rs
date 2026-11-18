@@ -65,10 +65,45 @@ enum Verdict {
 impl Agents {
     pub(super) fn handle(&mut self, incoming: Incoming, cx: &mut Context<Self>) {
         let from = incoming.call().from;
+        let caller = from
+            .and_then(|id| self.watched.iter().find(|w| w.id.as_u64() == id))
+            .and_then(|w| self.live_session(w.id, cx));
+        if !matches!(incoming.call().request, Request::Report { .. })
+            && caller
+                .as_ref()
+                .is_some_and(|s| s.read(cx).report_grant.is_some())
+        {
+            incoming.reply(Outcome::Error(ApiError::new(
+                ErrorCode::Unsupported,
+                "Hive schedules pipeline steps. Use report for the assigned handoff.",
+            )));
+            return;
+        }
         let answer = match incoming.call().request.clone() {
             Request::List => Ok(Response::Agents {
                 agents: self.infos(cx),
             }),
+            Request::Report {
+                ticket,
+                result,
+                grant,
+            } => {
+                let bound = caller.filter(|s| grant.is_some() && s.read(cx).report_grant == grant);
+                match bound {
+                    Some(session) => crate::app::AppState::get(cx)
+                        .pipelines
+                        .clone()
+                        .update(cx, |pipelines, cx| {
+                            pipelines.report(session.entity_id().as_u64(), &ticket, result, cx)
+                        })
+                        .map(|()| Response::Reported)
+                        .map_err(|e| ApiError::new(ErrorCode::InvalidRequest, e)),
+                    None => Err(ApiError::new(
+                        ErrorCode::InvalidRequest,
+                        "Report requires the active pipeline pane's grant",
+                    )),
+                }
+            }
             Request::Read { target, lines } => self.read_terminal(&target, lines, cx),
             Request::Interrupt { target } => self.interrupt(&target, cx),
             Request::Wait { target, timeout_ms } => match self.working_agent(&target, cx) {

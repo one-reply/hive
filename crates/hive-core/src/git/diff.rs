@@ -77,17 +77,35 @@ pub fn read(
     source: &DiffSource,
     old_path: Option<&str>,
 ) -> Result<FileDiff, GitError> {
-    validate_path(path)?;
-    if let Some(old) = old_path {
-        validate_path(old)?;
-    }
-    let mut args = match source {
+    let args = match source {
         DiffSource::WorkingTree => vec!["diff".into()],
         DiffSource::Staged => vec!["diff".into(), "--cached".into()],
         DiffSource::Commit(oid) => history::commit_args(host, cwd, oid)?,
         DiffSource::Compare(base) => history::compare_args(host, cwd, base)?,
         DiffSource::Untracked => vec!["diff".into(), "--no-index".into()],
     };
+    read_patch(
+        host,
+        cwd,
+        path,
+        old_path,
+        args,
+        *source == DiffSource::Untracked,
+    )
+}
+
+pub(crate) fn read_patch(
+    host: &Host,
+    cwd: &Path,
+    path: &str,
+    old_path: Option<&str>,
+    mut args: Vec<String>,
+    untracked: bool,
+) -> Result<FileDiff, GitError> {
+    validate_path(path)?;
+    if let Some(old) = old_path {
+        validate_path(old)?;
+    }
     args.extend(
         [
             "--no-color",
@@ -106,7 +124,7 @@ pub fn read(
         ]
         .map(String::from),
     );
-    if *source == DiffSource::Untracked {
+    if untracked {
         args.push("/dev/null".into());
     }
     if let Some(old) = old_path {
@@ -120,7 +138,7 @@ pub fn read(
         &args.iter().map(String::as_str).collect::<Vec<_>>(),
         None,
         PREVIEW_LIMIT,
-        *source == DiffSource::Untracked,
+        untracked,
     )?;
     parse(text(&raw)?.to_string())
 }

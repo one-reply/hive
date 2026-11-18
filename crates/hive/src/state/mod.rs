@@ -12,6 +12,7 @@ pub(crate) mod git_diff;
 pub(crate) mod git_hosting;
 pub(crate) mod keep_awake;
 pub(crate) mod notifications;
+pub(crate) mod pipelines;
 pub mod projects;
 pub mod store;
 pub(crate) mod terminal_session;

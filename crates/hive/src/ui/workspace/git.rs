@@ -73,6 +73,11 @@ impl Workspace {
     /// Selects the target in the sidebar and shows its project's center. The caller decides
     /// which tab to show, so `sync_selection` must not open a terminal on its own.
     pub(super) fn activate_target(&mut self, target: &Target, cx: &mut Context<Self>) {
+        if target.host.is_local()
+            && let Some(slot) = self.pipeline_panels.get_mut(&target.project)
+        {
+            slot.hide_for_reveal();
+        }
         let hidden = self
             .projects
             .read(cx)

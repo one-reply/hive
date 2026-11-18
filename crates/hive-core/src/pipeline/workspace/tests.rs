@@ -1,0 +1,377 @@
+use super::*;
+use crate::pipeline::{Assignment, Finding, Phase, Report, Run, Template};
+use std::fs;
+
+struct Scratch(PathBuf);
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let path =
+            std::env::temp_dir().join(format!("hive-pipeline-{name}-{}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        Self(path.canonicalize().unwrap())
+    }
+    fn lane(&self, name: &str) -> Lane {
+        let path = self.0.join(name);
+        fs::create_dir(&path).unwrap();
+        git(&path, &["init", "-q", "-b", "main"]);
+        git(&path, &["config", "core.hooksPath", "/dev/null"]);
+        fs::write(path.join("contract"), "original\n").unwrap();
+        git(&path, &["add", "contract"]);
+        git(&path, &["commit", "-qm", "base"]);
+        let preview = preview(&path, "main").unwrap();
+        assert!(!preview.dirty);
+        Lane {
+            name: name.into(),
+            project: path,
+            base: preview.commit,
+            ..Lane::default()
+        }
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+fn git(path: &Path, args: &[&str]) {
+    let output = Host::Local
+        .command("git", args, Some(path))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.test")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+#[test]
+fn multi_repo_checks_and_acceptance_use_task_worktrees_and_report_new_files() {
+    let dir = Scratch::new("end-to-end");
+    let mut api = dir.lane("api");
+    let mut web = dir.lane("web");
+    fs::write(api.project.join("local-change"), "keep").unwrap();
+    assert!(preview(&api.project, "main").unwrap().dirty);
+    api.worktree = prepare(1, &api, &Cancellation::default()).unwrap();
+    web.worktree = prepare(1, &web, &Cancellation::default()).unwrap();
+    assert_eq!(
+        prepare(1, &api, &Cancellation::default()).unwrap(),
+        api.worktree
+    );
+    assert!(!api.worktree.join("local-change").exists());
+    api.command = "test -f contract".into();
+    web.command = "test -f new-file".into();
+    let template = Template {
+        reviews: vec![crate::pipeline::Step::new("QA", "Check contract")],
+        ..Template::default()
+    };
+    let mut run = Run::new(
+        1,
+        api.project.clone(),
+        "Change contract".into(),
+        template,
+        vec![api.clone(), web.clone()],
+    )
+    .unwrap();
+    let plan = run.pending()[0];
+    run.report(
+        &plan,
+        Report::Plan {
+            assignments: (0..2)
+                .map(|lane| Assignment {
+                    lane,
+                    task: "Change".into(),
+                    criteria: "Tests pass".into(),
+                })
+                .collect(),
+        },
+    )
+    .unwrap();
+    run.approve().unwrap();
+    let dev = run.pending();
+    assert_eq!(dev.len(), 2);
+    fs::write(api.worktree.join("contract"), "changed\n").unwrap();
+    git(&api.worktree, &["commit", "-qam", "updated contract"]);
+    for ticket in dev {
+        run.report(
+            &ticket,
+            Report::Developed {
+                summary: "Done".into(),
+            },
+        )
+        .unwrap();
+    }
+    run.report(
+        &run.pending()[0],
+        Report::Review {
+            summary: "Missing Web contract".into(),
+            findings: vec![Finding {
+                lane: 1,
+                description: "Missing new file".into(),
+            }],
+        },
+    )
+    .unwrap();
+    let first = checks(&run.lanes, &Cancellation::default());
+    assert!(first[0].success);
+    assert_eq!(first[1].exit_code, Some(1));
+    run.command_results(first).unwrap();
+    assert_eq!(run.pending().len(), 1);
+    assert_eq!(run.pending()[0].lane, Some(1));
+    fs::write(web.worktree.join("new-file"), "new contract\n").unwrap();
+    run.report(
+        &run.pending()[0],
+        Report::Developed {
+            summary: "Updated".into(),
+        },
+    )
+    .unwrap();
+    run.report(
+        &run.pending()[0],
+        Report::Review {
+            summary: "Contracts agree".into(),
+            findings: vec![],
+        },
+    )
+    .unwrap();
+    run.command_results(checks(&run.lanes, &Cancellation::default()))
+        .unwrap();
+    assert_eq!(run.phase, Phase::Acceptance);
+    let repos = review(1, &run.lanes).unwrap();
+    assert_eq!(repos.len(), 2);
+    let change = &repos[0].files[0];
+    assert_eq!(change.path, "contract");
+    assert_eq!(change.added, Some(1));
+    assert_eq!(change.removed, Some(1));
+    assert!(
+        patch(1, &run.lanes[repos[0].lane], change)
+            .unwrap()
+            .contains("+changed")
+    );
+    let added = &repos[1].files[0];
+    assert_eq!(added.change, Change::Untracked);
+    assert_eq!(added.added, Some(1));
+    assert!(
+        patch(1, &run.lanes[repos[1].lane], added)
+            .unwrap()
+            .contains("+new contract")
+    );
+    assert_eq!(
+        fs::read_to_string(api.project.join("contract")).unwrap(),
+        "original\n"
+    );
+    assert!(!web.project.join("new-file").exists());
+}
+
+#[test]
+fn preparation_recovers_only_the_registered_checkout_and_never_recreates_missing_work() {
+    let dir = Scratch::new("recovery");
+    let mut lane = dir.lane("repo");
+    let path = prepare(13, &lane, &Cancellation::default()).unwrap();
+    // A crash after Git succeeded but before the checkpoint saved.
+    assert_eq!(prepare(13, &lane, &Cancellation::default()).unwrap(), path);
+    lane.worktree = path;
+    git(&lane.worktree, &["switch", "-qc", "unrelated"]);
+    assert!(verify(13, &lane).is_err());
+    assert!(prepare(13, &lane, &Cancellation::default()).is_err());
+    lane.worktree = dir.0.join("unrelated");
+    assert!(verify(13, &lane).is_err());
+    assert!(prepare(13, &lane, &Cancellation::default()).is_err());
+    assert!(!lane.worktree.exists());
+}
+
+#[test]
+fn unassigned_scripts_and_cancelled_commands_do_not_run() {
+    let dir = Scratch::new("commands");
+    let lane = Lane {
+        name: "unused".into(),
+        worktree: dir.0.clone(),
+        command: "touch marker".into(),
+        ..Lane::default()
+    };
+    assert!(checks(std::slice::from_ref(&lane), &Cancellation::default()).is_empty());
+    let cancel = Cancellation::default();
+    cancel.cancel();
+    assert!(
+        checks(
+            &[Lane {
+                assignment: "run".into(),
+                ..lane
+            }],
+            &cancel
+        )
+        .is_empty()
+    );
+    assert!(!dir.0.join("marker").exists());
+}
+
+#[test]
+fn revision_changes_after_manual_edits_new_files_binary_changes_and_permission_changes() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Scratch::new("revision");
+    let mut lane = dir.lane("binary");
+    fs::write(lane.project.join("image"), b"\x00zero").unwrap();
+    git(&lane.project, &["add", "image"]);
+    git(&lane.project, &["commit", "-qm", "binary"]);
+    lane.base = preview(&lane.project, "HEAD").unwrap().commit;
+    lane.worktree = prepare(1, &lane, &Cancellation::default()).unwrap();
+    let key = || revision(1, std::slice::from_ref(&lane), &Cancellation::default()).unwrap();
+    let original = key();
+    let file = lane.worktree.join("contract");
+    fs::write(&file, b"Edited during QA").unwrap();
+    let modified = key();
+    assert_ne!(original, modified);
+    fs::write(&file, b"original\n").unwrap();
+    assert_eq!(original, key());
+    let binary = lane.worktree.join("image");
+    fs::write(&binary, b"\x00one").unwrap();
+    let binary1 = key();
+    fs::write(&binary, b"\x00two").unwrap();
+    let binary2 = key();
+    assert_ne!(binary1, binary2);
+    let added = lane.worktree.join("new");
+    fs::write(&added, b"\x00A").unwrap();
+    let added1 = key();
+    fs::write(&added, b"\x00B").unwrap();
+    let added2 = key();
+    assert_ne!(added1, added2);
+    assert_ne!(binary2, added2);
+    fs::set_permissions(&added, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_ne!(added2, key());
+}
+
+#[test]
+fn large_text_changes_are_fingerprinted_beyond_the_display_budget() {
+    let dir = Scratch::new("large");
+    let mut lane = dir.lane("repo");
+    lane.worktree = prepare(1, &lane, &Cancellation::default()).unwrap();
+    let path = lane.worktree.join("contract");
+    let mut text = vec![b'x'; git::diff::PREVIEW_LIMIT + 1];
+    fs::write(&path, &text).unwrap();
+    let lanes = std::slice::from_ref(&lane);
+    let reviews = review(1, lanes).unwrap();
+    assert!(patch(1, &lane, &reviews[0].files[0]).is_err());
+    let a = revision(1, lanes, &Cancellation::default()).unwrap();
+    *text.last_mut().unwrap() = b'y';
+    fs::write(&path, &text).unwrap();
+    assert_ne!(revision(1, lanes, &Cancellation::default()).unwrap(), a);
+}
+
+#[test]
+fn file_review_uses_both_rename_paths_and_preserves_untracked_replacements() {
+    let dir = Scratch::new("file-review");
+    let mut lane = dir.lane("repo");
+    lane.worktree = prepare(1, &lane, &Cancellation::default()).unwrap();
+    git(&lane.worktree, &["mv", "contract", "new-name"]);
+    let listings = review(1, std::slice::from_ref(&lane)).unwrap();
+    let renamed = &listings[0].files[0];
+    assert_eq!(renamed.change, Change::Renamed);
+    assert_eq!(renamed.path, "new-name");
+    let renamed_patch = patch(1, &lane, renamed).unwrap();
+    assert!(renamed_patch.contains("rename from contract"));
+    assert!(renamed_patch.contains("rename to new-name"));
+
+    git(&lane.worktree, &["mv", "new-name", "contract"]);
+    git(&lane.worktree, &["rm", "--cached", "contract"]);
+    fs::write(lane.worktree.join("contract"), "replacement\n").unwrap();
+    let listings = review(1, std::slice::from_ref(&lane)).unwrap();
+    let files = &listings[0].files;
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].added, Some(1));
+    assert_eq!(files[0].removed, Some(1));
+    let actual = patch(1, &lane, &files[0]).unwrap();
+    assert!(actual.contains("-original"));
+    assert!(actual.contains("+replacement"));
+}
+
+#[test]
+fn cancelled_preparation_does_not_create_a_branch_or_checkout() {
+    let dir = Scratch::new("cancel-prepare");
+    let lane = dir.lane("repo");
+    let stop = Cancellation::default();
+    stop.cancel();
+    assert!(prepare(23, &lane, &stop).is_err());
+    let project = repository(&lane.project).unwrap();
+    assert_eq!(project.worktrees.len(), 1);
+    assert!(git::branches::resolve(&Host::Local, &lane.project, &branch(23)).is_err());
+}
+
+#[test]
+fn distinct_dirty_edits_inside_the_same_gitlink_change_acceptance_identity() {
+    let dir = Scratch::new("submodule");
+    let mut lane = dir.lane("parent");
+    let nested = dir.lane("library");
+    git(
+        &lane.project,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{},library", nested.base),
+        ],
+    );
+    git(&lane.project, &["commit", "-qm", "pin library"]);
+    lane.base = preview(&lane.project, "HEAD").unwrap().commit;
+    lane.worktree = prepare(1, &lane, &Cancellation::default()).unwrap();
+    git(
+        &lane.worktree,
+        &[
+            "clone",
+            "--quiet",
+            "--local",
+            nested.project.to_str().unwrap(),
+            "library",
+        ],
+    );
+    let key = || revision(1, std::slice::from_ref(&lane), &Cancellation::default()).unwrap();
+    let clean = key();
+    let file = lane.worktree.join("library/contract");
+    fs::write(&file, "first").unwrap();
+    let first = key();
+    fs::write(&file, "second").unwrap();
+    let second = key();
+    assert_ne!(clean, first);
+    assert_ne!(first, second);
+    fs::write(lane.worktree.join("library/new-file"), "untracked").unwrap();
+    assert_ne!(second, key());
+}
+
+#[test]
+fn launch_check_menu_reads_manifests_from_the_selected_commit() {
+    let scratch = Scratch::new("launch-choices");
+    let lane = scratch.lane("project");
+    fs::write(
+        lane.project.join("package.json"),
+        r#"{"scripts":{"test":"vitest"}}"#,
+    )
+    .unwrap();
+    fs::write(lane.project.join("pnpm-lock.yaml"), "").unwrap();
+    git(&lane.project, &["add", "."]);
+    git(&lane.project, &["commit", "-qm", "Add package tests"]);
+    fs::write(lane.project.join("Cargo.toml"), "").unwrap();
+    fs::write(
+        lane.project.join("package.json"),
+        r#"{"scripts":{"lint":"eslint"}}"#,
+    )
+    .unwrap();
+    let preview = preview(&lane.project, "refs/heads/main").unwrap();
+    assert_eq!(preview.checks, ["pnpm run test"]);
+    assert!(preview.dirty);
+    assert!(
+        preview
+            .branches
+            .iter()
+            .any(|b| b.reference == "refs/heads/main")
+    );
+    assert!(
+        super::preview(&lane.project, &lane.base)
+            .unwrap()
+            .checks
+            .is_empty()
+    );
+}

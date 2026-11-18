@@ -1,6 +1,7 @@
 //! Creating and removing git worktrees the way Orca does: a generated name, a new branch of
 //! the same name off the remote's default branch, a folder in [`Project::worktrees_dir`].
 
+use crate::command::Cancellation;
 use crate::git::{self, GitError};
 use crate::projects::{Head, Project, Worktree};
 use std::collections::HashSet;
@@ -105,6 +106,15 @@ pub fn create_from(
     name: Option<&str>,
     base: Option<&str>,
 ) -> Result<Worktree, WorktreeError> {
+    create_stoppable(project, name, base, &Cancellation::default())
+}
+
+pub(crate) fn create_stoppable(
+    project: &Project,
+    name: Option<&str>,
+    base: Option<&str>,
+    stop: &Cancellation,
+) -> Result<Worktree, WorktreeError> {
     let base = match base.map(str::trim).filter(|base| !base.is_empty()) {
         Some(base) => git::branches::resolve(&project.host, &project.path, base)?,
         None => default_base_ref(project)?,
@@ -118,7 +128,7 @@ pub fn create_from(
     };
     let path = project.worktrees_dir().join(&name);
     let path_arg = path_argument(&path)?;
-    git::run_mutation(
+    git::run_stoppable(
         &project.host,
         &project.path,
         &[
@@ -130,6 +140,7 @@ pub fn create_from(
             path_arg,
             &base,
         ],
+        stop,
     )?;
     tracing::info!(?path, %base, "created worktree");
     Ok(Worktree {

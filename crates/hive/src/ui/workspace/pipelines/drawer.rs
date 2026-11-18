@@ -1,0 +1,152 @@
+//! Project-local visibility, animated geometry and keyboard focus.
+use super::*;
+use gpui_kit::base::motion::{Transition, transition};
+
+pub(in crate::ui::workspace) struct PanelSlot {
+    pub(super) view: Entity<PipelinePanel>,
+    pub(super) open: bool,
+    pub(super) previous: Option<FocusHandle>,
+}
+
+impl PanelSlot {
+    fn show(&mut self, window: &mut Window, cx: &mut App) {
+        if !self.open {
+            self.previous = window.focused(cx);
+            self.open = true;
+        }
+        self.view.read(cx).focus.clone().focus(window, cx);
+    }
+    pub(super) fn toggle(&mut self, fallback: &FocusHandle, window: &mut Window, cx: &mut App) {
+        if self.open {
+            self.open = false;
+            self.previous
+                .take()
+                .unwrap_or_else(|| fallback.clone())
+                .focus(window, cx);
+        } else {
+            self.show(window, cx);
+        }
+    }
+    pub(in crate::ui::workspace) fn hide_for_reveal(&mut self) {
+        self.previous = None;
+        self.open = false;
+    }
+}
+impl Workspace {
+    pub(in crate::ui::workspace) fn open_pipeline_panel(&self) -> Option<Entity<PipelinePanel>> {
+        let (Host::Local, project) = self.shown.as_ref()? else {
+            return None;
+        };
+        let slot = self.pipeline_panels.get(project)?;
+        slot.open.then(|| slot.view.clone())
+    }
+
+    fn pipeline_slot(&mut self, project: PathBuf, cx: &mut Context<Self>) -> &mut PanelSlot {
+        self.pipeline_panels
+            .entry(project.clone())
+            .or_insert_with(|| PanelSlot {
+                view: cx.new(|cx| PipelinePanel::new(project, cx)),
+                open: false,
+                previous: None,
+            })
+    }
+
+    /// Workspace-wide shortcuts must expose the destination they focus.
+    pub(in crate::ui::workspace) fn restore_dock(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((Host::Local, path)) = &self.shown
+            && let Some(slot) = self.pipeline_panels.get_mut(path)
+            && slot.open
+        {
+            slot.toggle(&self.focus, window, cx);
+            cx.notify();
+        }
+    }
+
+    pub(in crate::ui::workspace) fn toggle_pipelines(
+        &mut self,
+        _: &TogglePipelines,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((Host::Local, project)) = self.shown.clone() else {
+            window.push_notification(
+                Notification::info("Select a local project to open Pipelines."),
+                cx,
+            );
+            return;
+        };
+        let focus = self.focus.clone();
+        self.pipeline_slot(project, cx).toggle(&focus, window, cx);
+        cx.notify();
+    }
+
+    pub(in crate::ui::workspace) fn show_pipeline_run(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(owner) = AppState::get(cx)
+            .store
+            .read(cx)
+            .state
+            .pipelines
+            .runs
+            .iter()
+            .find(|run| run.id == id)
+            .map(|r| r.owner.clone())
+        else {
+            return;
+        };
+        self.projects.update(cx, |projects, cx| {
+            projects.select_project(&Host::Local, &owner, cx)
+        });
+        self.sync_selection(window, cx);
+        let slot = self.pipeline_slot(owner, cx);
+        slot.show(window, cx);
+        slot.view
+            .update(cx, |view, cx| view.show_run(id, window, cx));
+        cx.notify();
+    }
+
+    pub(in crate::ui::workspace) fn pipeline_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(bool, AnyElement)> {
+        let (Host::Local, project) = self.shown.as_ref()? else {
+            return None;
+        };
+        let slot = self.pipeline_panels.get(project);
+        let open = slot.is_some_and(|slot| slot.open);
+        let key = ElementId::from(("pipeline-drawer", self.shown_center()?.dock().entity_id()));
+        let t = transition(
+            key,
+            if open { 1.0_f32 } else { 0. },
+            Transition::new(SIDEBAR_SLIDE_DURATION).ease(ease_in_out),
+            window,
+            cx,
+        );
+        let slot = slot?;
+        if t <= 0. && !open {
+            return None;
+        }
+        Some((
+            open && t >= 1.,
+            div()
+                .absolute()
+                .left_0()
+                .top(relative(1. - t))
+                .size_full()
+                .occlude()
+                .bg(cx.theme().background)
+                .when(!self.sidebar_open, |el| el.pt(TAB_BAR_HEIGHT))
+                .child(slot.view.clone())
+                .into_any_element(),
+        ))
+    }
+}

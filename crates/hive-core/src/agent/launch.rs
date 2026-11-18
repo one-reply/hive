@@ -1,4 +1,9 @@
 //! Explicit local CLI launches and persisted conversation identities.
+mod catalog;
+pub use catalog::pipeline_models;
+mod pipeline;
+pub use pipeline::{PipelineLaunch, PipelineRole, pipeline_efforts, validate_pipeline_profile};
+
 use super::AgentKind;
 use crate::{command, host::Host};
 use serde::{Deserialize, Serialize};
@@ -95,6 +100,8 @@ pub enum Launch {
     New(AgentKind),
     /// Resume exactly this conversation, never the ambiguous last session.
     Resume(ResumeSession),
+    /// A project-bound pipeline step with a role and a required typed handoff.
+    Pipeline(PipelineLaunch),
 }
 impl Launch {
     /// Check the CLI on the selected host, without starting a conversation.
@@ -104,6 +111,11 @@ impl Launch {
         }
         if !AGENTS.contains(&self.agent()) {
             return Err(LaunchError::Unsupported);
+        }
+        if matches!(self, Self::Pipeline(_)) {
+            return Err(LaunchError::Remote(
+                "Pipeline sessions require a local worktree".into(),
+            ));
         }
         if matches!(self, Self::Resume(_)) {
             return Err(LaunchError::Remote(
@@ -132,6 +144,7 @@ impl Launch {
         match self {
             Self::New(agent) => *agent,
             Self::Resume(session) => session.agent,
+            Self::Pipeline(spec) => spec.profile.agent,
         }
     }
     /// Gives a new OpenCode conversation its id up front, so it is resumable from the first
@@ -142,6 +155,15 @@ impl Launch {
                 agent: AgentKind::OpenCode,
                 id: new_opencode_session_id(),
             }),
+            Self::Pipeline(mut spec)
+                if spec.profile.agent == AgentKind::OpenCode && spec.resume.is_none() =>
+            {
+                spec.resume = Some(ResumeSession {
+                    agent: AgentKind::OpenCode,
+                    id: new_opencode_session_id(),
+                });
+                Self::Pipeline(spec)
+            }
             launch => launch,
         }
     }
@@ -150,6 +172,7 @@ impl Launch {
         match self {
             Self::New(_) => None,
             Self::Resume(session) => Some(session),
+            Self::Pipeline(spec) => spec.resume.as_ref(),
         }
     }
     /// Blocking: discover the binary before creating a worktree or starting a terminal.
@@ -166,13 +189,25 @@ impl Launch {
         directory: &Path,
         hook_settings: Option<&str>,
     ) -> Result<Command, LaunchError> {
-        let executable = self.executable()?;
+        self.command_at(&self.executable()?, directory, hook_settings)
+    }
+
+    fn command_at(
+        &self,
+        executable: &Path,
+        directory: &Path,
+        hook_settings: Option<&str>,
+    ) -> Result<Command, LaunchError> {
         let args = self.local_arguments(hook_settings)?;
         let mut command = Host::Local.command(
             &executable.to_string_lossy(),
             &args.iter().map(String::as_str).collect::<Vec<_>>(),
             Some(directory),
         );
+        // OpenCode mini uses PWD to select its project even after chdir into the worktree.
+        if directory.is_absolute() {
+            command.env("PWD", directory);
+        }
         if let Some(parent) = executable.parent() {
             let mut paths = vec![parent.to_owned()];
             if let Some(path) = crate::host::environment::path() {
@@ -195,7 +230,10 @@ impl Launch {
         Ok(args)
     }
     fn arguments(&self, hook_settings: Option<&str>) -> Result<Vec<String>, LaunchError> {
-        let mut args = Vec::new();
+        let mut args = match self {
+            Self::Pipeline(spec) => spec.arguments()?,
+            _ => Vec::new(),
+        };
         if let Self::Resume(session) = self {
             if !valid_session_id(&session.id) {
                 return Err(LaunchError::InvalidSession);
@@ -229,6 +267,9 @@ impl Launch {
 /// A launch that could not be prepared; no repository is changed by discovery.
 #[derive(Debug, thiserror::Error)]
 pub enum LaunchError {
+    /// A pipeline profile or worktree list could not be represented by this CLI.
+    #[error("{0}")]
+    Pipeline(String),
     /// SSH preflight or remote command preparation failed.
     #[error("{0}")]
     Remote(String),
@@ -246,6 +287,19 @@ pub enum LaunchError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn interactive_agents_get_the_selected_worktree_as_both_cwd_and_pwd() {
+        let cwd = Path::new("/tmp/selected worktree");
+        let command = Launch::New(AgentKind::OpenCode)
+            .command_at(Path::new("/bin/opencode"), cwd, None)
+            .unwrap();
+        assert_eq!(command.get_current_dir(), Some(cwd));
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "PWD" && value == Some(cwd.as_os_str()))
+        );
+    }
     #[test]
     fn new_agents_start_interactively_without_submitting_a_prompt() {
         for agent in AGENTS {

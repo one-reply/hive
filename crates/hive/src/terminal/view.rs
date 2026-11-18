@@ -117,7 +117,7 @@ impl TerminalView {
         view
     }
 
-    fn with_session(
+    pub(crate) fn with_session(
         session: Entity<TerminalSession>,
         cwd: Option<&Path>,
         window: &mut Window,

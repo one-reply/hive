@@ -44,6 +44,29 @@ impl Store {
         self.recovery.complete_held();
     }
 
+    /// Apply one pipeline mutation to the same snapshot as the rest of the workspace.
+    pub(crate) fn edit_pipelines<T>(
+        &mut self,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut hive_core::pipeline::Library) -> T,
+    ) -> T {
+        let result = edit(&mut self.state.pipelines);
+        self.commit(cx);
+        result
+    }
+
+    /// Wait asynchronously for this pipeline state (or a later snapshot) to reach disk.
+    pub(crate) fn pipeline_checkpoint(&self) -> async_channel::Receiver<Result<(), String>> {
+        if !self.stopping
+            && let Some(writer) = &self.writer
+        {
+            return writer.checkpoint(self.state.clone());
+        }
+        let (send, recv) = async_channel::bounded(1);
+        let _ = send.try_send(Err("Workspace state cannot be saved".into()));
+        recv
+    }
+
     pub(crate) fn set_reviewed(
         &mut self,
         revision: hive_core::git::reviewed::Revision,
