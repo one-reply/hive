@@ -2,13 +2,13 @@
 use super::*;
 
 impl RunView {
-    pub(super) fn actions(
+    pub(super) fn checkpoint_actions(
         &mut self,
         run: &Run,
         sessions: &[LiveSession],
         w: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Option<Div> {
         let mut row = h_flex().gap_2().flex_wrap();
         match run.phase {
             Phase::ApprovePlan => {
@@ -113,34 +113,30 @@ impl RunView {
                 ));
             }
             _ => {
-                for session in sessions {
+                let mut requests = sessions
+                    .iter()
+                    .filter_map(|session| Some((session, session.request_action()?)))
+                    .peekable();
+                if requests.peek().is_none() && !self.giving_feedback {
+                    return None;
+                }
+                for (session, action) in requests {
                     let ticket = session.ticket;
-                    if let Some(action) = session.request_action() {
-                        let mut title = session.stage.title(run);
-                        if let Stage::Develop(i) = session.stage {
-                            let repo = path_name(&run.lanes[i].project);
-                            if title != repo {
-                                title = format!("{title} · {repo}");
-                            }
+                    let mut title = session.stage.title(run);
+                    if let Stage::Develop(i) = session.stage {
+                        let repo = path_name(&run.lanes[i].project);
+                        if title != repo {
+                            title = format!("{title} · {repo}");
                         }
-                        row = row.child(button(
-                            ("open-agent-request", ticket.attempt as usize),
-                            format!("{action} · {title}"),
-                            ButtonLook::Primary,
-                            w,
-                            cx,
-                            move |v, w, cx| v.terminal(ticket, w, cx),
-                        ));
-                    } else if sessions.len() == 1 {
-                        row = row.child(button(
-                            "open-active-session",
-                            "Open agent session",
-                            ButtonLook::Outline,
-                            w,
-                            cx,
-                            move |v, w, cx| v.terminal(ticket, w, cx),
-                        ));
                     }
+                    row = row.child(button(
+                        ("open-agent-request", ticket.attempt as usize),
+                        format!("{action} · {title}"),
+                        ButtonLook::Primary,
+                        w,
+                        cx,
+                        move |v, w, cx| v.terminal(ticket, w, cx),
+                    ));
                 }
             }
         }
@@ -161,14 +157,6 @@ impl RunView {
                 },
             ));
         }
-        row = row.child(div().flex_1()).child(button(
-            "cancel-pipeline",
-            "Stop run",
-            ButtonLook::Ghost,
-            w,
-            cx,
-            |v, w, cx| v.stop(w, cx),
-        ));
         let mut block = v_flex().gap_2().child(row);
         if self.giving_feedback {
             let gate = run.phase;
@@ -192,7 +180,7 @@ impl RunView {
                     },
                 )));
         }
-        block
+        Some(block)
     }
 
     pub(super) fn stage_detail(

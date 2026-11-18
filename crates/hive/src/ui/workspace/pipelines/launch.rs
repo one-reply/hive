@@ -251,7 +251,6 @@ impl Render for LaunchForm {
             .cursor_pointer()
             .label("Start planning")
             .icon(Lucide::Play)
-            .small()
             .disabled(!ready)
             .on_click(cx.listener(|this, _, w, cx| this.submit(w, cx)))
             .smooth_hover(ButtonLook::Primary, &hover, cx);

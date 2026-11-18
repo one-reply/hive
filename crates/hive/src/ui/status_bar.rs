@@ -1,4 +1,4 @@
-//! Bottom bar: usage limits per provider, the keep-awake toggle, refresh and the settings gear.
+//! Bottom bar with the Pipelines toggle, provider limits and workspace controls.
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::animation::Lerp as _;
@@ -20,7 +20,8 @@ use crate::state::keep_awake::KeepAwake;
 use crate::state::store::Store;
 use crate::state::usage::Usage;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
-use crate::ui::settings;
+use crate::ui::workspace::TogglePipelines;
+use crate::ui::{keymap, settings};
 
 /// Width of the per-provider bar in the status bar.
 const BAR_WIDTH: Pixels = px(56.);
@@ -319,6 +320,7 @@ fn window_details(ix: usize, window: &UsageWindow, cx: &App) -> Div {
 impl Render for StatusBarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let loading = self.usage.read(cx).loading;
+        let pipelines_hover = Hover::new("toggle-pipelines", window, cx);
         let refresh_hover = Hover::new("refresh-usage", window, cx).enabled(!loading);
         let settings_hover = Hover::new("settings", window, cx);
         let providers: Vec<AnyElement> = self
@@ -334,30 +336,41 @@ impl Render for StatusBarView {
         let keep_awake = self.keep_awake_button(window, cx);
         StatusBar::new()
             .bg(cx.theme().background)
+            .left(
+                Button::new("toggle-pipelines")
+                    .cursor_pointer()
+                    .xsmall()
+                    .icon(Lucide::PanelBottom)
+                    .accessibility_label("Toggle Pipelines")
+                    .tooltip_with_action(
+                        "Toggle Pipelines",
+                        &TogglePipelines,
+                        Some(keymap::CONTEXT),
+                    )
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(TogglePipelines), cx))
+                    .smooth_hover(ButtonLook::Ghost, &pipelines_hover, cx),
+            )
+            .left(
+                Button::new("refresh-usage")
+                    .cursor_pointer()
+                    .xsmall()
+                    .icon(IconName::RefreshCw)
+                    .loading(loading)
+                    .tooltip("Refresh limits")
+                    .on_click(move |_, _, cx| usage.update(cx, |u, cx| u.refresh(cx)))
+                    .smooth_hover(ButtonLook::Ghost, &refresh_hover, cx),
+            )
             .left(h_flex().gap_6().children(providers))
             .right(
-                h_flex()
-                    .gap_1()
-                    .child(keep_awake)
-                    .child(
-                        Button::new("refresh-usage")
-                            .cursor_pointer()
-                            .xsmall()
-                            .icon(IconName::RefreshCw)
-                            .loading(loading)
-                            .tooltip("Refresh limits")
-                            .on_click(move |_, _, cx| usage.update(cx, |u, cx| u.refresh(cx)))
-                            .smooth_hover(ButtonLook::Ghost, &refresh_hover, cx),
-                    )
-                    .child(
-                        Button::new("settings")
-                            .cursor_pointer()
-                            .xsmall()
-                            .icon(IconName::Settings)
-                            .tooltip("Settings")
-                            .on_click(|_, _, cx| settings::open(cx))
-                            .smooth_hover(ButtonLook::Ghost, &settings_hover, cx),
-                    ),
+                h_flex().gap_1().child(keep_awake).child(
+                    Button::new("settings")
+                        .cursor_pointer()
+                        .xsmall()
+                        .icon(IconName::Settings)
+                        .tooltip("Settings")
+                        .on_click(|_, _, cx| settings::open(cx))
+                        .smooth_hover(ButtonLook::Ghost, &settings_hover, cx),
+                ),
             )
     }
 }

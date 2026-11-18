@@ -57,7 +57,12 @@ impl RunView {
         results
     }
 }
-fn report_body(ticket: Ticket, report: &Report, run: &Run, cx: &App) -> impl IntoElement {
+pub(super) fn report_body(
+    ticket: Ticket,
+    report: &Report,
+    run: &Run,
+    cx: &App,
+) -> impl IntoElement {
     let mut body = v_flex().gap_1();
     let id = ticket.attempt as usize;
     match report {

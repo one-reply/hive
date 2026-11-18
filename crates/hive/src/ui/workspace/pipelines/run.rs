@@ -21,6 +21,7 @@ use interaction::actionable;
 mod sessions;
 use sessions::LiveSession;
 mod stage;
+mod summary;
 mod timeline;
 use stage::Stage;
 
@@ -68,6 +69,7 @@ pub(super) struct RunView {
     display: Option<Entity<DiffState>>,
     timer: Option<Task<()>>,
     description_open: bool,
+    summary_expanded: bool,
     _subscriptions: Vec<Subscription>,
 }
 impl RunView {
@@ -124,6 +126,7 @@ impl RunView {
             display: None,
             timer: None,
             description_open: false,
+            summary_expanded: false,
             _subscriptions: subscriptions,
         }
     }
@@ -212,7 +215,7 @@ impl Render for RunView {
                                     this.session = None;
                                     cx.notify();
                                 }))
-                                .smooth_hover(ButtonLook::Ghost, &back_hover, cx),
+                                .smooth_hover(ButtonLook::Outline, &back_hover, cx),
                         )
                         .child(subtle(
                             format!("Live session · Attempt {}", ticket.attempt),
@@ -381,7 +384,7 @@ impl Render for RunView {
         }
         top = top.child(meta);
         if !stopped {
-            top = top.child(self.actions(&run, &sessions, w, cx));
+            top = top.children(self.checkpoint_actions(&run, &sessions, w, cx));
         }
         if let Some(msg) = self.error.clone() {
             top = top.child(div().text_sm().text_color(cx.theme().danger).child(msg));
@@ -409,14 +412,17 @@ impl Render for RunView {
         }
         let tabs = TabBar::new("pipeline-run-tabs")
             .segmented()
-            .small()
             .selected_index(
                 RunTab::ALL
                     .iter()
                     .position(|t| *t == self.tab)
                     .unwrap_or_default(),
             )
-            .children(RunTab::ALL.map(|tab| Tab::new().label(tab.label()).cursor_pointer()))
+            .children(
+                RunTab::ALL
+                    .iter()
+                    .map(|tab| Tab::new().label(tab.label()).cursor_pointer()),
+            )
             .on_click(cx.listener(|this, ix: &usize, _, cx| {
                 if let Some(tab) = RunTab::ALL.get(*ix) {
                     this.tab = *tab;
@@ -432,6 +438,41 @@ impl Render for RunView {
                 }
                 cx.notify();
             }));
+        let mut navigation = h_flex()
+            .px_5()
+            .pb_2()
+            .gap_2()
+            .flex_wrap()
+            .flex_none()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(tabs);
+        if !stopped {
+            let mut actions = h_flex().ml_auto().gap_2();
+            if let [session] = sessions.as_slice()
+                && session.request_action().is_none()
+            {
+                let ticket = session.ticket;
+                actions = actions.child(button_with_size(
+                    "open-active-session",
+                    "Open agent session",
+                    ButtonLook::Outline,
+                    ButtonSize::Medium,
+                    w,
+                    cx,
+                    move |v, w, cx| v.terminal(ticket, w, cx),
+                ));
+            }
+            navigation = navigation.child(actions.child(button_with_size(
+                "cancel-pipeline",
+                "Stop run",
+                ButtonLook::Danger,
+                ButtonSize::Medium,
+                w,
+                cx,
+                |v, w, cx| v.stop(w, cx),
+            )));
+        }
         let content = match self.tab {
             RunTab::Timeline => {
                 let scale = range.map(|range| elapsed::chart_range(range, recording));
@@ -446,15 +487,8 @@ impl Render for RunView {
             .min_h_0()
             .min_w_0()
             .child(top)
-            .child(
-                h_flex()
-                    .px_5()
-                    .pb_2()
-                    .flex_none()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(tabs),
-            )
+            .child(navigation)
+            .children(self.completion_summary(&run, w, cx))
             .child(content)
             .into_any_element()
     }

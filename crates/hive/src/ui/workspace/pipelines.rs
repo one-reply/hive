@@ -2,6 +2,7 @@
 use super::*;
 use crate::ui::text_field::TextField;
 use gpui_kit::component::{
+    Size as ButtonSize,
     input::{Input, InputState, Textarea, TextareaState},
     menu::{DropdownMenu as _, PopupMenuItem},
 };
@@ -129,26 +130,7 @@ impl Render for PipelinePanel {
                     .size_3()
                     .text_color(cx.theme().muted_foreground),
             )
-            .child(subtle(title, cx))
-            .child(div().flex_1())
-            .child(
-                Icon::new(Lucide::Folder)
-                    .size_3()
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .child(
-                subtle(path_name(&self.project), cx)
-                    .max_w(rems(8.))
-                    .truncate(),
-            )
-            .child(icon_action(
-                "hide-pipelines",
-                "Close",
-                Lucide::ChevronDown,
-                window,
-                cx,
-                |_, w, cx| w.dispatch_action(Box::new(TogglePipelines), cx),
-            ));
+            .child(subtle(title, cx));
         v_flex()
             .size_full()
             .overflow_hidden()
@@ -224,11 +206,22 @@ fn button<V: 'static>(
     cx: &mut Context<V>,
     click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
 ) -> Stateful<Div> {
+    button_with_size(id, label, look, ButtonSize::Small, window, cx, click)
+}
+fn button_with_size<V: 'static>(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    look: ButtonLook,
+    size: ButtonSize,
+    window: &mut Window,
+    cx: &mut Context<V>,
+    click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+) -> Stateful<Div> {
     let id = id.into();
     let hover = Hover::new(id.clone(), window, cx);
     Button::new(id)
         .cursor_pointer()
-        .small()
+        .with_size(size)
         .label(label)
         .on_click(cx.listener(move |this, _, w, cx| click(this, w, cx)))
         .smooth_hover(look, &hover, cx)

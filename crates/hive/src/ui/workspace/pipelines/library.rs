@@ -27,10 +27,11 @@ impl PipelinePanel {
             .iter()
             .position(|t| Some(&t.name) == self.selected_template.as_ref())
             .unwrap_or(0);
-        let mut actions = h_flex().gap_2().flex_wrap().child(button(
+        let mut actions = h_flex().gap_2().flex_wrap().child(button_with_size(
             "new-template",
             "New template",
             ButtonLook::Ghost,
+            ButtonSize::Medium,
             window,
             cx,
             |p, w, cx| p.edit(None, w, cx),
@@ -39,18 +40,20 @@ impl PipelinePanel {
             let edit = t.clone();
             let launch = t.clone();
             actions = actions
-                .child(button(
+                .child(button_with_size(
                     "edit-template",
                     "Edit workflow",
                     ButtonLook::Outline,
+                    ButtonSize::Medium,
                     window,
                     cx,
                     move |p, w, cx| p.edit(Some(edit.clone()), w, cx),
                 ))
-                .child(button(
+                .child(button_with_size(
                     "launch-template",
                     "Start run",
                     ButtonLook::Primary,
+                    ButtonSize::Medium,
                     window,
                     cx,
                     move |p, w, cx| p.launch(launch.clone(), w, cx),

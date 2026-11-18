@@ -108,6 +108,7 @@ pub(crate) enum ButtonLook {
     Ghost,
     Outline,
     Primary,
+    Danger,
 }
 
 impl ButtonLook {
@@ -135,6 +136,14 @@ impl ButtonLook {
                 active_bg: theme.input.mix_oklab(theme.transparent, 0.7),
                 border: Some(theme.input),
             },
+            Self::Danger => ButtonColors {
+                idle_bg: theme.button_danger,
+                hover_bg: theme.button_danger_hover,
+                idle_fg: theme.button_danger_foreground,
+                hover_fg: theme.button_danger_foreground,
+                active_bg: theme.button_danger_active,
+                border: None,
+            },
             Self::Primary => ButtonColors {
                 idle_bg: theme.button_primary,
                 hover_bg: theme.button_primary_hover,
@@ -151,6 +160,7 @@ impl ButtonLook {
             Self::Ghost => button.ghost(),
             Self::Outline => button.outline(),
             Self::Primary => button.primary(),
+            Self::Danger => button.danger(),
         }
     }
 }
