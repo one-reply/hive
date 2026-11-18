@@ -75,27 +75,18 @@ impl Inspector {
         };
         hive_core::agent::launch::validate_pipeline_profile(&profile).map_err(|e| e.to_string())?;
         if item == Item::Development {
-            update_inherited_profiles(t, &profile);
+            t.set_development_profile(profile.clone());
         }
         let step = match item {
             Item::Planner => &mut t.planner,
             Item::Development => &mut t.development,
-            Item::Review(i) => &mut t.reviews[i],
+            Item::Review(i) => t
+                .reviews
+                .get_mut(i)
+                .ok_or("This review no longer exists.")?,
             Item::Lane(i) => {
-                if t.lanes
-                    .iter()
-                    .enumerate()
-                    .any(|(ix, l)| ix != i && l.name == name)
-                {
-                    return Err("Lane names must be unique.".into());
-                }
+                t.rename_lane(i, name)?;
                 let lane = &mut t.lanes[i];
-                for step in &mut t.reviews {
-                    if step.return_lane.as_ref() == Some(&lane.name) {
-                        step.return_lane = Some(name.clone())
-                    }
-                }
-                lane.name = name;
                 lane.command = body;
                 lane.profile = profile;
                 return Ok(());
@@ -117,14 +108,6 @@ fn ensure_models(agent: AgentKind, cx: &mut App) {
         pipelines.update(cx, |p, cx| p.load_models(agent, cx));
     }
 }
-fn update_inherited_profiles(t: &mut Template, profile: &Profile) {
-    for lane in &mut t.lanes {
-        if lane.profile == t.development.profile {
-            lane.profile = profile.clone();
-        }
-    }
-}
-
 impl TemplateEditor {
     pub(super) fn sync_models(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         let id = self.inspector.model.read(cx).value();
@@ -351,22 +334,4 @@ fn setting(label: &'static str, value: AnyElement, cx: &App) -> Div {
         .justify_between()
         .child(subtle(label, cx).flex_none())
         .child(div().min_w_0().overflow_hidden().child(value))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Template, update_inherited_profiles};
-    #[test]
-    fn changing_development_profile_preserves_independent_lane_model() {
-        let mut t = Template::default();
-        let mut custom = t.lanes[0].clone();
-        custom.name = "API".into();
-        custom.profile.model = "custom".into();
-        t.lanes.push(custom.clone());
-        let mut profile = t.development.profile.clone();
-        profile.model = "new-default".into();
-        update_inherited_profiles(&mut t, &profile);
-        assert_eq!(t.lanes[0].profile, profile);
-        assert_eq!(t.lanes[1], custom);
-    }
 }

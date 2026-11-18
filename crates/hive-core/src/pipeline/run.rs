@@ -60,36 +60,36 @@ pub struct StageTiming {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Run {
     /// Stable run identity.
-    pub id: u64,
+    pub(super) id: u64,
     /// Local project that owns this task in the sidebar.
     #[serde(with = "crate::path_encoding::persisted")]
-    pub owner: PathBuf,
+    pub(super) owner: PathBuf,
     /// Original user request.
-    pub task: String,
+    pub(super) task: String,
     /// Recipe frozen at launch.
-    pub template: Template,
+    pub(super) template: Template,
     /// Approved repository bindings.
-    pub lanes: Vec<Lane>,
+    pub(super) lanes: Vec<Lane>,
     /// Current gate.
-    pub phase: Phase,
+    pub(super) phase: Phase,
     /// Chronological handoffs, decisions and test outcomes.
-    pub history: Vec<String>,
+    pub(super) history: Vec<String>,
     /// Accepted handoffs tied to their actual agent invocation and phase.
     #[serde(default)]
-    pub reports: Vec<(Ticket, Phase, Report)>,
+    pub(super) reports: Vec<(Ticket, Phase, Report)>,
     /// Observed stage intervals; older runs contain only their handoff history.
     #[serde(default)]
-    pub timings: Vec<StageTiming>,
+    pub(super) timings: Vec<StageTiming>,
     /// Open findings for the most recent review.
-    pub findings: Vec<Finding>,
+    pub(super) findings: Vec<Finding>,
     /// Most recent QA command results.
-    pub commands: Vec<CommandResult>,
+    pub(super) commands: Vec<CommandResult>,
     /// Content fingerprint taken before QA, checked again on final acceptance.
     #[serde(default)]
-    pub review_revision: Option<String>,
+    pub(super) review_revision: Option<String>,
     /// Known CLI session IDs, linked to the exact attempts that created them.
     #[serde(default)]
-    pub sessions: Vec<(Ticket, ResumeSession)>,
+    pub(super) sessions: Vec<(Ticket, ResumeSession)>,
     pub(super) outstanding: Vec<Ticket>,
     pub(super) last_attempt: u64,
     pub(super) rounds: Vec<u8>,
@@ -222,8 +222,12 @@ impl Run {
     pub fn prompt(&self, ticket: &Ticket) -> Result<String, Error> {
         let step = self.step(ticket).ok_or(Error::InactiveAttempt)?;
         let mut prompt = format!("{}\n\nUser task:\n{}\n", step.instruction, self.task);
+        let reviewing = matches!(self.phase, Phase::Review(_));
         for (i, lane) in self.lanes.iter().enumerate() {
-            if ticket.lane.is_some_and(|index| index != i) {
+            // A reviewer may only file findings against lanes that have work to review.
+            if ticket.lane.is_some_and(|index| index != i)
+                || (reviewing && lane.assignment.trim().is_empty())
+            {
                 continue;
             }
             let _ = writeln!(
@@ -283,7 +287,7 @@ impl Run {
         if self.id == 0
             || !self.owner.is_absolute()
             || self.lanes.is_empty()
-            || self.template.validate().is_err()
+            || self.template.validate_structure().is_err()
             || self.rounds.len() != self.template.reviews.len()
             || self.last_attempt > u64::MAX / 2
             || self.lanes.iter().any(|l| !l.project.is_absolute())

@@ -250,7 +250,8 @@ pub(crate) fn run_with_log_tail(
     )
 }
 
-/// Feed large read-only command output to a bounded incremental consumer and retain only stderr.
+/// Feed large read-only command output to a bounded incremental consumer and retain the tail
+/// of stderr: warnings, one per file in some configurations, must not fail the command.
 #[cfg(feature = "desktop")]
 pub(crate) fn stream_stdout(
     command: Command,
@@ -264,7 +265,7 @@ pub(crate) fn stream_stdout(
         &[],
         cancellation,
         timeout,
-        Capture::Exact(stderr_limit),
+        Capture::LogTail(stderr_limit),
         |_, bytes| {
             sink(bytes);
             Ok(())
@@ -424,6 +425,27 @@ mod tests {
         assert_eq!(result.code, Some(19));
         assert_eq!(result.stdout, b"def");
         assert_eq!(result.stderr, b"456");
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn streamed_output_survives_more_warnings_than_the_stderr_budget() {
+        let mut streamed = Vec::new();
+        let result = stream_stdout(
+            Host::Local.command(
+                "/bin/sh",
+                &["-c", "printf patch; printf warning-warning >&2"],
+                None,
+            ),
+            &Cancellation::default(),
+            Duration::from_secs(5),
+            7,
+            |chunk| streamed.extend_from_slice(chunk),
+        )
+        .unwrap();
+        assert_eq!(result.code, Some(0));
+        assert_eq!(streamed, b"patch");
+        assert_eq!(result.stderr, b"warning");
     }
 
     #[test]

@@ -178,6 +178,8 @@ impl Run {
                 "The results do not match the required commands",
             ));
         }
+        // `commands` keeps this round's full output; history only needs the diagnostic tail,
+        // so a long QA loop does not grow the saved state by the size of every log.
         for r in &results {
             self.history.push(format!(
                 "{} · {} · {} ({})\n{}",
@@ -186,7 +188,7 @@ impl Run {
                 if r.success { "Passed" } else { "Failed" },
                 r.exit_code
                     .map_or_else(|| "no exit code".into(), |code| format!("exit {code}")),
-                r.output
+                check_excerpt(&r.output)
             ));
         }
         self.commands = results;

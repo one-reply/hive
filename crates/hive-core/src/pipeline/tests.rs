@@ -239,6 +239,49 @@ fn review_budget_survives_an_intervening_green_qa_gate() {
 }
 
 #[test]
+fn reviewer_prompt_lists_only_lanes_with_assigned_work() {
+    let mut run = run_with(&["/api", "/web"], 3);
+    let assignments = vec![Assignment {
+        lane: 1,
+        task: "Update the client".into(),
+        criteria: "Tests pass".into(),
+    }];
+    report(&mut run, Report::Plan { assignments });
+    run.approve().unwrap();
+    report(&mut run, developed());
+    assert!(matches!(run.phase, Phase::Review(_)));
+    let prompt = run.prompt(&run.pending()[0]).unwrap();
+    assert!(prompt.contains("Lane 1: Role 1"), "{prompt}");
+    assert!(!prompt.contains("Lane 0:"), "{prompt}");
+}
+
+#[test]
+fn check_history_keeps_only_the_tail_of_a_long_log() {
+    let mut run = run_with(&["/repo"], 3);
+    run.lanes[0].command = "cargo test".into();
+    plan(&mut run);
+    report(&mut run, developed());
+    report(&mut run, review(vec![]));
+    let output = format!("{}expected 3, got 2", "compiling\n".repeat(10_000));
+    run.command_results(vec![CommandResult {
+        lane: 0,
+        command: "cargo test".into(),
+        success: false,
+        exit_code: Some(1),
+        output: output.clone(),
+    }])
+    .unwrap();
+    let entry = run
+        .history
+        .iter()
+        .find(|h| h.contains("cargo test"))
+        .unwrap();
+    assert!(entry.ends_with("expected 3, got 2"));
+    assert!(entry.len() < 4300, "{}", entry.len());
+    assert_eq!(run.commands[0].output, output);
+}
+
+#[test]
 fn repair_handoff_keeps_diagnostic_tail_on_a_character_boundary() {
     let log = format!("{}test failed", "я".repeat(6000));
     let excerpt = super::transitions::check_excerpt(&log);

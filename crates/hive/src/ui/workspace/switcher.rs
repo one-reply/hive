@@ -114,22 +114,22 @@ impl Destinations {
             let Some(t) = pipelines.ticket_for_session(session.session) else {
                 continue;
             };
-            let Some(run) = library.runs.iter().find(|r| r.id == t.run) else {
+            let Some(run) = library.runs.iter().find(|r| r.id() == t.run) else {
                 continue;
             };
-            let Some(project) = app.projects.read(cx).project(&Host::Local, &run.owner) else {
+            let Some(project) = app.projects.read(cx).project(&Host::Local, run.owner()) else {
                 continue;
             };
             self.entries.push(Destination {
                 host: Host::Local,
-                project: run.owner.clone(),
+                project: run.owner().to_path_buf(),
                 worktree: None,
                 session: Some(session.session),
                 pipeline: None,
                 label: format!(
                     "Pipeline · {} · {} · {} · {}",
                     project.name,
-                    run.task,
+                    run.task(),
                     session.kind.name(),
                     session.status.label()
                 ),

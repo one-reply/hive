@@ -283,13 +283,15 @@ fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::L
             object.get("templates"),
             "pipelines.templates",
             lost,
-            |t: &Template| t.validate().is_ok() && names.insert(t.name.to_lowercase()),
+            |t: &Template| {
+                t.validate_structure().is_ok() && names.insert(t.name.to_ascii_lowercase())
+            },
         )
     } else {
         Library::default().templates
     };
     let runs = items(object.get("runs"), "pipelines.runs", lost, |r: &Run| {
-        r.valid_snapshot() && ids.insert(r.id)
+        r.valid_snapshot() && ids.insert(r.id())
     });
     let catalog_version = object
         .get("catalog_version")
@@ -519,6 +521,44 @@ mod tests {
         library.templates[1].name = "Hotfix".into();
         let reloaded = pipelines(Some(serde_json::to_value(&library).unwrap()), &mut lost);
         assert_eq!(reloaded, library);
+    }
+
+    #[test]
+    fn recipes_with_a_retired_effort_or_non_ascii_names_survive_reload() {
+        use crate::pipeline::Template;
+        let mut retired = Template {
+            name: "Ärger".into(),
+            ..Default::default()
+        };
+        retired.planner.profile.effort = "retired-level".into();
+        assert!(retired.validate().is_err());
+        let lowercase = Template {
+            name: "ärger".into(),
+            ..Default::default()
+        };
+        let mut lost = vec![];
+        let library = pipelines(
+            Some(serde_json::json!({"templates": [retired, lowercase], "catalog_version": 1})),
+            &mut lost,
+        );
+        assert!(lost.is_empty(), "{lost:?}");
+        assert_eq!(library.templates, [retired, lowercase]);
+    }
+
+    #[test]
+    fn empty_template_library_stays_empty_after_reload() {
+        let mut state = State::default();
+        state.pipelines.templates.clear();
+        let fixture = Fixture::new();
+        state.save_to(&fixture.0.join("state.json")).unwrap();
+        assert!(
+            State::load_from(&fixture.0)
+                .unwrap()
+                .state
+                .pipelines
+                .templates
+                .is_empty()
+        );
     }
 
     #[test]

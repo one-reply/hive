@@ -1,6 +1,10 @@
 //! The library previews executable routes and the selected project's actual runs.
 use super::*;
 use crate::ui::hover::SmoothHoverBg as _;
+use gpui_kit::component::{
+    button::{ButtonVariant, ButtonVariants as _},
+    menu::{ContextMenuExt as _, PopupMenu},
+};
 
 fn count(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
@@ -13,12 +17,12 @@ impl PipelinePanel {
             .runs
             .iter()
             .rev()
-            .filter(|r| r.owner == self.project)
+            .filter(|r| r.owner() == self.project)
             .map(|r| {
                 (
-                    r.id,
-                    r.task.clone(),
-                    r.template.name.clone(),
+                    r.id(),
+                    r.task().to_owned(),
+                    r.template().name.clone(),
                     phase_label(r),
                 )
             })
@@ -37,32 +41,21 @@ impl PipelinePanel {
             |p, w, cx| p.edit(None, w, cx),
         ));
         if let Some(t) = templates.get(selected) {
-            let edit = t.clone();
             let launch = t.clone();
-            actions = actions
-                .child(button_with_size(
-                    "edit-template",
-                    "Edit workflow",
-                    ButtonLook::Outline,
-                    ButtonSize::Medium,
-                    window,
-                    cx,
-                    move |p, w, cx| p.edit(Some(edit.clone()), w, cx),
-                ))
-                .child(button_with_size(
-                    "launch-template",
-                    "Start run",
-                    ButtonLook::Primary,
-                    ButtonSize::Medium,
-                    window,
-                    cx,
-                    move |p, w, cx| p.launch(launch.clone(), w, cx),
-                ));
+            actions = actions.child(button_with_size(
+                "launch-template",
+                "Start run",
+                ButtonLook::Primary,
+                ButtonSize::Medium,
+                window,
+                cx,
+                move |p, w, cx| p.launch(launch.clone(), w, cx),
+            ));
         }
         let mut cards = h_flex().items_stretch().gap_3().flex_wrap();
         for (i, t) in templates.iter().enumerate() {
-            let id = ("workflow-template", i);
-            let hover = Hover::new(id, window, cx);
+            let id = SharedString::from(format!("workflow-template-{}", t.name));
+            let hover = Hover::new(id.clone(), window, cx);
             let selected = selected == i;
             let name = t.name.clone();
             let pick = move |this: &mut Self, cx: &mut Context<Self>| {
@@ -76,6 +69,19 @@ impl PipelinePanel {
                 count(t.reviews.len(), "review", "reviews")
             );
             let accent = cx.theme().blue;
+            let panel = cx.entity();
+            let template = t.clone();
+            let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+                template_menu(menu, &panel, &template)
+            };
+            let more = Button::new(("workflow-menu", i))
+                .cursor_pointer()
+                .ghost()
+                .xsmall()
+                .icon(Lucide::Ellipsis)
+                .accessibility_label(format!("Actions for {}", t.name))
+                .tooltip("Workflow actions")
+                .dropdown_menu(menu.clone());
             let bottom = v_flex()
                 .px_3()
                 .py_2p5()
@@ -105,7 +111,12 @@ impl PipelinePanel {
                             }),
                         ),
                 )
-                .child(subtle(summary, cx));
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .child(subtle(summary, cx))
+                        .child(more),
+                );
             cards = cards.child(
                 v_flex()
                     .id(id)
@@ -135,8 +146,12 @@ impl PipelinePanel {
                             pick(this, cx)
                         }
                     }))
-                    .hover_bg(&hover, cx.theme().sidebar, cx.theme().accent),
+                    .hover_bg(&hover, cx.theme().sidebar, cx.theme().accent)
+                    .context_menu(menu),
             );
+        }
+        if templates.is_empty() {
+            cards = cards.child(subtle("Create a template to start a run.", cx));
         }
         let mut history = v_flex().when(!runs.is_empty(), |e| {
             e.border_t_1().border_color(cx.theme().border)
@@ -213,4 +228,61 @@ impl PipelinePanel {
                 ),
         )
     }
+}
+
+fn template_menu(menu: PopupMenu, panel: &Entity<PipelinePanel>, template: &Template) -> PopupMenu {
+    let duplicate_panel = panel.clone();
+    let source = template.clone();
+    let panel = panel.clone();
+    let edit = template.clone();
+    let delete = template.clone();
+    menu.item(
+        PopupMenuItem::new("Edit workflow")
+            .icon(Lucide::Pencil)
+            .on_click(move |_, window, cx| {
+                panel.update(cx, |p, cx| p.edit(Some(edit.clone()), window, cx));
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Duplicate template")
+            .icon(Lucide::Copy)
+            .on_click(move |_, window, cx| {
+                let pipelines = AppState::get(cx).pipelines.clone();
+                match pipelines.update(cx, |p, cx| p.duplicate_template(&source, cx)) {
+                    Ok(copy) => duplicate_panel.update(cx, |p, cx| {
+                        p.selected_template = Some(copy.name.clone());
+                        p.edit(Some(copy), window, cx);
+                    }),
+                    Err(error) => window.push_notification(Notification::error(error), cx),
+                }
+            }),
+    )
+    .separator()
+    .item(
+        PopupMenuItem::new("Delete template…")
+            .icon(Lucide::Trash)
+            .on_click(move |_, window, cx| confirm_delete(&delete, window, cx)),
+    )
+}
+
+fn confirm_delete(template: &Template, window: &mut Window, cx: &mut App) {
+    let template = template.clone();
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let template = template.clone();
+        alert
+            .confirm()
+            .title(format!("Delete “{}”?", template.name))
+            .description(
+                "This removes the template from all projects. Existing runs keep their workflow.",
+            )
+            .ok_text("Delete")
+            .ok_variant(ButtonVariant::Danger)
+            .on_ok(move |_, window, cx| {
+                let pipelines = AppState::get(cx).pipelines.clone();
+                if let Err(error) = pipelines.update(cx, |p, cx| p.delete_template(&template, cx)) {
+                    window.push_notification(Notification::error(error), cx);
+                }
+                true
+            })
+    });
 }

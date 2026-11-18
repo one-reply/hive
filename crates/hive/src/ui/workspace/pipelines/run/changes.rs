@@ -32,7 +32,7 @@ impl RunView {
             },
         ));
         page = page.child(head);
-        match pipelines.read(cx).reviews.get(&self.id) {
+        match pipelines.read(cx).review(self.id) {
             None => page = page.child(subtle("Reading worktree changes…", cx)),
             Some(Err(e)) => {
                 page = page.child(
@@ -45,7 +45,7 @@ impl RunView {
             Some(Ok(repos)) => {
                 for repo in repos {
                     let name = run
-                        .lanes
+                        .lanes()
                         .get(repo.lane)
                         .map(|lane| path_name(&lane.project))
                         .unwrap_or_else(|| repo.name.clone());
@@ -110,8 +110,7 @@ impl RunView {
         let pipelines = AppState::get(cx).pipelines.clone();
         let repo = pipelines
             .read(cx)
-            .reviews
-            .get(&self.id)
+            .review(self.id)
             .and_then(|r| r.as_ref().ok())
             .and_then(|repos| repos.iter().find(|r| r.lane == lane));
         let Some(repo) = repo else { return vec![] };
@@ -205,7 +204,7 @@ impl RunView {
             },
         );
         let project = run
-            .lanes
+            .lanes()
             .get(lane)
             .map(|l| path_name(&l.project))
             .unwrap_or_default();
@@ -222,8 +221,7 @@ impl RunView {
             .child(div().text_sm().truncate().child(path.clone()));
         let result = pipelines
             .read(cx)
-            .patches
-            .get(&self.id)
+            .patch(self.id)
             .filter(|(i, p, _)| *i == lane && *p == path);
         let body = match result {
             Some((_, _, Ok(files))) if files.iter().any(|f| f.is_binary()) => {

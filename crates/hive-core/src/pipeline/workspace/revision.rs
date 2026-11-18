@@ -36,7 +36,7 @@ fn digest_checkout(
 ) -> Result<(), GitError> {
     frame(hash, cwd.as_os_str().as_bytes());
     frame(hash, base.as_bytes());
-    digest_patch(hash, cwd, [OsStr::new(base), OsStr::new("--")], false, stop)?;
+    digest_patch(hash, cwd, [OsStr::new(base), OsStr::new("--")], stop)?;
     let files = git::bytes(
         &Host::Local,
         cwd,
@@ -51,18 +51,7 @@ fn digest_checkout(
             // Git lists an embedded repository as one path. Hash its checkout, never its .git metadata.
             digest_nested(hash, cwd, file, stop)?;
         } else {
-            digest_patch(
-                hash,
-                cwd,
-                [
-                    OsStr::new("--no-index"),
-                    OsStr::new("--"),
-                    OsStr::new("/dev/null"),
-                    OsStr::from_bytes(file),
-                ],
-                true,
-                stop,
-            )?;
+            digest_untracked(hash, &cwd.join(OsStr::from_bytes(file)), stop)?;
         }
     }
     // A superproject patch only says "-dirty" for every edit inside the same gitlink.
@@ -136,6 +125,44 @@ fn digest_nested(
     Ok(())
 }
 
+/// Hashes what Git would record for a new file: its type, executable bit and bytes.
+/// Done in process because a generated tree can hold thousands of untracked files.
+fn digest_untracked(hash: &mut Sha256, path: &Path, stop: &Cancellation) -> Result<(), GitError> {
+    use std::os::unix::fs::PermissionsExt;
+    let unreadable = |e: std::io::Error| GitError::Invalid(format!("{}: {e}", path.display()));
+    if stop.is_cancelled() {
+        return Err(GitError::Invalid("Review was cancelled.".into()));
+    }
+    let meta = std::fs::symlink_metadata(path).map_err(unreadable)?;
+    if meta.file_type().is_symlink() {
+        frame(hash, b"symlink");
+        let target = std::fs::read_link(path).map_err(unreadable)?;
+        frame(hash, target.as_os_str().as_bytes());
+        return Ok(());
+    }
+    if !meta.is_file() {
+        frame(hash, b"special");
+        return Ok(());
+    }
+    let executable = meta.permissions().mode() & 0o111 != 0;
+    frame(hash, if executable { b"executable" } else { b"file" });
+    let mut file = std::fs::File::open(path).map_err(unreadable)?;
+    let mut contents = Sha256::new();
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let read = match std::io::Read::read(&mut file, &mut buffer) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            read => read.map_err(unreadable)?,
+        };
+        if read == 0 {
+            break;
+        }
+        contents.update(&buffer[..read]);
+    }
+    hash.update(contents.finalize());
+    Ok(())
+}
+
 fn frame(hash: &mut Sha256, value: &[u8]) {
     hash.update((value.len() as u64).to_be_bytes());
     hash.update(value);
@@ -145,7 +172,6 @@ fn digest_patch<const N: usize>(
     combined: &mut Sha256,
     cwd: &Path,
     args: [&OsStr; N],
-    allow_difference: bool,
     stop: &Cancellation,
 ) -> Result<(), GitError> {
     let mut cmd = Host::Local.command("git", DIFF_FLAGS, Some(cwd));
@@ -164,7 +190,7 @@ fn digest_patch<const N: usize>(
         mutation: false,
         guidance: "Review could not verify the current files.",
     })?;
-    if out.code != Some(0) && !(allow_difference && out.code == Some(1)) {
+    if out.code != Some(0) {
         return Err(GitError::Failed {
             command: "diff".into(),
             host: Host::Local,

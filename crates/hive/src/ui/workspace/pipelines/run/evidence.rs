@@ -1,19 +1,20 @@
 //! User-configured checks and chronological evidence, with long output disclosed on demand.
 use super::*;
 use crate::ui::hover::SmoothHoverBg as _;
+use hive_core::pipeline::readable_history;
 
 impl RunView {
     pub(super) fn checks(&self, r: &Run, w: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut list = v_flex().gap_1().child(heading("Required checks"));
         let mut count = 0;
         for (i, lane) in r
-            .lanes
+            .lanes()
             .iter()
             .enumerate()
             .filter(|(_, l)| !l.command.trim().is_empty())
         {
             count += 1;
-            let result = r.commands.iter().find(|c| c.lane == i);
+            let result = r.commands().iter().find(|c| c.lane == i);
             let (label, color) = match result {
                 Some(c) if c.success => ("Passed", cx.theme().success),
                 Some(_) => ("Failed", cx.theme().danger),
@@ -103,20 +104,18 @@ impl RunView {
                 list.child(subtle("No required commands were configured for this run.", cx).py_3());
         }
         list = list.child(heading("Agent reviews").mt_3());
-        for (i, review) in r.template.reviews.iter().enumerate() {
+        for (i, review) in r.template().reviews.iter().enumerate() {
             let stage = Stage::Review(i);
-            let state = stage.state(r, &stage.observations(r));
-            let latest = handoff::stage_reports(r, stage)
-                .next_back()
-                .map(|(_, report)| report);
-            let mut label = state.to_owned();
+            let state = stage.status(r, &stage.observations(r));
+            let latest = r.stage_reports(stage).next_back().map(|(_, report)| report);
+            let mut label = state.label().to_owned();
             let mut color = match state {
-                "Complete" => cx.theme().success,
-                "Failed" | "Interrupted" => cx.theme().danger,
-                "In progress" => cx.theme().info,
+                StageStatus::Complete => cx.theme().success,
+                StageStatus::Failed | StageStatus::Interrupted => cx.theme().danger,
+                StageStatus::InProgress => cx.theme().info,
                 _ => cx.theme().muted_foreground,
             };
-            if !matches!(state, "In progress" | "Interrupted")
+            if !matches!(state, StageStatus::InProgress | StageStatus::Interrupted)
                 && let Some(hive_core::pipeline::Report::Review { findings, .. }) = latest
             {
                 if findings.is_empty() {
@@ -204,16 +203,16 @@ impl RunView {
     }
     pub(super) fn activity(&self, r: &Run, w: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut list = v_flex().gap_1().child(heading("Activity"));
-        if r.history.is_empty() {
+        if r.history().is_empty() {
             list = list.child(subtle("No handoffs have been recorded yet.", cx).py_3());
         }
-        for (i, event) in r.history.iter().enumerate() {
+        for (i, event) in r.history().iter().enumerate() {
             let text = event.trim();
             let first = text.lines().next().unwrap_or_default();
             let open = self.expanded_events.contains(&i);
             let expandable = first.len() != text.len() || first.chars().count() > 85;
             let hover = Hover::new(("event-hover", i), w, cx);
-            let label = human_exit(first);
+            let label = readable_history(first);
             let mut row = h_flex()
                 .id(("activity-entry", i))
                 .gap_2()
@@ -260,32 +259,13 @@ impl RunView {
                         .border_l_1()
                         .border_color(cx.theme().border)
                         .text_sm()
-                        .child(SelectableText::new(("history-text", i), human_exit(text))),
+                        .child(SelectableText::new(
+                            ("history-text", i),
+                            readable_history(text),
+                        )),
                 );
             }
         }
         scroll("run-activity", list)
-    }
-}
-// Historical command events persisted a Rust Option in their first line.
-fn human_exit(text: &str) -> String {
-    if let Some((prefix, rest)) = text.split_once("(Some(")
-        && let Some((code, suffix)) = rest.split_once("))")
-        && code.parse::<i32>().is_ok()
-    {
-        return format!("{prefix}(exit {code}){suffix}");
-    }
-    text.to_owned()
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[::core::prelude::v1::test]
-    fn old_structured_exit_codes_are_readable_without_rewriting_raw_test_output() {
-        assert_eq!(
-            human_exit("API · cargo test · passed (Some(0))"),
-            "API · cargo test · passed (exit 0)"
-        );
-        assert_eq!(human_exit("app: Some(value)"), "app: Some(value)");
     }
 }

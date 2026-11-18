@@ -186,6 +186,19 @@ fn preparation_recovers_only_the_registered_checkout_and_never_recreates_missing
 }
 
 #[test]
+fn preparation_rejects_a_checkout_that_an_interrupted_add_left_incomplete() {
+    let dir = Scratch::new("partial-checkout");
+    let lane = dir.lane("repo");
+    let path = prepare(14, &lane, &Cancellation::default()).unwrap();
+    // A killed `git worktree add` keeps the registration and HEAD but not every file.
+    fs::remove_file(path.join("contract")).unwrap();
+    let error = prepare(14, &lane, &Cancellation::default()).unwrap_err();
+    assert!(error.to_string().contains("incomplete"), "{error}");
+    git(&path, &["checkout", "--", "contract"]);
+    assert_eq!(prepare(14, &lane, &Cancellation::default()).unwrap(), path);
+}
+
+#[test]
 fn unassigned_scripts_and_cancelled_commands_do_not_run() {
     let dir = Scratch::new("commands");
     let lane = Lane {
@@ -242,7 +255,15 @@ fn revision_changes_after_manual_edits_new_files_binary_changes_and_permission_c
     assert_ne!(added1, added2);
     assert_ne!(binary2, added2);
     fs::set_permissions(&added, fs::Permissions::from_mode(0o755)).unwrap();
-    assert_ne!(added2, key());
+    let executable = key();
+    assert_ne!(added2, executable);
+    let link = lane.worktree.join("link");
+    std::os::unix::fs::symlink("new", &link).unwrap();
+    let linked = key();
+    assert_ne!(executable, linked);
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink("contract", &link).unwrap();
+    assert_ne!(linked, key());
 }
 
 #[test]

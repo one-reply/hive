@@ -11,11 +11,13 @@ use hive_core::agent::AgentStatus;
 use hive_core::pipeline::{Phase, Ticket};
 
 mod changes;
+mod checkpoint;
 mod decision;
 mod details;
 mod elapsed;
 mod evidence;
 mod handoff;
+mod header;
 mod interaction;
 use interaction::actionable;
 mod sessions;
@@ -23,7 +25,7 @@ use sessions::LiveSession;
 mod stage;
 mod summary;
 mod timeline;
-use stage::Stage;
+use stage::{Stage, StageIcon as _, StageStatus};
 
 use gpui_kit::component::{
     diff::DiffState,
@@ -55,6 +57,8 @@ pub(super) struct RunView {
     note: Entity<TextareaState>,
     plan: Vec<(Entity<TextareaState>, Entity<TextareaState>)>,
     session: Option<(Ticket, Entity<TerminalView>)>,
+    /// Keeps keyboard focus inside the run when its live session closes.
+    focus: FocusHandle,
     error: Option<String>,
     tab: RunTab,
     editing_plan: bool,
@@ -80,12 +84,17 @@ impl RunView {
         let agents = app.agents.clone();
         let run = saved_run(store.read(cx), id).cloned().map(Rc::new);
         let subscriptions = vec![
-            cx.observe(&store, move |this, store, cx| {
+            cx.observe_in(&store, window, move |this, store, window, cx| {
                 let state = store.read(cx);
                 let saved = saved_run(state, id);
                 if this.run.as_deref() != saved {
                     this.run = saved.cloned().map(Rc::new);
                     cx.notify();
+                }
+                if let Some((ticket, _)) = &this.session
+                    && sessions::attempt_ended(this.run.as_deref(), ticket)
+                {
+                    this.close_session(window, cx);
                 }
             }),
             cx.observe(&agents, |view, _, cx| {
@@ -96,8 +105,7 @@ impl RunView {
                 }
             }),
             cx.observe(&pipelines, |view, pipelines, cx| {
-                if view.tab == RunTab::Changes && !pipelines.read(cx).reviews.contains_key(&view.id)
-                {
+                if view.tab == RunTab::Changes && pipelines.read(cx).review(view.id).is_none() {
                     view.selected_file = None;
                     view.display = None;
                     let id = view.id;
@@ -112,6 +120,7 @@ impl RunView {
             note: area("", "Feedback or decision rationale", window, cx),
             plan: vec![],
             session: None,
+            focus: cx.focus_handle(),
             error: None,
             tab: RunTab::Timeline,
             editing_plan: false,
@@ -153,18 +162,12 @@ impl RunView {
                 )
             })
             .collect::<Vec<_>>();
-        self.edit(cx, |run| {
-            if run.phase != Phase::ApprovePlan || assignments.len() != run.lanes.len() {
-                return Err("The proposed plan has changed.".into());
-            }
-            for (lane, (task, criteria)) in run.lanes.iter_mut().zip(assignments) {
-                lane.assignment = task;
-                lane.criteria = criteria;
-            }
-            run.approve().map_err(|error| error.to_string())
-        });
+        self.edit(cx, |run| Ok(run.approve_with(assignments)?));
     }
     pub(super) fn terminal(&mut self, ticket: Ticket, w: &mut Window, cx: &mut Context<Self>) {
+        if ticket.run != self.id {
+            return;
+        }
         let session = AppState::get(cx).pipelines.read(cx).session(&ticket);
         if let Some(session) = session {
             let view = cx.new(|cx| TerminalView::with_session(session, None, w, cx));
@@ -176,6 +179,11 @@ impl RunView {
                 "The live session is unavailable. Retry or resume the interrupted attempt.".into(),
             );
         }
+        cx.notify();
+    }
+    fn close_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session = None;
+        self.focus.focus(window, cx);
         cx.notify();
     }
     fn retry(&mut self, cx: &mut Context<Self>) {
@@ -211,9 +219,8 @@ impl Render for RunView {
                                 .small()
                                 .icon(Lucide::ArrowLeft)
                                 .label("Back to run")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.session = None;
-                                    cx.notify();
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.close_session(window, cx);
                                 }))
                                 .smooth_hover(ButtonLook::Outline, &back_hover, cx),
                         )
@@ -228,251 +235,40 @@ impl Render for RunView {
         let Some(run) = self.run.clone() else {
             return div()
                 .p_4()
+                .track_focus(&self.focus)
                 .child("This run is unavailable.")
                 .into_any_element();
         };
-        if self.phase != Some(run.phase) {
-            self.phase = Some(run.phase);
+        if self.phase != Some(run.phase()) {
+            self.phase = Some(run.phase());
             self.editing_plan = false;
             self.giving_feedback = false;
             self.plan.clear();
             self.note = area("", "Add feedback for the agent", w, cx);
-            self.selected_stage = match run.phase {
+            self.selected_stage = match run.phase() {
                 Phase::ApprovePlan => Some(Stage::Approval),
                 Phase::Decision(ix) => Some(Stage::Decision(ix)),
                 _ => None,
             };
-            if matches!(run.phase, Phase::Acceptance | Phase::Accepted) {
+            if matches!(run.phase(), Phase::Acceptance | Phase::Accepted) {
                 let view = cx.weak_entity();
                 cx.defer(move |cx| {
                     let _ = view.update(cx, |v, cx| v.refresh_changes(cx));
                 });
             }
         }
-        let pipelines = AppState::get(cx).pipelines.clone();
-        let stopped = matches!(run.phase, Phase::Accepted | Phase::Cancelled);
+        let stopped = matches!(run.phase(), Phase::Accepted | Phase::Cancelled);
         let sessions = LiveSession::for_run(&run, cx);
-        let request = sessions
-            .iter()
-            .find(|s| s.request_action().is_some())
-            .and_then(|s| s.status);
-        let mut phase = phase_label(&run);
-        if let Some(status) = request {
-            phase = format!("{phase} · {}", status.label());
-        }
-        let status_color = match run.phase {
-            _ if request.is_some() => cx.theme().warning,
-            Phase::Accepted => cx.theme().success,
-            Phase::ApprovePlan | Phase::Decision(_) | Phase::Acceptance => cx.theme().warning,
-            Phase::Cancelled => cx.theme().muted_foreground,
-            _ => cx.theme().info,
-        };
-        let mut top = v_flex().px_5().pt_4().pb_3().gap_2();
-        let mut title = h_flex().gap_2().items_start().child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_3xl()
-                .font_weight(FontWeight::MEDIUM)
-                .child(task_title(&run.task)),
-        );
-        if run.task.lines().count() > 1 || run.task.chars().count() > 110 {
-            title = title.child(button(
-                "task-description",
-                if self.description_open {
-                    "Hide task"
-                } else {
-                    "Full task"
-                },
-                ButtonLook::Ghost,
-                w,
-                cx,
-                |v, _, cx| {
-                    v.description_open = !v.description_open;
-                    cx.notify();
-                },
-            ));
-        }
-        top = top.child(title);
-        if self.description_open {
-            top = top.child(
-                div()
-                    .id("task-scroll")
-                    .max_h(rems(6.))
-                    .overflow_y_scroll()
-                    .text_sm()
-                    .child(SelectableText::new("full-task", run.task.clone())),
-            );
-        }
-        let mut meta = h_flex()
-            .gap_3()
-            .flex_wrap()
-            .child(
-                h_flex()
-                    .gap_1p5()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_full()
-                    .bg(status_color.opacity(0.12))
-                    .child(div().size_1p5().rounded_full().bg(status_color))
-                    .child(div().text_xs().text_color(status_color).child(phase)),
-            )
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Icon::new(Lucide::GitBranch)
-                            .size_3p5()
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .child(subtle(run.template.name.clone(), cx)),
-            );
-        let repos = run
-            .lanes
-            .iter()
-            .map(|l| &l.project)
-            .collect::<HashSet<_>>()
-            .len();
-        meta = meta.child(subtle(
-            format!(
-                "{repos} {}",
-                if repos == 1 {
-                    "repository"
-                } else {
-                    "repositories"
-                }
-            ),
-            cx,
-        ));
         let now = elapsed::now_ms();
-        let range = elapsed::range(&run.timings, now);
-        let recording = !stopped && run.timings.iter().any(|r| r.end_ms.is_none() && !r.failed);
-        if recording && self.timer.is_none() {
-            self.timer = Some(cx.spawn(async |view, cx| {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
-                let _ = view.update(cx, |this, cx| {
-                    this.timer.take();
-                    cx.notify();
-                });
-            }));
-        } else if !recording {
-            self.timer = None;
-        }
-        if let Some((start, end)) = range {
-            meta = meta.child(subtle(
-                format!("{} elapsed", elapsed::duration(end.saturating_sub(start))),
-                cx,
-            ));
-            let invocations = run
-                .timings
+        let range = elapsed::range(run.timings(), now);
+        let recording = !stopped
+            && run
+                .timings()
                 .iter()
-                .filter(|row| row.attempt.is_some())
-                .count();
-            if invocations > 0 {
-                meta = meta.child(subtle(
-                    format!(
-                        "{invocations} agent {}",
-                        if invocations == 1 {
-                            "session"
-                        } else {
-                            "sessions"
-                        }
-                    ),
-                    cx,
-                ));
-            }
-        }
-        top = top.child(meta);
-        if !stopped {
-            top = top.children(self.checkpoint_actions(&run, &sessions, w, cx));
-        }
-        if let Some(msg) = self.error.clone() {
-            top = top.child(div().text_sm().text_color(cx.theme().danger).child(msg));
-        }
-        if let Some(error) = pipelines.read(cx).error(self.id).map(str::to_owned) {
-            top = top.child(
-                h_flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(
-                        Icon::new(Lucide::CircleAlert)
-                            .size_4()
-                            .text_color(cx.theme().warning),
-                    )
-                    .child(div().text_sm().child(error))
-                    .child(button(
-                        "retry-run",
-                        "Retry interrupted work",
-                        ButtonLook::Outline,
-                        w,
-                        cx,
-                        |v, _, cx| v.retry(cx),
-                    )),
-            );
-        }
-        let tabs = TabBar::new("pipeline-run-tabs")
-            .segmented()
-            .selected_index(
-                RunTab::ALL
-                    .iter()
-                    .position(|t| *t == self.tab)
-                    .unwrap_or_default(),
-            )
-            .children(
-                RunTab::ALL
-                    .iter()
-                    .map(|tab| Tab::new().label(tab.label()).cursor_pointer()),
-            )
-            .on_click(cx.listener(|this, ix: &usize, _, cx| {
-                if let Some(tab) = RunTab::ALL.get(*ix) {
-                    this.tab = *tab;
-                }
-                if this.tab == RunTab::Changes
-                    && !AppState::get(cx)
-                        .pipelines
-                        .read(cx)
-                        .reviews
-                        .contains_key(&this.id)
-                {
-                    this.refresh_changes(cx);
-                }
-                cx.notify();
-            }));
-        let mut navigation = h_flex()
-            .px_5()
-            .pb_2()
-            .gap_2()
-            .flex_wrap()
-            .flex_none()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(tabs);
-        if !stopped {
-            let mut actions = h_flex().ml_auto().gap_2();
-            if let [session] = sessions.as_slice()
-                && session.request_action().is_none()
-            {
-                let ticket = session.ticket;
-                actions = actions.child(button_with_size(
-                    "open-active-session",
-                    "Open agent session",
-                    ButtonLook::Outline,
-                    ButtonSize::Medium,
-                    w,
-                    cx,
-                    move |v, w, cx| v.terminal(ticket, w, cx),
-                ));
-            }
-            navigation = navigation.child(actions.child(button_with_size(
-                "cancel-pipeline",
-                "Stop run",
-                ButtonLook::Danger,
-                ButtonSize::Medium,
-                w,
-                cx,
-                |v, w, cx| v.stop(w, cx),
-            )));
-        }
+                .any(|r| r.end_ms.is_none() && !r.failed);
+        self.tick_while(recording, cx);
+        let top = self.header(&run, &sessions, range, stopped, w, cx);
+        let navigation = self.navigation(&sessions, stopped, w, cx);
         let content = match self.tab {
             RunTab::Timeline => {
                 let scale = range.map(|range| elapsed::chart_range(range, recording));
@@ -486,6 +282,7 @@ impl Render for RunView {
             .flex_1()
             .min_h_0()
             .min_w_0()
+            .track_focus(&self.focus)
             .child(top)
             .child(navigation)
             .children(self.completion_summary(&run, w, cx))
@@ -495,14 +292,5 @@ impl Render for RunView {
 }
 
 fn saved_run(store: &crate::state::store::Store, id: u64) -> Option<&Run> {
-    store.state.pipelines.runs.iter().find(|r| r.id == id)
-}
-
-fn task_title(task: &str) -> String {
-    let full = task.trim().lines().next().unwrap_or_default();
-    if full.chars().count() > 110 {
-        format!("{}…", full.chars().take(109).collect::<String>())
-    } else {
-        full.to_owned()
-    }
+    store.state.pipelines.runs.iter().find(|r| r.id() == id)
 }

@@ -1,188 +1,7 @@
-//! Checkpoint controls and the evidence revealed by selecting a stage.
+//! The evidence and attempt controls revealed by selecting a stage.
 use super::*;
 
 impl RunView {
-    pub(super) fn checkpoint_actions(
-        &mut self,
-        run: &Run,
-        sessions: &[LiveSession],
-        w: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Div> {
-        let mut row = h_flex().gap_2().flex_wrap();
-        match run.phase {
-            Phase::ApprovePlan => {
-                row = row.child(button(
-                    "approve-plan",
-                    "Approve plan",
-                    ButtonLook::Primary,
-                    w,
-                    cx,
-                    |v, _, cx| v.approve(cx),
-                ));
-                let plan = run
-                    .lanes
-                    .iter()
-                    .map(|l| (l.assignment.clone(), l.criteria.clone()))
-                    .collect::<Vec<_>>();
-                row = row.child(button(
-                    "edit-plan",
-                    if self.editing_plan {
-                        "Discard edits"
-                    } else {
-                        "Edit plan"
-                    },
-                    ButtonLook::Outline,
-                    w,
-                    cx,
-                    move |v, w, cx| {
-                        v.editing_plan = !v.editing_plan;
-                        v.tab = RunTab::Timeline;
-                        v.selected_stage = Some(Stage::Approval);
-                        if v.editing_plan {
-                            v.plan = plan
-                                .iter()
-                                .map(|(task, criteria)| {
-                                    (
-                                        area(task, "Assignment", w, cx),
-                                        area(criteria, "Acceptance criteria", w, cx),
-                                    )
-                                })
-                                .collect();
-                        }
-                        cx.notify();
-                    },
-                ));
-            }
-            Phase::Acceptance => {
-                let p = AppState::get(cx).pipelines.read(cx);
-                let accepting = p.accepting(run.id);
-                let reviewed = matches!(p.reviews.get(&run.id), Some(Ok(_)));
-                if reviewed && !accepting {
-                    row = row.child(button(
-                        "accept-pipeline",
-                        "Accept changes",
-                        ButtonLook::Primary,
-                        w,
-                        cx,
-                        |v, _, cx| {
-                            v.error = AppState::get(cx)
-                                .pipelines
-                                .clone()
-                                .update(cx, |p, cx| p.accept(v.id, cx))
-                                .err();
-                            cx.notify();
-                        },
-                    ));
-                } else {
-                    row = row.child(subtle(
-                        if accepting {
-                            "Verifying changes…"
-                        } else {
-                            "Reading changes for acceptance…"
-                        },
-                        cx,
-                    ));
-                }
-                row = row.child(button(
-                    "inspect-changes",
-                    "Review files",
-                    ButtonLook::Outline,
-                    w,
-                    cx,
-                    |v, _, cx| {
-                        v.tab = RunTab::Changes;
-                        cx.notify();
-                    },
-                ));
-            }
-            Phase::Decision(_) => {
-                row = row.child(button(
-                    "review-findings",
-                    "Review findings",
-                    ButtonLook::Primary,
-                    w,
-                    cx,
-                    |v, w, cx| {
-                        if let Some(run) = v.run.clone()
-                            && matches!(run.phase, Phase::Decision(_))
-                        {
-                            v.decide(&run, w, cx);
-                        }
-                    },
-                ));
-            }
-            _ => {
-                let mut requests = sessions
-                    .iter()
-                    .filter_map(|session| Some((session, session.request_action()?)))
-                    .peekable();
-                if requests.peek().is_none() && !self.giving_feedback {
-                    return None;
-                }
-                for (session, action) in requests {
-                    let ticket = session.ticket;
-                    let mut title = session.stage.title(run);
-                    if let Stage::Develop(i) = session.stage {
-                        let repo = path_name(&run.lanes[i].project);
-                        if title != repo {
-                            title = format!("{title} · {repo}");
-                        }
-                    }
-                    row = row.child(button(
-                        ("open-agent-request", ticket.attempt as usize),
-                        format!("{action} · {title}"),
-                        ButtonLook::Primary,
-                        w,
-                        cx,
-                        move |v, w, cx| v.terminal(ticket, w, cx),
-                    ));
-                }
-            }
-        }
-        if matches!(run.phase, Phase::ApprovePlan | Phase::Acceptance) {
-            row = row.child(button(
-                "request-feedback",
-                if self.giving_feedback {
-                    "Cancel feedback"
-                } else {
-                    "Request changes"
-                },
-                ButtonLook::Ghost,
-                w,
-                cx,
-                |v, _, cx| {
-                    v.giving_feedback = !v.giving_feedback;
-                    cx.notify();
-                },
-            ));
-        }
-        let mut block = v_flex().gap_2().child(row);
-        if self.giving_feedback {
-            let gate = run.phase;
-            block = block
-                .child(paragraph("Feedback (optional)", &self.note, cx))
-                .child(h_flex().child(button(
-                    "send-feedback",
-                    "Send request",
-                    ButtonLook::Primary,
-                    w,
-                    cx,
-                    move |v, _, cx| {
-                        let note = v.note.read(cx).value().to_string();
-                        v.edit(cx, |r| {
-                            match gate {
-                                Phase::ApprovePlan => r.replan(&note),
-                                _ => r.request_changes(&note),
-                            }
-                            .map_err(Into::into)
-                        });
-                    },
-                )));
-        }
-        Some(block)
-    }
-
     pub(super) fn stage_detail(
         &mut self,
         stage: Stage,
@@ -199,14 +18,14 @@ impl RunView {
             .border_l_2()
             .border_color(cx.theme().border);
         let step = match stage {
-            Stage::Planner => Some(&r.template.planner),
-            Stage::Develop(_) => Some(&r.template.development),
-            Stage::Review(i) => r.template.reviews.get(i),
+            Stage::Planner => Some(&r.template().planner),
+            Stage::Develop(_) => Some(&r.template().development),
+            Stage::Review(i) => r.template().reviews.get(i),
             _ => None,
         };
         if let Some(step) = step {
             let profile = match stage {
-                Stage::Develop(i) => &r.lanes[i].profile,
+                Stage::Develop(i) => &r.lanes()[i].profile,
                 _ => &step.profile,
             };
             let mut meta = vec![profile.agent.name()];
@@ -222,7 +41,7 @@ impl RunView {
             }
         }
         let now = elapsed::now_ms();
-        if let Some((start, _)) = elapsed::range(&r.timings, now) {
+        if let Some((start, _)) = elapsed::range(r.timings(), now) {
             for timing in stage.observations(r) {
                 let action = timing
                     .attempt
@@ -244,7 +63,7 @@ impl RunView {
         match stage {
             Stage::Approval => {
                 let mut assigned = 0;
-                for (i, lane) in r.lanes.iter().enumerate() {
+                for (i, lane) in r.lanes().iter().enumerate() {
                     let fields = self.editing_plan.then(|| self.plan.get(i)).flatten();
                     if fields.is_none() && lane.assignment.is_empty() {
                         continue;
@@ -270,7 +89,7 @@ impl RunView {
                     detail =
                         detail.child(subtle("The planner has not submitted assignments yet.", cx));
                 }
-                if r.phase == Phase::ApprovePlan {
+                if r.phase() == Phase::ApprovePlan {
                     detail = detail.child(h_flex().pt_1().child(button(
                         "approve-plan-inline",
                         "Approve plan and start development",
@@ -282,7 +101,7 @@ impl RunView {
                 }
             }
             Stage::Develop(i) => {
-                let lane = &r.lanes[i];
+                let lane = &r.lanes()[i];
                 detail = detail.child(heading(path_name(&lane.project)));
                 if !lane.assignment.is_empty() {
                     detail = detail
@@ -291,15 +110,15 @@ impl RunView {
                 }
             }
             Stage::Review(i) | Stage::Decision(i) => {
-                if let Some(step) = r.template.reviews.get(i) {
+                if let Some(step) = r.template().reviews.get(i) {
                     detail = detail.child(subtle(
                         format!("Repair rounds · {} of {}", r.cycles(i), step.limit),
                         cx,
                     ));
                 }
-                if r.phase == Phase::Decision(i) || r.phase == Phase::Commands(i) {
-                    for f in &r.findings {
-                        if let Some(lane) = r.lanes.get(f.lane) {
+                if r.phase() == Phase::Decision(i) || r.phase() == Phase::Commands(i) {
+                    for f in r.findings() {
+                        if let Some(lane) = r.lanes().get(f.lane) {
                             detail = detail.child(
                                 div()
                                     .text_sm()
@@ -338,13 +157,13 @@ impl RunView {
             }
             Stage::Planner => {}
         }
-        if handoff::stage_reports(r, stage).next().is_some() {
+        if r.stage_reports(stage).next().is_some() {
             detail = detail.child(self.handoffs(stage, r, w, cx));
         }
         for ticket in r
             .pending()
             .into_iter()
-            .filter(|t| Stage::from_phase(r.phase, t.lane) == Some(stage))
+            .filter(|t| Stage::from_phase(r.phase(), t.lane) == Some(stage))
         {
             let p = AppState::get(cx).pipelines.read(cx);
             if p.session(&ticket).is_some() {
@@ -356,7 +175,7 @@ impl RunView {
                     cx,
                     move |v, w, cx| v.terminal(ticket, w, cx),
                 )));
-            } else if p.error(r.id).is_some() && r.sessions.iter().any(|(t, _)| *t == ticket) {
+            } else if p.error(r.id()).is_some() && r.sessions().iter().any(|(t, _)| *t == ticket) {
                 detail = detail.child(h_flex().child(button(
                     ("resume-pipeline-attempt", ticket.attempt as usize),
                     "Resume conversation",

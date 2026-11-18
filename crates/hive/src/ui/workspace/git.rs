@@ -215,11 +215,11 @@ impl Workspace {
                                 .bg(cx.theme().primary),
                         ),
                 )
-                .child(right_sidebar_toggle().small().smooth_hover(
-                    ButtonLook::Ghost,
-                    &toggle_hover,
-                    cx,
-                ));
+                .child(
+                    right_sidebar_toggle()
+                        .small()
+                        .panel_toggle(open, &toggle_hover, cx),
+                );
         let header = self.window_drag_band(header, |_| true, cx);
         let content = v_flex()
             .h_full()
@@ -340,6 +340,7 @@ fn render_right_tab(
 /// welcome screen) while it is closed. Callers pick the size.
 pub(crate) fn right_sidebar_toggle() -> Button {
     Button::new("toggle-right-sidebar")
+        .toggled(false)
         .cursor_pointer()
         .icon(Lucide::PanelRight)
         .tooltip_with_action(

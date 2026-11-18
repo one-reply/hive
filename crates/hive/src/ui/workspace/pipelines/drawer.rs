@@ -33,6 +33,10 @@ impl PanelSlot {
     }
 }
 impl Workspace {
+    pub(crate) fn pipelines_open(&self) -> bool {
+        self.open_pipeline_panel().is_some()
+    }
+
     pub(in crate::ui::workspace) fn open_pipeline_panel(&self) -> Option<Entity<PipelinePanel>> {
         let (Host::Local, project) = self.shown.as_ref()? else {
             return None;
@@ -97,11 +101,26 @@ impl Workspace {
             .pipelines
             .runs
             .iter()
-            .find(|run| run.id == id)
-            .map(|r| r.owner.clone())
+            .find(|run| run.id() == id)
+            .map(|r| r.owner().to_path_buf())
         else {
             return;
         };
+        let registered = self
+            .projects
+            .read(cx)
+            .items
+            .iter()
+            .any(|project| project.host == Host::Local && project.path == owner);
+        if !registered {
+            // Showing it anyway would leave the current project's panel on screen.
+            tracing::warn!(
+                run = id,
+                ?owner,
+                "pipeline run belongs to a removed project"
+            );
+            return;
+        }
         self.projects.update(cx, |projects, cx| {
             projects.select_project(&Host::Local, &owner, cx)
         });

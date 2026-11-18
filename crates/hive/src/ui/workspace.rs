@@ -262,6 +262,7 @@ impl Workspace {
         let target = projects.read(cx).target();
         let shown_files = files::WorktreeFiles::new(target.clone(), window, cx);
         let files_panel = shown_files.panel();
+        let workspace = cx.weak_entity();
         let mut this = Self {
             focus: cx.focus_handle(),
             sidebar: cx.new(Sidebar::new),
@@ -271,7 +272,7 @@ impl Workspace {
             resizing_sidebar: false,
             fullscreen: window.is_fullscreen(),
             fullscreen_animate: false,
-            status_bar: cx.new(StatusBarView::new),
+            status_bar: cx.new(|cx| StatusBarView::new(workspace, cx)),
             projects,
             centers: HashMap::new(),
             pipeline_panels: HashMap::new(),
@@ -641,7 +642,7 @@ impl Render for Workspace {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_sidebar(&ToggleSidebar, window, cx)
                             }))
-                            .smooth_hover(ButtonLook::Ghost, &toggle_hover, cx),
+                            .panel_toggle(open, &toggle_hover, cx),
                     ),
             );
         let title_bar = self.animate_title_inset(title_bar);

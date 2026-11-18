@@ -20,7 +20,7 @@ use crate::state::keep_awake::KeepAwake;
 use crate::state::store::Store;
 use crate::state::usage::Usage;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
-use crate::ui::workspace::TogglePipelines;
+use crate::ui::workspace::{TogglePipelines, Workspace};
 use crate::ui::{keymap, settings};
 
 /// Width of the per-provider bar in the status bar.
@@ -41,6 +41,7 @@ const CARD_RISE: Pixels = px(6.);
 const KEEP_AWAKE_TRANSITION: Duration = Duration::from_millis(180);
 
 pub struct StatusBarView {
+    workspace: WeakEntity<Workspace>,
     usage: Entity<Usage>,
     store: Entity<Store>,
     keep_awake: Entity<KeepAwake>,
@@ -48,7 +49,7 @@ pub struct StatusBarView {
 }
 
 impl StatusBarView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(workspace: WeakEntity<Workspace>, cx: &mut Context<Self>) -> Self {
         let app = AppState::get(cx);
         let (usage, store, keep_awake) =
             (app.usage.clone(), app.store.clone(), app.keep_awake.clone());
@@ -58,6 +59,7 @@ impl StatusBarView {
             cx.observe(&keep_awake, |_, _, cx| cx.notify()),
         ];
         Self {
+            workspace,
             usage,
             store,
             keep_awake,
@@ -320,6 +322,10 @@ fn window_details(ix: usize, window: &UsageWindow, cx: &App) -> Div {
 impl Render for StatusBarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let loading = self.usage.read(cx).loading;
+        let pipelines_open = self
+            .workspace
+            .upgrade()
+            .is_some_and(|workspace| workspace.read(cx).pipelines_open());
         let pipelines_hover = Hover::new("toggle-pipelines", window, cx);
         let refresh_hover = Hover::new("refresh-usage", window, cx).enabled(!loading);
         let settings_hover = Hover::new("settings", window, cx);
@@ -348,7 +354,7 @@ impl Render for StatusBarView {
                         Some(keymap::CONTEXT),
                     )
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(TogglePipelines), cx))
-                    .smooth_hover(ButtonLook::Ghost, &pipelines_hover, cx),
+                    .panel_toggle(pipelines_open, &pipelines_hover, cx),
             )
             .left(
                 Button::new("refresh-usage")

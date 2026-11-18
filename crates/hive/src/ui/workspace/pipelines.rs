@@ -100,31 +100,24 @@ impl Render for PipelinePanel {
             Screen::Launch(view) => view.clone().into_any_element(),
             Screen::Run(view) => view.clone().into_any_element(),
         };
-        let mut bar = h_flex()
+        let home_hover = Hover::new("pipeline-home", window, cx);
+        let bar = h_flex()
             .h(TAB_BAR_HEIGHT)
             .flex_none()
             .px_3()
             .gap_2()
             .border_b_1()
-            .border_color(cx.theme().border);
-        bar = bar.child(
-            Icon::new(Lucide::Workflow)
-                .size_4()
-                .text_color(cx.theme().muted_foreground),
-        );
-        if matches!(self.screen, Screen::Library) {
-            bar = bar.child(heading("Pipelines"));
-        } else {
-            bar = bar.child(button(
-                "pipeline-home",
-                "Pipelines",
-                ButtonLook::Ghost,
-                window,
-                cx,
-                |this, w, cx| this.home(w, cx),
-            ));
-        }
-        bar = bar
+            .border_color(cx.theme().border)
+            .child(
+                Button::new("pipeline-home")
+                    .cursor_pointer()
+                    .small()
+                    .icon(Lucide::Workflow)
+                    .label("Pipelines")
+                    .tooltip("Back to project pipelines")
+                    .on_click(cx.listener(|this, _, window, cx| this.home(window, cx)))
+                    .smooth_hover(ButtonLook::Outline, &home_hover, cx),
+            )
             .child(
                 Icon::new(Lucide::ChevronRight)
                     .size_3()
@@ -142,12 +135,12 @@ impl Render for PipelinePanel {
 
 fn phase_label(run: &Run) -> String {
     use hive_core::pipeline::Phase::*;
-    match run.phase {
+    match run.phase() {
         Planning => "Planning".into(),
         ApprovePlan => "Plan approval".into(),
         Development => "Development".into(),
         Review(i) => run
-            .template
+            .template()
             .reviews
             .get(i)
             .map(|s| s.name.clone())

@@ -12,19 +12,18 @@ enum Work {
 
 impl Pipelines {
     pub(super) fn schedule(&mut self, id: u64, cx: &mut Context<Self>) {
-        let generation = self.generations.entry(id).or_default();
-        *generation = generation.wrapping_add(1);
-        let generation = *generation;
+        let generation = self.next_job();
+        self.runtime_mut(id).generation = generation;
         cx.notify();
-        if self.stopped || self.errors.contains_key(&id) {
+        if self.stopped || self.runtime(id).is_some_and(|r| r.error.is_some()) {
             return;
         }
         let Ok(run) = self.run(id, cx) else { return };
-        if run.pending().is_empty() && !matches!(run.phase, Phase::Commands(_)) {
+        if run.pending().is_empty() && !matches!(run.phase(), Phase::Commands(_)) {
             return;
         }
-        if !self.registered(&run.owner, cx)
-            || run.lanes.iter().any(|l| !self.registered(&l.project, cx))
+        if !self.registered(run.owner(), cx)
+            || run.lanes().iter().any(|l| !self.registered(&l.project, cx))
         {
             self.fail(
                 id,
@@ -59,21 +58,20 @@ impl Pipelines {
 
     fn current(&self, id: u64, generation: u64) -> bool {
         !self.stopped
-            && self.generations.get(&id) == Some(&generation)
-            && !self.errors.contains_key(&id)
+            && self
+                .runtime(id)
+                .is_some_and(|r| r.generation == generation && r.error.is_none())
     }
 
     fn work(&mut self, run: Run, generation: u64, cx: &mut Context<Self>) {
-        let id = run.id;
+        let id = run.id();
         let cancel = Arc::new(Cancellation::default());
-        if let Some(old) = self.workers.insert(id, cancel.clone()) {
+        let runtime = self.runtime_mut(id);
+        if let Some(old) = runtime.worker.replace(cancel.clone()) {
             old.cancel();
         }
-        self.closing.retain(|_, list| {
-            list.retain(|pty| !pty.is_closed());
-            !list.is_empty()
-        });
-        let closing = self.closing.get(&id).cloned().unwrap_or_default();
+        runtime.closing.retain(|pty| !pty.is_closed());
+        let closing = runtime.closing.clone();
         let work = cx.background_executor().spawn(async move {
             // A reporting agent may still have children writing while its PTY shuts down.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -84,15 +82,15 @@ impl Pipelines {
                 );
             }
             if let Some((index, lane)) = run
-                .lanes
+                .lanes()
                 .iter()
                 .enumerate()
                 .find(|(_, l)| l.worktree.as_os_str().is_empty())
             {
-                for profile in [&run.template.planner.profile]
+                for profile in [&run.template().planner.profile]
                     .into_iter()
-                    .chain(run.template.reviews.iter().map(|s| &s.profile))
-                    .chain(run.lanes.iter().map(|l| &l.profile))
+                    .chain(run.template().reviews.iter().map(|s| &s.profile))
+                    .chain(run.lanes().iter().map(|l| &l.profile))
                 {
                     validate_pipeline_profile(profile).map_err(|e| e.to_string())?;
                     Launch::New(profile.agent)
@@ -104,7 +102,7 @@ impl Pipelines {
                 }
                 let path = workspace::prepare(id, lane, &cancel).map_err(|e| e.to_string())?;
                 if run
-                    .lanes
+                    .lanes()
                     .iter()
                     .any(|other| other.worktree == path && other.base != lane.base)
                 {
@@ -115,19 +113,19 @@ impl Pipelines {
                 }
                 return Ok(Work::Prepared(index, path));
             }
-            for lane in &run.lanes {
+            for lane in run.lanes() {
                 if cancel.is_cancelled() {
                     return Err("Cancelled".into());
                 }
                 workspace::verify(id, lane).map_err(|e| e.to_string())?;
             }
-            if run.phase == Phase::Review(0) && run.review_revision.is_none() {
-                return workspace::revision(id, &run.lanes, &cancel)
+            if run.phase() == Phase::Review(0) && run.review_revision().is_none() {
+                return workspace::revision(id, run.lanes(), &cancel)
                     .map(Work::ReviewRevision)
                     .map_err(|e| e.to_string());
             }
-            if matches!(run.phase, Phase::Commands(_)) {
-                return Ok(Work::Checked(workspace::checks(&run.lanes, &cancel)));
+            if matches!(run.phase(), Phase::Commands(_)) {
+                return Ok(Work::Checked(workspace::checks(run.lanes(), &cancel)));
             }
             Ok(Work::Dispatch)
         });
@@ -139,11 +137,8 @@ impl Pipelines {
                 if let Ok(Work::Prepared(index, path)) = &result {
                     p.store.update(cx, |s, cx| {
                         s.edit_pipelines(cx, |library| {
-                            if let Some(run) = library.runs.iter_mut().find(|r| r.id == id)
-                                && let Some(lane) = run.lanes.get_mut(*index)
-                                && lane.worktree.as_os_str().is_empty()
-                            {
-                                lane.worktree = path.clone();
+                            if let Some(run) = library.runs.iter_mut().find(|r| r.id() == id) {
+                                run.record_worktree(*index, path.clone());
                             }
                         })
                     });
@@ -155,7 +150,7 @@ impl Pipelines {
                 if !p.current(id, generation) {
                     return;
                 }
-                p.workers.remove(&id);
+                p.runtime_mut(id).worker = None;
                 let result = match result {
                     Err(error) => Err(error),
                     Ok(Work::Prepared(_, _)) => {
@@ -165,10 +160,9 @@ impl Pipelines {
                     Ok(Work::Checked(results)) => {
                         p.edit(id, cx, |run| Ok(run.command_results(results)?))
                     }
-                    Ok(Work::ReviewRevision(hash)) => p.edit(id, cx, |r| {
-                        r.review_revision = Some(hash);
-                        Ok(())
-                    }),
+                    Ok(Work::ReviewRevision(hash)) => {
+                        p.edit(id, cx, |r| Ok(r.record_review_revision(hash)?))
+                    }
                     Ok(Work::Dispatch) => p.dispatch(id, cx),
                 };
                 if let Err(error) = result {
@@ -180,9 +174,10 @@ impl Pipelines {
     }
 
     pub(super) fn fail(&mut self, id: u64, reason: String, cx: &mut Context<Self>) {
-        if self.errors.get(&id) != Some(&reason) {
+        let runtime = self.runtime_mut(id);
+        if runtime.error.as_ref() != Some(&reason) {
             tracing::warn!(run=id,%reason,"pipeline needs attention");
-            self.errors.insert(id, reason);
+            runtime.error = Some(reason);
             cx.notify();
         }
     }
@@ -191,7 +186,7 @@ impl Pipelines {
         if self.error(id).is_none() {
             return Err("There is no interrupted work to retry.".into());
         }
-        if self.run(id, cx)?.phase == Phase::Acceptance {
+        if self.run(id, cx)?.phase() == Phase::Acceptance {
             return self.accept(id, cx);
         }
         let mut run = self.run(id, cx)?.clone();
@@ -212,12 +207,12 @@ impl Pipelines {
             .collect();
         for ticket in interrupted {
             run.restart_attempt(&ticket)?;
-            timing::finish_attempt(&mut run, ticket, true, timing::now());
+            run.finish_attempt_at(ticket, true, now_ms());
             self.suspended.remove(&ticket);
             self.session_errors.remove(&ticket);
             self.stop_session(&ticket, cx);
         }
-        self.errors.remove(&id);
+        self.clear_error(id);
         self.edit(id, cx, |record| {
             *record = run;
             Ok(())
@@ -227,7 +222,7 @@ impl Pipelines {
     pub(crate) fn resume(&mut self, ticket: &Ticket, cx: &mut Context<Self>) -> Result<(), String> {
         let run = self.run(ticket.run, cx)?;
         let session = run
-            .sessions
+            .sessions()
             .iter()
             .find(|(t, _)| t == ticket)
             .map(|(_, s)| s.clone())
@@ -248,7 +243,7 @@ impl Pipelines {
         self.suspended.remove(ticket);
         self.session_errors.remove(ticket);
         self.resumes.insert(*ticket, session);
-        self.errors.remove(&ticket.run);
+        self.clear_error(ticket.run);
         self.schedule(ticket.run, cx);
         Ok(())
     }

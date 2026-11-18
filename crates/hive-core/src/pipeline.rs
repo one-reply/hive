@@ -4,10 +4,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+mod outcome;
+mod recipe;
+mod record;
 mod run;
+mod stage;
+mod timing;
 mod transitions;
 pub mod workspace;
+pub use outcome::{CheckTally, readable_history};
+pub use recipe::unique_name;
 pub use run::{Phase, Run, StageTiming, Ticket};
+pub use stage::{Stage, StageStatus};
+pub use timing::now_ms;
 
 /// Invalid pipeline input or an operation inconsistent with the current checkpoint.
 #[derive(Debug, thiserror::Error)]
@@ -221,6 +230,17 @@ impl Template {
 
     /// Checks a draft before it becomes an executable recipe.
     pub fn validate(&self) -> Result<(), Error> {
+        self.validate_structure()?;
+        for profile in self.profiles() {
+            crate::agent::launch::validate_pipeline_profile(profile)?;
+        }
+        Ok(())
+    }
+
+    /// Checks names and references without the agent catalog, which changes between releases:
+    /// a saved recipe stays loadable after an agent or effort level is retired, and its launch
+    /// reports the unsupported profile instead.
+    pub fn validate_structure(&self) -> Result<(), Error> {
         if self.name.trim().is_empty() || self.lanes.is_empty() || self.reviews.is_empty() {
             return Err(Error::InvalidInput(
                 "Give the template a name, a development lane and a QA review",
@@ -231,12 +251,8 @@ impl Template {
             if lane.name.trim().is_empty() || !names.insert(lane.name.trim()) {
                 return Err(Error::InvalidInput("Each lane needs a distinct name"));
             }
-            crate::agent::launch::validate_pipeline_profile(&lane.profile)?;
         }
-        for step in [&self.planner, &self.development]
-            .into_iter()
-            .chain(&self.reviews)
-        {
+        for step in self.steps() {
             if step.name.trim().is_empty() {
                 return Err(Error::InvalidInput("Give every stage a name"));
             }
@@ -245,9 +261,19 @@ impl Template {
             {
                 return Err(Error::MissingLane(name.clone()));
             }
-            crate::agent::launch::validate_pipeline_profile(&step.profile)?;
         }
         Ok(())
+    }
+
+    fn steps(&self) -> impl Iterator<Item = &Step> {
+        [&self.planner, &self.development]
+            .into_iter()
+            .chain(&self.reviews)
+    }
+
+    fn profiles(&self) -> impl Iterator<Item = &Profile> {
+        let lanes = self.lanes.iter().map(|lane| &lane.profile);
+        lanes.chain(self.steps().map(|step| &step.profile))
     }
 }
 

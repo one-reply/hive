@@ -1,8 +1,11 @@
 use super::inspector::Inspector;
 use super::map::{Layout, RoleKind};
 use super::*;
+use hive_core::pipeline::unique_name;
 use hive_core::pipeline::{LanePreset, Step};
 mod nodes;
+mod structure;
+use structure::{StageChoice, move_item};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(super) enum Item {
@@ -146,18 +149,17 @@ impl TemplateEditor {
     }
     fn remove(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         match self.selected {
-            Item::Lane(i) if self.template.lanes.len() > 1 => {
-                let removed = self.template.lanes.remove(i);
-                for s in &mut self.template.reviews {
-                    if s.return_lane.as_deref() == Some(&removed.name) {
-                        s.return_lane = None;
-                    }
+            Item::Lane(i) => {
+                if self.template.remove_lane(i).is_err() {
+                    return;
                 }
             }
-            Item::Review(i) if i > 0 => {
-                self.template.reviews.remove(i);
+            Item::Review(i) => {
+                if self.template.remove_review(i).is_err() {
+                    return;
+                }
             }
-            _ => return,
+            Item::Planner | Item::Development => return,
         }
         self.error = None;
         self.load(Item::Development, w, cx);
@@ -197,121 +199,6 @@ impl TemplateEditor {
     }
 }
 
-#[derive(Clone, Copy)]
-enum StageChoice {
-    Lane,
-    Code,
-    Security,
-    Performance,
-    Custom,
-}
-impl StageChoice {
-    fn recipe(self) -> (&'static str, &'static str) {
-        match self {
-            Self::Lane => ("Development lane", ""),
-            Self::Code => (
-                "Code review",
-                "Review the implementation for correctness, maintainability and missing regression coverage. Report actionable findings and their affected lanes.",
-            ),
-            Self::Security => (
-                "Security review",
-                "Review the changed code for vulnerabilities, broken authorization and accidental exposure of sensitive data. Report the affected lane and a defensive fix.",
-            ),
-            Self::Performance => (
-                "Performance review",
-                "Inspect changed paths for performance regressions and unnecessary resource use. Report evidence and the affected lane.",
-            ),
-            Self::Custom => (
-                "Custom review",
-                "Review the changes against the approved acceptance criteria. Identify the affected lane for each finding.",
-            ),
-        }
-    }
-}
-fn unique_name<'a>(base: &str, existing: impl Iterator<Item = &'a str>) -> String {
-    let names: HashSet<_> = existing.map(str::to_ascii_lowercase).collect();
-    let available = |name: &str| !names.contains(&name.to_ascii_lowercase());
-    if available(base) {
-        return base.to_owned();
-    }
-    let mut n = 2;
-    loop {
-        let name = format!("{base} {n}");
-        if available(&name) {
-            return name;
-        }
-        n += 1;
-    }
-}
-
-fn move_item(t: &mut Template, from: Item, to: Item) -> bool {
-    match (from, to) {
-        (Item::Lane(a), Item::Lane(b)) => reorder(&mut t.lanes, a, b),
-        (Item::Review(a), Item::Review(b)) if a > 0 && b > 0 => reorder(&mut t.reviews, a, b),
-        _ => false,
-    }
-}
-fn reorder<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
-    if from == to || from >= items.len() || to >= items.len() {
-        return false;
-    }
-    let item = items.remove(from);
-    items.insert(to, item);
-    true
-}
-impl TemplateEditor {
-    fn add_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let options = [
-            StageChoice::Lane,
-            StageChoice::Code,
-            StageChoice::Security,
-            StageChoice::Performance,
-            StageChoice::Custom,
-        ]
-        .map(|stage| (stage.recipe().0.to_owned(), false, stage))
-        .into();
-        options_menu(
-            Button::new("add-stage")
-                .small()
-                .cursor_pointer()
-                .icon(Lucide::Plus)
-                .label("Add stage"),
-            options,
-            cx,
-            |s, stage, w, cx| s.add(stage, w, cx),
-        )
-    }
-    fn ordering(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (min, count, index, make): (usize, usize, usize, fn(usize) -> Item) =
-            match self.selected {
-                Item::Lane(i) if self.template.lanes.len() > 1 => {
-                    (0, self.template.lanes.len(), i, Item::Lane)
-                }
-                Item::Review(i) if i > 0 => (1, self.template.reviews.len(), i, Item::Review),
-                _ => return None,
-            };
-        let mut options = Vec::new();
-        if index > min {
-            options.push(("Move earlier".to_owned(), false, Some(make(index - 1))));
-        }
-        if index + 1 < count {
-            options.push(("Move later".to_owned(), false, Some(make(index + 1))));
-        }
-        options.push(("Remove stage".to_owned(), false, None));
-        Some(options_menu(
-            Button::new("selected-stage-actions")
-                .small()
-                .cursor_pointer()
-                .label("Stage actions"),
-            options,
-            cx,
-            move |s, dest, w, cx| match dest {
-                Some(to) => s.move_to(make(index), to, w, cx),
-                None => s.remove(w, cx),
-            },
-        ))
-    }
-}
 impl Render for TemplateEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = if self.renaming {
@@ -460,9 +347,9 @@ impl Render for TemplateEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Item, StageChoice, Template, move_item, reorder, unique_name};
+    use super::unique_name;
     #[test]
-    fn new_drafts_and_stages_have_distinct_runnable_defaults() {
+    fn new_drafts_get_a_free_numbered_name() {
         assert_eq!(
             unique_name(
                 "Custom workflow",
@@ -470,28 +357,5 @@ mod tests {
             ),
             "Custom workflow 2"
         );
-        for role in [
-            StageChoice::Code,
-            StageChoice::Security,
-            StageChoice::Performance,
-            StageChoice::Custom,
-        ] {
-            let (name, instruction) = role.recipe();
-            assert!(!name.is_empty() && !instruction.is_empty());
-        }
-    }
-    #[test]
-    fn cannot_drag_the_qa_barrier_or_move_lanes_into_review() {
-        let mut t = Template::default();
-        assert!(!move_item(&mut t, Item::Review(1), Item::Review(0)));
-        assert!(!move_item(&mut t, Item::Lane(0), Item::Review(1)));
-        t.reviews.push(t.reviews[1].clone());
-        t.reviews[2].name = "Code review".into();
-        assert!(move_item(&mut t, Item::Review(2), Item::Review(1)));
-        assert_eq!(t.reviews[0].name, "QA");
-        assert_eq!(t.reviews[1].name, "Code review");
-        let mut items = vec!["api", "web", "mobile"];
-        assert!(reorder(&mut items, 0, 2));
-        assert_eq!(items, ["web", "mobile", "api"]);
     }
 }

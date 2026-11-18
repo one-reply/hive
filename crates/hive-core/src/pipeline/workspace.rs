@@ -89,14 +89,8 @@ pub fn prepare(run: u64, lane: &Lane, stop: &Cancellation) -> Result<PathBuf, Wo
             ))
             .into());
         }
-        if lane.worktree.as_os_str().is_empty()
-            && git::branches::resolve(&Host::Local, &intended, "HEAD")? != oid
-        {
-            return Err(GitError::Invalid(format!(
-                "The existing {} does not start at the approved commit.",
-                intended.display()
-            ))
-            .into());
+        if lane.worktree.as_os_str().is_empty() {
+            confirm_unused_checkout(&intended, &oid)?;
         }
         return Ok(intended);
     }
@@ -108,6 +102,24 @@ pub fn prepare(run: u64, lane: &Lane, stop: &Cancellation) -> Result<PathBuf, Wo
         .into());
     }
     Ok(worktree::create_stoppable(&project, Some(&name), Some(&oid), stop)?.path)
+}
+
+/// No agent has used a checkout the run has not recorded, so it must equal the base commit.
+/// A cancelled `git worktree add` leaves it registered with HEAD set but files missing.
+fn confirm_unused_checkout(path: &Path, base: &str) -> Result<(), GitError> {
+    if git::branches::resolve(&Host::Local, path, "HEAD")? != base {
+        return Err(GitError::Invalid(format!(
+            "The existing {} does not start at the approved commit.",
+            path.display()
+        )));
+    }
+    if !git::status::read(&Host::Local, path)?.is_clean() {
+        return Err(GitError::Invalid(format!(
+            "The interrupted checkout at {0} is incomplete. Remove it with `git worktree remove --force {0}`, then retry.",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Check checkout registration before background agents or commands operate on a recovered run.

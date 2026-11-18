@@ -28,6 +28,64 @@ fn recovering(cx: &mut TestAppContext) -> Entity<Pipelines> {
     cx.new(|cx| Pipelines::new(store, &agents, cx))
 }
 
+/// A saved run at the acceptance gate, as the state file would hold it; the transitions to
+/// get there need real worktrees.
+fn awaiting_acceptance(run: &Run, revision: &str) -> Run {
+    let mut saved = serde_json::to_value(run).unwrap();
+    saved["phase"] = serde_json::to_value(Phase::Acceptance).unwrap();
+    saved["review_revision"] = revision.into();
+    serde_json::from_value(saved).unwrap()
+}
+
+#[gpui::test]
+fn duplicates_the_entire_recipe_and_edits_only_the_chosen_copy(cx: &mut TestAppContext) {
+    recovering(cx).update(cx, |p, cx| {
+        let source = p
+            .store
+            .read(cx)
+            .state
+            .pipelines
+            .templates
+            .last()
+            .unwrap()
+            .clone();
+        let first = p.duplicate_template(&source, cx).unwrap();
+        let mut expected = source.clone();
+        expected.name = format!("{} copy", source.name);
+        assert_eq!(first, expected);
+        let second = p.duplicate_template(&source, cx).unwrap();
+        assert_eq!(second.name, format!("{} 2", first.name));
+        let mut edited = first.clone();
+        edited.planner.instruction.push_str(" Check both lanes.");
+        p.save_template(Some(&first), edited.clone(), cx).unwrap();
+        let saved = &p.store.read(cx).state.pipelines.templates;
+        assert!(saved.contains(&source) && saved.contains(&second) && saved.contains(&edited));
+        assert!(p.duplicate_template(&first, cx).is_err());
+    });
+}
+
+#[gpui::test]
+fn deleting_a_template_preserves_runs_and_rejects_stale_confirmations(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        let run = p.run(42, cx).unwrap().clone();
+        let original = run.template().clone();
+        let mut edited = original.clone();
+        edited.planner.instruction.push_str(" Review the plan.");
+        p.save_template(Some(&original), edited.clone(), cx)
+            .unwrap();
+        let before = p.store.read(cx).state.pipelines.templates.clone();
+        assert!(p.delete_template(&original, cx).is_err());
+        assert_eq!(p.store.read(cx).state.pipelines.templates, before);
+
+        p.delete_template(&edited, cx).unwrap();
+        assert!(p.delete_template(&edited, cx).is_err());
+        let remaining: Vec<_> = before.into_iter().filter(|t| t != &edited).collect();
+        assert_eq!(p.store.read(cx).state.pipelines.templates, remaining);
+        assert_eq!(p.run(42, cx).unwrap(), &run);
+    });
+}
+
 #[gpui::test]
 fn restarted_attempt_requires_explicit_retry_and_failed_checkpoint_prevents_processes(
     cx: &mut TestAppContext,
@@ -57,7 +115,7 @@ fn restarted_attempt_requires_explicit_retry_and_failed_checkpoint_prevents_proc
     pipelines.read_with(cx, |p, cx| {
         assert!(p.error(42).unwrap().contains("checkpoint"));
         assert!(
-            p.run(42, cx).unwrap().lanes[0]
+            p.run(42, cx).unwrap().lanes()[0]
                 .worktree
                 .as_os_str()
                 .is_empty()
@@ -77,7 +135,7 @@ fn cancelling_while_checkpoint_is_pending_ignores_late_dispatch_and_clears_atten
     });
     cx.run_until_parked();
     pipelines.read_with(cx, |p, cx| {
-        assert_eq!(p.run(42, cx).unwrap().phase, Phase::Cancelled);
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Cancelled);
         assert!(p.error(42).is_none());
         assert!(p.attention(cx).is_empty());
         assert!(p.live.is_empty());
@@ -90,12 +148,13 @@ fn invalid_decision_does_not_partially_edit_the_run(cx: &mut TestAppContext) {
     pipelines.update(cx, |p, cx| {
         assert!(
             p.edit(42, cx, |run| {
-                run.task = "wrong".into();
+                run.record_worktree(0, "/partial-edit".into());
                 Ok(run.approve()?)
             })
             .is_err()
         );
-        assert_eq!(p.run(42, cx).unwrap().task, "Task");
+        let run = p.run(42, cx).unwrap();
+        assert!(run.lanes()[0].worktree.as_os_str().is_empty());
     });
 }
 
@@ -107,22 +166,43 @@ fn only_the_reviewed_revision_can_be_accepted(cx: &mut TestAppContext) {
         let store = p.store.clone();
         let ready = |s: &mut Store| {
             let run = &mut s.state.pipelines.runs[0];
-            run.phase = Phase::Acceptance;
-            run.review_revision = Some("reviewed".into());
+            *run = awaiting_acceptance(run, "reviewed");
         };
         store.update(cx, |s, _| ready(s));
-        p.accept_jobs.insert(42, 1);
-        p.generations.insert(42, 1);
+        let runtime = p.runtime_mut(42);
+        runtime.accept_job = Some(1);
+        runtime.generation = 1;
         p.finish_acceptance(42, 0, Ok("stale callback".into()), cx);
-        assert_eq!(p.run(42, cx).unwrap().phase, Phase::Acceptance);
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Acceptance);
         assert!(p.accepting(42));
         p.finish_acceptance(42, 1, Ok("manual edit".into()), cx);
-        assert_eq!(p.run(42, cx).unwrap().phase, Phase::Review(0));
-        assert!(p.run(42, cx).unwrap().review_revision.is_none());
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Review(0));
+        assert!(p.run(42, cx).unwrap().review_revision().is_none());
         store.update(cx, |s, _| ready(s));
-        p.generations.insert(42, 3);
-        p.accept_jobs.insert(42, 3);
+        let runtime = p.runtime_mut(42);
+        runtime.generation = 3;
+        runtime.accept_job = Some(3);
         p.finish_acceptance(42, 3, Ok("reviewed".into()), cx);
-        assert_eq!(p.run(42, cx).unwrap().phase, Phase::Accepted);
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Accepted);
+    });
+}
+
+#[gpui::test]
+fn cancelling_drops_everything_held_for_the_run(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        let worker = std::sync::Arc::new(hive_core::command::Cancellation::default());
+        let runtime = p.runtime_mut(42);
+        runtime.error = Some("Checkout failed".into());
+        runtime.worker = Some(worker.clone());
+        runtime.review = Some(Err("unreadable".into()));
+        runtime.review_job = Some(7);
+        runtime.accept_job = Some(1);
+        p.cancel(42, cx).unwrap();
+        assert!(p.runtime(42).is_none());
+        assert!(worker.is_cancelled());
+        assert!(p.error(42).is_none());
+        assert!(!p.accepting(42));
+        assert!(p.review(42).is_none());
     });
 }

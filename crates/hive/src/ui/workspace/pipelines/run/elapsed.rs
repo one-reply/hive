@@ -1,14 +1,6 @@
 //! Wall-clock scale for persisted measurements. A crash has no known end time.
 use hive_core::pipeline::StageTiming;
-use std::time::{SystemTime, UNIX_EPOCH};
-pub(super) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
+pub(super) use hive_core::pipeline::now_ms;
 pub(super) fn observed_end(row: &StageTiming, now: u64) -> u64 {
     row.end_ms
         .unwrap_or(if row.failed { row.start_ms } else { now })

@@ -30,8 +30,8 @@ impl RunView {
     }
     pub(super) fn decide(&self, r: &Run, w: &mut Window, cx: &mut Context<Self>) {
         let id = self.id;
-        let gate = r.phase;
-        let findings = r.findings.clone();
+        let gate = r.phase();
+        let findings = r.findings().to_vec();
         let options: Vec<String> = std::iter::once("Allow one more repair".to_owned())
             .chain(
                 findings
@@ -50,18 +50,18 @@ impl RunView {
         });
         let note = area("", "Explain this decision", w, cx);
         let mut evidence = r
-            .findings
+            .findings()
             .iter()
             .enumerate()
-            .map(|(i, f)| format!("{}. {} · {}", i + 1, r.lanes[f.lane].name, f.description))
+            .map(|(i, f)| format!("{}. {} · {}", i + 1, r.lanes()[f.lane].name, f.description))
             .collect::<Vec<_>>();
-        for command in r.commands.iter().filter(|cmd| !cmd.success) {
+        for command in r.commands().iter().filter(|cmd| !cmd.success) {
             evidence.push(format!(
                 "Required check failed: {}\n{}",
                 command.command, command.output
             ));
         }
-        let history = r.history.join("\n");
+        let history = r.history().join("\n");
         let view = cx.weak_entity();
         w.open_alert_dialog(cx, move |dialog, _, cx| {
             let view = view.clone();
@@ -106,7 +106,7 @@ impl RunView {
                             };
                             let result = AppState::get(cx).pipelines.clone().update(cx, |p, cx| {
                                 p.edit(id, cx, |r| {
-                                    if r.phase != gate || r.findings != findings {
+                                    if r.phase() != gate || r.findings() != findings {
                                         return Err("Findings changed. Reopen the decision.".into());
                                     }
                                     if index == 0 {

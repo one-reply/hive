@@ -11,14 +11,14 @@ use gpui_kit::*;
 use hive_core::agent::launch::ResumeSession;
 use hive_core::command::Cancellation;
 use hive_core::host::Host;
-use hive_core::pipeline::{Lane, Phase, Report, Run, Template, Ticket, workspace};
+use hive_core::pipeline::{Lane, Phase, Report, Run, Template, Ticket, now_ms, workspace};
 
 mod execution;
 mod models;
 mod review;
+mod runtime;
 mod sessions;
 mod templates;
-mod timing;
 
 pub(crate) use workspace::ReviewRepo;
 
@@ -43,20 +43,13 @@ pub(crate) struct Pipelines {
     /// Only a user's explicit recovery action populates this map.
     resumes: HashMap<Ticket, ResumeSession>,
     suspended: HashSet<Ticket>,
-    errors: HashMap<u64, String>,
     session_errors: HashMap<Ticket, String>,
-    _agent_status: Subscription,
-    generations: HashMap<u64, u64>,
-    workers: HashMap<u64, Arc<Cancellation>>,
-    closing: HashMap<u64, Vec<hive_core::terminal::TerminalControl>>,
+    runtime: HashMap<u64, runtime::RunRuntime>,
+    next_job: u64,
+    agents: Entity<super::agents::Agents>,
+    _agent_status: Vec<Subscription>,
     previewing: HashSet<(PathBuf, String)>,
     pub(crate) previews: HashMap<(PathBuf, String), Result<workspace::BasePreview, String>>,
-    pub(crate) reviews: HashMap<u64, Result<Vec<ReviewRepo>, String>>,
-    pub(crate) patches: HashMap<u64, PatchPreview>,
-    review_jobs: HashMap<u64, u64>,
-    patch_jobs: HashMap<u64, u64>,
-    next_read: u64,
-    accept_jobs: HashMap<u64, u64>,
     stopped: bool,
 }
 
@@ -67,30 +60,42 @@ impl Pipelines {
         cx: &mut Context<Self>,
     ) -> Self {
         use super::agents::AgentsEvent;
-        use hive_core::agent::AgentStatus;
-        let agent_status = cx.subscribe(agents, |pipelines: &mut Self, _, event, cx| {
-            if let AgentsEvent::Attention(id, AgentStatus::Done | AgentStatus::Failed) = event
-                && let Some(ticket) = pipelines.ticket_for_session(*id)
-            {
-                pipelines.session_failed(
-                    ticket,
-                    "The agent ended its turn without reporting a stage result. Open the session to continue or retry the step.".into(),
-                    cx,
-                );
-            }
-        });
+        use sessions::{TurnOutcome, turn_outcome};
+        let agent_status = vec![
+            cx.subscribe(agents, |pipelines: &mut Self, _, event, cx| {
+                let AgentsEvent::Attention(id, status) = event else {
+                    return;
+                };
+                let Some(ticket) = pipelines.ticket_for_session(*id) else {
+                    return;
+                };
+                match turn_outcome(*status) {
+                    TurnOutcome::Failed => pipelines.session_failed(
+                        ticket,
+                        "The agent reported a failed turn. Open the session to continue or retry the step.".into(),
+                        cx,
+                    ),
+                    // The live session shows the request; the attempt is still in progress.
+                    TurnOutcome::AwaitsUser => cx.notify(),
+                    TurnOutcome::InProgress => {}
+                }
+            }),
+            cx.observe(agents, |pipelines: &mut Self, _, cx| {
+                pipelines.clear_recovered_sessions(cx);
+            }),
+        ];
         if store
             .read(cx)
             .state
             .pipelines
             .runs
             .iter()
-            .any(timing::interruptible)
+            .any(Run::is_interruptible)
         {
             store.update(cx, |s, cx| {
                 s.edit_pipelines(cx, |l| {
                     for run in &mut l.runs {
-                        timing::interrupt(run, None);
+                        run.interrupt_timings(None);
                     }
                 })
             });
@@ -103,19 +108,21 @@ impl Pipelines {
             .iter()
             .flat_map(Run::pending)
             .collect();
-        let errors = store
+        let runtime = store
             .read(cx)
             .state
             .pipelines
             .runs
             .iter()
-            .filter(|run| matches!(run.phase, Phase::Commands(_)))
+            .filter(|run| matches!(run.phase(), Phase::Commands(_)))
             .map(|run| {
-                (
-                    run.id,
-                    "Hive restarted during a required check. Retry to run the command again."
-                        .into(),
-                )
+                let error =
+                    "Hive restarted during a required check. Retry to run the command again.";
+                let runtime = runtime::RunRuntime {
+                    error: Some(error.into()),
+                    ..Default::default()
+                };
+                (run.id(), runtime)
             })
             .collect();
         Self {
@@ -124,20 +131,13 @@ impl Pipelines {
             suspended,
             live: HashMap::new(),
             resumes: HashMap::new(),
-            errors,
             session_errors: HashMap::new(),
+            runtime,
+            next_job: 0,
+            agents: agents.clone(),
             _agent_status: agent_status,
-            generations: HashMap::new(),
-            workers: HashMap::new(),
-            closing: HashMap::new(),
             previews: HashMap::new(),
             previewing: HashSet::new(),
-            reviews: HashMap::new(),
-            patches: HashMap::new(),
-            review_jobs: HashMap::new(),
-            patch_jobs: HashMap::new(),
-            next_read: 0,
-            accept_jobs: HashMap::new(),
             stopped: false,
         }
     }
@@ -149,7 +149,7 @@ impl Pipelines {
             .pipelines
             .runs
             .iter()
-            .find(|run| run.id == id)
+            .find(|run| run.id() == id)
             .ok_or_else(|| "Pipeline run no longer exists.".into())
     }
 
@@ -158,7 +158,7 @@ impl Pipelines {
     }
 
     pub(crate) fn error(&self, id: u64) -> Option<&str> {
-        if let Some(message) = self.errors.get(&id) {
+        if let Some(message) = self.runtime(id).and_then(|r| r.error.as_deref()) {
             return Some(message);
         }
         if let Some((_, message)) = self
@@ -180,16 +180,19 @@ impl Pipelines {
             .runs
             .iter()
             .filter_map(|run| {
-                let status = self.error(run.id).or(match run.phase {
-                    Phase::ApprovePlan => Some("Approve plan"),
-                    Phase::Decision(_) => Some("Review findings"),
-                    Phase::Acceptance => Some("Accept changes"),
-                    _ => None,
-                })?;
+                let status = self
+                    .error(run.id())
+                    .or(self.agent_request(run, cx))
+                    .or(match run.phase() {
+                        Phase::ApprovePlan => Some("Approve plan"),
+                        Phase::Decision(_) => Some("Review findings"),
+                        Phase::Acceptance => Some("Accept changes"),
+                        _ => None,
+                    })?;
                 Some((
-                    run.id,
-                    run.owner.clone(),
-                    format!("{} · {status}", run.task),
+                    run.id(),
+                    run.owner().to_path_buf(),
+                    format!("{} · {status}", run.task()),
                 ))
             })
             .collect()
@@ -291,7 +294,7 @@ impl Pipelines {
             return Err("Run ID collision. Start again.".into());
         }
         let mut run = Run::new(id, owner, task, template, lanes)?;
-        timing::stage(&mut run, None, timing::now());
+        run.record_stage(None, now_ms());
         self.store
             .update(cx, |s, cx| s.edit_pipelines(cx, |l| l.runs.push(run)));
         self.schedule(id, cx);
@@ -306,15 +309,15 @@ impl Pipelines {
         change: impl FnOnce(&mut Run) -> Result<(), String>,
     ) -> Result<(), String> {
         let mut run = self.run(id, cx)?.clone();
-        let previous = run.phase;
+        let previous = run.phase();
         change(&mut run)?;
-        timing::stage(&mut run, Some(previous), timing::now());
-        if run.phase != Phase::Accepted {
+        run.record_stage(Some(previous), now_ms());
+        if run.phase() != Phase::Accepted {
             self.clear_review(id);
         }
         self.store.update(cx, |s, cx| {
             s.edit_pipelines(cx, |l| {
-                if let Some(record) = l.runs.iter_mut().find(|r| r.id == id) {
+                if let Some(record) = l.runs.iter_mut().find(|r| r.id() == id) {
                     *record = run;
                 }
             })
@@ -339,7 +342,7 @@ impl Pipelines {
         let failed = matches!(&report, Report::Review { findings, .. } if !findings.is_empty());
         self.edit(ticket.run, cx, |r| {
             r.report(ticket, report)?;
-            timing::finish_attempt(r, *ticket, failed, timing::now());
+            r.finish_attempt_at(*ticket, failed, now_ms());
             Ok(())
         })?;
         self.session_errors.remove(ticket);
@@ -349,17 +352,14 @@ impl Pipelines {
 
     pub(crate) fn cancel(&mut self, id: u64, cx: &mut Context<Self>) -> Result<(), String> {
         self.edit(id, cx, |r| Ok(r.cancel()?))?;
-        self.errors.remove(&id);
         self.suspended.retain(|t| t.run != id);
         self.session_errors.retain(|t, _| t.run != id);
         self.resumes.retain(|t, _| t.run != id);
-        if let Some(c) = self.workers.remove(&id) {
-            c.cancel();
-        }
         let tickets: Vec<_> = self.live.keys().copied().filter(|t| t.run == id).collect();
         for ticket in tickets {
             self.stop_session(&ticket, cx);
         }
+        self.drop_runtime(id);
         cx.notify();
         Ok(())
     }
@@ -373,18 +373,18 @@ impl Pipelines {
             .pipelines
             .runs
             .iter()
-            .any(timing::interruptible)
+            .any(Run::is_interruptible)
         {
-            let at = timing::now();
+            let at = now_ms();
             self.store.update(cx, |s, cx| {
                 s.edit_pipelines(cx, |l| {
                     for run in &mut l.runs {
-                        timing::interrupt(run, Some(at));
+                        run.interrupt_timings(Some(at));
                     }
                 })
             });
         }
-        for (_, worker) in self.workers.drain() {
+        for worker in self.runtime.values_mut().filter_map(|r| r.worker.take()) {
             worker.cancel();
         }
     }

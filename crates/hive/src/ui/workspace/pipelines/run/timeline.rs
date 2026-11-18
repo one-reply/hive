@@ -70,7 +70,7 @@ impl RunView {
         let mut table = v_flex().min_w_0().w_full();
         for (i, stage) in Stage::recipe(run).into_iter().enumerate() {
             let rows = stage.observations(run);
-            let active = stage.active(run);
+            let active = stage.is_active(run);
             let current = rows
                 .last()
                 .copied()
@@ -79,18 +79,21 @@ impl RunView {
                 .iter()
                 .find(|s| s.stage == stage)
                 .and_then(|s| s.status);
-            let status = agent.map_or_else(|| stage.state(run, &rows), AgentStatus::label);
+            let stage_status = stage.status(run, &rows);
+            let status = agent.map_or(stage_status.label(), AgentStatus::label);
             let working = current.is_some()
-                && !stage.human()
+                && !stage.is_human()
                 && agent.is_none_or(|s| s == AgentStatus::Working);
             let open = self.selected_stage == Some(stage);
             let hover = Hover::new(("stage-hover", i), w, cx);
-            let ink = if status == "Interrupted"
-                || status == "Failed"
-                || agent == Some(AgentStatus::Failed)
-            {
+            let failed = match agent {
+                Some(agent) => agent == AgentStatus::Failed,
+                None => stage_status.is_failure(),
+            };
+            let ink = if failed {
                 cx.theme().danger
-            } else if active && stage.human() || agent.is_some_and(AgentStatus::needs_attention) {
+            } else if active && stage.is_human() || agent.is_some_and(AgentStatus::needs_attention)
+            {
                 cx.theme().warning
             } else if active {
                 live_color(cx)
@@ -98,8 +101,8 @@ impl RunView {
                 cx.theme().muted_foreground
             };
             let subtitle = match stage {
-                Stage::Develop(i) if path_name(&run.lanes[i].project) != run.lanes[i].name => {
-                    format!("{} · {status}", path_name(&run.lanes[i].project))
+                Stage::Develop(i) if path_name(&run.lanes()[i].project) != run.lanes()[i].name => {
+                    format!("{} · {status}", path_name(&run.lanes()[i].project))
                 }
                 _ => status.to_owned(),
             };
@@ -176,7 +179,7 @@ impl RunView {
                     let live = row.end_ms.is_none() && !row.failed;
                     let color = if row.failed {
                         cx.theme().danger
-                    } else if stage.human() {
+                    } else if stage.is_human() {
                         cx.theme().warning
                     } else if live {
                         ink
@@ -190,13 +193,13 @@ impl RunView {
                         .min_w(px(3.))
                         .rounded_sm()
                         .overflow_hidden()
-                        .bg(color.opacity(if stage.human() || live { 0.21 } else { 0.84 }));
+                        .bg(color.opacity(if stage.is_human() || live { 0.21 } else { 0.84 }));
                     bar = if x >= 1. {
                         bar.right_0()
                     } else {
                         bar.left(relative(x))
                     };
-                    if stage.human() {
+                    if stage.is_human() {
                         bar = bar.child(stripes(color.opacity(0.61)));
                     }
                     if live {
@@ -218,7 +221,7 @@ impl RunView {
                                 .px_2()
                                 .overflow_hidden()
                                 .text_xs()
-                                .text_color(if stage.human() {
+                                .text_color(if stage.is_human() {
                                     cx.theme().foreground
                                 } else {
                                     cx.theme().background

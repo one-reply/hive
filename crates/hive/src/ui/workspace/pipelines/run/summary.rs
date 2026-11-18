@@ -4,30 +4,16 @@ use gpui_kit::base::{
     MotionReveal,
     motion::{Transition, transition},
 };
+use hive_core::pipeline::CheckTally;
 
 const REVEAL_DURATION: Duration = Duration::from_millis(260);
 const REPORTS_MAX_HEIGHT: f32 = 12.;
 
-fn check_outcome(run: &Run) -> String {
-    let mut required = 0;
-    let mut passed = 0;
-    for (ix, lane) in run.lanes.iter().enumerate() {
-        if lane.assignment.trim().is_empty() || lane.command.trim().is_empty() {
-            continue;
-        }
-        required += 1;
-        if run
-            .commands
-            .iter()
-            .any(|c| c.lane == ix && c.command == lane.command && c.success)
-        {
-            passed += 1;
-        }
-    }
-    match required {
+fn check_outcome(tally: CheckTally) -> String {
+    match tally.required {
         0 => "No required commands".into(),
-        1 => format!("{passed}/1 required check passed"),
-        n => format!("{passed}/{n} required checks passed"),
+        1 => format!("{}/1 required check passed", tally.passed),
+        n => format!("{}/{n} required checks passed", tally.passed),
     }
 }
 
@@ -50,8 +36,8 @@ impl RunView {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let progress = reveal_progress(run.phase, w, cx)?;
-        let repairs: usize = (0..run.template.reviews.len())
+        let progress = reveal_progress(run.phase(), w, cx)?;
+        let repairs: usize = (0..run.template().reviews.len())
             .map(|i| usize::from(run.cycles(i)))
             .sum();
         let success = cx.theme().success;
@@ -78,7 +64,7 @@ impl RunView {
             .child(subtle(
                 format!(
                     "{}   ·   {repairs} automatic repair {}",
-                    check_outcome(run),
+                    check_outcome(run.check_tally()),
                     if repairs == 1 { "round" } else { "rounds" }
                 ),
                 cx,
@@ -113,11 +99,11 @@ impl RunView {
 
 fn reports(run: &Run, cx: &App) -> Div {
     let mut body = v_flex().gap_3();
-    for stage in (0..run.lanes.len())
+    for stage in (0..run.lanes().len())
         .map(Stage::Develop)
-        .chain((0..run.template.reviews.len()).map(Stage::Review))
+        .chain((0..run.template().reviews.len()).map(Stage::Review))
     {
-        let report = handoff::stage_reports(run, stage).next_back();
+        let report = run.stage_reports(stage).next_back();
         let mut section = v_flex()
             .gap_1()
             .pt_2()
@@ -125,7 +111,7 @@ fn reports(run: &Run, cx: &App) -> Div {
             .border_color(cx.theme().border)
             .child(heading(stage.title(run)));
         if let Stage::Develop(i) = stage {
-            let lane = &run.lanes[i];
+            let lane = &run.lanes()[i];
             if lane.assignment.trim().is_empty() && report.is_none() {
                 continue;
             }
@@ -155,9 +141,8 @@ fn reports(run: &Run, cx: &App) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::{Run, check_outcome};
+    use super::{CheckTally, check_outcome};
     use gpui_kit as gpui;
-    use hive_core::pipeline::{CommandResult, Lane, Template};
 
     #[gpui::test]
     fn accepting_reveals_the_block_once(cx: &mut gpui::TestAppContext) {
@@ -193,34 +178,10 @@ mod tests {
     }
 
     #[test]
-    fn check_summary_requires_a_matching_passing_result_for_assigned_work() {
-        let mut run = Run::new(
-            1,
-            "/repo".into(),
-            "Task".into(),
-            Template::default(),
-            vec![Lane {
-                name: "Development".into(),
-                project: "/repo".into(),
-                command: "cargo test".into(),
-                ..Default::default()
-            }],
-        )
-        .unwrap();
-        assert_eq!(check_outcome(&run), "No required commands");
-        run.lanes[0].assignment = "Implement the task".into();
-        assert_eq!(check_outcome(&run), "0/1 required check passed");
-        run.commands.push(CommandResult {
-            lane: 0,
-            command: "different check".into(),
-            success: true,
-            output: String::new(),
-            exit_code: Some(0),
-        });
-        assert_eq!(check_outcome(&run), "0/1 required check passed");
-        run.commands[0].command = "cargo test".into();
-        assert_eq!(check_outcome(&run), "1/1 required check passed");
-        run.commands[0].success = false;
-        assert_eq!(check_outcome(&run), "0/1 required check passed");
+    fn check_summary_counts_passed_against_required() {
+        let tally = |passed, required| check_outcome(CheckTally { required, passed });
+        assert_eq!(tally(0, 0), "No required commands");
+        assert_eq!(tally(1, 1), "1/1 required check passed");
+        assert_eq!(tally(1, 3), "1/3 required checks passed");
     }
 }
