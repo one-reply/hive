@@ -104,8 +104,10 @@ impl GitPanel {
         let fg = cx.theme().foreground;
         let can_act = mutable && !conflicted;
         let untracked = source == DiffSource::Untracked;
-        let can_discard =
-            (source == DiffSource::WorkingTree || untracked) && !conflicted && !file.submodule;
+        let discard = match source {
+            DiffSource::WorkingTree | DiffSource::Untracked => Discard::for_file(file),
+            _ => None,
+        };
         let row_id: SharedString = format!(
             "file-row:{:?}:{source:?}:{}",
             self.git.read(cx).target,
@@ -165,7 +167,7 @@ impl GitPanel {
                 })
                 .smooth_hover(ButtonLook::Ghost, &open_hover, cx),
         );
-        if can_discard {
+        if let Some(kind) = discard {
             let path = file.path.clone();
             actions = actions.child(
                 action_button(
@@ -181,7 +183,7 @@ impl GitPanel {
                         cx.stop_propagation();
                         git_controls::confirm(
                             this.git.clone(),
-                            Action::Discard(path.clone()),
+                            Action::Discard { kind, paths: vec![path.clone()] },
                             if untracked {
                                 git_controls::Confirmation {
                                     title: "Delete File",
@@ -273,7 +275,7 @@ impl GitPanel {
                     .smooth_hover(ButtonLook::Ghost, hover, cx),
             );
         }
-        let action_count = 1 + usize::from(can_discard) + usize::from(can_act) + sides.len();
+        let action_count = 1 + usize::from(discard.is_some()) + usize::from(can_act) + sides.len();
         let (selected, open_source) = (file.clone(), source);
         h_flex()
             .id(row_id)

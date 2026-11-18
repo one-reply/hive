@@ -11,6 +11,7 @@ mod commit_and_push;
 #[cfg(feature = "desktop")]
 mod commit_messages;
 mod conflicts;
+mod discard;
 mod line_stats;
 
 struct Repo(PathBuf);
@@ -212,7 +213,11 @@ fn literal_paths_unborn_unstage_discard_and_index_only_commit() {
     repo.write(path, "two");
     repo.action(Action::Stage(vec![path.into()])).unwrap();
     repo.write(path, "three");
-    repo.action(Action::Discard(path.into())).unwrap();
+    repo.action(Action::Discard {
+        kind: Discard::Restore,
+        paths: vec![path.into()],
+    })
+    .unwrap();
     assert_eq!(std::fs::read_to_string(repo.0.join(path)).unwrap(), "two");
     repo.write(path, "three");
     repo.action(Action::Commit("index only".into())).unwrap();
@@ -222,7 +227,11 @@ fn literal_paths_unborn_unstage_discard_and_index_only_commit() {
     std::fs::create_dir(repo.0.join("dir")).unwrap();
     repo.write(untracked, "gone");
     repo.write("dir/keep", "keep");
-    repo.action(Action::Discard(untracked.into())).unwrap();
+    repo.action(Action::Discard {
+        kind: Discard::Delete,
+        paths: vec![untracked.into()],
+    })
+    .unwrap();
     assert!(!repo.0.join(untracked).exists());
     assert!(repo.0.join("dir/keep").exists());
 }
