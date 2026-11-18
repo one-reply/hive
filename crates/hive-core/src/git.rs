@@ -178,6 +178,7 @@ fn invoke(
             let mut remote = vec![
                 "GIT_TERMINAL_PROMPT=0",
                 "GIT_EDITOR=true",
+                "GIT_ICASE_PATHSPECS=0",
                 "LC_ALL=C",
                 "git",
             ];
@@ -190,6 +191,8 @@ fn invoke(
     command
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
+        // The panel confirms exact paths, even if a login shell requests case-insensitive matches.
+        .env("GIT_ICASE_PATHSPECS", "0")
         .env("LC_ALL", "C");
     let timeout = if mutation {
         MUTATION_TIMEOUT
