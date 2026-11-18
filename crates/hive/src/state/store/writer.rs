@@ -22,13 +22,20 @@ pub(super) struct Writer {
 
 impl Writer {
     pub(super) fn new(executor: &BackgroundExecutor) -> (Self, Receiver<String>) {
+        Self::with_save(executor, State::save)
+    }
+
+    pub(super) fn with_save(
+        executor: &BackgroundExecutor,
+        save: impl Fn(&State) -> Result<(), StateError> + Send + 'static,
+    ) -> (Self, Receiver<String>) {
         let (snapshots, receiver) = async_channel::bounded(1);
         let (errors, error_receiver) = async_channel::bounded(1);
         let (done_sender, done) = mpsc::channel();
         let acknowledgments = Acknowledgments::default();
         let pending = acknowledgments.clone();
         let task = executor.spawn(async move {
-            write_snapshots(receiver, errors, &pending, State::save).await;
+            write_snapshots(receiver, errors, &pending, save).await;
             let _ = done_sender.send(());
         });
         (

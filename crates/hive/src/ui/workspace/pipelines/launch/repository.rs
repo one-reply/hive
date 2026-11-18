@@ -12,6 +12,7 @@ pub(super) enum Check {
 pub(super) struct Binding {
     pub preset: LanePreset,
     pub project: Option<PathBuf>,
+    checkout: Option<PathBuf>,
     reference: String,
     pub ref_input: Option<Entity<InputState>>,
     pub check: Check,
@@ -32,10 +33,11 @@ impl Binding {
                 cx.notify();
             }
         });
-        let reference = initial_ref(project.as_deref(), cx);
+        let (checkout, reference) = initial_ref(project.as_deref(), cx);
         Self {
             preset,
             project,
+            checkout,
             reference,
             ref_input: None,
             check: Check::Suggested,
@@ -44,7 +46,7 @@ impl Binding {
         }
     }
     pub(super) fn bind(&mut self, project: Option<PathBuf>, cx: &mut Context<LaunchForm>) {
-        self.reference = initial_ref(project.as_deref(), cx);
+        (self.checkout, self.reference) = initial_ref(project.as_deref(), cx);
         self.project = project;
         self.ref_input = None;
         self.check = Check::Suggested;
@@ -53,17 +55,22 @@ impl Binding {
     pub(super) fn preview(&self, cx: &mut Context<LaunchForm>) {
         if let Some(project) = &self.project {
             AppState::get(cx).pipelines.clone().update(cx, |p, cx| {
-                p.preview(project.clone(), self.reference.clone(), cx)
+                p.preview(
+                    project.clone(),
+                    self.checkout.as_ref().unwrap_or(project).clone(),
+                    self.reference.clone(),
+                    cx,
+                )
             });
         }
     }
     pub(super) fn base_preview<'a>(&self, cx: &'a App) -> Option<&'a Result<BasePreview, String>> {
         let project = self.project.as_ref()?;
-        AppState::get(cx)
-            .pipelines
-            .read(cx)
-            .previews
-            .get(&(project.clone(), self.reference.clone()))
+        AppState::get(cx).pipelines.read(cx).previews.get(&(
+            project.clone(),
+            self.checkout.as_ref().unwrap_or(project).clone(),
+            self.reference.clone(),
+        ))
     }
     pub(super) fn command(&self, preview: &BasePreview, cx: &App) -> String {
         match &self.check {
@@ -77,20 +84,28 @@ impl Binding {
     }
 }
 
-fn initial_ref(project: Option<&Path>, cx: &App) -> String {
+fn initial_ref(project: Option<&Path>, cx: &App) -> (Option<PathBuf>, String) {
     let projects = AppState::get(cx).projects.read(cx);
-    let branch = project.and_then(|p| {
-        let repo = projects.project(&Host::Local, p)?;
-        let selected = projects
-            .target()
-            .filter(|t| t.project == p && t.host.is_local());
-        let path = selected.as_ref().map_or(p, |t| t.path.as_path());
-        repo.worktrees
-            .iter()
-            .find(|w| w.path == path)
-            .and_then(|w| w.branch())
-    });
-    branch.map_or_else(|| "HEAD".into(), |b| format!("refs/heads/{b}"))
+    let Some(repo) = project.and_then(|p| projects.project(&Host::Local, p)) else {
+        return (None, "HEAD".into());
+    };
+    let (path, reference) = checkout_ref(repo, projects.target().as_ref());
+    (Some(path), reference)
+}
+
+fn checkout_ref(repo: &Project, selected: Option<&Target>) -> (PathBuf, String) {
+    let path = selected
+        .filter(|t| t.project == repo.path && t.host.is_local())
+        .map_or(&repo.path, |t| &t.path);
+    let branch = repo
+        .worktrees
+        .iter()
+        .find(|w| w.path == *path)
+        .and_then(Worktree::branch);
+    (
+        path.clone(),
+        branch.map_or_else(|| "HEAD".into(), |b| format!("refs/heads/{b}")),
+    )
 }
 
 pub(super) fn repositories(cx: &App) -> Vec<(PathBuf, String)> {
@@ -328,5 +343,34 @@ impl LaunchForm {
             group = group.child(subtle(message, cx));
         }
         group
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Host, Project, Target, Worktree, checkout_ref};
+    use hive_core::{projects::Head, state::ProjectRef};
+    #[test]
+    fn a_detached_selection_keeps_its_own_head_in_the_preview_key() {
+        let mut repo = Project::from(&ProjectRef::new("/project".into(), Host::Local));
+        repo.worktrees = vec![
+            Worktree {
+                path: repo.path.clone(),
+                head: Head::Branch("main".into()),
+            },
+            Worktree {
+                path: "/detached".into(),
+                head: Head::Detached,
+            },
+        ];
+        let selected = Target::of(&repo, Some(&repo.worktrees[1]));
+        assert_eq!(
+            checkout_ref(&repo, Some(&selected)),
+            (selected.path, "HEAD".into())
+        );
+        assert_eq!(
+            checkout_ref(&repo, None),
+            (repo.path, "refs/heads/main".into())
+        );
     }
 }

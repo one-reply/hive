@@ -96,16 +96,14 @@ fn restarted_attempt_requires_explicit_retry_and_failed_checkpoint_prevents_proc
         assert!(p.error(42).is_some());
         assert!(p.session(&ticket).is_none());
         assert_eq!(p.attention(cx).len(), 1);
-        assert!(
-            p.report(
-                7,
-                &ticket,
-                Report::Developed {
-                    summary: "unauthorized".into()
-                },
-                cx
-            )
-            .is_err()
+        p.report(
+            7,
+            ticket,
+            Report::Developed {
+                summary: "unauthorized".into(),
+            },
+            |answer| assert!(answer.is_err()),
+            cx,
         );
         assert!(p.resume(&ticket, cx).is_err());
         p.retry(42, cx).unwrap();
@@ -240,5 +238,165 @@ fn cancelling_drops_everything_held_for_the_run(cx: &mut TestAppContext) {
         assert!(p.error(42).is_none());
         assert!(!p.accepting(42));
         assert!(p.review(42).is_none());
+    });
+}
+
+fn attach_session(
+    pipelines: &mut Pipelines,
+    ticket: super::Ticket,
+    cx: &mut gpui::Context<Pipelines>,
+) -> u64 {
+    use hive_core::terminal::{Terminal, TerminalSize};
+    let terminal = Terminal::spawn(None, Some("/bin/cat"), TerminalSize::new(80, 24)).unwrap();
+    let session = cx.new(|_| super::TerminalSession::for_test(terminal));
+    let id = session.entity_id().as_u64();
+    pipelines.suspended.remove(&ticket);
+    pipelines.live.insert(
+        ticket,
+        super::Live {
+            session,
+            phase: pipelines.run(ticket.run, cx).unwrap().phase(),
+            _subscriptions: vec![],
+        },
+    );
+    id
+}
+
+fn submit(
+    p: &mut Pipelines,
+    from: u64,
+    ticket: super::Ticket,
+    report: Report,
+    cx: &mut gpui::Context<Pipelines>,
+) -> std::sync::mpsc::Receiver<Result<(), String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    p.report(
+        from,
+        ticket,
+        report,
+        move |answer| tx.send(answer).unwrap(),
+        cx,
+    );
+    rx
+}
+
+fn plan(lanes: usize) -> Report {
+    Report::Plan {
+        assignments: (0..lanes)
+            .map(|lane| hive_core::pipeline::Assignment {
+                lane,
+                task: "Implement".into(),
+                criteria: "Tests pass".into(),
+            })
+            .collect(),
+    }
+}
+
+#[gpui::test]
+fn report_retries_after_write_failure_without_closing_the_session_or_reapplying_the_transition(
+    cx: &mut TestAppContext,
+) {
+    let pipelines = recovering(cx);
+    let (ticket, from, first) = pipelines.update(cx, |p, cx| {
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        let from = attach_session(p, ticket, cx);
+        let first = submit(p, from, ticket, plan(1), cx);
+        assert!(matches!(
+            first.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        assert!(p.edit(42, cx, |run| Ok(run.approve()?)).is_err());
+        assert_eq!(p.live_attempts(42), [(ticket, Phase::Planning)]);
+        (ticket, from, first)
+    });
+    cx.run_until_parked();
+    assert!(first.try_recv().unwrap().is_err());
+    let (retry, duplicate) = pipelines.update(cx, |p, cx| {
+        assert!(p.session(&ticket).is_some());
+        p.store.update(cx, |s, cx| {
+            s.set_test_writer(cx, |state| {
+                assert_eq!(state.pipelines.runs[0].phase(), Phase::ApprovePlan);
+                assert_eq!(state.pipelines.runs[0].reports().len(), 1);
+                Ok(())
+            })
+        });
+        let bad = Report::Developed {
+            summary: "replacement".into(),
+        };
+        assert!(
+            submit(p, from, ticket, bad, cx)
+                .try_recv()
+                .unwrap()
+                .is_err()
+        );
+        let retry = submit(p, from, ticket, plan(1), cx);
+        let duplicate = submit(p, from, ticket, plan(1), cx);
+        assert!(retry.try_recv().is_err() && duplicate.try_recv().is_err());
+        (retry, duplicate)
+    });
+    cx.run_until_parked();
+    assert_eq!(retry.try_recv().unwrap(), Ok(()));
+    assert_eq!(duplicate.try_recv().unwrap(), Ok(()));
+    pipelines.read_with(cx, |p, cx| {
+        assert!(p.session(&ticket).is_none());
+        assert!(p.error(42).is_none());
+        assert_eq!(p.run(42, cx).unwrap().reports().len(), 1);
+    });
+}
+
+#[gpui::test]
+fn parallel_reports_share_the_latest_durable_checkpoint_before_dispatch(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    let replies = pipelines.update(cx, |p, cx| {
+        p.store.update(cx, |s, cx| {
+            let lanes = ["web", "api"].map(|name| Lane {
+                name: name.into(),
+                project: PathBuf::from("/fixture").join(name),
+                base: "HEAD".into(),
+                ..Default::default()
+            });
+            let mut run = Run::new(
+                42,
+                "/fixture".into(),
+                "Task".into(),
+                Template::default(),
+                lanes.to_vec(),
+            )
+            .unwrap();
+            let planner = run.pending()[0];
+            run.report(&planner, plan(2)).unwrap();
+            run.approve().unwrap();
+            s.state.pipelines.runs[0] = run;
+            s.set_test_writer(cx, |_| Ok(()));
+        });
+        let tickets = p.run(42, cx).unwrap().pending();
+        assert_eq!(tickets.len(), 2);
+        let mut replies = vec![];
+        for ticket in tickets {
+            let from = attach_session(p, ticket, cx);
+            replies.push(submit(
+                p,
+                from,
+                ticket,
+                Report::Developed {
+                    summary: "done".into(),
+                },
+                cx,
+            ));
+        }
+        assert_eq!(p.live_attempts(42).len(), 2);
+        assert!(replies.iter().all(|reply| reply.try_recv().is_err()));
+        replies
+    });
+    cx.run_until_parked();
+    assert!(
+        replies
+            .iter()
+            .all(|reply| reply.try_recv().unwrap().is_ok())
+    );
+    pipelines.read_with(cx, |p, cx| {
+        assert!(p.live.is_empty());
+        assert_eq!(p.run(42, cx).unwrap().reports().len(), 3);
+        assert!(p.error(42).unwrap().contains("registered"));
     });
 }

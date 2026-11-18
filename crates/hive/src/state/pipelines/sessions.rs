@@ -78,6 +78,17 @@ impl Pipelines {
             .map(|(t, _)| *t)
     }
 
+    pub(crate) fn live_attempts(&self, id: u64) -> Vec<(Ticket, Phase)> {
+        let mut attempts: Vec<_> = self
+            .live
+            .iter()
+            .filter(|(ticket, _)| ticket.run == id)
+            .map(|(ticket, live)| (*ticket, live.phase))
+            .collect();
+        attempts.sort_unstable_by_key(|(ticket, _)| ticket.attempt);
+        attempts
+    }
+
     pub(crate) fn session(&self, ticket: &Ticket) -> Option<Entity<TerminalSession>> {
         self.live.get(ticket).map(|live| live.session.clone())
     }
@@ -199,6 +210,7 @@ impl Pipelines {
             self.live.insert(
                 ticket,
                 Live {
+                    phase: run.phase(),
                     session: session.clone(),
                     _subscriptions: subscriptions,
                 },

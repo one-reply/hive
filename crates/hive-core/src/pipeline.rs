@@ -308,6 +308,13 @@ pub struct Lane {
     pub profile: Profile,
 }
 
+impl Lane {
+    /// Whether this assigned lane contributes a mandatory QA command.
+    pub fn requires_check(&self) -> bool {
+        !self.assignment.trim().is_empty() && !self.command.trim().is_empty()
+    }
+}
+
 /// Planner handoff for one selected lane.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Assignment {

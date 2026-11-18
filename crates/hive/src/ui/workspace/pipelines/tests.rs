@@ -9,6 +9,8 @@ struct Harness {
     slots: [PanelSlot; 2],
     documents: [FocusHandle; 2],
     project: usize,
+    checkout: std::path::PathBuf,
+    terminal_switches: usize,
 }
 
 impl Render for Harness {
@@ -23,7 +25,14 @@ impl Render for Harness {
             .size_full()
             .key_context("Workspace")
             .on_action(cx.listener(|this, _: &TogglePipelines, window, cx| {
-                this.slots[this.project].toggle(&this.documents[this.project], window, cx);
+                if this.slots[this.project].toggle(
+                    &this.checkout,
+                    &this.documents[this.project],
+                    window,
+                    cx,
+                ) {
+                    this.terminal_switches += 1;
+                }
                 cx.notify();
             }))
             .child(
@@ -68,6 +77,8 @@ fn shortcut_and_project_switch_preserve_independent_drawer_and_document_focus(
             slots,
             documents,
             project: 0,
+            checkout: "/a".into(),
+            terminal_switches: 0,
         }
     });
     cx.update(|w, cx| w.draw(cx).clear(cx));
@@ -99,4 +110,8 @@ fn shortcut_and_project_switch_preserve_independent_drawer_and_document_focus(
         assert!(view.read(cx).slots[1].open);
         assert!(view.read(cx).documents[0].is_focused(w));
     });
+    cx.simulate_keystrokes("ctrl-`");
+    view.update(cx, |this, _| this.checkout = "/b".into());
+    cx.simulate_keystrokes("ctrl-`");
+    view.read_with(cx, |v, _| assert_eq!(v.terminal_switches, 1));
 }

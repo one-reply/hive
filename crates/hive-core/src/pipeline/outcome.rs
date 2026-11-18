@@ -11,12 +11,24 @@ pub struct CheckTally {
 }
 
 impl Run {
+    /// Before approval the UI previews configured checks; afterwards only assigned work counts.
+    pub fn shows_check(&self, lane: &super::Lane) -> bool {
+        if matches!(
+            self.phase(),
+            super::Phase::Planning | super::Phase::ApprovePlan
+        ) {
+            !lane.command.trim().is_empty()
+        } else {
+            lane.requires_check()
+        }
+    }
+
     /// Counts only results for the command the lane requires now, so an edited or
     /// unrelated command cannot satisfy it.
     pub fn check_tally(&self) -> CheckTally {
         let mut tally = CheckTally::default();
         for (ix, lane) in self.lanes.iter().enumerate() {
-            if lane.assignment.trim().is_empty() || lane.command.trim().is_empty() {
+            if !lane.requires_check() {
                 continue;
             }
             tally.required += 1;
@@ -56,6 +68,50 @@ mod tests {
             "API · cargo test · passed (exit 0)"
         );
         assert_eq!(readable_history("app: Some(value)"), "app: Some(value)");
+    }
+
+    #[test]
+    fn check_list_shows_only_assigned_commands_after_approval() {
+        use crate::pipeline::{Assignment, Phase, Report};
+        let lanes = ["api", "web"].map(|name| Lane {
+            name: name.into(),
+            project: std::path::Path::new("/").join(name),
+            command: "cargo test".into(),
+            ..Default::default()
+        });
+        let mut run = Run::new(
+            1,
+            "/api".into(),
+            "Task".into(),
+            Template::default(),
+            lanes.to_vec(),
+        )
+        .unwrap();
+        let count = |run: &Run| {
+            run.lanes()
+                .iter()
+                .filter(|lane| run.shows_check(lane))
+                .count()
+        };
+        assert_eq!(count(&run), 2);
+        let ticket = run.pending()[0];
+        run.report(
+            &ticket,
+            Report::Plan {
+                assignments: vec![Assignment {
+                    lane: 1,
+                    task: "Implement".into(),
+                    criteria: "Pass".into(),
+                }],
+            },
+        )
+        .unwrap();
+        assert_eq!(count(&run), 2);
+        run.approve().unwrap();
+        assert_eq!(run.phase(), Phase::Development);
+        assert_eq!(count(&run), 1);
+        assert!(run.shows_check(&run.lanes()[1]));
+        assert_eq!(run.check_tally().required, 1);
     }
 
     #[test]

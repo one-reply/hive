@@ -146,21 +146,31 @@ fn digest_untracked(hash: &mut Sha256, path: &Path, stop: &Cancellation) -> Resu
     }
     let executable = meta.permissions().mode() & 0o111 != 0;
     frame(hash, if executable { b"executable" } else { b"file" });
-    let mut file = std::fs::File::open(path).map_err(unreadable)?;
+    let file = std::fs::File::open(path).map_err(unreadable)?;
+    hash.update(digest_reader(file, stop).map_err(unreadable)?);
+    Ok(())
+}
+
+fn digest_reader(
+    mut file: impl std::io::Read,
+    stop: &Cancellation,
+) -> std::io::Result<sha2::digest::Output<Sha256>> {
     let mut contents = Sha256::new();
     let mut buffer = vec![0; 64 * 1024];
     loop {
-        let read = match std::io::Read::read(&mut file, &mut buffer) {
+        if stop.is_cancelled() {
+            return Err(std::io::Error::other("Review was cancelled."));
+        }
+        let read = match file.read(&mut buffer) {
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            read => read.map_err(unreadable)?,
+            read => read?,
         };
         if read == 0 {
             break;
         }
         contents.update(&buffer[..read]);
     }
-    hash.update(contents.finalize());
-    Ok(())
+    Ok(contents.finalize())
 }
 
 fn frame(hash: &mut Sha256, value: &[u8]) {
@@ -201,4 +211,28 @@ fn digest_patch<const N: usize>(
     }
     combined.update(digest.finalize());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_during_an_untracked_file_stops_before_the_next_chunk() {
+        struct CancelOnRead<'a>(&'a Cancellation);
+        impl std::io::Read for CancelOnRead<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                assert!(!self.0.is_cancelled(), "read past cancellation");
+                self.0.cancel();
+                Ok(buf.len())
+            }
+        }
+        let stop = Cancellation::default();
+        assert!(
+            digest_reader(CancelOnRead(&stop), &stop)
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+    }
 }

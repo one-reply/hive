@@ -83,12 +83,7 @@ impl Run {
                     })
                     .collect();
                 self.outstanding.clear();
-                if ix == 0
-                    && self
-                        .lanes
-                        .iter()
-                        .any(|l| !l.command.trim().is_empty() && !l.assignment.trim().is_empty())
-                {
+                if ix == 0 && self.lanes.iter().any(Lane::requires_check) {
                     self.phase = Phase::Commands(ix);
                 } else {
                     self.finish_review(ix);
@@ -161,7 +156,7 @@ impl Run {
             .lanes
             .iter()
             .enumerate()
-            .filter(|(_, l)| !l.assignment.trim().is_empty() && !l.command.trim().is_empty())
+            .filter(|(_, l)| l.requires_check())
             .map(|(ix, _)| ix)
             .collect();
         let actual: BTreeSet<_> = results.iter().map(|r| r.lane).collect();

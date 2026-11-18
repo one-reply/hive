@@ -5,27 +5,39 @@ use gpui_kit::base::motion::{Transition, transition};
 pub(in crate::ui::workspace) struct PanelSlot {
     pub(super) view: Entity<PipelinePanel>,
     pub(super) open: bool,
-    pub(super) previous: Option<FocusHandle>,
+    pub(super) previous: Option<(PathBuf, Option<FocusHandle>)>,
 }
 
 impl PanelSlot {
-    fn show(&mut self, window: &mut Window, cx: &mut App) {
+    fn show(&mut self, cwd: &Path, window: &mut Window, cx: &mut App) {
         if !self.open {
-            self.previous = window.focused(cx);
+            self.previous = Some((cwd.to_owned(), window.focused(cx)));
             self.open = true;
         }
         self.view.read(cx).focus.clone().focus(window, cx);
     }
-    pub(super) fn toggle(&mut self, fallback: &FocusHandle, window: &mut Window, cx: &mut App) {
-        if self.open {
-            self.open = false;
-            self.previous
-                .take()
-                .unwrap_or_else(|| fallback.clone())
-                .focus(window, cx);
-        } else {
-            self.show(window, cx);
+    /// Returns true when the newly exposed dock needs a different terminal.
+    pub(super) fn toggle(
+        &mut self,
+        cwd: &Path,
+        fallback: &FocusHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        if !self.open {
+            self.show(cwd, window, cx);
+            return false;
         }
+        self.open = false;
+        if let Some((previous_cwd, focus)) = self.previous.take() {
+            if previous_cwd != cwd {
+                return true;
+            }
+            focus.as_ref().unwrap_or(fallback).focus(window, cx);
+        } else {
+            fallback.focus(window, cx);
+        }
+        false
     }
     pub(in crate::ui::workspace) fn hide_for_reveal(&mut self) {
         self.previous = None;
@@ -61,12 +73,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some((Host::Local, path)) = &self.shown
-            && let Some(slot) = self.pipeline_panels.get_mut(path)
-            && slot.open
-        {
-            slot.toggle(&self.focus, window, cx);
-            cx.notify();
+        if self.pipelines_open() {
+            self.toggle_pipelines(&TogglePipelines, window, cx);
         }
     }
 
@@ -84,7 +92,22 @@ impl Workspace {
             return;
         };
         let focus = self.focus.clone();
-        self.pipeline_slot(project, cx).toggle(&focus, window, cx);
+        // An agent reveal can show a project before the sidebar follows it.
+        let selected = self
+            .selected_target(cx)
+            .filter(|(target, _)| self.shown.as_ref() == Some(target));
+        let slot = self.pipeline_slot(project.clone(), cx);
+        let cwd = selected
+            .map(|(_, cwd)| cwd)
+            .or_else(|| slot.previous.as_ref().map(|(cwd, _)| cwd.clone()))
+            .unwrap_or_else(|| project.clone());
+        if slot.toggle(&cwd, &focus, window, cx) {
+            let project = (Host::Local, project);
+            self.center(&project, window, cx)
+                .show_terminal(&cwd, window, cx);
+            self.sync_active_worktrees(cx);
+            self.save_center(&project, window, cx);
+        }
         cx.notify();
     }
 
@@ -125,8 +148,9 @@ impl Workspace {
             projects.select_project(&Host::Local, &owner, cx)
         });
         self.sync_selection(window, cx);
+        let cwd = self.last_selection.clone().unwrap_or_else(|| owner.clone());
         let slot = self.pipeline_slot(owner, cx);
-        slot.show(window, cx);
+        slot.show(&cwd, window, cx);
         slot.view
             .update(cx, |view, cx| view.show_run(id, window, cx));
         cx.notify();

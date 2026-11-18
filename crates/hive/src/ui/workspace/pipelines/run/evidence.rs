@@ -11,10 +11,13 @@ impl RunView {
             .lanes()
             .iter()
             .enumerate()
-            .filter(|(_, l)| !l.command.trim().is_empty())
+            .filter(|(_, l)| r.shows_check(l))
         {
             count += 1;
-            let result = r.commands().iter().find(|c| c.lane == i);
+            let result = r
+                .commands()
+                .iter()
+                .find(|c| c.lane == i && c.command == lane.command);
             let (label, color) = match result {
                 Some(c) if c.success => ("Passed", cx.theme().success),
                 Some(_) => ("Failed", cx.theme().danger),

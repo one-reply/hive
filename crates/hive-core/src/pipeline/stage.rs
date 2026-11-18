@@ -78,7 +78,7 @@ impl Stage {
         stages.extend((0..run.lanes.len()).map(Self::Develop));
         for i in 0..run.template.reviews.len() {
             stages.push(Self::Review(i));
-            if i == 0 && run.lanes.iter().any(|lane| !lane.command.trim().is_empty()) {
+            if i == 0 && run.lanes.iter().any(|lane| run.shows_check(lane)) {
                 stages.push(Self::Commands(i));
             }
             if run.phase == Phase::Decision(i)

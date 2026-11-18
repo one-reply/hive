@@ -5,6 +5,7 @@ use hive_core::terminal::TerminalControl;
 
 #[derive(Default)]
 pub(super) struct RunRuntime {
+    pub(super) reports: HashMap<Ticket, Vec<super::reports::Reply>>,
     /// Stamp of the scheduled step; results carrying an older stamp are dropped.
     pub(super) generation: u64,
     /// Why the run stopped and waits for the user.

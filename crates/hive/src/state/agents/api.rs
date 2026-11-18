@@ -3,7 +3,7 @@
 //!
 //! Quick calls are answered at once. `wait` and `start` are kept until the poll sees the
 //! agent settle or appear; `send` is answered by the recipient's terminal once the message
-//! is submitted.
+//! is submitted. A pipeline report waits for its durable checkpoint.
 use super::*;
 use crate::state::terminal_session::{Message, Recipient, SessionStatus};
 use hive_core::agent::api::{
@@ -94,14 +94,27 @@ impl Agents {
             } => {
                 let bound = caller.filter(|s| grant.is_some() && s.read(cx).report_grant == grant);
                 match bound {
-                    Some(session) => crate::app::AppState::get(cx)
-                        .pipelines
-                        .clone()
-                        .update(cx, |pipelines, cx| {
-                            pipelines.report(session.entity_id().as_u64(), &ticket, result, cx)
-                        })
-                        .map(|()| Response::Reported)
-                        .map_err(|e| ApiError::new(ErrorCode::InvalidRequest, e)),
+                    Some(session) => {
+                        crate::app::AppState::get(cx).pipelines.clone().update(
+                            cx,
+                            |pipelines, cx| {
+                                pipelines.report(
+                                    session.entity_id().as_u64(),
+                                    ticket,
+                                    result,
+                                    move |saved| {
+                                        incoming.reply(outcome(
+                                            saved.map(|()| Response::Reported).map_err(|e| {
+                                                ApiError::new(ErrorCode::InvalidRequest, e)
+                                            }),
+                                        ));
+                                    },
+                                    cx,
+                                );
+                            },
+                        );
+                        return;
+                    }
                     None => Err(ApiError::new(
                         ErrorCode::InvalidRequest,
                         "Report requires the active pipeline pane's grant",

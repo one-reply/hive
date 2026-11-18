@@ -193,7 +193,12 @@ fn preparation_rejects_a_checkout_that_an_interrupted_add_left_incomplete() {
     // A killed `git worktree add` keeps the registration and HEAD but not every file.
     fs::remove_file(path.join("contract")).unwrap();
     let error = prepare(14, &lane, &Cancellation::default()).unwrap_err();
-    assert!(error.to_string().contains("incomplete"), "{error}");
+    assert!(error.to_string().contains("missing files"), "{error}");
+    let user_file = path.join("manual-edit");
+    fs::write(&user_file, "keep me").unwrap();
+    assert!(prepare(14, &lane, &Cancellation::default()).is_err());
+    assert_eq!(fs::read_to_string(&user_file).unwrap(), "keep me");
+    fs::remove_file(user_file).unwrap();
     git(&path, &["checkout", "--", "contract"]);
     assert_eq!(prepare(14, &lane, &Cancellation::default()).unwrap(), path);
 }
@@ -395,4 +400,59 @@ fn launch_check_menu_reads_manifests_from_the_selected_commit() {
             .checks
             .is_empty()
     );
+}
+
+#[test]
+fn interrupted_preparation_reattaches_only_an_unoccupied_branch_at_the_approved_commit() {
+    let dir = Scratch::new("reattach");
+    let lane = dir.lane("repo");
+    let stop = Cancellation::default();
+    let checkout = prepare(42, &lane, &stop).unwrap();
+    let path = checkout.to_str().unwrap();
+    let name = branch(42);
+    git(&lane.project, &["worktree", "remove", path]);
+    git(&lane.project, &["switch", &name]);
+    assert!(prepare(42, &lane, &stop).is_err());
+    assert!(!checkout.exists());
+    git(&lane.project, &["switch", "main"]);
+    assert_eq!(prepare(42, &lane, &stop).unwrap(), checkout);
+    git(&checkout, &["commit", "--allow-empty", "-m", "preserve"]);
+    let moved = preview(&checkout, "HEAD").unwrap().commit;
+    git(&lane.project, &["worktree", "remove", path]);
+    assert!(
+        prepare(42, &lane, &stop)
+            .unwrap_err()
+            .to_string()
+            .contains("moved")
+    );
+    assert_eq!(preview(&lane.project, &name).unwrap().commit, moved);
+    assert!(!checkout.exists());
+}
+
+#[test]
+fn detached_preview_uses_the_selected_checkout_for_head_and_local_changes() {
+    let dir = Scratch::new("detached-preview");
+    let lane = dir.lane("repo");
+    let detached = dir.0.join("detached");
+    git(
+        &lane.project,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            detached.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    git(
+        &lane.project,
+        &["commit", "--allow-empty", "-m", "move main"],
+    );
+    fs::write(detached.join("local"), "keep").unwrap();
+    let selected = preview(&detached, "HEAD").unwrap();
+    let primary = preview(&lane.project, "HEAD").unwrap();
+    assert_eq!(selected.commit, lane.base);
+    assert_ne!(primary.commit, selected.commit);
+    assert!(selected.dirty && !primary.dirty);
+    assert_eq!(selected.worktrees_dir, primary.worktrees_dir);
 }

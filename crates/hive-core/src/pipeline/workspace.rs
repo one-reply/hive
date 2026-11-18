@@ -101,6 +101,33 @@ pub fn prepare(run: u64, lane: &Lane, stop: &Cancellation) -> Result<PathBuf, Wo
         ))
         .into());
     }
+    let reference = format!("refs/heads/{name}");
+    let branch_head = git::bytes(
+        &Host::Local,
+        &project.path,
+        &["rev-parse", "--verify", "--quiet", &reference],
+        None,
+        1024,
+        true,
+    )?;
+    if !branch_head.is_empty() {
+        if branch_head.trim_ascii_end() != oid.as_bytes() {
+            return Err(GitError::Invalid(format!(
+                "Branch {name} has moved from the approved commit. Inspect it before retrying."
+            ))
+            .into());
+        }
+        // Git refuses an occupied branch or a nonempty destination without --force.
+        let path = worktree::path_argument(&intended)?;
+        git::run_stoppable(
+            &Host::Local,
+            &project.path,
+            &["worktree", "add", "--", path, &name],
+            stop,
+        )?;
+        confirm_unused_checkout(&intended, &oid)?;
+        return Ok(intended);
+    }
     Ok(worktree::create_stoppable(&project, Some(&name), Some(&oid), stop)?.path)
 }
 
@@ -115,7 +142,7 @@ fn confirm_unused_checkout(path: &Path, base: &str) -> Result<(), GitError> {
     }
     if !git::status::read(&Host::Local, path)?.is_clean() {
         return Err(GitError::Invalid(format!(
-            "The interrupted checkout at {0} is incomplete. Remove it with `git worktree remove --force {0}`, then retry.",
+            "The checkout at {0} has local changes or missing files. Inspect and preserve your work, then retry with a clean checkout at the approved commit.",
             path.display()
         )));
     }
@@ -146,7 +173,7 @@ pub fn checks(lanes: &[Lane], cancellation: &Cancellation) -> Vec<CommandResult>
     for (index, lane) in lanes
         .iter()
         .enumerate()
-        .filter(|(_, lane)| !lane.assignment.trim().is_empty() && !lane.command.trim().is_empty())
+        .filter(|(_, lane)| lane.requires_check())
     {
         if cancellation.is_cancelled() {
             break;

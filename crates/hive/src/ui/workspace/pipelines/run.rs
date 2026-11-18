@@ -84,17 +84,12 @@ impl RunView {
         let agents = app.agents.clone();
         let run = saved_run(store.read(cx), id).cloned().map(Rc::new);
         let subscriptions = vec![
-            cx.observe_in(&store, window, move |this, store, window, cx| {
+            cx.observe(&store, move |this, store, cx| {
                 let state = store.read(cx);
                 let saved = saved_run(state, id);
                 if this.run.as_deref() != saved {
                     this.run = saved.cloned().map(Rc::new);
                     cx.notify();
-                }
-                if let Some((ticket, _)) = &this.session
-                    && sessions::attempt_ended(this.run.as_deref(), ticket)
-                {
-                    this.close_session(window, cx);
                 }
             }),
             cx.observe(&agents, |view, _, cx| {
@@ -104,7 +99,12 @@ impl RunView {
                     cx.notify();
                 }
             }),
-            cx.observe(&pipelines, |view, pipelines, cx| {
+            cx.observe_in(&pipelines, window, |view, pipelines, window, cx| {
+                if let Some((ticket, _)) = &view.session
+                    && pipelines.read(cx).session(ticket).is_none()
+                {
+                    view.close_session(window, cx);
+                }
                 if view.tab == RunTab::Changes && pipelines.read(cx).review(view.id).is_none() {
                     view.selected_file = None;
                     view.display = None;

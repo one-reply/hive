@@ -4,7 +4,7 @@ use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::store::Store;
+use super::store::{Checkpoint, Store};
 use super::terminal_session::TerminalSession;
 use crate::app::AppState;
 use gpui_kit::*;
@@ -15,6 +15,7 @@ use hive_core::pipeline::{Lane, Phase, Report, Run, Template, Ticket, now_ms, wo
 
 mod execution;
 mod models;
+mod reports;
 mod review;
 mod runtime;
 mod sessions;
@@ -32,6 +33,7 @@ pub(crate) struct RevealRun(pub u64);
 impl EventEmitter<RevealRun> for Pipelines {}
 
 struct Live {
+    phase: Phase,
     session: Entity<TerminalSession>,
     _subscriptions: Vec<Subscription>,
 }
@@ -48,8 +50,9 @@ pub(crate) struct Pipelines {
     next_job: u64,
     agents: Entity<super::agents::Agents>,
     _agent_status: Vec<Subscription>,
-    previewing: HashSet<(PathBuf, String)>,
-    pub(crate) previews: HashMap<(PathBuf, String), Result<workspace::BasePreview, String>>,
+    previewing: HashSet<(PathBuf, PathBuf, String)>,
+    pub(crate) previews:
+        HashMap<(PathBuf, PathBuf, String), Result<workspace::BasePreview, String>>,
     stopped: bool,
 }
 
@@ -207,15 +210,21 @@ impl Pipelines {
             .any(|p| p.host.is_local() && p.path == project)
     }
 
-    pub(crate) fn preview(&mut self, project: PathBuf, base: String, cx: &mut Context<Self>) {
-        let key = (project.clone(), base.clone());
+    pub(crate) fn preview(
+        &mut self,
+        project: PathBuf,
+        checkout: PathBuf,
+        base: String,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (project.clone(), checkout.clone(), base.clone());
         if !self.registered(&project, cx) || !self.previewing.insert(key.clone()) {
             return;
         }
         self.previews.remove(&key);
         let work = cx
             .background_executor()
-            .spawn(async move { workspace::preview(&project, &base).map_err(|e| e.to_string()) });
+            .spawn(async move { workspace::preview(&checkout, &base).map_err(|e| e.to_string()) });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |p, cx| {
@@ -264,17 +273,14 @@ impl Pipelines {
                     lane.project.display()
                 ));
             }
-            let key = (lane.project.clone(), lane.base.clone());
             let preview = self
                 .previews
-                .get(&key)
-                .and_then(|p| p.as_ref().ok())
-                .or_else(|| {
-                    self.previews.iter().find_map(|((project, _), p)| {
-                        p.as_ref()
-                            .ok()
-                            .filter(|p| project == &lane.project && p.commit == lane.base)
-                    })
+                .iter()
+                .find_map(|((project, _, _), preview)| {
+                    preview
+                        .as_ref()
+                        .ok()
+                        .filter(|p| project == &lane.project && p.commit == lane.base)
                 })
                 .ok_or_else(|| {
                     format!(
@@ -301,9 +307,10 @@ impl Pipelines {
         }
         let mut run = Run::new(id, owner, task, template, lanes)?;
         run.record_stage(None, now_ms());
-        self.store
-            .update(cx, |s, cx| s.edit_pipelines(cx, |l| l.runs.push(run)));
-        self.schedule(id, cx);
+        let saved = self
+            .store
+            .update(cx, |s, cx| s.checkpoint_pipelines(cx, |l| l.runs.push(run)));
+        self.schedule(id, saved, cx);
         Ok(id)
     }
 
@@ -314,6 +321,18 @@ impl Pipelines {
         cx: &mut Context<Self>,
         change: impl FnOnce(&mut Run) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.ensure_reports_saved(id)?;
+        let saved = self.apply_change(id, cx, change)?;
+        self.schedule(id, saved, cx);
+        Ok(())
+    }
+
+    fn apply_change(
+        &mut self,
+        id: u64,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut Run) -> Result<(), String>,
+    ) -> Result<Checkpoint, String> {
         let mut run = self.run(id, cx)?.clone();
         let previous = run.phase();
         if let Err(error) = change(&mut run) {
@@ -324,43 +343,18 @@ impl Pipelines {
         if run.phase() != Phase::Accepted {
             self.clear_review(id);
         }
-        self.store.update(cx, |s, cx| {
-            s.edit_pipelines(cx, |l| {
+        Ok(self.store.update(cx, |s, cx| {
+            s.checkpoint_pipelines(cx, |l| {
                 if let Some(record) = l.runs.iter_mut().find(|r| r.id() == id) {
                     *record = run;
                 }
             })
-        });
-        self.schedule(id, cx);
-        Ok(())
-    }
-
-    pub(crate) fn report(
-        &mut self,
-        from: u64,
-        ticket: &Ticket,
-        report: Report,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        if self
-            .session(ticket)
-            .is_none_or(|s| s.entity_id().as_u64() != from)
-        {
-            return Err("The report came from a different pipeline session.".into());
-        }
-        let failed = matches!(&report, Report::Review { findings, .. } if !findings.is_empty());
-        self.edit(ticket.run, cx, |r| {
-            r.report(ticket, report)?;
-            r.finish_attempt_at(*ticket, failed, now_ms());
-            Ok(())
-        })?;
-        self.session_errors.remove(ticket);
-        self.stop_session(ticket, cx);
-        Ok(())
+        }))
     }
 
     pub(crate) fn cancel(&mut self, id: u64, cx: &mut Context<Self>) -> Result<(), String> {
-        self.edit(id, cx, |r| Ok(r.cancel()?))?;
+        self.apply_change(id, cx, |r| Ok(r.cancel()?))?;
+        self.settle_reports(id, Err("The pipeline was cancelled.".into()), cx);
         self.suspended.retain(|t| t.run != id);
         self.session_errors.retain(|t, _| t.run != id);
         self.resumes.retain(|t, _| t.run != id);
@@ -393,8 +387,12 @@ impl Pipelines {
                 })
             });
         }
-        for worker in self.runtime.values_mut().filter_map(|r| r.worker.take()) {
-            worker.cancel();
+        for runtime in self.runtime.values_mut() {
+            // Dropping unanswered API requests tells their socket callers Hive is shutting down.
+            runtime.reports.clear();
+            if let Some(worker) = runtime.worker.take() {
+                worker.cancel();
+            }
         }
     }
 }

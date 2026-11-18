@@ -11,46 +11,49 @@ enum Work {
 }
 
 impl Pipelines {
-    pub(super) fn schedule(&mut self, id: u64, cx: &mut Context<Self>) {
+    pub(super) fn schedule(&mut self, id: u64, saved: Checkpoint, cx: &mut Context<Self>) {
         let generation = self.next_job();
         self.runtime_mut(id).generation = generation;
         cx.notify();
-        if self.stopped || self.runtime(id).is_some_and(|r| r.error.is_some()) {
+        if self.stopped {
             return;
         }
-        let Ok(run) = self.run(id, cx) else { return };
-        if run.pending().is_empty() && !matches!(run.phase(), Phase::Commands(_)) {
-            return;
-        }
-        if !self.registered(run.owner(), cx)
-            || run.lanes().iter().any(|l| !self.registered(&l.project, cx))
-        {
-            self.fail(
-                id,
-                "A participating project is no longer registered locally.".into(),
-                cx,
-            );
-            return;
-        }
-        let run = run.clone();
-        let saved = self.store.read(cx).pipeline_checkpoint();
         cx.spawn(async move |this, cx| {
-            let saved = saved
+            let result = saved
                 .recv()
                 .await
                 .unwrap_or_else(|_| Err("State writer stopped.".into()));
             let _ = this.update(cx, |p, cx| {
-                if !p.current(id, generation) {
+                if p.stopped || p.runtime(id).is_none_or(|r| r.generation != generation) {
                     return;
                 }
-                match saved {
-                    Ok(()) => p.work(run, generation, cx),
-                    Err(error) => p.fail(
+                p.settle_reports(id, result.clone(), cx);
+                if let Err(error) = result {
+                    p.fail(
                         id,
                         format!("Pipeline checkpoint could not be saved: {error}"),
                         cx,
-                    ),
+                    );
+                    return;
                 }
+                if !p.current(id, generation) {
+                    return;
+                }
+                let Ok(run) = p.run(id, cx) else { return };
+                if run.pending().is_empty() && !matches!(run.phase(), Phase::Commands(_)) {
+                    return;
+                }
+                if !p.registered(run.owner(), cx)
+                    || run.lanes().iter().any(|l| !p.registered(&l.project, cx))
+                {
+                    p.fail(
+                        id,
+                        "A participating project is no longer registered locally.".into(),
+                        cx,
+                    );
+                    return;
+                }
+                p.work(run.clone(), generation, cx);
             });
         })
         .detach();
@@ -132,31 +135,31 @@ impl Pipelines {
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |p, cx| {
-                // A user may cancel while Git is registering a checkout. Keep its actual path
-                // visible for recovery even when this generation no longer schedules anything.
-                if let Ok(Work::Prepared(index, path)) = &result {
-                    p.store.update(cx, |s, cx| {
-                        s.edit_pipelines(cx, |library| {
-                            if let Some(run) = library.runs.iter_mut().find(|r| r.id() == id) {
-                                run.record_worktree(*index, path.clone());
-                            }
-                        })
-                    });
-                    AppState::get(cx)
-                        .projects
-                        .clone()
-                        .update(cx, |projects, cx| projects.rescan(cx).detach());
+                let current = p.current(id, generation);
+                if current {
+                    p.runtime_mut(id).worker = None;
                 }
-                if !p.current(id, generation) {
-                    return;
-                }
-                p.runtime_mut(id).worker = None;
                 let result = match result {
-                    Err(error) => Err(error),
-                    Ok(Work::Prepared(_, _)) => {
-                        p.schedule(id, cx);
+                    // Git may finish registering a checkout during cancellation. Keep its path visible.
+                    Ok(Work::Prepared(index, path)) => {
+                        let saved = p.store.update(cx, |s, cx| {
+                            s.checkpoint_pipelines(cx, |library| {
+                                if let Some(run) = library.runs.iter_mut().find(|r| r.id() == id) {
+                                    run.record_worktree(index, path);
+                                }
+                            })
+                        });
+                        AppState::get(cx)
+                            .projects
+                            .clone()
+                            .update(cx, |projects, cx| projects.rescan(cx).detach());
+                        if current {
+                            p.schedule(id, saved, cx);
+                        }
                         Ok(())
                     }
+                    _ if !current => return,
+                    Err(error) => Err(error),
                     Ok(Work::Checked(results)) => {
                         p.edit(id, cx, |run| Ok(run.command_results(results)?))
                     }
@@ -185,6 +188,12 @@ impl Pipelines {
     pub(crate) fn retry(&mut self, id: u64, cx: &mut Context<Self>) -> Result<(), String> {
         if self.error(id).is_none() {
             return Err("There is no interrupted work to retry.".into());
+        }
+        if self.ensure_reports_saved(id).is_err() {
+            self.clear_error(id);
+            let saved = self.store.read(cx).pipeline_checkpoint();
+            self.schedule(id, saved, cx);
+            return Ok(());
         }
         if self.run(id, cx)?.phase() == Phase::Acceptance {
             return self.accept(id, cx);
@@ -229,6 +238,7 @@ impl Pipelines {
     }
 
     pub(crate) fn resume(&mut self, ticket: &Ticket, cx: &mut Context<Self>) -> Result<(), String> {
+        self.ensure_reports_saved(ticket.run)?;
         let run = self.run(ticket.run, cx)?;
         let session = run
             .sessions()
@@ -253,7 +263,8 @@ impl Pipelines {
         self.session_errors.remove(ticket);
         self.resumes.insert(*ticket, session);
         self.clear_error(ticket.run);
-        self.schedule(ticket.run, cx);
+        let saved = self.store.read(cx).pipeline_checkpoint();
+        self.schedule(ticket.run, saved, cx);
         Ok(())
     }
 }

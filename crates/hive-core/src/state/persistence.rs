@@ -35,10 +35,9 @@ pub enum StateError {
     },
 }
 
-/// Layout version this build writes into `state.json`. Bump it when the meaning of an
-/// existing field changes and add the matching upgrade in [`State::load_from`]; fields
-/// added with `#[serde(default)]` need no bump. Files without a version are version 0.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Version 2 protects pipeline history on downgrade: v1 preserves newer files before rewriting them.
+/// Unversioned and v1 files load with defaults for any missing sections.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Loaded state and, when the file could not be used as written, what happened to it.
 pub struct LoadedState {
@@ -437,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn old_state_gains_independent_palettes_and_saves_them_without_a_version_bump() {
+    fn old_state_gains_independent_palettes_and_saves_them_in_the_current_schema() {
         use crate::settings::{DarkTheme, LightTheme, ThemeChoice};
         let fixture = Fixture::new();
         let path = fixture.0.join("state.json");
@@ -457,7 +456,7 @@ mod tests {
         assert_eq!(reloaded.state.settings.ui_font_size(), 18.);
         assert_eq!(reloaded.state.projects.len(), 1);
         let saved: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 1);
+        assert_eq!(saved["version"], SCHEMA_VERSION);
     }
 
     #[test]
@@ -484,6 +483,15 @@ mod tests {
         state.pipelines.runs.push(run.clone());
         state.save_to(&path).unwrap();
         let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 2);
+        saved["version"] = 1.into();
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let previous = State::load_from(&fixture.0).unwrap();
+        assert!(previous.recovery.is_none());
+        assert_eq!(previous.state.pipelines, state.pipelines);
+        previous.state.save_to(&path).unwrap();
+        saved = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 2);
         saved["pipelines"]["unknown_future_field"] = 42.into();
         let mut malformed = saved["pipelines"]["runs"][0].clone();
         malformed["id"] = 18.into();

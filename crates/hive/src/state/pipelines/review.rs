@@ -96,6 +96,7 @@ impl Pipelines {
     /// Accept only the worktree contents that entered this QA pass. A manual edit returns
     /// all participating repositories to QA before another acceptance decision.
     pub(crate) fn accept(&mut self, id: u64, cx: &mut Context<Self>) -> Result<(), String> {
+        self.ensure_reports_saved(id)?;
         let run = self.run(id, cx)?;
         if run.phase() != Phase::Acceptance {
             return Err("This run is not awaiting acceptance.".into());

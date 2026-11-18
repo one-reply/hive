@@ -22,6 +22,8 @@ pub struct Store {
     _errors: Option<Task<()>>,
 }
 
+pub(super) type Checkpoint = async_channel::Receiver<Result<(), String>>;
+
 pub(crate) struct SaveError(pub(crate) String);
 impl EventEmitter<SaveError> for Store {}
 
@@ -37,6 +39,15 @@ impl Store {
             stopping: false,
             _errors: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_writer(
+        &mut self,
+        cx: &Context<Self>,
+        save: impl Fn(&State) -> Result<(), StateError> + Send + 'static,
+    ) {
+        self.writer = Some(Writer::with_save(cx.background_executor(), save).0);
     }
 
     #[cfg(test)]
@@ -60,8 +71,19 @@ impl Store {
         self.writer.is_some() && !self.stopping
     }
 
+    /// Submit the mutation and its acknowledgment together so a transition clones State once.
+    pub(super) fn checkpoint_pipelines(
+        &mut self,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut hive_core::pipeline::Library),
+    ) -> Checkpoint {
+        edit(&mut self.state.pipelines);
+        cx.notify();
+        self.pipeline_checkpoint()
+    }
+
     /// Wait asynchronously for this pipeline state (or a later snapshot) to reach disk.
-    pub(crate) fn pipeline_checkpoint(&self) -> async_channel::Receiver<Result<(), String>> {
+    pub(crate) fn pipeline_checkpoint(&self) -> Checkpoint {
         if !self.stopping
             && let Some(writer) = &self.writer
         {

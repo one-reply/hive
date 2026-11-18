@@ -89,7 +89,7 @@ pub fn create(project: &Project, name: Option<&str>) -> Result<Worktree, Worktre
     create_from(project, name, None)
 }
 
-fn path_argument(path: &Path) -> Result<&str, WorktreeError> {
+pub(crate) fn path_argument(path: &Path) -> Result<&str, WorktreeError> {
     // shortcut: Git mutations take UTF-8 arguments; use OsStr when adding byte-path mutations.
     path.to_str().ok_or_else(|| {
         GitError::Invalid(
