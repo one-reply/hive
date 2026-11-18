@@ -1,12 +1,67 @@
 //! A task, its execution recipe and the repositories the planner may use.
 use super::*;
-use gpui_kit::component::{Disableable as _, input::InputEvent};
+use gpui_kit::component::{Disableable as _, button::ButtonVariants as _, input::InputEvent};
 use hive_core::pipeline::{Lane, LanePreset, workspace::BasePreview};
 
 mod repository;
-use repository::{Binding, Check, repositories, select_menu};
+use repository::{Binding, dropdown, repositories};
 
-const COMPOSER_WIDTH: Pixels = px(850.);
+const COMPOSER_WIDTH: Pixels = px(800.);
+/// Tall enough for a few sentences of intent and acceptance criteria without scrolling.
+const TASK_ROWS: usize = 6;
+
+/// Where one repository of the run stands before planning can start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LaneState {
+    Ready,
+    Reading,
+    Failed,
+    EditingRef,
+    MissingCommand,
+}
+
+/// The first thing that keeps **Start planning** disabled, named so the user knows what to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Blocker {
+    Task,
+    Repository,
+    Failed,
+    EditingRef,
+    MissingCommand,
+    Reading,
+}
+
+impl Blocker {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Task => "Describe the task to start planning.",
+            Self::Repository => "Add at least one repository.",
+            Self::Failed => "A repository can’t be read. Pick another branch or repository.",
+            Self::EditingRef => "Press Use ref to apply the branch, tag or commit.",
+            Self::MissingCommand => "Enter the custom check command.",
+            Self::Reading => "Reading repositories…",
+        }
+    }
+}
+
+/// Things the user must fix come before a read that only needs time.
+fn blocker(has_task: bool, lanes: &[LaneState]) -> Option<Blocker> {
+    if !has_task {
+        return Some(Blocker::Task);
+    }
+    if lanes.is_empty() {
+        return Some(Blocker::Repository);
+    }
+    [
+        (LaneState::Failed, Blocker::Failed),
+        (LaneState::EditingRef, Blocker::EditingRef),
+        (LaneState::MissingCommand, Blocker::MissingCommand),
+        (LaneState::Reading, Blocker::Reading),
+    ]
+    .into_iter()
+    .find(|(state, _)| lanes.contains(state))
+    .map(|(_, blocker)| blocker)
+}
 
 pub(super) struct LaunchForm {
     project: PathBuf,
@@ -28,12 +83,11 @@ impl LaunchForm {
         let app = AppState::get(cx);
         let projects = app.projects.clone();
         let pipelines = app.pipelines.clone();
-        let task = area(
-            "",
-            "What would you like the agents to build or fix?",
-            window,
-            cx,
-        );
+        let task = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .rows(TASK_ROWS)
+                .placeholder("What should the agents build or fix? Include what “done” looks like.")
+        });
         let subscriptions = vec![
             cx.observe(&projects, |_, _, cx| cx.notify()),
             cx.observe(&pipelines, |_, _, cx| cx.notify()),
@@ -140,9 +194,11 @@ impl LaunchForm {
         }
     }
 
+    /// The stages this recipe runs, in order, so the user sees where their approval comes.
     fn route(&self, cx: &App) -> Div {
-        let mut route = h_flex().flex_wrap().gap_2();
+        let mut route = h_flex().flex_wrap().items_center().gap_1p5();
         let steps = std::iter::once((Lucide::Map, self.template.planner.name.as_str()))
+            .chain(std::iter::once((Lucide::UserRoundCheck, "Your approval")))
             .chain(std::iter::once((
                 Lucide::GitBranch,
                 self.template.development.name.as_str(),
@@ -162,19 +218,46 @@ impl LaunchForm {
                         .text_color(cx.theme().muted_foreground),
                 );
             }
-            route = route.child(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Icon::new(icon)
-                            .size_3()
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .child(subtle(name.to_owned(), cx)),
-            );
+            route = route.child(stage_chip(icon, name.to_owned(), cx));
         }
         route
     }
+}
+
+fn stage_chip(icon: Lucide, name: String, cx: &App) -> Div {
+    h_flex()
+        .flex_none()
+        .gap_1p5()
+        .px_2()
+        .py_0p5()
+        .rounded_full()
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().background)
+        .text_xs()
+        .child(
+            Icon::new(icon)
+                .size_3()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(name)
+}
+
+/// A section title with one line on why it matters, and an optional action on the right.
+fn section(title: &'static str, hint: &'static str, action: Option<AnyElement>, cx: &App) -> Div {
+    h_flex()
+        .w_full()
+        .items_end()
+        .justify_between()
+        .gap_3()
+        .child(
+            v_flex()
+                .min_w_0()
+                .gap_0p5()
+                .child(heading(title))
+                .child(subtle(hint, cx)),
+        )
+        .children(action)
 }
 
 fn default_projects(
@@ -210,23 +293,15 @@ impl Render for LaunchForm {
             .pipelines
             .templates
             .clone();
-        let bound = self.bindings.iter().filter(|b| b.project.is_some()).count();
-        let ready = bound > 0
-            && !self.task.read(cx).value().trim().is_empty()
-            && self
-                .bindings
-                .iter()
-                .filter(|b| b.project.is_some())
-                .all(|b| {
-                    b.ref_input.is_none()
-                        && b.base_preview(cx).is_some_and(|p| p.is_ok())
-                        && (!matches!(b.check, Check::Custom)
-                            || !b.custom_command.read(cx).value().trim().is_empty())
-                });
-        let template = select_menu(
-            "launch-recipe",
-            Lucide::Layers,
-            self.template.name.clone(),
+        let lanes: Vec<_> = self.bindings.iter().filter_map(|b| b.state(cx)).collect();
+        let has_task = !self.task.read(cx).value().trim().is_empty();
+        let blocked = blocker(has_task, &lanes);
+        let template = options_menu(
+            dropdown(
+                "launch-recipe",
+                Lucide::Workflow,
+                self.template.name.clone(),
+            ),
             templates
                 .into_iter()
                 .map(|t| (t.name.clone(), t == self.template, t))
@@ -236,12 +311,15 @@ impl Render for LaunchForm {
         );
         let mut repos = v_flex().w_full().gap_2();
         for i in 0..self.bindings.len() {
-            repos = repos.child(self.repository_row(i, &projects, window, cx));
+            repos = repos.child(self.repository_card(i, &projects, window, cx));
         }
-        let add = select_menu(
-            "add-pipeline-repo",
-            Lucide::Plus,
-            "Add repository",
+        let add = options_menu(
+            Button::new("add-pipeline-repo")
+                .small()
+                .ghost()
+                .cursor_pointer()
+                .icon(Lucide::Plus)
+                .label("Add repository"),
             projects
                 .iter()
                 .map(|(p, n)| (n.clone(), false, p.clone()))
@@ -249,73 +327,130 @@ impl Render for LaunchForm {
             cx,
             |this, p, w, cx| this.add_repository(p, w, cx),
         );
-        let hover = Hover::new("start-planning", window, cx).enabled(ready);
+        let hover = Hover::new("start-planning", window, cx).enabled(blocked.is_none());
         let submit = Button::new("start-planning")
             .cursor_pointer()
+            .with_size(ButtonSize::Medium)
             .label("Start planning")
             .icon(Lucide::Play)
-            .disabled(!ready)
+            .disabled(blocked.is_some())
             .on_click(cx.listener(|this, _, w, cx| this.submit(w, cx)))
             .smooth_hover(ButtonLook::Primary, &hover, cx);
+        let footer_hint = blocked.map_or(
+            "Agents only plan first. You approve the plan before any code changes.",
+            Blocker::message,
+        );
+        let header = v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .text_3xl()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("New run"),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Describe the task and choose the repositories. A planner drafts the work for your approval."),
+            );
+        let workflow = card(cx)
+            .w_full()
+            .gap_3()
+            .child(
+                h_flex()
+                    .gap_3()
+                    .flex_wrap()
+                    .child(heading("Workflow"))
+                    .child(template),
+            )
+            .child(self.route(cx));
+        let task = v_flex()
+            .gap_2()
+            .child(section(
+                "Task",
+                "Plain language is fine. The planner asks if something is unclear.",
+                None,
+                cx,
+            ))
+            .child(TextField::textarea(
+                Textarea::new(&self.task),
+                &self.task,
+                cx,
+            ));
+        let repositories = v_flex()
+            .gap_2()
+            .child(section(
+                "Repositories",
+                "Each runs in its own worktree created from the chosen branch.",
+                Some(add),
+                cx,
+            ))
+            .child(repos);
+        let footer = h_flex()
+            .w_full()
+            .gap_3()
+            .flex_wrap()
+            .pt_4()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(submit)
+            .child(subtle(footer_hint, cx));
         let body = v_flex()
             .w_full()
             .max_w(COMPOSER_WIDTH)
-            .gap_5()
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_3xl()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("New run"),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .flex_wrap()
-                            .child(template)
-                            .child(self.route(cx)),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(heading("Task"))
-                    .child(TextField::textarea(
-                        Textarea::new(&self.task),
-                        &self.task,
-                        cx,
-                    )),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .child(heading("Repositories"))
-                            .child(add),
-                    )
-                    .child(repos),
-            )
+            .gap_6()
+            .child(header)
+            .child(workflow)
+            .child(task)
+            .child(repositories)
             .when_some(self.error.clone(), |el, e| {
                 el.child(div().text_sm().text_color(cx.theme().danger).child(e))
             })
-            .child(h_flex().gap_3().flex_wrap().child(submit).child(subtle(
-                "You’ll review the plan before development starts.",
-                cx,
-            )));
+            .child(footer);
         scroll(
             "pipeline-launch",
-            h_flex().items_start().justify_center().pt_4().child(body),
+            h_flex()
+                .items_start()
+                .justify_center()
+                .pt_6()
+                .pb_8()
+                .child(body),
         )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Path, PathBuf, Template, default_projects};
+    use super::{Blocker, LaneState, Path, PathBuf, Template, blocker, default_projects};
+
+    #[test]
+    fn a_missing_task_is_named_before_anything_else() {
+        assert_eq!(blocker(false, &[]), Some(Blocker::Task));
+        assert_eq!(blocker(false, &[LaneState::Failed]), Some(Blocker::Task));
+    }
+
+    #[test]
+    fn a_run_needs_at_least_one_repository() {
+        assert_eq!(blocker(true, &[]), Some(Blocker::Repository));
+    }
+
+    #[test]
+    fn a_fix_the_user_must_make_outranks_a_read_in_progress() {
+        let lanes = [LaneState::Reading, LaneState::MissingCommand];
+        assert_eq!(blocker(true, &lanes), Some(Blocker::MissingCommand));
+        let lanes = [LaneState::EditingRef, LaneState::Failed];
+        assert_eq!(blocker(true, &lanes), Some(Blocker::Failed));
+        assert_eq!(
+            blocker(true, &[LaneState::Ready, LaneState::Reading]),
+            Some(Blocker::Reading)
+        );
+    }
+
+    #[test]
+    fn ready_lanes_and_a_task_unblock_planning() {
+        assert_eq!(blocker(true, &[LaneState::Ready, LaneState::Ready]), None);
+    }
 
     #[test]
     fn matching_lanes_keep_their_repository_when_the_owner_matches_a_later_lane() {
