@@ -108,6 +108,8 @@ pub(crate) enum ButtonLook {
     Ghost,
     Outline,
     Primary,
+    Danger,
+    Info,
 }
 
 impl ButtonLook {
@@ -135,6 +137,22 @@ impl ButtonLook {
                 active_bg: theme.input.mix_oklab(theme.transparent, 0.7),
                 border: Some(theme.input),
             },
+            Self::Info => ButtonColors {
+                idle_bg: theme.button_info,
+                hover_bg: theme.button_info_hover,
+                idle_fg: theme.button_info_foreground,
+                hover_fg: theme.button_info_foreground,
+                active_bg: theme.button_info_active,
+                border: None,
+            },
+            Self::Danger => ButtonColors {
+                idle_bg: theme.button_danger,
+                hover_bg: theme.button_danger_hover,
+                idle_fg: theme.button_danger_foreground,
+                hover_fg: theme.button_danger_foreground,
+                active_bg: theme.button_danger_active,
+                border: None,
+            },
             Self::Primary => ButtonColors {
                 idle_bg: theme.button_primary,
                 hover_bg: theme.button_primary_hover,
@@ -151,6 +169,8 @@ impl ButtonLook {
             Self::Ghost => button.ghost(),
             Self::Outline => button.outline(),
             Self::Primary => button.primary(),
+            Self::Danger => button.danger(),
+            Self::Info => button.info(),
         }
     }
 }
@@ -171,10 +191,23 @@ struct ButtonColors {
 /// Not for buttons with a dropdown menu: the eased background would cover the library's
 /// "open" surface.
 pub(crate) trait SmoothButton {
+    fn panel_toggle(self, open: bool, hover: &Hover, cx: &App) -> Stateful<Div>;
     fn smooth_hover(self, look: ButtonLook, hover: &Hover, cx: &App) -> Stateful<Div>;
 }
 
 impl SmoothButton for Button {
+    fn panel_toggle(self, open: bool, hover: &Hover, cx: &App) -> Stateful<Div> {
+        self.toggled(open).smooth_hover(
+            if open {
+                ButtonLook::Info
+            } else {
+                ButtonLook::Ghost
+            },
+            hover,
+            cx,
+        )
+    }
+
     fn smooth_hover(self, look: ButtonLook, hover: &Hover, cx: &App) -> Stateful<Div> {
         div()
             .id(hover.id.clone())

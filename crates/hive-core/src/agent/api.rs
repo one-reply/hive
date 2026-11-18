@@ -7,7 +7,9 @@
 
 pub mod mcp_config;
 mod pane;
+mod report;
 mod socket;
+pub use report::{REPORT_GRANT_ENV, ReportGrant};
 
 pub use pane::{clear_environment, environment, link_launcher};
 pub use socket::{Incoming, call, call_on, listen};
@@ -74,6 +76,16 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Submit the typed handoff for this pane's active pipeline attempt.
+    Report {
+        /// Attempt assigned by Hive.
+        ticket: crate::pipeline::Ticket,
+        /// Result matching the attempt's role.
+        result: crate::pipeline::Report,
+        /// Capability set internally by the local launcher.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grant: Option<ReportGrant>,
+    },
     /// Paste a message into an agent's prompt and submit it.
     Send {
         /// The recipient.
@@ -135,6 +147,8 @@ pub struct AgentInfo {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Response {
+    /// Acknowledgement after a pipeline transition was accepted.
+    Reported,
     /// Answer to `list`.
     Agents {
         /// Agents in terminal order.
@@ -505,6 +519,7 @@ mod tests {
             "agent wait",
             "agent read",
             "agent interrupt",
+            "agent report",
         ] {
             assert!(SKILL.contains(command), "{command}");
         }

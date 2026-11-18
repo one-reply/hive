@@ -85,6 +85,8 @@ pub struct State {
     pub projects: Vec<ProjectRef>,
     /// Workspace layout and selection, restored without replaying commands.
     pub workspace: workspace::Workspace,
+    /// Shared pipeline templates and task checkpoints.
+    pub pipelines: crate::pipeline::Library,
     /// Installed version whose release highlights were last presented.
     pub last_seen_release: Option<String>,
     /// Exact acknowledged diff revisions; never stores source text.

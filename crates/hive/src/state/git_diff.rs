@@ -162,18 +162,22 @@ fn changed_display(
     if previous == Some(patch) {
         return Ok(None);
     }
+    parse_patch(patch.patch()).map(Some)
+}
+
+/// Renderable Git files for either a normal diff tab or a pipeline's selected file.
+pub(crate) fn parse_patch(patch: &str) -> Result<Vec<DiffFile>, String> {
     // Git describes an unmerged file with a combined diff, which has no two-sided display.
     if ["diff --cc ", "diff --combined "]
         .iter()
-        .any(|header| patch.patch().starts_with(header))
+        .any(|header| patch.starts_with(header))
     {
         return Err(
             "This file has merge conflicts. Open it from Conflicts in the Git panel.".into(),
         );
     }
-    let files = DiffFile::parse(patch.patch())
-        .map_err(|e| format!("Cannot display this patch: {e}. Open it in the terminal."))?;
-    Ok(Some(files))
+    DiffFile::parse(patch)
+        .map_err(|e| format!("Cannot display this patch: {e}. Open it in the terminal."))
 }
 
 #[cfg(test)]

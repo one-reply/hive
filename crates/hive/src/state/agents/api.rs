@@ -3,7 +3,7 @@
 //!
 //! Quick calls are answered at once. `wait` and `start` are kept until the poll sees the
 //! agent settle or appear; `send` is answered by the recipient's terminal once the message
-//! is submitted.
+//! is submitted. A pipeline report waits for its durable checkpoint.
 use super::*;
 use crate::state::terminal_session::{Message, Recipient, SessionStatus};
 use hive_core::agent::api::{
@@ -65,10 +65,62 @@ enum Verdict {
 impl Agents {
     pub(super) fn handle(&mut self, incoming: Incoming, cx: &mut Context<Self>) {
         let from = incoming.call().from;
+        let caller = from
+            .and_then(|id| self.watched.iter().find(|w| w.id.as_u64() == id))
+            .and_then(|w| self.live_session(w.id, cx));
+        // Advisory, not isolation: `from` is the caller's own HIVE_TERMINAL, which a pipeline
+        // agent can unset (`env -u HIVE_TERMINAL hive agent start ..`), and its shell can start
+        // a CLI directly anyway. This keeps a well-behaved step from scheduling work; only
+        // `report` is enforced, by the grant.
+        if !matches!(incoming.call().request, Request::Report { .. })
+            && caller
+                .as_ref()
+                .is_some_and(|s| s.read(cx).report_grant.is_some())
+        {
+            incoming.reply(Outcome::Error(ApiError::new(
+                ErrorCode::Unsupported,
+                "Hive schedules pipeline steps. Use report for the assigned handoff.",
+            )));
+            return;
+        }
         let answer = match incoming.call().request.clone() {
             Request::List => Ok(Response::Agents {
                 agents: self.infos(cx),
             }),
+            Request::Report {
+                ticket,
+                result,
+                grant,
+            } => {
+                let bound = caller.filter(|s| grant.is_some() && s.read(cx).report_grant == grant);
+                match bound {
+                    Some(session) => {
+                        crate::app::AppState::get(cx).pipelines.clone().update(
+                            cx,
+                            |pipelines, cx| {
+                                pipelines.report(
+                                    session.entity_id().as_u64(),
+                                    ticket,
+                                    result,
+                                    move |saved| {
+                                        incoming.reply(outcome(
+                                            saved.map(|()| Response::Reported).map_err(|e| {
+                                                ApiError::new(ErrorCode::InvalidRequest, e)
+                                            }),
+                                        ));
+                                    },
+                                    cx,
+                                );
+                            },
+                        );
+                        return;
+                    }
+                    None => Err(ApiError::new(
+                        ErrorCode::InvalidRequest,
+                        "Report requires the active pipeline pane's grant",
+                    )),
+                }
+            }
             Request::Read { target, lines } => self.read_terminal(&target, lines, cx),
             Request::Interrupt { target } => self.interrupt(&target, cx),
             Request::Wait { target, timeout_ms } => match self.working_agent(&target, cx) {

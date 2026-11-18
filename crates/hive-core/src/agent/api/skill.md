@@ -72,3 +72,7 @@ finished turn; ask it to answer with `hive agent send`, or use `hive agent wait`
   at a time.
 - Send your final report without `--wait` to avoid mutual waits. Cancellation/timeouts stop
   waiting, not already submitted work; inspect the target before retrying a mutation.
+
+## Pipeline steps
+
+Only a pipeline pane can complete its assigned attempt. Follow the result shape in the task handoff and use the pane-scoped `report` tool with `ticket` and `result` objects. The CLI fallback is `hive agent report '<ticket-json>' '<result-json>'`. Use the exact ticket supplied by Hive and wait for acknowledgement. Trust and approval decisions belong to the user.

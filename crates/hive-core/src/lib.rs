@@ -24,6 +24,8 @@ pub mod language_service;
 #[cfg(feature = "desktop")]
 pub mod llm;
 #[cfg(feature = "desktop")]
+pub mod pipeline;
+#[cfg(feature = "desktop")]
 pub mod projects;
 #[cfg(feature = "desktop")]
 pub mod release_notes;

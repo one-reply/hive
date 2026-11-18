@@ -43,7 +43,7 @@ pub struct Prepaint {
     cursor: Option<(Bounds<Pixels>, Hsla, CursorShape)>,
     line_height: Pixels,
     hitbox: Hitbox,
-    /// A ⌘-hovered link is under the pointer.
+    /// A hovered link is under the pointer.
     over_link: bool,
 }
 

@@ -17,6 +17,7 @@ const QUICK_TIMEOUT: Duration = Duration::from_secs(10);
 const USAGE: &str = "\
 Usage:
   hive agent list
+  hive agent report <ticket-json> <result-json>
   hive agent start <name> --kind <claude|codex|opencode|agy> [--prompt <task>] [--tab]
   hive agent send <target> <text> [--wait]
   hive agent wait <target>
@@ -72,7 +73,7 @@ fn agent(args: &[OsString]) -> ExitCode {
 }
 
 /// Reaches the app through the socket this terminal was given.
-fn call(invocation: Invocation) -> Result<Response, ApiError> {
+fn call(mut invocation: Invocation) -> Result<Response, ApiError> {
     let socket = std::env::var_os("HIVE_SOCKET")
         .filter(|socket| !socket.is_empty())
         .ok_or_else(|| {
@@ -84,6 +85,14 @@ fn call(invocation: Invocation) -> Result<Response, ApiError> {
     let from = std::env::var("HIVE_TERMINAL")
         .ok()
         .and_then(|terminal| terminal.parse().ok());
+    if let Request::Report { grant, .. } = &mut invocation.request {
+        *grant = Some(api::ReportGrant::inherited().ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::InvalidRequest,
+                "Pipeline reporting is only available in the assigned pane",
+            )
+        })?);
+    }
     let call = Call {
         from,
         request: invocation.request,
@@ -177,6 +186,22 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
     };
     let millis = |timeout: Duration| Some(u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX));
     let (request, timeout, allowed): (Request, Duration, &[&str]) = match command.as_str() {
+        "report" => {
+            let [ticket, result] = positional(&words)?;
+            let ticket =
+                serde_json::from_str(&ticket).map_err(|_| "Invalid pipeline ticket JSON")?;
+            let result =
+                serde_json::from_str(&result).map_err(|_| "Invalid pipeline result JSON")?;
+            (
+                Request::Report {
+                    ticket,
+                    result,
+                    grant: None,
+                },
+                timeout(QUICK_TIMEOUT)?,
+                &[],
+            )
+        }
         "list" => {
             positional::<0>(&words)?;
             (Request::List, timeout(QUICK_TIMEOUT)?, &[])
@@ -342,6 +367,21 @@ mod tests {
             Ok(Parsed::Call(invocation)) => invocation,
             other => panic!("{line:?} parsed as {other:?}"),
         }
+    }
+
+    #[test]
+    fn report_accepts_only_a_ticket_and_typed_result_and_never_takes_a_grant_argument() {
+        let args = [
+            "report",
+            r#"{"run":4,"attempt":5,"lane":null}"#,
+            r#"{"kind":"developed","summary":"done"}"#,
+        ];
+        assert!(matches!(
+            request(&args).request,
+            Request::Report { grant: None, .. }
+        ));
+        assert!(parse_words(&["report", args[1], r#"{"kind":"unexpected"}"#]).is_err());
+        assert!(parse_words(&["report", args[1], args[2], "forged"]).is_err());
     }
 
     #[test]

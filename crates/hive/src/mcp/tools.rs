@@ -84,9 +84,22 @@ struct Send {
     timeout: Option<f64>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+struct PipelineReport {
+    /// The exact ticket object from Hive, with run, attempt and optional lane.
+    #[schemars(with = "serde_json::Map<String,Value>")]
+    ticket: hive_core::pipeline::Ticket,
+    /// The typed plan, developed, or review result matching the example in your stage instructions.
+    #[schemars(with = "serde_json::Map<String,Value>")]
+    result: hive_core::pipeline::Report,
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "name", content = "arguments", rename_all = "snake_case")]
 enum Input {
+    Report(PipelineReport),
     List(Empty),
     Start(Start),
     Send(Send),
@@ -110,7 +123,14 @@ fn tool<T: JsonSchema>(name: &'static str, description: &'static str, read_only:
     )
 }
 
-pub(super) fn list() -> Vec<Tool> {
+pub(super) fn list(pipeline: bool) -> Vec<Tool> {
+    if pipeline {
+        return vec![tool::<PipelineReport>(
+            "report",
+            "Submit the completed result of this pipeline step using the ticket and result format supplied by Hive. Only the assigned attempt can advance. Acknowledge once.",
+            false,
+        )];
+    }
     vec![
         tool::<Empty>(
             "list",
@@ -170,6 +190,14 @@ pub(super) fn invocation(name: &str, arguments: Value) -> Result<(Request, Durat
     };
     let quick = Duration::from_secs(10);
     let (request, timeout) = match input {
+        Input::Report(input) => (
+            Request::Report {
+                ticket: input.ticket,
+                result: input.result,
+                grant: None,
+            },
+            quick,
+        ),
         Input::List(_) => (Request::List, quick),
         Input::Start(input) => {
             if !api::valid_name(&input.name) {
@@ -255,6 +283,10 @@ mod tests {
     #[test]
     fn translates_every_tool_and_preserves_message_bytes() {
         for (name, input) in [
+            (
+                "report",
+                json!({"ticket":{"run":1,"attempt":4,"lane":null},"result":{"kind":"developed","summary":"Built API"}}),
+            ),
             ("list", json!({})),
             ("start", json!({"name":"helper","kind":"codex"})),
             ("send", json!({"target":"42","text":"--hello\n世界"})),
@@ -284,12 +316,21 @@ mod tests {
         assert_eq!(to, Address::Terminal(42));
         assert_eq!(timeout, api::WAIT_TIMEOUT);
         assert_eq!(timeout_ms, Some(600000));
-        assert_eq!(list().len(), 6);
+        assert_eq!(list(false).len(), 6);
+        assert_eq!(list(true).len(), 1);
     }
     #[test]
     fn rejects_bad_inputs_before_dispatch_without_echoing_message() {
         for (name, input) in [
             ("bogus", json!({})),
+            (
+                "report",
+                json!({"ticket":{"run":1,"attempt":4},"result":{"kind":"unexpected"}}),
+            ),
+            (
+                "report",
+                json!({"ticket":{"run":1,"attempt":4},"result":{"kind":"developed","summary":"ok"},"grant":"secret"}),
+            ),
             ("list", json!({"from":42})),
             ("start", json!({"name":"BAD","kind":"codex"})),
             ("start", json!({"name":"helper","kind":"shell"})),

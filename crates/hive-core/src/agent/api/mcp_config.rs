@@ -33,6 +33,9 @@ pub fn attach(
             "Hive socket path must be UTF-8 for MCP config",
         )
     })?;
+    let pipeline = command
+        .get_envs()
+        .any(|(key, value)| key == super::REPORT_GRANT_ENV && value.is_some());
     let args = [
         "mcp".to_owned(),
         "--socket".into(),
@@ -45,14 +48,24 @@ pub fn attach(
     let name = format!("hive_{:016x}_{terminal}", hash.finish());
     match agent {
         AgentKind::ClaudeCode => {
+            let mut server = json!({"type":"stdio", "command":executable, "args":args});
+            if pipeline {
+                server["env"] =
+                    json!({super::REPORT_GRANT_ENV: format!("${{{}}}", super::REPORT_GRANT_ENV)});
+            }
             command.args([
                 "--mcp-config",
-                &json!({"mcpServers": {name: {"type":"stdio", "command":executable, "args":args}}})
-                    .to_string(),
+                &json!({"mcpServers": {name: server}}).to_string(),
             ]);
         }
         AgentKind::Codex => {
             let prefix = format!("mcp_servers.{name}");
+            if pipeline {
+                command.args([
+                    "-c",
+                    &format!("{prefix}.env_vars={}", json!([super::REPORT_GRANT_ENV])),
+                ]);
+            }
             for (key, value) in [
                 ("command", json!(executable)),
                 ("args", json!(args)),
@@ -112,6 +125,28 @@ mod tests {
         assert!(!first.iter().any(|arg| arg.contains("approval")
             || arg.contains("sandbox")
             || arg.contains("HOME")));
+    }
+    #[test]
+    fn pipeline_mcp_inherits_only_the_grant_variable_name_in_argv() {
+        for agent in [AgentKind::Codex, AgentKind::ClaudeCode] {
+            let mut command = Command::new("agent");
+            command.env(super::super::REPORT_GRANT_ENV, "ephemeral-value");
+            attach(
+                &mut command,
+                agent,
+                Path::new("/tmp/one/a"),
+                15,
+                Path::new("/Apps/Hive"),
+            )
+            .unwrap();
+            let args = command
+                .get_args()
+                .map(|a| a.to_str().unwrap())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(args.contains(super::super::REPORT_GRANT_ENV));
+            assert!(!args.contains("ephemeral-value"));
+        }
     }
     #[test]
     fn unverified_clients_do_not_receive_an_mcp_override() {

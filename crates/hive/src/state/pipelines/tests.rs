@@ -1,0 +1,402 @@
+use super::{Pipelines, Store};
+use gpui_kit as gpui;
+use gpui_kit::{AppContext as _, Entity, TestAppContext};
+use hive_core::state::ProjectRef;
+use hive_core::{
+    host::Host,
+    pipeline::{Lane, Phase, Report, Run, Template},
+};
+use std::path::PathBuf;
+
+fn recovering(cx: &mut TestAppContext) -> Entity<Pipelines> {
+    let store = cx.new(Store::with_held_recovery);
+    store.update(cx, |s, _| {
+        let path = PathBuf::from("/unused-pipeline-test-project");
+        s.state
+            .projects
+            .push(ProjectRef::new(path.clone(), Host::Local));
+        let lane = Lane {
+            name: "Web".into(),
+            project: path.clone(),
+            base: "HEAD".into(),
+            ..Lane::default()
+        };
+        let run = Run::new(42, path, "Task".into(), Template::default(), vec![lane]).unwrap();
+        s.state.pipelines.runs.push(run);
+    });
+    let agents = cx.new(|cx| crate::state::agents::Agents::new(None, cx));
+    cx.new(|cx| Pipelines::new(store, &agents, cx))
+}
+
+/// A saved run at the acceptance gate, as the state file would hold it; the transitions to
+/// get there need real worktrees.
+fn awaiting_acceptance(run: &Run, revision: &str) -> Run {
+    let mut saved = serde_json::to_value(run).unwrap();
+    saved["phase"] = serde_json::to_value(Phase::Acceptance).unwrap();
+    saved["review_revision"] = revision.into();
+    serde_json::from_value(saved).unwrap()
+}
+
+#[gpui::test]
+fn duplicates_the_entire_recipe_and_edits_only_the_chosen_copy(cx: &mut TestAppContext) {
+    recovering(cx).update(cx, |p, cx| {
+        let source = p
+            .store
+            .read(cx)
+            .state
+            .pipelines
+            .templates
+            .last()
+            .unwrap()
+            .clone();
+        let first = p.duplicate_template(&source, cx).unwrap();
+        let mut expected = source.clone();
+        expected.name = format!("{} copy", source.name);
+        assert_eq!(first, expected);
+        let second = p.duplicate_template(&source, cx).unwrap();
+        assert_eq!(second.name, format!("{} 2", first.name));
+        let mut edited = first.clone();
+        edited.planner.instruction.push_str(" Check both lanes.");
+        p.save_template(Some(&first), edited.clone(), cx).unwrap();
+        let saved = &p.store.read(cx).state.pipelines.templates;
+        assert!(saved.contains(&source) && saved.contains(&second) && saved.contains(&edited));
+        assert!(p.duplicate_template(&first, cx).is_err());
+    });
+}
+
+#[gpui::test]
+fn deleting_a_template_preserves_runs_and_rejects_stale_confirmations(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        let run = p.run(42, cx).unwrap().clone();
+        let original = run.template().clone();
+        let mut edited = original.clone();
+        edited.planner.instruction.push_str(" Review the plan.");
+        p.save_template(Some(&original), edited.clone(), cx)
+            .unwrap();
+        let before = p.store.read(cx).state.pipelines.templates.clone();
+        assert!(p.delete_template(&original, cx).is_err());
+        assert_eq!(p.store.read(cx).state.pipelines.templates, before);
+
+        p.delete_template(&edited, cx).unwrap();
+        assert!(p.delete_template(&edited, cx).is_err());
+        let remaining: Vec<_> = before.into_iter().filter(|t| t != &edited).collect();
+        assert_eq!(p.store.read(cx).state.pipelines.templates, remaining);
+        assert_eq!(p.run(42, cx).unwrap(), &run);
+    });
+}
+
+#[gpui::test]
+fn restarted_attempt_requires_explicit_retry_and_failed_checkpoint_prevents_processes(
+    cx: &mut TestAppContext,
+) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        assert!(p.error(42).is_some());
+        assert!(p.session(&ticket).is_none());
+        assert_eq!(p.attention(cx).len(), 1);
+        p.report(
+            7,
+            ticket,
+            Report::Developed {
+                summary: "unauthorized".into(),
+            },
+            |answer| assert!(answer.is_err()),
+            cx,
+        );
+        assert!(p.resume(&ticket, cx).is_err());
+        p.retry(42, cx).unwrap();
+        assert_ne!(ticket, p.run(42, cx).unwrap().pending()[0]);
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, cx| {
+        assert!(p.error(42).unwrap().contains("checkpoint"));
+        assert!(
+            p.run(42, cx).unwrap().lanes()[0]
+                .worktree
+                .as_os_str()
+                .is_empty()
+        );
+        assert!(p.live.is_empty());
+    });
+}
+
+#[gpui::test]
+fn refuses_to_start_a_run_that_cannot_be_saved(cx: &mut TestAppContext) {
+    recovering(cx).update(cx, |p, cx| {
+        let before = p.store.read(cx).state.pipelines.runs.clone();
+        let owner = before[0].owner().to_path_buf();
+        let lanes = before[0].lanes().to_vec();
+        let error = p
+            .start(owner, "Another".into(), Template::default(), lanes, cx)
+            .unwrap_err();
+        assert!(error.contains("cannot be saved"));
+        assert_eq!(p.store.read(cx).state.pipelines.runs, before);
+    });
+}
+
+#[gpui::test]
+fn retrying_a_failed_checkpoint_keeps_the_number_of_a_ticket_that_never_launched(
+    cx: &mut TestAppContext,
+) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| p.retry(42, cx).unwrap());
+    cx.run_until_parked();
+    let ticket = pipelines.update(cx, |p, cx| {
+        assert!(p.error(42).unwrap().contains("checkpoint"));
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        p.retry(42, cx).unwrap();
+        ticket
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, cx| {
+        let run = p.run(42, cx).unwrap();
+        assert_eq!(run.pending()[0], ticket);
+        let retries = run.history().iter().filter(|h| h.starts_with("Retried"));
+        assert_eq!(retries.count(), 1);
+    });
+}
+
+#[gpui::test]
+fn cancelling_while_checkpoint_is_pending_ignores_late_dispatch_and_clears_attention(
+    cx: &mut TestAppContext,
+) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.retry(42, cx).unwrap();
+        p.cancel(42, cx).unwrap();
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, cx| {
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Cancelled);
+        assert!(p.error(42).is_none());
+        assert!(p.attention(cx).is_empty());
+        assert!(p.live.is_empty());
+    });
+}
+
+#[gpui::test]
+fn invalid_decision_does_not_partially_edit_the_run(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        assert!(
+            p.edit(42, cx, |run| {
+                run.record_worktree(0, "/partial-edit".into());
+                Ok(run.approve()?)
+            })
+            .is_err()
+        );
+        let run = p.run(42, cx).unwrap();
+        assert!(run.lanes()[0].worktree.as_os_str().is_empty());
+    });
+}
+
+#[gpui::test]
+fn only_the_reviewed_revision_can_be_accepted(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        let store = p.store.clone();
+        let ready = |s: &mut Store| {
+            let run = &mut s.state.pipelines.runs[0];
+            *run = awaiting_acceptance(run, "reviewed");
+        };
+        store.update(cx, |s, _| ready(s));
+        let runtime = p.runtime_mut(42);
+        runtime.accept_job = Some(1);
+        runtime.generation = 1;
+        p.finish_acceptance(42, 0, Ok("stale callback".into()), cx);
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Acceptance);
+        assert!(p.accepting(42));
+        p.finish_acceptance(42, 1, Ok("manual edit".into()), cx);
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Review(0));
+        assert!(p.run(42, cx).unwrap().review_revision().is_none());
+        store.update(cx, |s, _| ready(s));
+        let runtime = p.runtime_mut(42);
+        runtime.generation = 3;
+        runtime.accept_job = Some(3);
+        p.finish_acceptance(42, 3, Ok("reviewed".into()), cx);
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Accepted);
+    });
+}
+
+#[gpui::test]
+fn cancelling_drops_everything_held_for_the_run(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        let worker = std::sync::Arc::new(hive_core::command::Cancellation::default());
+        let runtime = p.runtime_mut(42);
+        runtime.error = Some("Checkout failed".into());
+        runtime.worker = Some(worker.clone());
+        runtime.review = Some(Err("unreadable".into()));
+        runtime.review_job = Some(7);
+        runtime.accept_job = Some(1);
+        p.cancel(42, cx).unwrap();
+        assert!(p.runtime(42).is_none());
+        assert!(worker.is_cancelled());
+        assert!(p.error(42).is_none());
+        assert!(!p.accepting(42));
+        assert!(p.review(42).is_none());
+    });
+}
+
+fn attach_session(
+    pipelines: &mut Pipelines,
+    ticket: super::Ticket,
+    cx: &mut gpui::Context<Pipelines>,
+) -> u64 {
+    use hive_core::terminal::{Terminal, TerminalSize};
+    let terminal = Terminal::spawn(None, Some("/bin/cat"), TerminalSize::new(80, 24)).unwrap();
+    let session = cx.new(|_| super::TerminalSession::for_test(terminal));
+    let id = session.entity_id().as_u64();
+    pipelines.suspended.remove(&ticket);
+    pipelines.live.insert(
+        ticket,
+        super::Live {
+            session,
+            phase: pipelines.run(ticket.run, cx).unwrap().phase(),
+            _subscriptions: vec![],
+        },
+    );
+    id
+}
+
+fn submit(
+    p: &mut Pipelines,
+    from: u64,
+    ticket: super::Ticket,
+    report: Report,
+    cx: &mut gpui::Context<Pipelines>,
+) -> std::sync::mpsc::Receiver<Result<(), String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    p.report(
+        from,
+        ticket,
+        report,
+        move |answer| tx.send(answer).unwrap(),
+        cx,
+    );
+    rx
+}
+
+fn plan(lanes: usize) -> Report {
+    Report::Plan {
+        assignments: (0..lanes)
+            .map(|lane| hive_core::pipeline::Assignment {
+                lane,
+                task: "Implement".into(),
+                criteria: "Tests pass".into(),
+            })
+            .collect(),
+    }
+}
+
+#[gpui::test]
+fn report_retries_after_write_failure_without_closing_the_session_or_reapplying_the_transition(
+    cx: &mut TestAppContext,
+) {
+    let pipelines = recovering(cx);
+    let (ticket, from, first) = pipelines.update(cx, |p, cx| {
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        let from = attach_session(p, ticket, cx);
+        let first = submit(p, from, ticket, plan(1), cx);
+        assert!(matches!(
+            first.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        assert!(p.edit(42, cx, |run| Ok(run.approve()?)).is_err());
+        assert_eq!(p.live_attempts(42), [(ticket, Phase::Planning)]);
+        (ticket, from, first)
+    });
+    cx.run_until_parked();
+    assert!(first.try_recv().unwrap().is_err());
+    let (retry, duplicate) = pipelines.update(cx, |p, cx| {
+        assert!(p.session(&ticket).is_some());
+        p.store.update(cx, |s, cx| {
+            s.set_test_writer(cx, |state| {
+                assert_eq!(state.pipelines.runs[0].phase(), Phase::ApprovePlan);
+                assert_eq!(state.pipelines.runs[0].reports().len(), 1);
+                Ok(())
+            })
+        });
+        let bad = Report::Developed {
+            summary: "replacement".into(),
+        };
+        assert!(
+            submit(p, from, ticket, bad, cx)
+                .try_recv()
+                .unwrap()
+                .is_err()
+        );
+        let retry = submit(p, from, ticket, plan(1), cx);
+        let duplicate = submit(p, from, ticket, plan(1), cx);
+        assert!(retry.try_recv().is_err() && duplicate.try_recv().is_err());
+        (retry, duplicate)
+    });
+    cx.run_until_parked();
+    assert_eq!(retry.try_recv().unwrap(), Ok(()));
+    assert_eq!(duplicate.try_recv().unwrap(), Ok(()));
+    pipelines.read_with(cx, |p, cx| {
+        assert!(p.session(&ticket).is_none());
+        assert!(p.error(42).is_none());
+        assert_eq!(p.run(42, cx).unwrap().reports().len(), 1);
+    });
+}
+
+#[gpui::test]
+fn parallel_reports_share_the_latest_durable_checkpoint_before_dispatch(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    let replies = pipelines.update(cx, |p, cx| {
+        p.store.update(cx, |s, cx| {
+            let lanes = ["web", "api"].map(|name| Lane {
+                name: name.into(),
+                project: PathBuf::from("/fixture").join(name),
+                base: "HEAD".into(),
+                ..Default::default()
+            });
+            let mut run = Run::new(
+                42,
+                "/fixture".into(),
+                "Task".into(),
+                Template::default(),
+                lanes.to_vec(),
+            )
+            .unwrap();
+            let planner = run.pending()[0];
+            run.report(&planner, plan(2)).unwrap();
+            run.approve().unwrap();
+            s.state.pipelines.runs[0] = run;
+            s.set_test_writer(cx, |_| Ok(()));
+        });
+        let tickets = p.run(42, cx).unwrap().pending();
+        assert_eq!(tickets.len(), 2);
+        let mut replies = vec![];
+        for ticket in tickets {
+            let from = attach_session(p, ticket, cx);
+            replies.push(submit(
+                p,
+                from,
+                ticket,
+                Report::Developed {
+                    summary: "done".into(),
+                },
+                cx,
+            ));
+        }
+        assert_eq!(p.live_attempts(42).len(), 2);
+        assert!(replies.iter().all(|reply| reply.try_recv().is_err()));
+        replies
+    });
+    cx.run_until_parked();
+    assert!(
+        replies
+            .iter()
+            .all(|reply| reply.try_recv().unwrap().is_ok())
+    );
+    pipelines.read_with(cx, |p, cx| {
+        assert!(p.live.is_empty());
+        assert_eq!(p.run(42, cx).unwrap().reports().len(), 3);
+        assert!(p.error(42).unwrap().contains("registered"));
+    });
+}

@@ -88,7 +88,7 @@ pub struct Sidebar {
     agents_open: HashSet<(Host, PathBuf)>,
     /// Turns the Working indicators of visible agents; idle while none is on screen.
     working: SteppedSpinner,
-    _observers: [Subscription; 4],
+    _observers: Vec<Subscription>,
 }
 
 impl Sidebar {
@@ -107,7 +107,8 @@ impl Sidebar {
                 .map(|project| (project.host.clone(), project.path.clone()))
                 .collect()
         };
-        let observers = [
+        let observers = vec![
+            cx.observe(&AppState::get(cx).pipelines.clone(), |_, _, cx| cx.notify()),
             cx.observe(&pull_requests, |_, _, cx| cx.notify()),
             cx.observe(&projects, |_, _, cx| cx.notify()),
             cx.observe(&agents, |_, _, cx| cx.notify()),
@@ -673,7 +674,8 @@ impl Render for Sidebar {
             .read(cx)
             .all()
             .filter(|(_, s)| s.unread)
-            .count();
+            .count()
+            + AppState::get(cx).pipelines.read(cx).attention(cx).len();
         let theme = cx.theme();
         let (fg, muted_fg) = (theme.sidebar_foreground, theme.muted_foreground);
 

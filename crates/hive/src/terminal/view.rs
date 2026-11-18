@@ -117,7 +117,7 @@ impl TerminalView {
         view
     }
 
-    fn with_session(
+    pub(crate) fn with_session(
         session: Entity<TerminalSession>,
         cwd: Option<&Path>,
         window: &mut Window,
@@ -354,7 +354,6 @@ impl Render for TerminalView {
                     })
                     .on_drop(cx.listener(Self::drop_file))
                     .on_key_down(cx.listener(Self::key_down))
-                    .on_modifiers_changed(cx.listener(Self::modifiers_changed))
                     .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
                     .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
                     .on_action(cx.listener(|this, _: &component::input::Copy, _, cx| this.copy(cx)))

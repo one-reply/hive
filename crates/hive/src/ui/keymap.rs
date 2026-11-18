@@ -21,7 +21,7 @@ use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
 use crate::ui::workspace::{
     NewTerminal, OpenHistory, QuickSwitch, ShowFilesPanel, ShowGitPanel, ToggleGitPanel,
-    ToggleSidebar,
+    TogglePipelines, ToggleSidebar,
 };
 
 /// Key context of window-wide shortcuts: the main window's root.
@@ -117,7 +117,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 37] = [
+pub(crate) static SHORTCUTS: [Shortcut; 38] = [
     Shortcut {
         label: "Find references",
         default: "shift-f12",
@@ -210,6 +210,15 @@ pub(crate) static SHORTCUTS: [Shortcut; 37] = [
         category: Category::Workspace,
         context: CONTEXT,
         action: || Box::new(NewTerminal),
+    },
+    Shortcut {
+        label: "Toggle pipelines",
+        // Deliberately wins over a focused terminal, which then never sees NUL: toggling from
+        // a terminal is the common case, and emacs or tmux users can reassign the shortcut.
+        default: "ctrl-`",
+        category: Category::Workspace,
+        context: CONTEXT,
+        action: || Box::new(TogglePipelines),
     },
     Shortcut {
         label: "Toggle left sidebar",

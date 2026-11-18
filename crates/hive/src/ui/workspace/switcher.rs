@@ -18,6 +18,7 @@ struct Destination {
     project: PathBuf,
     worktree: Option<PathBuf>,
     session: Option<EntityId>,
+    pipeline: Option<u64>,
     attention: Option<Attention>,
 }
 
@@ -41,6 +42,7 @@ impl Destinations {
                     project: project.path.clone(),
                     worktree: project.worktrees.first().map(|w| w.path.clone()),
                     session: None,
+                    pipeline: None,
                     attention: None,
                 });
             }
@@ -62,11 +64,18 @@ impl Destinations {
                         project: project.path.clone(),
                         worktree: worktree.map(|w| w.path.clone()),
                         session: None,
+                        pipeline: None,
                         attention: None,
                     });
                 }
                 for session in agents.sessions(&project.host, path) {
-                    if self.attention && !session.unread {
+                    if app
+                        .pipelines
+                        .read(cx)
+                        .ticket_for_session(session.session)
+                        .is_some()
+                        || (self.attention && !session.unread)
+                    {
                         continue;
                     }
                     let status = if !project.host.is_local() {
@@ -90,7 +99,54 @@ impl Destinations {
                         project: project.path.clone(),
                         worktree: worktree.map(|w| w.path.clone()),
                         session: Some(session.session),
+                        pipeline: None,
                         attention,
+                    });
+                }
+            }
+        }
+        let pipelines = app.pipelines.read(cx);
+        let library = &app.store.read(cx).state.pipelines;
+        for (_, session) in agents.all() {
+            if self.attention && !session.unread {
+                continue;
+            }
+            let Some(t) = pipelines.ticket_for_session(session.session) else {
+                continue;
+            };
+            let Some(run) = library.runs.iter().find(|r| r.id() == t.run) else {
+                continue;
+            };
+            let Some(project) = app.projects.read(cx).project(&Host::Local, run.owner()) else {
+                continue;
+            };
+            self.entries.push(Destination {
+                host: Host::Local,
+                project: run.owner().to_path_buf(),
+                worktree: None,
+                session: Some(session.session),
+                pipeline: None,
+                label: format!(
+                    "Pipeline · {} · {} · {} · {}",
+                    project.name,
+                    run.task(),
+                    session.kind.name(),
+                    session.status.label()
+                ),
+                attention: None,
+            });
+        }
+        if self.attention {
+            for (id, path, status) in app.pipelines.read(cx).attention(cx) {
+                if let Some(project) = app.projects.read(cx).project(&Host::Local, &path) {
+                    self.entries.push(Destination {
+                        host: Host::Local,
+                        project: path,
+                        worktree: None,
+                        session: None,
+                        label: format!("Pipeline · {} · {status}", project.name),
+                        pipeline: Some(id),
+                        attention: None,
                     });
                 }
             }
@@ -150,16 +206,22 @@ impl ListDelegate for Destinations {
         let host = entry.host.clone();
         let worktree = entry.worktree.clone();
         let session = entry.session;
+        let pipeline = entry.pipeline;
         window.close_dialog(cx);
         // Run after the dialog returns focus; otherwise it would steal focus from the pane.
         window.defer(cx, move |_, cx| {
             let app = AppState::get(cx);
+            if let Some(id) = pipeline {
+                app.pipelines.clone().update(cx, |p, cx| p.reveal(id, cx));
+                return;
+            }
             let (projects, agents) = (app.projects.clone(), app.agents.clone());
-            projects.update(cx, |projects, cx| {
-                projects.select(&host, &project, worktree.as_deref(), cx)
-            });
             if let Some(session) = session {
                 agents.update(cx, |agents, cx| agents.reveal(session, cx));
+            } else {
+                projects.update(cx, |projects, cx| {
+                    projects.select(&host, &project, worktree.as_deref(), cx)
+                });
             }
         });
     }
@@ -198,6 +260,14 @@ pub(crate) fn open(attention: bool, window: &mut Window, cx: &mut App) {
             cx.notify();
         });
     });
+    let pipelines = AppState::get(cx).pipelines.clone();
+    let weak = list.downgrade();
+    let pipeline_subscription = cx.observe(&pipelines, move |_, cx| {
+        let _ = weak.update(cx, |list, cx| {
+            list.delegate_mut().refresh(cx);
+            cx.notify();
+        });
+    });
     let initial_focus = Cell::new(true);
     window.open_dialog(cx, move |dialog, window, cx| {
         if initial_focus.replace(false) {
@@ -206,7 +276,7 @@ pub(crate) fn open(attention: bool, window: &mut Window, cx: &mut App) {
                 list.update(cx, |list, cx| list.focus(window, cx))
             });
         }
-        let _keep_alive = &subscription;
+        let _keep_alive = (&subscription, &pipeline_subscription);
         dialog
             .title(if attention {
                 "Needs attention"
@@ -224,7 +294,7 @@ pub(crate) fn open(attention: bool, window: &mut Window, cx: &mut App) {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("Select a notification to open its terminal."),
+                        .child("Select a notification to open the run or terminal."),
                 )
             })
     });
@@ -232,7 +302,7 @@ pub(crate) fn open(attention: bool, window: &mut Window, cx: &mut App) {
 
 fn empty_message(attention: bool, query: &str) -> &'static str {
     match (attention, query.is_empty()) {
-        (true, true) => "No agents need attention",
+        (true, true) => "No tasks need attention",
         (true, false) => "No matching notifications. Try another search.",
         (false, _) => "No matching workspaces or agents",
     }
@@ -244,7 +314,7 @@ mod tests {
 
     #[test]
     fn empty_attention_distinguishes_a_search_from_no_notifications() {
-        assert_eq!(empty_message(true, ""), "No agents need attention");
+        assert_eq!(empty_message(true, ""), "No tasks need attention");
         assert_eq!(
             empty_message(true, "missing"),
             "No matching notifications. Try another search."

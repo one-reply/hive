@@ -135,6 +135,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.restore_dock(window, cx);
         self.show_right_tab(RightTab::Files, cx);
         let panel = self.files_panel.clone();
         window.defer(cx, move |window, cx| {

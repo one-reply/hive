@@ -1,4 +1,5 @@
-//! Holding ⌘ over a web link underlines it; ⌘-click opens it in the default browser.
+//! Hovering a web link underlines it; a click that does not drag opens it in the default
+//! browser. A drag that starts on a link still selects text.
 use hive_core::terminal::{Point as GridPoint, TerminalLink};
 
 use super::*;
@@ -6,42 +7,34 @@ use super::*;
 /// What the pointer last showed of links in this pane.
 #[derive(Default)]
 pub(super) struct LinkHover {
-    /// Last pointer position inside the pane, for a ⌘ press without movement.
-    pointer: Option<Point<Pixels>>,
-    /// The cell under the pointer while ⌘ is held.
+    /// The cell under the pointer.
     cell: Option<GridPoint<usize>>,
     /// The link at `cell`, looked up again on every render because output moves it.
     link: Option<TerminalLink>,
+    /// A single press on a link, opened on release in the same cell.
+    press: Option<(GridPoint<usize>, TerminalLink)>,
 }
 
 impl TerminalView {
     /// `pointer` is `None` when the pointer is outside the pane or over something above it.
-    pub(super) fn hover_link(
-        &mut self,
-        pointer: Option<Point<Pixels>>,
-        command: bool,
-        cx: &mut Context<Self>,
-    ) {
-        self.link_hover.pointer = pointer;
-        let cell = link_cell(self.grid, pointer, command);
-        if cell != self.link_hover.cell {
-            self.link_hover.cell = cell;
+    pub(super) fn hover_link(&mut self, pointer: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        let cell = link_cell(self.grid, pointer);
+        if cell == self.link_hover.cell {
+            return;
+        }
+        self.link_hover.cell = cell;
+        // Repaint only when the underline moves, not on every cell the pointer crosses.
+        let link = cell.and_then(|cell| self.session.read(cx).terminal()?.link_at(cell));
+        if link != self.link_hover.link {
+            self.link_hover.link = link;
             cx.notify();
         }
     }
 
-    pub(super) fn modifiers_changed(
-        &mut self,
-        event: &ModifiersChangedEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.hover_link(self.link_hover.pointer, event.modifiers.platform, cx);
-    }
-
-    /// ⌘ is released outside the window after a click sends focus to the browser.
+    /// The pointer can leave through another window, which this pane never hears about.
     pub(super) fn clear_link_hover(&mut self, cx: &mut Context<Self>) {
-        self.hover_link(None, false, cx);
+        self.link_hover.press = None;
+        self.hover_link(None, cx);
     }
 
     pub(super) fn sync_link(&mut self, cx: &App) {
@@ -56,24 +49,40 @@ impl TerminalView {
         self.link_hover.link.as_ref()
     }
 
-    /// Opens the link under a ⌘-click; returns whether there was one.
-    pub(super) fn open_link(&self, position: Point<Pixels>, cx: &mut Context<Self>) -> bool {
-        let session = self.session.read(cx);
-        let link = link_cell(self.grid, Some(position), true)
-            .and_then(|cell| session.terminal()?.link_at(cell));
-        let Some(link) = link else { return false };
-        cx.open_url(link.url());
-        true
+    /// Remembers a single press on a link; a double or triple click selects instead.
+    pub(super) fn press_link(&mut self, event: &MouseDownEvent, cx: &App) {
+        self.link_hover.press = (event.click_count == 1)
+            .then(|| self.link_under(event.position, cx))
+            .flatten();
+    }
+
+    /// Opens the pressed link when the button comes up in the cell it went down in.
+    pub(super) fn release_link(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(pressed) = self.link_hover.press.take() else {
+            return;
+        };
+        if self.link_under(position, cx).as_ref() == Some(&pressed) {
+            cx.open_url(pressed.1.url());
+        }
+    }
+
+    fn link_under(
+        &self,
+        position: Point<Pixels>,
+        cx: &App,
+    ) -> Option<(GridPoint<usize>, TerminalLink)> {
+        let cell = link_cell(self.grid, Some(position))?;
+        let link = self.session.read(cx).terminal()?.link_at(cell)?;
+        Some((cell, link))
     }
 }
 
-/// The grid cell a ⌘-gesture at `pointer` points at; nothing over the padding around the grid.
+/// The grid cell under `pointer`; nothing over the padding around the grid.
 fn link_cell(
     grid: Option<GridGeometry>,
     pointer: Option<Point<Pixels>>,
-    command: bool,
 ) -> Option<GridPoint<usize>> {
-    let (grid, pointer) = grid.zip(pointer).filter(|_| command)?;
+    let (grid, pointer) = grid.zip(pointer)?;
     grid.bounds
         .contains(&pointer)
         .then(|| grid.cell_at(pointer).0)
@@ -96,21 +105,20 @@ mod tests {
     }
 
     #[test]
-    fn points_at_a_cell_only_with_command_inside_the_grid() {
+    fn points_at_a_cell_only_inside_the_grid() {
         let inside = Some(point(px(125.), px(145.)));
         assert_eq!(
-            link_cell(Some(grid()), inside, true),
+            link_cell(Some(grid()), inside),
             Some(Point::new(2, Column(2)))
         );
-        assert_eq!(link_cell(Some(grid()), inside, false), None);
-        assert_eq!(link_cell(None, inside, true), None);
-        assert_eq!(link_cell(Some(grid()), None, true), None);
+        assert_eq!(link_cell(None, inside), None);
+        assert_eq!(link_cell(Some(grid()), None), None);
         assert_eq!(
-            link_cell(Some(grid()), Some(point(px(98.), px(145.))), true),
+            link_cell(Some(grid()), Some(point(px(98.), px(145.)))),
             None
         );
         assert_eq!(
-            link_cell(Some(grid()), Some(point(px(125.), px(201.))), true),
+            link_cell(Some(grid()), Some(point(px(125.), px(201.)))),
             None
         );
     }
