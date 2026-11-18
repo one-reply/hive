@@ -14,6 +14,7 @@ const TASK_ROWS: usize = 6;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LaneState {
     Ready,
+    NoBranch,
     Reading,
     Failed,
     EditingRef,
@@ -25,6 +26,7 @@ enum LaneState {
 enum Blocker {
     Task,
     Repository,
+    Branch,
     Failed,
     EditingRef,
     MissingCommand,
@@ -36,6 +38,7 @@ impl Blocker {
         match self {
             Self::Task => "Describe the task to start planning.",
             Self::Repository => "Add at least one repository.",
+            Self::Branch => "Choose or create a branch for each repository.",
             Self::Failed => "A repository can’t be read. Pick another branch or repository.",
             Self::EditingRef => "Press Use ref to apply the branch, tag or commit.",
             Self::MissingCommand => "Enter the custom check command.",
@@ -53,6 +56,7 @@ fn blocker(has_task: bool, lanes: &[LaneState]) -> Option<Blocker> {
         return Some(Blocker::Repository);
     }
     [
+        (LaneState::NoBranch, Blocker::Branch),
         (LaneState::Failed, Blocker::Failed),
         (LaneState::EditingRef, Blocker::EditingRef),
         (LaneState::MissingCommand, Blocker::MissingCommand),
@@ -174,6 +178,7 @@ impl LaunchForm {
                 name: b.preset.name.clone(),
                 project: project.clone(),
                 base: preview.commit.clone(),
+                branch: b.branch_name().unwrap_or_default().to_owned(),
                 command: b.command(preview, cx),
                 profile: b.preset.profile.clone(),
                 ..Default::default()
@@ -224,6 +229,18 @@ impl LaunchForm {
     }
 }
 
+/// Marks a field that must be filled before planning can start.
+fn required_mark(cx: &App) -> Div {
+    div().text_xs().text_color(cx.theme().danger).child("*")
+}
+
+fn required_heading(title: &'static str, cx: &App) -> Div {
+    h_flex()
+        .gap_0p5()
+        .child(heading(title))
+        .child(required_mark(cx))
+}
+
 fn stage_chip(icon: Lucide, name: String, cx: &App) -> Div {
     h_flex()
         .flex_none()
@@ -244,7 +261,12 @@ fn stage_chip(icon: Lucide, name: String, cx: &App) -> Div {
 }
 
 /// A section title with one line on why it matters, and an optional action on the right.
-fn section(title: &'static str, hint: &'static str, action: Option<AnyElement>, cx: &App) -> Div {
+fn section(
+    title: impl IntoElement,
+    hint: &'static str,
+    action: Option<AnyElement>,
+    cx: &App,
+) -> Div {
     h_flex()
         .w_full()
         .items_end()
@@ -254,7 +276,7 @@ fn section(title: &'static str, hint: &'static str, action: Option<AnyElement>, 
             v_flex()
                 .min_w_0()
                 .gap_0p5()
-                .child(heading(title))
+                .child(title)
                 .child(subtle(hint, cx)),
         )
         .children(action)
@@ -368,7 +390,7 @@ impl Render for LaunchForm {
         let task = v_flex()
             .gap_2()
             .child(section(
-                "Task",
+                required_heading("Task", cx),
                 "Plain language is fine. The planner asks if something is unclear.",
                 None,
                 cx,
@@ -381,8 +403,8 @@ impl Render for LaunchForm {
         let repositories = v_flex()
             .gap_2()
             .child(section(
-                "Repositories",
-                "Each runs in its own worktree created from the chosen branch.",
+                required_heading("Repositories", cx),
+                "Agents commit to the chosen branch in a separate worktree, so your checkout stays as it is.",
                 Some(add),
                 cx,
             ))
@@ -445,6 +467,13 @@ mod tests {
             blocker(true, &[LaneState::Ready, LaneState::Reading]),
             Some(Blocker::Reading)
         );
+    }
+
+    #[test]
+    fn a_lane_without_a_branch_blocks_planning_before_slower_reads() {
+        let lanes = [LaneState::Reading, LaneState::NoBranch];
+        assert_eq!(blocker(true, &lanes), Some(Blocker::Branch));
+        assert_eq!(blocker(false, &lanes), Some(Blocker::Task));
     }
 
     #[test]

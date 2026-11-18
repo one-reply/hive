@@ -1,4 +1,4 @@
-use super::{Pipelines, Store};
+use super::{Pipelines, Store, check_branches};
 use gpui_kit as gpui;
 use gpui_kit::{AppContext as _, Entity, TestAppContext};
 use hive_core::state::ProjectRef;
@@ -6,7 +6,7 @@ use hive_core::{
     host::Host,
     pipeline::{Lane, Phase, Report, Run, Template},
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn recovering(cx: &mut TestAppContext) -> Entity<Pipelines> {
     let store = cx.new(Store::with_held_recovery);
@@ -399,4 +399,40 @@ fn parallel_reports_share_the_latest_durable_checkpoint_before_dispatch(cx: &mut
         assert_eq!(p.run(42, cx).unwrap().reports().len(), 3);
         assert!(p.error(42).unwrap().contains("registered"));
     });
+}
+
+fn lane_on(name: &str, branch: &str) -> Lane {
+    Lane {
+        name: name.into(),
+        project: PathBuf::from("/repo"),
+        branch: branch.into(),
+        ..Lane::default()
+    }
+}
+
+#[test]
+fn a_new_run_needs_a_valid_branch_for_every_lane() {
+    let repo = Path::new("/repo-worktrees");
+    let missing = [lane_on("api", "")];
+    assert!(
+        check_branches(missing.iter().map(|lane| (repo, lane)))
+            .unwrap_err()
+            .contains("api")
+    );
+    let invalid = [lane_on("api", "bad name")];
+    assert!(check_branches(invalid.iter().map(|lane| (repo, lane))).is_err());
+    let valid = [lane_on("api", "feature/login")];
+    assert!(check_branches(valid.iter().map(|lane| (repo, lane))).is_ok());
+}
+
+#[test]
+fn lanes_in_one_repository_share_its_branch_and_other_repositories_may_differ() {
+    let (web, api) = (Path::new("/web-worktrees"), Path::new("/api-worktrees"));
+    let lanes = [lane_on("ui", "feature"), lane_on("docs", "other")];
+    assert!(
+        check_branches([(web, &lanes[0]), (web, &lanes[1])])
+            .unwrap_err()
+            .contains("same branch")
+    );
+    assert!(check_branches([(web, &lanes[0]), (api, &lanes[1])]).is_ok());
 }

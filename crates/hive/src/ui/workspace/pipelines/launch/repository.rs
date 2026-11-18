@@ -2,7 +2,10 @@ use super::*;
 use gpui_kit::component::spinner::Spinner;
 use hive_core::git::branches::short_name;
 
-/// Repository, base and check share one row until the drawer is too narrow for three.
+mod branch;
+use branch::WorkBranch;
+
+/// Repository, branch and check share one row until the drawer is too narrow for them.
 const FIELD_MIN_WIDTH: Pixels = px(170.);
 
 #[derive(Clone, PartialEq)]
@@ -16,11 +19,17 @@ pub(super) struct Binding {
     pub preset: LanePreset,
     pub project: Option<PathBuf>,
     checkout: Option<PathBuf>,
+    /// The base ref being previewed: the chosen branch itself, or where a new one starts.
     reference: String,
+    /// Where a new branch starts unless the user picks another base: their checkout's branch.
+    default_reference: String,
     ref_input: Option<Entity<InputState>>,
+    branch: WorkBranch,
+    branch_query: Entity<InputState>,
+    branch_open: bool,
     check: Check,
     custom_command: Entity<InputState>,
-    _command_changes: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Binding {
@@ -31,29 +40,47 @@ impl Binding {
         cx: &mut Context<LaunchForm>,
     ) -> Self {
         let custom_command = input("", "Shell command", window, cx);
-        let command_changes = cx.subscribe(&custom_command, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        });
+        let branch_query = input("", "Search or name a new branch", window, cx);
+        let subscriptions = vec![
+            cx.subscribe(&custom_command, |_, _, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&branch_query, |this, query, event, cx| match event {
+                InputEvent::Change => cx.notify(),
+                InputEvent::PressEnter { .. } => this.submit_branch_query(&query, cx),
+                _ => {}
+            }),
+        ];
         let (checkout, reference) = initial_ref(project.as_deref(), cx);
         Self {
             preset,
             project,
             checkout,
+            default_reference: reference.clone(),
             reference,
             ref_input: None,
+            branch: WorkBranch::Unchosen,
+            branch_query,
+            branch_open: false,
             check: Check::Suggested,
             custom_command,
-            _command_changes: command_changes,
+            _subscriptions: subscriptions,
         }
     }
     pub(super) fn bind(&mut self, project: Option<PathBuf>, cx: &mut Context<LaunchForm>) {
         (self.checkout, self.reference) = initial_ref(project.as_deref(), cx);
+        self.default_reference.clone_from(&self.reference);
         self.project = project;
         self.ref_input = None;
+        self.branch = WorkBranch::Unchosen;
         self.check = Check::Suggested;
         self.preview(cx);
+    }
+    /// The branch the lane commits to, once the user has chosen or named one.
+    pub(super) fn branch_name(&self) -> Option<&str> {
+        self.branch.name()
     }
     pub(super) fn preview(&self, cx: &mut Context<LaunchForm>) {
         if let Some(project) = &self.project {
@@ -80,6 +107,9 @@ impl Binding {
         self.project.as_ref()?;
         if self.ref_input.is_some() {
             return Some(LaneState::EditingRef);
+        }
+        if self.branch == WorkBranch::Unchosen {
+            return Some(LaneState::NoBranch);
         }
         Some(match self.base_preview(cx) {
             None => LaneState::Reading,
@@ -178,13 +208,21 @@ pub(super) fn dropdown(
 }
 
 /// A caption above a control; fields share a row and wrap below this width.
-fn labeled(label: &'static str, control: impl IntoElement, cx: &App) -> Div {
+fn labeled(caption: impl IntoElement, control: impl IntoElement) -> Div {
     v_flex()
         .flex_1()
         .min_w(FIELD_MIN_WIDTH)
         .gap_1()
-        .child(subtle(label, cx))
+        .child(caption)
         .child(control)
+}
+
+/// A caption whose field must be filled before planning can start.
+fn required(label: &'static str, cx: &App) -> Div {
+    h_flex()
+        .gap_0p5()
+        .child(subtle(label, cx))
+        .child(required_mark(cx))
 }
 
 /// What the repository is doing right now, under its fields.
@@ -265,33 +303,35 @@ impl LaunchForm {
         }
         if b.project.is_none() {
             return group
-                .child(labeled("Repository", repo, cx))
+                .child(labeled(subtle("Repository", cx), repo))
                 .child(subtle("Optional lane. Leave it empty to skip it.", cx));
         }
         let preview = b.base_preview(cx);
         let data = preview.and_then(|p| p.as_ref().ok()).cloned();
         let message = match preview {
             Some(Err(e)) => Some(Notice::Failed(e.clone())),
-            Some(Ok(p)) if p.dirty => Some(Notice::Dirty),
+            // Only a new branch starts from the user's checkout; a chosen branch is not open.
+            Some(Ok(p)) if p.dirty && matches!(b.branch, WorkBranch::New(_)) => Some(Notice::Dirty),
             None => Some(Notice::Reading),
             _ => None,
         };
-        let fields = h_flex()
+        let mut fields = h_flex()
             .w_full()
             .flex_wrap()
             .items_start()
             .gap_3()
-            .child(labeled("Repository", repo, cx))
-            .child(labeled(
-                "Start from",
+            .child(labeled(required("Repository", cx), repo))
+            .child(labeled(required("Branch", cx), self.branch_field(i, cx)));
+        if matches!(b.branch, WorkBranch::New(_)) {
+            fields = fields.child(labeled(
+                subtle("From", cx),
                 self.ref_menu(i, data.as_ref(), cx),
-                cx,
-            ))
-            .child(labeled(
-                "Check before acceptance",
-                self.check_menu(i, data.as_ref(), cx),
-                cx,
             ));
+        }
+        let fields = fields.child(labeled(
+            subtle("Check before acceptance", cx),
+            self.check_menu(i, data.as_ref(), cx),
+        ));
         group = group.child(fields);
         if let Some(ref_input) = &b.ref_input {
             group = group.child(

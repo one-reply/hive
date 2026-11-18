@@ -295,6 +295,10 @@ pub struct Lane {
     pub project: PathBuf,
     /// Starting ref, resolved by preparation to an immutable commit.
     pub base: String,
+    /// Branch the lane commits to: an existing local branch at `base`, or a new one that
+    /// preparation creates there. Empty in runs saved before the user chose it; those use
+    /// the generated `pipeline-<run id>`.
+    pub branch: String,
     /// Actual task worktree; empty until preparation succeeds.
     #[serde(with = "crate::path_encoding::persisted")]
     pub worktree: PathBuf,

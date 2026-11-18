@@ -324,7 +324,7 @@ fn cancelled_preparation_does_not_create_a_branch_or_checkout() {
     assert!(prepare(23, &lane, &stop).is_err());
     let project = repository(&lane.project).unwrap();
     assert_eq!(project.worktrees.len(), 1);
-    assert!(git::branches::resolve(&Host::Local, &lane.project, &branch(23)).is_err());
+    assert!(git::branches::resolve(&Host::Local, &lane.project, &branch(23, &lane)).is_err());
 }
 
 #[test]
@@ -409,7 +409,7 @@ fn interrupted_preparation_reattaches_only_an_unoccupied_branch_at_the_approved_
     let stop = Cancellation::default();
     let checkout = prepare(42, &lane, &stop).unwrap();
     let path = checkout.to_str().unwrap();
-    let name = branch(42);
+    let name = branch(42, &lane);
     git(&lane.project, &["worktree", "remove", path]);
     git(&lane.project, &["switch", &name]);
     assert!(prepare(42, &lane, &stop).is_err());
@@ -455,4 +455,61 @@ fn detached_preview_uses_the_selected_checkout_for_head_and_local_changes() {
     assert_ne!(primary.commit, selected.commit);
     assert!(selected.dirty && !primary.dirty);
     assert_eq!(selected.worktrees_dir, primary.worktrees_dir);
+}
+
+#[test]
+fn preparation_commits_to_a_chosen_existing_branch() {
+    let dir = Scratch::new("existing-branch");
+    let mut lane = dir.lane("repo");
+    git(&lane.project, &["branch", "feature"]);
+    lane.branch = "feature".into();
+    lane.worktree = prepare(5, &lane, &Cancellation::default()).unwrap();
+    let project = repository(&lane.project).unwrap();
+    let checkout = project
+        .worktrees
+        .iter()
+        .find(|w| w.path == lane.worktree)
+        .unwrap();
+    assert_eq!(checkout.branch(), Some("feature"));
+    verify(5, &lane).unwrap();
+}
+
+#[test]
+fn a_new_nested_branch_keeps_its_name_and_gets_a_flat_folder() {
+    let dir = Scratch::new("nested-branch");
+    let mut lane = dir.lane("repo");
+    lane.branch = "feature/login".into();
+    lane.worktree = prepare(6, &lane, &Cancellation::default()).unwrap();
+    assert_eq!(lane.worktree.file_name().unwrap(), "feature-login");
+    assert_eq!(
+        preview(&lane.project, "refs/heads/feature/login")
+            .unwrap()
+            .commit,
+        lane.base
+    );
+    verify(6, &lane).unwrap();
+}
+
+#[test]
+fn a_chosen_branch_that_moved_after_launch_is_not_taken_over() {
+    let dir = Scratch::new("moved-branch");
+    let mut lane = dir.lane("repo");
+    git(&lane.project, &["branch", "feature"]);
+    git(&lane.project, &["switch", "-q", "feature"]);
+    git(
+        &lane.project,
+        &["commit", "-q", "--allow-empty", "-m", "later"],
+    );
+    git(&lane.project, &["switch", "-q", "main"]);
+    lane.branch = "feature".into();
+    let error = prepare(8, &lane, &Cancellation::default()).unwrap_err();
+    assert!(error.to_string().contains("moved"), "{error}");
+}
+
+#[test]
+fn lanes_saved_before_branches_were_chosen_keep_the_generated_branch() {
+    let lane: Lane = serde_json::from_str(r#"{"name":"api","project":"/api","base":"abc"}"#)
+        .expect("a lane without a branch still loads");
+    assert!(lane.branch.is_empty());
+    assert_eq!(branch(0x2a, &lane), "pipeline-2a");
 }
