@@ -17,7 +17,8 @@ pub enum Phase {
     Development,
     /// One read-only reviewer sees every repository.
     Review(usize),
-    /// Hive runs the mandatory commands.
+    /// Hive runs the mandatory commands before the first review. The index names the review
+    /// whose repair budget a red command spends, which is always the first.
     Commands(usize),
     /// Automatic repair budget exhausted.
     Decision(usize),
@@ -98,8 +99,18 @@ pub struct Run {
     pub(super) rounds: Vec<u8>,
     #[serde(default)]
     pub(super) dismissed: Vec<(usize, Finding)>,
+    /// Non-blocking findings of the current QA pass, with the review that reported each.
+    #[serde(default)]
+    pub(super) notes: Vec<(usize, Finding)>,
     #[serde(default)]
     pub(super) feedback: String,
+    /// Repair instructions addressed to one lane each; a lane without one reads `feedback`.
+    #[serde(default)]
+    pub(super) briefs: Vec<(usize, String)>,
+    /// Development attempts that continue their lane's earlier CLI conversation instead of
+    /// starting a new one. A retried attempt gets a new ticket and so starts fresh.
+    #[serde(default)]
+    pub(super) continuations: Vec<(Ticket, ResumeSession)>,
 }
 
 impl Run {
@@ -156,7 +167,10 @@ impl Run {
             last_attempt: 0,
             rounds: vec![0; reviews],
             dismissed: vec![],
+            notes: vec![],
             feedback: String::new(),
+            briefs: vec![],
+            continuations: vec![],
         };
         run.schedule(None);
         Ok(run)
@@ -217,6 +231,16 @@ impl Run {
         )
     }
 
+    /// Whether this attempt's CLI may edit files without asking: a lane's own setting for
+    /// its developer, never for the read-only planner and reviewers.
+    pub fn edit_approval(&self, ticket: &Ticket) -> EditApproval {
+        ticket
+            .lane
+            .and_then(|lane| self.lanes.get(lane))
+            .map(|lane| lane.edits)
+            .unwrap_or_default()
+    }
+
     /// Number of repair rounds already charged to this review.
     pub fn cycles(&self, review: usize) -> u8 {
         self.rounds.get(review).copied().unwrap_or_default()
@@ -234,27 +258,32 @@ impl Run {
             {
                 continue;
             }
+            // The base commit bounds the lane's changes: without it a reviewer of committed
+            // work sees an empty `git diff`.
             let _ = writeln!(
                 prompt,
-                "\nLane {i}: {}\nWorktree: {}\nAssignment: {}\nCriteria: {}",
+                "\nLane {i}: {}\nWorktree: {}\nBase commit: {}\nAssignment: {}\nCriteria: {}",
                 lane.name,
                 lane.worktree.display(),
+                lane.base,
                 lane.assignment,
                 lane.criteria
             );
         }
-        if !self.feedback.is_empty() {
-            let _ = writeln!(prompt, "\nHandoff:\n{}", self.feedback);
+        let handoff = self.handoff(ticket);
+        if !handoff.is_empty() {
+            let _ = writeln!(prompt, "\nHandoff:\n{handoff}");
+        }
+        if let Phase::Review(ix) = self.phase {
+            self.write_review_context(ix, &mut prompt);
         }
         let contract = match self.phase {
             Phase::Planning => {
                 r#"Plan only. Ask the user if necessary. Report {"kind":"plan","assignments":[{"lane":0,"task":"...","criteria":"..."}]} with one entry per required lane."#
             }
-            Phase::Development => {
-                r#"Work only in your assigned worktree. Report {"kind":"developed","summary":"..."} with changes and verification evidence."#
-            }
+            Phase::Development => super::handoff::DEVELOPED_CONTRACT,
             Phase::Review(_) => {
-                r#"Inspect the participating worktrees together. Report {"kind":"review","summary":"evidence","findings":[{"lane":0,"description":"issue, reproduction and expected behavior"}]}. Use an empty list to pass."#
+                r#"Inspect the participating worktrees together. A lane's changes are everything after its base commit: `git diff <base commit>` shows committed and uncommitted edits together, `git status` lists new files. Report {"kind":"review","summary":"evidence","findings":[{"lane":0,"severity":"major","description":"issue, reproduction and expected behavior"}]}. Severity is "blocker" (breaks an acceptance criterion, the build or the tests, or loses data), "major" (a defect to fix before merging) or "minor" (an improvement that should not hold the change back). Blocker and major findings return the work to development; minor ones are shown to the user. Use an empty list to pass."#
             }
             _ => return Err(Error::WrongStage("This gate has no agent")),
         };
@@ -279,6 +308,8 @@ impl Run {
             .find(|t| *t == ticket)
             .ok_or(Error::InactiveAttempt)?;
         *slot = replacement;
+        // Whatever stopped the attempt may be the conversation itself: the retry starts fresh.
+        self.continuations.retain(|(t, _)| t != ticket);
         self.history.push(format!(
             "Retried attempt {} as {}",
             ticket.attempt, replacement.attempt
@@ -297,6 +328,18 @@ impl Run {
             || self.lanes.iter().any(|l| !l.project.is_absolute())
             || self.findings.iter().any(|f| f.lane >= self.lanes.len())
             || self.commands.iter().any(|c| c.lane >= self.lanes.len())
+            || self
+                .dismissed
+                .iter()
+                .any(|(_, f)| f.lane >= self.lanes.len())
+            || self
+                .notes
+                .iter()
+                .any(|(review, f)| *review >= self.rounds.len() || f.lane >= self.lanes.len())
+            || self
+                .briefs
+                .iter()
+                .any(|(lane, _)| *lane >= self.lanes.len())
         {
             return false;
         }

@@ -181,6 +181,11 @@ impl RunView {
             ));
         }
         let mut block = v_flex().gap_2().child(row);
+        if run.phase() == Phase::Acceptance
+            && let Some(notes) = review_notes(run, cx)
+        {
+            block = block.child(notes);
+        }
         if self.giving_feedback {
             let gate = run.phase();
             block = block
@@ -205,4 +210,32 @@ impl RunView {
         }
         Some(block)
     }
+}
+
+/// Reviewer findings that did not block the run, listed where the user decides to accept.
+fn review_notes(run: &Run, cx: &App) -> Option<Div> {
+    let notes = run.notes();
+    if notes.is_empty() {
+        return None;
+    }
+    let mut list = v_flex().gap_1().child(subtle(
+        format!(
+            "{} did not block acceptance",
+            count(notes.len(), "reviewer note", "reviewer notes")
+        ),
+        cx,
+    ));
+    for (i, (review, note)) in notes.iter().enumerate() {
+        let (Some(review), Some(lane)) = (
+            run.template().reviews.get(*review),
+            run.lanes().get(note.lane),
+        ) else {
+            continue;
+        };
+        list = list.child(div().text_sm().child(SelectableText::new(
+            ("review-note", i),
+            format!("{} · {}: {}", review.name, lane.name, note.description),
+        )));
+    }
+    Some(list)
 }

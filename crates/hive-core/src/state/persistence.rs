@@ -37,8 +37,11 @@ pub enum StateError {
 
 /// Version 2 protects pipeline history on downgrade: v1 preserves newer files before rewriting them.
 /// Version 3 does the same for the pipeline prompt library and the stage links into it.
+/// Version 4 marks a change of meaning: a run's required checks now precede its first review,
+/// so a build that ran them after it would take a saved `commands` phase for a finished
+/// review and skip that review.
 /// Older and unversioned files load with defaults for any missing sections.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Loaded state and, when the file could not be used as written, what happened to it.
 pub struct LoadedState {

@@ -53,7 +53,15 @@ impl RunView {
             .findings()
             .iter()
             .enumerate()
-            .map(|(i, f)| format!("{}. {} · {}", i + 1, r.lanes()[f.lane].name, f.description))
+            .map(|(i, f)| {
+                format!(
+                    "{}. {} · {} · {}",
+                    i + 1,
+                    r.lanes()[f.lane].name,
+                    f.severity.label(),
+                    f.description
+                )
+            })
             .collect::<Vec<_>>();
         for command in r.commands().iter().filter(|cmd| !cmd.success) {
             evidence.push(format!(

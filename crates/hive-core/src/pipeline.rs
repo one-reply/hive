@@ -4,11 +4,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+mod delivery;
+mod handoff;
 mod outcome;
 mod presets;
 pub(crate) mod prompts;
 mod recipe;
 mod record;
+mod report;
 mod run;
 mod stage;
 mod stock;
@@ -19,6 +22,7 @@ pub use outcome::{CheckTally, readable_history};
 pub(crate) use presets::refresh_stock_instructions;
 pub use prompts::Prompt;
 pub use recipe::unique_name;
+pub use report::{Assignment, CommandResult, Finding, Report, Severity};
 pub use run::{Phase, Run, StageTiming, Ticket};
 pub use stage::{Stage, StageStatus};
 pub use stock::ReviewKind;
@@ -127,6 +131,20 @@ impl Profile {
     }
 }
 
+/// Whether a developer's CLI asks before it changes files in its own worktree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditApproval {
+    /// File edits inside the worktree go through without a prompt. Everything else the CLI
+    /// guards (commands outside its sandbox, network, other folders) still asks.
+    AcceptEdits,
+    /// Hive passes nothing: the CLI's own configuration decides. Also what an unknown saved
+    /// value means, so a newer build's choice never widens what an older one allows.
+    #[default]
+    #[serde(other)]
+    CliDefault,
+}
+
 /// One stage's prompt and execution settings.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Step {
@@ -186,6 +204,8 @@ pub struct LanePreset {
     pub profile: Profile,
     /// User-configured mandatory QA command, empty when unused.
     pub command: String,
+    /// Whether the developer edits files in its worktree without asking.
+    pub edits: EditApproval,
 }
 
 /// Ordered stage recipe shared between projects.
@@ -275,17 +295,24 @@ pub struct Lane {
     /// preparation creates there. Empty in runs saved before the user chose it; those use
     /// the generated `pipeline-<run id>`.
     pub branch: String,
+    /// Branch a new `branch` was started from, as the target of its pull request; empty
+    /// when the lane works on an existing branch or started from a tag or commit.
+    pub base_branch: String,
     /// Actual task worktree; empty until preparation succeeds.
     #[serde(with = "crate::path_encoding::persisted")]
     pub worktree: PathBuf,
     /// Mandatory command as confirmed by the user.
     pub command: String,
+    /// Command run once in the new worktree before any agent, empty when unused.
+    pub setup: String,
     /// Approved task for this lane, empty when omitted from the plan.
     pub assignment: String,
     /// Acceptance criteria for this assignment.
     pub criteria: String,
     /// Effective development profile.
     pub profile: Profile,
+    /// Whether the developer edits files in this worktree without asking.
+    pub edits: EditApproval,
 }
 
 impl Lane {
@@ -293,65 +320,6 @@ impl Lane {
     pub fn requires_check(&self) -> bool {
         !self.assignment.trim().is_empty() && !self.command.trim().is_empty()
     }
-}
-
-/// Planner handoff for one selected lane.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Assignment {
-    /// Zero-based index in the run's lane list.
-    pub lane: usize,
-    /// Concrete development assignment.
-    pub task: String,
-    /// Testable completion criteria.
-    pub criteria: String,
-}
-
-/// Reviewer finding addressed to one lane.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Finding {
-    /// Repository owning this finding.
-    pub lane: usize,
-    /// Evidence, expected behavior and reproduction or verification steps.
-    pub description: String,
-}
-
-/// Result submitted by the bound agent for a particular attempt.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Report {
-    /// Proposed repository-specific work.
-    Plan {
-        /// Ordered lane assignments.
-        assignments: Vec<Assignment>,
-    },
-    /// Implementation or repair completed.
-    Developed {
-        /// What changed and how it was verified.
-        summary: String,
-    },
-    /// Review completed; empty findings represents a pass.
-    Review {
-        /// Review evidence.
-        summary: String,
-        /// Outstanding issues.
-        findings: Vec<Finding>,
-    },
-}
-
-/// Outcome of a mandatory command, recorded by Hive itself.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CommandResult {
-    /// Lane whose worktree hosted the command.
-    pub lane: usize,
-    /// Exact user-configured command.
-    pub command: String,
-    /// Whether the command actually completed successfully.
-    pub success: bool,
-    /// Process exit status, absent on signal, timeout or spawn failure.
-    #[serde(default)]
-    pub exit_code: Option<i32>,
-    /// Bounded terminal output or diagnostic.
-    pub output: String,
 }
 
 #[cfg(test)]

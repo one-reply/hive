@@ -209,7 +209,7 @@ pub fn calendar_date(iso: &str) -> String {
         .unwrap_or_else(|_| iso.to_string())
 }
 
-fn relative_date_at(iso: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+pub(crate) fn relative_date_at(iso: &str, now: chrono::DateTime<chrono::Utc>) -> String {
     let Ok(date) = chrono::DateTime::parse_from_rfc3339(iso) else {
         return iso.to_string();
     };

@@ -68,6 +68,7 @@ impl Pipelines {
 
     fn work(&mut self, run: Run, generation: u64, cx: &mut Context<Self>) {
         let id = run.id();
+        let phase = run.phase();
         let cancel = Arc::new(Cancellation::default());
         let runtime = self.runtime_mut(id);
         if let Some(old) = runtime.worker.replace(cancel.clone()) {
@@ -113,6 +114,11 @@ impl Pipelines {
                         "Two lanes of {} require different base commits.",
                         lane.project.display()
                     ));
+                }
+                // Lanes of one repository share a checkout: the first to arrive prepares it,
+                // with its own setup command.
+                if !run.lanes().iter().any(|other| other.worktree == path) {
+                    workspace::provision(lane, &path, &cancel).map_err(|e| e.to_string())?;
                 }
                 return Ok(Work::Prepared(index, path));
             }
@@ -161,7 +167,9 @@ impl Pipelines {
                     _ if !current => return,
                     Err(error) => Err(error),
                     Ok(Work::Checked(results)) => {
-                        p.edit(id, cx, |run| Ok(run.command_results(results)?))
+                        let applied = p.edit(id, cx, |run| Ok(run.command_results(results)?));
+                        p.announce_gate(id, phase, cx);
+                        applied
                     }
                     Ok(Work::ReviewRevision(hash)) => {
                         p.edit(id, cx, |r| Ok(r.record_review_revision(hash)?))
@@ -180,7 +188,11 @@ impl Pipelines {
         let runtime = self.runtime_mut(id);
         if runtime.error.as_ref() != Some(&reason) {
             tracing::warn!(run=id,%reason,"pipeline needs attention");
-            runtime.error = Some(reason);
+            runtime.error = Some(reason.clone());
+            cx.emit(RunWaits {
+                run: id,
+                reason: Waiting::Failed(reason),
+            });
             cx.notify();
         }
     }

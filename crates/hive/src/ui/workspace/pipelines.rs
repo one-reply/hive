@@ -77,6 +77,29 @@ impl PipelinePanel {
             Screen::Editor(cx.new(|cx| editor::TemplateEditor::new(original, parent, window, cx)));
         cx.notify();
     }
+    /// Opens the new-run form filled in from run `id`: its task, recipe and repositories.
+    fn launch_again(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let library = &AppState::get(cx).store.read(cx).state.pipelines;
+        let Some(run) = library.runs.iter().find(|run| run.id() == id).cloned() else {
+            return;
+        };
+        // The library's current recipe of that name, so later edits apply; the run's own
+        // copy when the recipe was renamed or deleted since.
+        let template = library
+            .templates
+            .iter()
+            .find(|template| template.name == run.template().name)
+            .unwrap_or(run.template())
+            .clone();
+        let parent = cx.weak_entity();
+        let project = self.project.clone();
+        self.screen = Screen::Launch(cx.new(|cx| {
+            let mut form = launch::LaunchForm::new(project, template, parent, window, cx);
+            form.repeat(&run, window, cx);
+            form
+        }));
+        cx.notify();
+    }
     fn launch(&mut self, template: Template, window: &mut Window, cx: &mut Context<Self>) {
         let parent = cx.weak_entity();
         let project = self.project.clone();

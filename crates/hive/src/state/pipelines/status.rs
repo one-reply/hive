@@ -41,6 +41,79 @@ impl RunStatus {
     }
 }
 
+/// A phase that only the user can move the run out of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Gate {
+    Plan,
+    Decision,
+    Acceptance,
+}
+
+impl Gate {
+    pub(crate) fn at(phase: Phase) -> Option<Self> {
+        match phase {
+            Phase::ApprovePlan => Some(Self::Plan),
+            Phase::Decision(_) => Some(Self::Decision),
+            Phase::Acceptance => Some(Self::Acceptance),
+            _ => None,
+        }
+    }
+
+    /// What the user is asked to do, as the attention list words it.
+    pub(crate) fn action(self) -> &'static str {
+        match self {
+            Self::Plan => "Approve plan",
+            Self::Decision => "Review findings",
+            Self::Acceptance => "Accept changes",
+        }
+    }
+
+    fn headline(self) -> &'static str {
+        match self {
+            Self::Plan => "Plan ready for approval",
+            Self::Decision => "Review needs your decision",
+            Self::Acceptance => "Changes ready to accept",
+        }
+    }
+}
+
+/// Why a run stopped for the user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Waiting {
+    Gate(Gate),
+    Failed(String),
+    /// A stage's agent is still at work after its time budget; nothing is asked of the user.
+    Slow {
+        stage: String,
+        minutes: u64,
+    },
+}
+
+/// A notification body names the run by the first line of its task, cut to this many characters.
+const NOTICE_TASK_CHARS: usize = 110;
+
+impl Waiting {
+    /// Title and body of the notification for a run with this task.
+    pub(crate) fn notice(&self, task: &str) -> (String, String) {
+        let line = task.trim().lines().next().unwrap_or_default();
+        let mut name: String = line.chars().take(NOTICE_TASK_CHARS).collect();
+        if name.len() < line.len() {
+            name.push('…');
+        }
+        match self {
+            Self::Gate(gate) => (gate.headline().to_owned(), name),
+            Self::Failed(error) => (
+                "Pipeline step failed".to_owned(),
+                format!("{name} · {error}"),
+            ),
+            Self::Slow { stage, minutes } => (
+                format!("{stage} is still running after {minutes} min"),
+                name,
+            ),
+        }
+    }
+}
+
 impl Pipelines {
     pub(crate) fn status(&self, run: &Run, cx: &App) -> RunStatus {
         RunStatus::of(
@@ -49,13 +122,75 @@ impl Pipelines {
             self.agent_request(run, cx).is_some(),
         )
     }
+
+    /// Title and body of the notification for `event`; `None` once the run is gone.
+    pub(crate) fn notice(&self, event: &RunWaits, cx: &App) -> Option<(String, String)> {
+        let run = self.run(event.run, cx).ok()?;
+        Some(event.reason.notice(run.task()))
+    }
+
+    /// Announces a gate the run reached through an agent's report or a check. The user's own
+    /// decisions never call this: they are looking at the run they just moved.
+    pub(super) fn announce_gate(&mut self, id: u64, before: Phase, cx: &mut Context<Self>) {
+        let Ok(run) = self.run(id, cx) else { return };
+        if run.phase() != before
+            && let Some(gate) = Gate::at(run.phase())
+        {
+            cx.emit(RunWaits {
+                run: id,
+                reason: Waiting::Gate(gate),
+            });
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     // Not a glob import: `gpui_kit::*` brings in GPUI's `test` attribute, which shadows `#[test]`.
-    use super::RunStatus;
+    use super::{Gate, RunStatus, Waiting};
     use hive_core::pipeline::Phase;
+
+    #[test]
+    fn only_phases_waiting_on_the_user_are_gates() {
+        assert_eq!(Gate::at(Phase::ApprovePlan), Some(Gate::Plan));
+        assert_eq!(Gate::at(Phase::Decision(1)), Some(Gate::Decision));
+        assert_eq!(Gate::at(Phase::Acceptance), Some(Gate::Acceptance));
+        for phase in [
+            Phase::Planning,
+            Phase::Development,
+            Phase::Review(0),
+            Phase::Commands(0),
+            Phase::Accepted,
+            Phase::Cancelled,
+        ] {
+            assert_eq!(Gate::at(phase), None);
+            assert_ne!(
+                RunStatus::of(phase, false, false),
+                RunStatus::NeedsYou,
+                "{phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_notice_names_the_run_by_the_first_line_of_its_task() {
+        let gate = Waiting::Gate(Gate::Plan);
+        assert_eq!(
+            gate.notice("  Add login\nwith details below"),
+            ("Plan ready for approval".into(), "Add login".into())
+        );
+        let (_, body) = gate.notice(&"я".repeat(300));
+        assert_eq!(body.chars().count(), 111);
+        assert!(body.ends_with('…'));
+        let failed = Waiting::Failed("Agent exited before reporting a result.".into());
+        assert_eq!(
+            failed.notice("Add login"),
+            (
+                "Pipeline step failed".into(),
+                "Add login · Agent exited before reporting a result.".into()
+            )
+        );
+    }
 
     #[test]
     fn working_phases_are_running() {

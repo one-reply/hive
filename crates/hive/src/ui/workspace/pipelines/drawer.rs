@@ -117,6 +117,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The run is seen now, however the user got here: its notification would only be stale.
+        window.remove_notification1::<RunWaits>(run_notice_key(id), cx);
         let Some(owner) = AppState::get(cx)
             .store
             .read(cx)
@@ -178,18 +180,48 @@ impl Workspace {
         if t <= 0. && !open {
             return None;
         }
+        let header_inset = if self.sidebar_open {
+            px(0.)
+        } else {
+            TAB_BAR_HEIGHT
+        };
+        let overlay = div()
+            .id("pipeline-drawer")
+            .absolute()
+            .left_0()
+            .top(relative(1. - t))
+            .size_full()
+            .occlude()
+            .bg(cx.theme().background)
+            .pt(header_inset)
+            .child(slot.view.clone());
         Some((
             open && t >= 1.,
-            div()
-                .absolute()
-                .left_0()
-                .top(relative(1. - t))
-                .size_full()
-                .occlude()
-                .bg(cx.theme().background)
-                .when(!self.sidebar_open, |el| el.pt(TAB_BAR_HEIGHT))
-                .child(slot.view.clone())
-                .into_any_element(),
+            self.window_drag_band(
+                overlay,
+                move |position| in_pipeline_title_band(position.y, header_inset),
+                cx,
+            )
+            .into_any_element(),
         ))
+    }
+}
+
+fn in_pipeline_title_band(y: Pixels, header_inset: Pixels) -> bool {
+    y < header_inset + TAB_BAR_HEIGHT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TAB_BAR_HEIGHT, in_pipeline_title_band, px};
+
+    #[test]
+    fn pipeline_title_band_reaches_the_breadcrumb_but_excludes_the_body() {
+        for header_inset in [px(0.), TAB_BAR_HEIGHT] {
+            assert!(in_pipeline_title_band(px(0.), header_inset));
+            let body_top = header_inset + TAB_BAR_HEIGHT;
+            assert!(in_pipeline_title_band(body_top - px(1.), header_inset));
+            assert!(!in_pipeline_title_band(body_top, header_inset));
+        }
     }
 }

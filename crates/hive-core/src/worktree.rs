@@ -8,6 +8,9 @@ use std::collections::HashSet;
 use std::hash::{BuildHasher as _, RandomState};
 use std::path::{Path, PathBuf};
 
+mod provision;
+pub use provision::{INCLUDE_FILE, IncludePatterns, ProvisionError, copy_included, run_setup};
+
 /// Pool for generated worktree names: plants bees forage on.
 const NAMES: &[&str] = &[
     "acacia",
@@ -72,6 +75,9 @@ pub enum WorktreeError {
     HasChanges { path: PathBuf },
     #[error(transparent)]
     Git(#[from] GitError),
+    /// The worktree exists but its ignored files or setup command did not complete.
+    #[error(transparent)]
+    Provision(#[from] ProvisionError),
 }
 
 /// How hard [`remove`] tries.

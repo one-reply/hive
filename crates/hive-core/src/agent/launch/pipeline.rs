@@ -1,6 +1,6 @@
 //! Role-specific arguments for interactive local pipeline sessions.
 use super::{AgentKind, LaunchError, ResumeSession, valid_session_id};
-use crate::pipeline::{Profile, Ticket};
+use crate::pipeline::{EditApproval, Profile, Ticket};
 use std::path::PathBuf;
 
 /// Access and handoff expected from this session.
@@ -29,6 +29,31 @@ pub struct PipelineLaunch {
     pub ticket: Ticket,
     /// Exact conversation for an explicit resume, or a preallocated OpenCode session.
     pub resume: Option<ResumeSession>,
+    /// Whether a developer edits files in its worktree without asking; other roles are
+    /// read-only whatever this says.
+    pub edits: EditApproval,
+}
+
+/// The arguments that let `agent` edit files in its worktree without a prompt while it still
+/// asks for anything beyond that. `None` when the CLI has no such setting: OpenCode offers
+/// only `--auto`, which approves every permission, and Hive never passes a blanket approval.
+fn accept_edits_arguments(agent: AgentKind) -> Option<&'static [&'static str]> {
+    match agent {
+        AgentKind::ClaudeCode => Some(&["--permission-mode", "acceptEdits"]),
+        AgentKind::Codex => Some(&[
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "on-request",
+        ]),
+        AgentKind::Antigravity => Some(&["--mode", "accept-edits"]),
+        _ => None,
+    }
+}
+
+/// Whether [`EditApproval::AcceptEdits`] changes how `agent` is launched.
+pub fn supports_accept_edits(agent: AgentKind) -> bool {
+    accept_edits_arguments(agent).is_some()
 }
 
 /// Choices offered by the adapter. An empty entry selects the provider default.
@@ -149,6 +174,10 @@ impl PipelineLaunch {
                 _ => return Err(LaunchError::Unsupported),
             };
             args.extend([flag.into(), value.into()]);
+        } else if self.edits == EditApproval::AcceptEdits
+            && let Some(flags) = accept_edits_arguments(agent)
+        {
+            args.extend(flags.iter().map(|flag| (*flag).to_owned()));
         }
         if !self.prompt.is_empty() {
             let ticket = serde_json::to_string(&self.ticket)
@@ -201,6 +230,7 @@ mod tests {
                 lane: None,
             },
             resume: None,
+            edits: EditApproval::CliDefault,
         }
     }
 
@@ -259,6 +289,78 @@ mod tests {
                 !args
                     .iter()
                     .any(|arg| arg.contains("hive agent report") || arg == "--prompt")
+            );
+        }
+    }
+    #[test]
+    fn a_continued_developer_resumes_its_conversation_and_receives_the_new_ticket() {
+        for agent in AGENTS {
+            let mut pipeline = launch(agent, PipelineRole::Develop);
+            pipeline.prompt = "Resolve the finding".into();
+            pipeline.resume = ResumeSession::new(agent, "ses_earlier_round");
+            let args = pipeline.arguments().unwrap();
+            let session = args.iter().position(|arg| arg == "ses_earlier_round");
+            let message = args.iter().position(|arg| {
+                arg.contains("Resolve the finding")
+                    && arg.contains("hive agent report")
+                    && arg.contains("\"attempt\":2")
+            });
+            assert!(
+                session.is_some() && session < message,
+                "{agent:?}: {args:?}"
+            );
+            assert!(
+                !args.iter().any(|arg| arg == "read-only" || arg == "plan"),
+                "{agent:?}: {args:?}"
+            );
+        }
+    }
+    #[test]
+    fn accepting_edits_is_opt_in_for_developers_only_and_never_a_blanket_approval() {
+        for agent in AGENTS {
+            let flags = |role, edits| {
+                let mut pipeline = launch(agent, role);
+                pipeline.edits = edits;
+                let prompt = pipeline.prompt.clone();
+                let mut args = pipeline.arguments().unwrap();
+                // The prompt quotes the ticket; only the flags before it are of interest.
+                args.retain(|arg| !arg.contains(&prompt));
+                args
+            };
+            let ask = flags(PipelineRole::Develop, EditApproval::CliDefault);
+            let accept = flags(PipelineRole::Develop, EditApproval::AcceptEdits);
+            let added: Vec<_> = accept.iter().filter(|arg| !ask.contains(arg)).collect();
+            match agent {
+                AgentKind::ClaudeCode => assert_eq!(added, ["--permission-mode", "acceptEdits"]),
+                AgentKind::Codex => assert_eq!(
+                    added,
+                    [
+                        "--sandbox",
+                        "workspace-write",
+                        "--ask-for-approval",
+                        "on-request"
+                    ]
+                ),
+                AgentKind::Antigravity => assert_eq!(added, ["--mode", "accept-edits"]),
+                AgentKind::OpenCode => assert!(added.is_empty()),
+                _ => unreachable!(),
+            }
+            assert_eq!(supports_accept_edits(agent), !added.is_empty());
+            for arg in &accept {
+                assert!(
+                    !arg.contains("bypass")
+                        && !arg.contains("dangerously")
+                        && !arg.contains("danger-full-access")
+                        && arg != "--auto"
+                        && arg != "never",
+                    "{agent:?}: {arg}"
+                );
+            }
+            // A reviewer stays read-only even if a lane's setting leaks into its launch.
+            let review = flags(PipelineRole::Review, EditApproval::AcceptEdits);
+            assert_eq!(
+                review,
+                flags(PipelineRole::Review, EditApproval::CliDefault)
             );
         }
     }

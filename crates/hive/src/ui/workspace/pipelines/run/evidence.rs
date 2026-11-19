@@ -1,7 +1,19 @@
 //! User-configured checks and chronological evidence, with long output disclosed on demand.
 use super::*;
 use crate::ui::hover::SmoothHoverBg as _;
-use hive_core::pipeline::readable_history;
+use hive_core::pipeline::{Finding, readable_history};
+
+/// A review's result as the Checks tab words it, and whether it let the run continue: only
+/// blocking findings hold a run, the rest are notes for the user.
+fn review_outcome(findings: &[Finding]) -> (String, bool) {
+    let blocking = findings.iter().filter(|f| f.severity.blocks()).count();
+    let notes = findings.len() - blocking;
+    match (blocking, notes) {
+        (0, 0) => ("Passed".into(), true),
+        (0, _) => (format!("Passed · {}", count(notes, "note", "notes")), true),
+        _ => (count(blocking, "finding", "findings"), false),
+    }
+}
 
 impl RunView {
     pub(super) fn checks(&self, r: &Run, w: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -119,21 +131,13 @@ impl RunView {
             if !matches!(state, StageStatus::InProgress | StageStatus::Interrupted)
                 && let Some(hive_core::pipeline::Report::Review { findings, .. }) = latest
             {
-                if findings.is_empty() {
-                    label = "Passed".into();
-                    color = cx.theme().success;
+                let passed;
+                (label, passed) = review_outcome(findings);
+                color = if passed {
+                    cx.theme().success
                 } else {
-                    label = format!(
-                        "{} {}",
-                        findings.len(),
-                        if findings.len() == 1 {
-                            "finding"
-                        } else {
-                            "findings"
-                        }
-                    );
-                    color = cx.theme().warning;
-                }
+                    cx.theme().warning
+                };
             }
             let expanded = self.expanded_reviews.contains(&i);
             let hover = Hover::new(("review-check-hover", i), w, cx);
@@ -264,5 +268,31 @@ impl RunView {
             }
         }
         scroll("run-activity", list)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not a glob import: the parent's `gpui_kit::*` brings in GPUI's `test` attribute.
+    use super::review_outcome;
+    use hive_core::pipeline::{Finding, Severity};
+
+    fn finding(severity: Severity) -> Finding {
+        Finding {
+            lane: 0,
+            severity,
+            description: "Something".into(),
+        }
+    }
+
+    #[test]
+    fn a_review_with_only_notes_passed_and_blocking_findings_are_counted_alone() {
+        assert_eq!(review_outcome(&[]), ("Passed".into(), true));
+        let notes = [finding(Severity::Minor), finding(Severity::Minor)];
+        assert_eq!(review_outcome(&notes), ("Passed · 2 notes".into(), true));
+        let mixed = [finding(Severity::Blocker), finding(Severity::Minor)];
+        assert_eq!(review_outcome(&mixed), ("1 finding".into(), false));
+        let blocking = [finding(Severity::Major), finding(Severity::Blocker)];
+        assert_eq!(review_outcome(&blocking), ("2 findings".into(), false));
     }
 }

@@ -66,7 +66,29 @@ fn review(findings: Vec<Finding>) -> Report {
 fn issue(lane: usize) -> Finding {
     Finding {
         lane,
+        severity: Severity::Major,
         description: "Server returns id but client reads task_id".into(),
+    }
+}
+fn note(lane: usize) -> Finding {
+    Finding {
+        lane,
+        severity: Severity::Minor,
+        description: "Rename the helper for clarity".into(),
+    }
+}
+fn check(success: bool) -> CommandResult {
+    CommandResult {
+        lane: 0,
+        command: "cargo test".into(),
+        success,
+        exit_code: Some(i32::from(!success)),
+        output: if success {
+            "passed"
+        } else {
+            "expected 3, got 2"
+        }
+        .into(),
     }
 }
 
@@ -123,44 +145,210 @@ fn lanes_sharing_the_actual_worktree_are_serial_even_after_retry_or_restore() {
 }
 
 #[test]
-fn third_unsuccessful_repair_pauses_and_a_red_command_cannot_be_waived() {
+fn a_red_check_returns_to_development_before_any_review_and_cannot_be_waived() {
     let mut run = run_with(&["/repo"], 3);
     run.lanes[0].command = "cargo test".into();
     plan(&mut run);
     for cycle in 0..=3 {
         report(&mut run, developed());
-        report(&mut run, review(vec![issue(0)]));
         assert_eq!(run.phase, Phase::Commands(0));
+        assert!(run.pending().is_empty());
         assert!(run.command_results(vec![]).is_err());
-        let result = CommandResult {
-            lane: 0,
-            command: "cargo test".into(),
-            success: false,
-            exit_code: Some(1),
-            output: "expected 3, got 2".into(),
-        };
-        run.command_results(vec![result]).unwrap();
+        run.command_results(vec![check(false)]).unwrap();
         assert_eq!(run.cycles(0), (cycle + 1).min(3));
     }
     assert_eq!(run.phase, Phase::Decision(0));
-    assert!(run.dismiss_finding(0, " ").is_err());
-    run.dismiss_finding(0, "Compatibility tested separately")
-        .unwrap();
-    assert_eq!(run.phase, Phase::Decision(0));
+    let reviewed = |run: &Run| {
+        run.reports
+            .iter()
+            .any(|(_, _, report)| matches!(report, Report::Review { .. }))
+    };
+    assert!(!reviewed(&run), "a red check must not cost a reviewer turn");
+    assert!(run.dismiss_finding(0, "Nothing to waive").is_err());
     assert!(run.accept().is_err());
     run.retry_gate("Fix that failing test").unwrap();
+    let repair = run.prompt(&run.pending()[0]).unwrap();
+    assert!(
+        repair.contains("Required checks failed. Fix that failing test"),
+        "{repair}"
+    );
+    assert!(repair.contains("expected 3, got 2"), "{repair}");
     report(&mut run, developed());
-    report(&mut run, review(vec![issue(0)]));
-    run.command_results(vec![CommandResult {
-        lane: 0,
-        command: "cargo test".into(),
-        success: true,
-        exit_code: Some(0),
-        output: "passed".into(),
-    }])
-    .unwrap();
+    run.command_results(vec![check(true)]).unwrap();
+    assert_eq!(run.phase, Phase::Review(0));
+    // The fingerprint is taken only now, after the checks stopped writing to the worktree.
+    assert_eq!(run.review_revision, None);
+    let reviewer = run.prompt(&run.pending()[0]).unwrap();
+    assert!(
+        reviewer.contains("- Role 0 · cargo test · passed"),
+        "{reviewer}"
+    );
+    report(&mut run, review(vec![]));
     assert_eq!(run.phase, Phase::Review(1));
     assert_eq!(run.cycles(0), 3);
+}
+
+#[test]
+fn minor_findings_pass_the_review_and_wait_for_the_user_at_acceptance() {
+    let mut run = run_with(&["/repo"], 3);
+    plan(&mut run);
+    report(&mut run, developed());
+    report(&mut run, review(vec![note(0)]));
+    assert_eq!(run.phase, Phase::Review(1));
+    assert_eq!(run.cycles(0), 0);
+    assert!(run.findings.is_empty());
+    report(&mut run, review(vec![issue(0), note(0)]));
+    assert_eq!(run.phase, Phase::Development);
+    assert_eq!(run.findings, [issue(0)]);
+    let repair = run.prompt(&run.pending()[0]).unwrap();
+    assert!(repair.contains("task_id"), "{repair}");
+    assert!(!repair.contains("Rename the helper"), "{repair}");
+    // A new pass over changed code makes the earlier notes stale.
+    report(&mut run, developed());
+    assert!(run.notes.is_empty());
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![note(0)]));
+    assert_eq!(run.phase, Phase::Acceptance);
+    assert_eq!(run.notes(), [(1, note(0))]);
+    run.request_changes("Do the rename").unwrap();
+    let request = run.prompt(&run.pending()[0]).unwrap();
+    assert!(request.contains("Do the rename"), "{request}");
+    assert!(
+        request.contains("- Security & performance · Role 0: Rename the helper"),
+        "{request}"
+    );
+}
+
+#[test]
+fn a_finding_without_or_with_an_unreadable_severity_still_blocks() {
+    for severity in ["", r#","severity":"critical""#, r#","severity":7"#] {
+        let text = format!(
+            r#"{{"kind":"review","summary":"Checked","findings":[{{"lane":0{severity},"description":"Broken"}}]}}"#
+        );
+        let mut run = run_with(&["/repo"], 3);
+        plan(&mut run);
+        report(&mut run, developed());
+        report(&mut run, serde_json::from_str(&text).unwrap());
+        assert_eq!(run.phase, Phase::Development, "{text}");
+        assert_eq!(run.findings[0].severity, Severity::Major);
+    }
+    let minor: Finding =
+        serde_json::from_str(r#"{"lane":0,"severity":"minor","description":"Nit"}"#).unwrap();
+    assert!(!minor.severity.blocks());
+}
+
+#[test]
+fn a_repair_brief_reaches_only_the_lane_the_finding_was_routed_to() {
+    let mut other = issue(1);
+    other.description = "Client drops the error body".into();
+    let reviewed = |return_lane: Option<&str>| {
+        let mut run = run_with(&["/api", "/web"], 3);
+        run.template.reviews[0].return_lane = return_lane.map(Into::into);
+        plan(&mut run);
+        for ticket in run.pending() {
+            run.report(&ticket, developed()).unwrap();
+        }
+        report(&mut run, review(vec![issue(0), other.clone()]));
+        let prompts: Vec<_> = run
+            .pending()
+            .iter()
+            .map(|ticket| run.prompt(ticket).unwrap())
+            .collect();
+        (run, prompts)
+    };
+
+    let (run, prompts) = reviewed(None);
+    assert_eq!(prompts.len(), 2);
+    assert!(prompts[0].contains("task_id") && !prompts[0].contains("error body"));
+    assert!(prompts[1].contains("error body") && !prompts[1].contains("task_id"));
+    // The reviewers and the history still see every finding.
+    assert!(run.feedback.contains("task_id") && run.feedback.contains("error body"));
+
+    // A review with a fixed return lane sends that lane everything, wherever it was found.
+    let (_, prompts) = reviewed(Some("Role 0"));
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains("task_id") && prompts[0].contains("error body"));
+}
+
+#[test]
+fn reviewer_prompt_bounds_the_changes_and_lists_findings_the_user_accepted() {
+    let mut run = run_with(&["/repo"], 0);
+    run.lanes[0].base = "4f2c9d1".into();
+    plan(&mut run);
+    report(&mut run, developed());
+    let first = run.prompt(&run.pending()[0]).unwrap();
+    assert!(first.contains("Base commit: 4f2c9d1"), "{first}");
+    assert!(!first.contains("Do not report them again"), "{first}");
+    report(&mut run, review(vec![issue(0)]));
+    assert_eq!(run.phase, Phase::Decision(0));
+    run.dismiss_finding(0, "Tracked separately").unwrap();
+    assert_eq!(run.phase, Phase::Review(1));
+    let other = run.prompt(&run.pending()[0]).unwrap();
+    assert!(!other.contains("Do not report them again"), "{other}");
+    report(&mut run, review(vec![]));
+    run.request_changes("One more pass").unwrap();
+    report(&mut run, developed());
+    let again = run.prompt(&run.pending()[0]).unwrap();
+    assert!(
+        again.contains("Do not report them again:\n- Role 0: Server returns id"),
+        "{again}"
+    );
+    // The same text is not reopened, even re-rated as a note.
+    let mut rerated = note(0);
+    rerated.description = issue(0).description;
+    report(&mut run, review(vec![issue(0), rerated, note(0)]));
+    assert_eq!(run.phase, Phase::Review(1));
+    assert_eq!(run.notes(), [(0, note(0))]);
+}
+
+#[test]
+fn a_run_saved_while_its_checks_followed_the_first_review_still_loads_and_concludes() {
+    let mut run = run_with(&["/repo"], 3);
+    run.lanes[0].command = "cargo test".into();
+    plan(&mut run);
+    report(&mut run, developed());
+    // 1.0.27 fingerprinted the changes, ran the first review and only then the checks,
+    // parking the review's findings in the run meanwhile.
+    let saved = |phase: Phase, outstanding: serde_json::Value, findings: serde_json::Value| {
+        let mut saved = serde_json::to_value(&run).unwrap();
+        let fields = saved.as_object_mut().unwrap();
+        fields.remove("notes");
+        fields.remove("briefs");
+        fields.remove("continuations");
+        fields["phase"] = serde_json::to_value(phase).unwrap();
+        fields["outstanding"] = outstanding;
+        fields["findings"] = findings;
+        fields["review_revision"] = "reviewed".into();
+        fields["last_attempt"] = 9.into();
+        let loaded: Run = serde_json::from_value(saved).unwrap();
+        assert!(loaded.valid_snapshot());
+        loaded
+    };
+    let none = || serde_json::json!([]);
+    let broken = || serde_json::json!([{"lane": 0, "description": "Broken"}]);
+
+    let mut repaired = saved(Phase::Commands(0), none(), broken());
+    repaired.command_results(vec![check(true)]).unwrap();
+    assert_eq!(repaired.phase, Phase::Development);
+    assert!(
+        repaired
+            .prompt(&repaired.pending()[0])
+            .unwrap()
+            .contains("Broken")
+    );
+
+    // Its review already passed this content, so green checks conclude it as they used to.
+    let mut passed = saved(Phase::Commands(0), none(), none());
+    passed.command_results(vec![check(true)]).unwrap();
+    assert_eq!(passed.phase, Phase::Review(1));
+
+    // Saved mid-review, it still owes the checks that build would have run afterwards.
+    let reviewer = serde_json::json!([{"run": 19, "attempt": 9, "lane": null}]);
+    let mut reviewing = saved(Phase::Review(0), reviewer, none());
+    report(&mut reviewing, review(vec![]));
+    assert_eq!(reviewing.phase, Phase::Commands(0));
+    reviewing.command_results(vec![check(true)]).unwrap();
+    assert_eq!(reviewing.phase, Phase::Review(1));
 }
 
 #[test]
@@ -285,7 +473,6 @@ fn check_history_keeps_only_the_tail_of_a_long_log() {
     run.lanes[0].command = "cargo test".into();
     plan(&mut run);
     report(&mut run, developed());
-    report(&mut run, review(vec![]));
     let output = format!("{}expected 3, got 2", "compiling\n".repeat(10_000));
     run.command_results(vec![CommandResult {
         lane: 0,
@@ -329,4 +516,90 @@ fn lane_names_differing_only_by_whitespace_are_duplicates_like_in_the_template()
         vec![lane("Web"), lane("Web ")],
     );
     assert!(matches!(result, Err(Error::InvalidInput(_))));
+}
+
+#[test]
+fn another_round_continues_the_lanes_conversation_and_a_retry_starts_fresh() {
+    use crate::agent::AgentKind;
+    use crate::agent::launch::ResumeSession;
+    let session = |agent, id: &str| ResumeSession::new(agent, id).unwrap();
+    let codex = session(AgentKind::Codex, "0195a1f0-0000-7000-8000-000000000001");
+    let mut run = run_with(&["/api", "/web"], 3);
+    plan(&mut run);
+    let first = run.pending();
+    // The first round has nothing to continue.
+    assert!(run.continuation(&first[0]).is_none());
+    run.record_session(first[0], codex.clone());
+    // A conversation of another CLI cannot be continued by this lane's agent.
+    run.record_session(
+        first[1],
+        session(
+            AgentKind::ClaudeCode,
+            "6f1c2d3e-0000-4000-8000-000000000002",
+        ),
+    );
+    for ticket in &first {
+        run.report(ticket, developed()).unwrap();
+    }
+    let mut other = issue(1);
+    other.description = "Client drops the error body".into();
+    report(&mut run, review(vec![issue(0), other]));
+    let repair = run.pending();
+    let (continued, message) = run.continuation(&repair[0]).unwrap();
+    assert_eq!(continued, &codex);
+    assert!(
+        message.starts_with("Continue your earlier work"),
+        "{message}"
+    );
+    assert!(
+        message.contains("task_id") && !message.contains("error body"),
+        "{message}"
+    );
+    assert!(message.contains(r#"{"kind":"developed""#), "{message}");
+    assert!(run.continuation(&repair[1]).is_none());
+    assert!(run.prompt(&repair[1]).unwrap().contains("error body"));
+
+    // Whatever stopped the attempt may be the conversation itself.
+    let retried = run.restart_attempt(&repair[0]).unwrap();
+    assert!(run.continuation(&retried).is_none());
+    assert!(run.prompt(&retried).unwrap().contains("task_id"));
+
+    // The user's own request for changes continues it as well, until QA starts again.
+    for ticket in run.pending() {
+        run.report(&ticket, developed()).unwrap();
+    }
+    assert!(run.continuations.is_empty());
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![]));
+    run.request_changes("Rename the endpoint").unwrap();
+    let again = run.pending();
+    let (continued, message) = run.continuation(&again[0]).unwrap();
+    assert_eq!(continued, &codex);
+    assert!(message.contains("Rename the endpoint"), "{message}");
+    let loaded: Run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+    assert!(loaded.valid_snapshot());
+    assert_eq!(loaded.continuation(&again[0]).unwrap().0, &codex);
+}
+
+#[test]
+fn edit_approval_is_a_lanes_own_choice_and_an_unknown_saved_value_asks() {
+    let mut run = run_with(&["/api", "/web"], 3);
+    run.lanes[1].edits = EditApproval::AcceptEdits;
+    let planner = run.pending()[0];
+    assert_eq!(run.edit_approval(&planner), EditApproval::CliDefault);
+    plan(&mut run);
+    let developers = run.pending();
+    assert_eq!(run.edit_approval(&developers[0]), EditApproval::CliDefault);
+    assert_eq!(run.edit_approval(&developers[1]), EditApproval::AcceptEdits);
+
+    let mut saved = serde_json::to_value(&run).unwrap();
+    assert_eq!(saved["lanes"][1]["edits"], "accept_edits");
+    // A lane saved before the setting existed, and one saved by a build with a wider choice.
+    saved["lanes"][0].as_object_mut().unwrap().remove("edits");
+    saved["lanes"][1]["edits"] = "everything".into();
+    let loaded: Run = serde_json::from_value(saved).unwrap();
+    assert!(loaded.valid_snapshot());
+    for ticket in &developers {
+        assert_eq!(loaded.edit_approval(ticket), EditApproval::CliDefault);
+    }
 }

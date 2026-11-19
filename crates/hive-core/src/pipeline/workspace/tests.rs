@@ -1,5 +1,5 @@
 use super::*;
-use crate::pipeline::{Assignment, Finding, Phase, Report, Run, Template};
+use crate::pipeline::{Assignment, Phase, Report, Run, Template};
 use std::fs;
 
 struct Scratch(PathBuf);
@@ -106,17 +106,8 @@ fn multi_repo_checks_and_acceptance_use_task_worktrees_and_report_new_files() {
         )
         .unwrap();
     }
-    run.report(
-        &run.pending()[0],
-        Report::Review {
-            summary: "Missing Web contract".into(),
-            findings: vec![Finding {
-                lane: 1,
-                description: "Missing new file".into(),
-            }],
-        },
-    )
-    .unwrap();
+    // The checks run before any reviewer: the red one returns only its own lane.
+    assert_eq!(run.phase, Phase::Commands(0));
     let first = checks(&run.lanes, &Cancellation::default());
     assert!(first[0].success);
     assert_eq!(first[1].exit_code, Some(1));
@@ -131,6 +122,9 @@ fn multi_repo_checks_and_acceptance_use_task_worktrees_and_report_new_files() {
         },
     )
     .unwrap();
+    run.command_results(checks(&run.lanes, &Cancellation::default()))
+        .unwrap();
+    assert_eq!(run.phase, Phase::Review(0));
     run.report(
         &run.pending()[0],
         Report::Review {
@@ -139,8 +133,6 @@ fn multi_repo_checks_and_acceptance_use_task_worktrees_and_report_new_files() {
         },
     )
     .unwrap();
-    run.command_results(checks(&run.lanes, &Cancellation::default()))
-        .unwrap();
     assert_eq!(run.phase, Phase::Acceptance);
     let repos = review(1, &run.lanes).unwrap();
     assert_eq!(repos.len(), 2);
@@ -512,4 +504,46 @@ fn lanes_saved_before_branches_were_chosen_keep_the_generated_branch() {
         .expect("a lane without a branch still loads");
     assert!(lane.branch.is_empty());
     assert_eq!(branch(0x2a, &lane), "pipeline-2a");
+}
+
+#[test]
+fn a_new_checkout_gets_the_projects_ignored_files_and_setup_and_a_retry_repeats_them() {
+    let dir = Scratch::new("provision");
+    let mut lane = dir.lane("api");
+    fs::write(lane.project.join(".gitignore"), ".env\n.installed\n").unwrap();
+    git(&lane.project, &["add", ".gitignore"]);
+    git(&lane.project, &["commit", "-qm", "ignore local files"]);
+    lane.base = preview(&lane.project, "main").unwrap().commit;
+    fs::write(lane.project.join(".env"), "TOKEN=1").unwrap();
+    fs::write(lane.project.join(".worktreeinclude"), ".env\n").unwrap();
+    let stop = Cancellation::default();
+
+    lane.setup = "echo installing >&2; exit 7".into();
+    let checkout = prepare(1, &lane, &stop).unwrap();
+    let error = provision(&lane, &checkout, &stop).unwrap_err().to_string();
+    assert!(error.contains("exited with 7"), "{error}");
+    assert!(error.contains("installing"), "{error}");
+    assert_eq!(
+        fs::read_to_string(checkout.join(".env")).unwrap(),
+        "TOKEN=1"
+    );
+
+    // The run has not recorded the checkout yet, so a retry prepares the same one again.
+    lane.setup = "test -f .env && echo done > .installed".into();
+    assert_eq!(prepare(1, &lane, &stop).unwrap(), checkout);
+    provision(&lane, &checkout, &stop).unwrap();
+    assert!(checkout.join(".installed").exists());
+    // Ignored files are not changes: the reviewers and the fingerprint never see them.
+    assert!(
+        review(
+            1,
+            &[Lane {
+                worktree: checkout,
+                ..lane
+            }]
+        )
+        .unwrap()[0]
+            .files
+            .is_empty()
+    );
 }

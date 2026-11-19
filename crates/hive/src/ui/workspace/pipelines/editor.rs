@@ -135,7 +135,7 @@ impl TemplateEditor {
                         self.template.lanes.iter().map(|l| l.name.as_str()),
                     ),
                     profile: self.template.development.profile.clone(),
-                    command: String::new(),
+                    ..Default::default()
                 });
                 Item::Lane(i)
             }

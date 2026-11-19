@@ -29,7 +29,31 @@ pub(super) struct Binding {
     branch_open: bool,
     check: Check,
     custom_command: Entity<InputState>,
+    /// Runs once in the new worktree; starts as the command this project used last time.
+    setup: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// The branch a full ref names, local or remote-tracking; `None` for a tag, a commit or `HEAD`.
+fn branch_of(reference: &str) -> Option<&str> {
+    if let Some(local) = reference.strip_prefix("refs/heads/") {
+        return Some(local);
+    }
+    let (_remote, branch) = reference.strip_prefix("refs/remotes/")?.split_once('/')?;
+    Some(branch)
+}
+
+/// The setup command the project's last run used, to offer it again.
+fn remembered_setup(project: Option<&Path>, cx: &App) -> String {
+    let projects = &AppState::get(cx).store.read(cx).state.projects;
+    project
+        .and_then(|path| {
+            projects
+                .iter()
+                .find(|p| p.host.is_local() && p.path == path)
+        })
+        .map(|p| p.setup.clone())
+        .unwrap_or_default()
 }
 
 impl Binding {
@@ -40,6 +64,12 @@ impl Binding {
         cx: &mut Context<LaunchForm>,
     ) -> Self {
         let custom_command = input("", "Shell command", window, cx);
+        let setup = input(
+            &remembered_setup(project.as_deref(), cx),
+            "npm ci, bundle install… Leave empty when the worktree needs no setup",
+            window,
+            cx,
+        );
         let branch_query = input("", "Search or name a new branch", window, cx);
         let subscriptions = vec![
             cx.subscribe(&custom_command, |_, _, event, cx| {
@@ -66,12 +96,21 @@ impl Binding {
             branch_open: false,
             check: Check::Suggested,
             custom_command,
+            setup,
             _subscriptions: subscriptions,
         }
     }
-    pub(super) fn bind(&mut self, project: Option<PathBuf>, cx: &mut Context<LaunchForm>) {
+    pub(super) fn bind(
+        &mut self,
+        project: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<LaunchForm>,
+    ) {
         (self.checkout, self.reference) = initial_ref(project.as_deref(), cx);
         self.default_reference.clone_from(&self.reference);
+        let setup = remembered_setup(project.as_deref(), cx);
+        self.setup
+            .update(cx, |input, cx| input.set_value(setup, window, cx));
         self.project = project;
         self.ref_input = None;
         self.branch = WorkBranch::Unchosen;
@@ -132,6 +171,30 @@ impl Binding {
             Check::Command(s) => s.clone(),
             Check::Custom => self.custom_command.read(cx).value().trim().to_owned(),
         }
+    }
+    /// The branch a new work branch starts from, as the target of its pull request.
+    pub(super) fn base_branch(&self) -> String {
+        match self.branch {
+            WorkBranch::New(_) => branch_of(&self.reference).unwrap_or_default().to_owned(),
+            WorkBranch::Unchosen | WorkBranch::Existing(_) => String::new(),
+        }
+    }
+    /// Binds the repository of an earlier run's `lane` with its check and setup commands.
+    pub(super) fn restore(
+        &mut self,
+        lane: &Lane,
+        window: &mut Window,
+        cx: &mut Context<LaunchForm>,
+    ) {
+        self.bind(Some(lane.project.clone()), window, cx);
+        self.check = Check::Command(lane.command.clone());
+        self.setup.update(cx, |input, cx| {
+            input.set_value(lane.setup.clone(), window, cx)
+        });
+    }
+    /// The command to run once in the new worktree, empty for none.
+    pub(super) fn setup_command(&self, cx: &App) -> String {
+        self.setup.read(cx).value().trim().to_owned()
     }
 }
 
@@ -277,7 +340,7 @@ impl LaunchForm {
             .w_full(),
             choices,
             cx,
-            move |this, p, _, cx| this.bindings[i].bind(Some(p), cx),
+            move |this, p, window, cx| this.bindings[i].bind(Some(p), window, cx),
         );
         let mut group = card(cx).w_full().gap_3();
         if i < self.template.lanes.len() && self.template.lanes.len() > 1 {
@@ -329,7 +392,7 @@ impl LaunchForm {
             Lucide::X,
             window,
             cx,
-            move |this, _, cx| this.remove_repository(i, cx),
+            move |this, window, cx| this.remove_repository(i, window, cx),
         );
         group = group.child(
             h_flex()
@@ -375,6 +438,11 @@ impl LaunchForm {
                 cx,
             ));
         }
+        group = group.child(field(
+            "Worktree setup command (optional). Files listed in .worktreeinclude are copied first",
+            &b.setup,
+            cx,
+        ));
         group.when_some(message, |el, m| el.child(notice(m, cx)))
     }
 
@@ -489,8 +557,25 @@ impl LaunchForm {
 
 #[cfg(test)]
 mod tests {
-    use super::{Host, Project, Target, Worktree, checkout_ref};
+    use super::{Host, Project, Target, Worktree, branch_of, checkout_ref};
     use hive_core::{projects::Head, state::ProjectRef};
+    #[test]
+    fn only_a_branch_ref_names_the_target_of_a_pull_request() {
+        assert_eq!(branch_of("refs/heads/develop"), Some("develop"));
+        assert_eq!(branch_of("refs/heads/feature/login"), Some("feature/login"));
+        assert_eq!(
+            branch_of("refs/remotes/origin/release/2"),
+            Some("release/2")
+        );
+        for other in [
+            "HEAD",
+            "refs/tags/v1.0.27",
+            "4f2c9d1",
+            "refs/remotes/origin",
+        ] {
+            assert_eq!(branch_of(other), None, "{other}");
+        }
+    }
     #[test]
     fn a_detached_selection_keeps_its_own_head_in_the_preview_key() {
         let mut repo = Project::from(&ProjectRef::new("/project".into(), Host::Local));

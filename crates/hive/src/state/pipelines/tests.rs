@@ -462,6 +462,186 @@ fn parallel_reports_share_the_latest_durable_checkpoint_before_dispatch(cx: &mut
     });
 }
 
+/// Every `RunWaits` the entity emits from now on, in order.
+fn announcements(
+    pipelines: &Entity<Pipelines>,
+    cx: &mut TestAppContext,
+) -> (
+    std::rc::Rc<std::cell::RefCell<Vec<super::RunWaits>>>,
+    gpui::Subscription,
+) {
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let subscription = cx.update(|cx| {
+        cx.subscribe(pipelines, move |_, event: &super::RunWaits, _| {
+            sink.borrow_mut().push(event.clone())
+        })
+    });
+    (seen, subscription)
+}
+
+#[gpui::test]
+fn a_gate_reached_by_an_agents_report_is_announced_once(cx: &mut TestAppContext) {
+    use super::status::{Gate, Waiting};
+    let pipelines = recovering(cx);
+    let (seen, _subscription) = announcements(&pipelines, cx);
+    let replies = pipelines.update(cx, |p, cx| {
+        p.store
+            .update(cx, |s, cx| s.set_test_writer(cx, |_| Ok(())));
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        let from = attach_session(p, ticket, cx);
+        // A repeated report of the same ticket is the same gate, not a second one.
+        [(); 2].map(|()| submit(p, from, ticket, plan(1), cx))
+    });
+    cx.run_until_parked();
+    for reply in replies {
+        assert_eq!(reply.try_recv().unwrap(), Ok(()));
+    }
+    let plan_ready = super::RunWaits {
+        run: 42,
+        reason: Waiting::Gate(Gate::Plan),
+    };
+    assert_eq!(*seen.borrow(), std::slice::from_ref(&plan_ready));
+    pipelines.read_with(cx, |p, cx| {
+        assert_eq!(
+            p.notice(&plan_ready, cx),
+            Some(("Plan ready for approval".into(), "Task".into()))
+        );
+    });
+}
+
+#[gpui::test]
+fn a_gate_the_user_reaches_by_their_own_decision_is_not_announced(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    let (seen, _subscription) = announcements(&pipelines, cx);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        p.store.update(cx, |s, _| {
+            let run = &mut s.state.pipelines.runs[0];
+            let mut saved = serde_json::to_value(&*run).unwrap();
+            saved["phase"] = serde_json::to_value(Phase::Decision(1)).unwrap();
+            saved["outstanding"] = serde_json::json!([]);
+            saved["findings"] = serde_json::json!([{"lane": 0, "description": "Left open"}]);
+            *run = serde_json::from_value(saved).unwrap();
+        });
+        p.edit(42, cx, |run| {
+            Ok(run.dismiss_finding(0, "Tracked separately")?)
+        })
+        .unwrap();
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Acceptance);
+    });
+    assert!(seen.borrow().is_empty());
+}
+
+#[gpui::test]
+fn a_step_failure_is_announced_once_until_it_changes(cx: &mut TestAppContext) {
+    use super::status::Waiting;
+    let pipelines = recovering(cx);
+    let (seen, _subscription) = announcements(&pipelines, cx);
+    pipelines.update(cx, |p, cx| {
+        p.fail(42, "Checkout failed".into(), cx);
+        p.fail(42, "Checkout failed".into(), cx);
+    });
+    assert_eq!(
+        *seen.borrow(),
+        [super::RunWaits {
+            run: 42,
+            reason: Waiting::Failed("Checkout failed".into()),
+        }]
+    );
+    pipelines.update(cx, |p, cx| p.fail(42, "Disk full".into(), cx));
+    assert_eq!(seen.borrow().len(), 2);
+}
+
+#[gpui::test]
+fn an_attempt_past_its_time_budget_is_announced_once(cx: &mut TestAppContext) {
+    use super::status::Waiting;
+    const STARTED: u64 = 1_000;
+    const BUDGET: u64 = 30 * 60 * 1000;
+    let pipelines = recovering(cx);
+    let (seen, _subscription) = announcements(&pipelines, cx);
+    pipelines.update(cx, |p, cx| {
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        attach_session(p, ticket, cx);
+        p.store.update(cx, |s, _| {
+            s.state.pipelines.runs[0].start_attempt_at(ticket, STARTED)
+        });
+        p.announce_slow_attempts(STARTED + BUDGET - 1, cx);
+    });
+    assert!(seen.borrow().is_empty());
+    pipelines.update(cx, |p, cx| {
+        p.announce_slow_attempts(STARTED + BUDGET, cx);
+        p.announce_slow_attempts(STARTED + 2 * BUDGET, cx);
+    });
+    let seen = seen.borrow();
+    assert_eq!(seen.len(), 1);
+    assert!(matches!(seen[0].reason, Waiting::Slow { minutes: 30, .. }));
+    let (title, body) = seen[0].reason.notice("Task");
+    assert!(title.ends_with("is still running after 30 min"), "{title}");
+    assert_eq!(body, "Task");
+}
+
+#[gpui::test]
+fn only_a_finished_run_can_be_deleted_and_nothing_is_kept_for_it(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        let error = p.delete_run(42, cx).unwrap_err();
+        assert!(error.contains("Stop the run"), "{error}");
+        assert!(p.run(42, cx).is_ok());
+        p.cancel(42, cx).unwrap();
+        p.runtime_mut(42).error = Some("A stale error".into());
+        p.delete_run(42, cx).unwrap();
+        assert!(p.run(42, cx).is_err());
+        assert!(p.runtime(42).is_none());
+        assert!(p.attention(cx).is_empty());
+        assert!(p.delete_run(42, cx).is_err());
+    });
+}
+
+#[gpui::test]
+fn a_pull_request_needs_accepted_work_and_its_outcome_is_kept_for_the_lane(
+    cx: &mut TestAppContext,
+) {
+    use super::Delivery;
+    use hive_core::git::pull_request::Draft;
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        let draft = || Draft {
+            title: "Add login".into(),
+            ..Draft::default()
+        };
+        let early = p.open_pull_request(42, 0, draft(), cx).unwrap_err();
+        assert!(early.contains("Accept the changes"), "{early}");
+        p.suspended.clear();
+        p.store.update(cx, |s, _| {
+            let run = &mut s.state.pipelines.runs[0];
+            let mut saved = serde_json::to_value(&*run).unwrap();
+            saved["phase"] = serde_json::to_value(Phase::Accepted).unwrap();
+            saved["outstanding"] = serde_json::json!([]);
+            *run = serde_json::from_value(saved).unwrap();
+        });
+        // The fixture's lane never got a checkout, so nothing is asked of the hosting CLI.
+        let nowhere = p.open_pull_request(42, 0, draft(), cx).unwrap_err();
+        assert!(nowhere.contains("no worktree"), "{nowhere}");
+        assert_eq!(p.delivery(42, 0), None);
+
+        p.runtime_mut(42);
+        p.finish_pull_request(42, 0, Err("gh: push the branch first".into()), cx);
+        assert_eq!(
+            p.delivery(42, 0),
+            Some(&Delivery::Failed("gh: push the branch first".into()))
+        );
+        let url = "https://github.com/acme/app/pull/3";
+        p.finish_pull_request(42, 0, Ok(url.into()), cx);
+        assert_eq!(p.delivery(42, 0), Some(&Delivery::Opened(url.into())));
+        assert_eq!(p.delivery(42, 1), None);
+
+        p.delete_run(42, cx).unwrap();
+        p.finish_pull_request(42, 0, Ok(url.into()), cx);
+        assert_eq!(p.delivery(42, 0), None);
+    });
+}
+
 fn lane_on(name: &str, branch: &str) -> Lane {
     Lane {
         name: name.into(),
