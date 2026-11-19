@@ -117,6 +117,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The run is seen now, however the user got here: its notification would only be stale.
+        window.remove_notification1::<RunWaits>(run_notice_key(id), cx);
         let Some(owner) = AppState::get(cx)
             .store
             .read(cx)

@@ -43,15 +43,19 @@ impl Run {
     pub fn timings(&self) -> &[StageTiming] {
         &self.timings
     }
-    /// Open findings of the most recent review.
+    /// Open blocking findings of the most recent review.
     pub fn findings(&self) -> &[Finding] {
         &self.findings
     }
-    /// Most recent QA command results.
+    /// Non-blocking findings of the current QA pass, each with the index of its review.
+    pub fn notes(&self) -> &[(usize, Finding)] {
+        &self.notes
+    }
+    /// Required-check results of the current QA pass.
     pub fn commands(&self) -> &[CommandResult] {
         &self.commands
     }
-    /// Content fingerprint taken before QA.
+    /// Content fingerprint taken after the required checks, before the first review.
     pub fn review_revision(&self) -> Option<&str> {
         self.review_revision.as_deref()
     }
@@ -90,7 +94,8 @@ impl Run {
         self.sessions.push((ticket, session));
     }
 
-    /// Records the fingerprint of the changes the first QA review looks at.
+    /// Records the fingerprint of the changes the first QA review looks at, taken once the
+    /// required checks have stopped writing to the worktree.
     pub fn record_review_revision(&mut self, revision: String) -> Result<(), Error> {
         if self.phase != Phase::Review(0) {
             return Err(Error::WrongStage(

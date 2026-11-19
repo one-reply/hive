@@ -23,6 +23,23 @@ impl Run {
         }
     }
 
+    /// When the run started, in Unix milliseconds; `None` for a run saved before stage
+    /// timings existed.
+    pub fn started_ms(&self) -> Option<u64> {
+        self.timings().iter().map(|row| row.start_ms).min()
+    }
+
+    /// Human age of the start at `now` (Unix milliseconds): "just now", "5m ago", "2d ago",
+    /// then the date.
+    pub fn age(&self, now: u64) -> Option<String> {
+        let at = |ms: u64| chrono::DateTime::from_timestamp_millis(i64::try_from(ms).ok()?);
+        let started = at(self.started_ms()?)?;
+        Some(crate::git::history::relative_date_at(
+            &started.to_rfc3339(),
+            at(now)?,
+        ))
+    }
+
     /// Counts only results for the command the lane requires now, so an edited or
     /// unrelated command cannot satisfy it.
     pub fn check_tally(&self) -> CheckTally {
@@ -68,6 +85,32 @@ mod tests {
             "API · cargo test · passed (exit 0)"
         );
         assert_eq!(readable_history("app: Some(value)"), "app: Some(value)");
+    }
+
+    #[test]
+    fn a_run_reports_its_age_from_the_first_recorded_stage() {
+        let lane = Lane {
+            name: "api".into(),
+            project: "/api".into(),
+            ..Default::default()
+        };
+        let mut run = Run::new(
+            1,
+            "/api".into(),
+            "Task".into(),
+            Template::default(),
+            vec![lane],
+        )
+        .unwrap();
+        assert_eq!(run.started_ms(), None);
+        assert_eq!(run.age(10), None);
+        const HOUR: u64 = 3_600_000;
+        run.record_stage(None, 5 * HOUR);
+        run.record_stage(None, 6 * HOUR);
+        assert_eq!(run.started_ms(), Some(5 * HOUR));
+        assert_eq!(run.age(5 * HOUR + 30_000).as_deref(), Some("just now"));
+        assert_eq!(run.age(8 * HOUR).as_deref(), Some("3h ago"));
+        assert_eq!(run.age(53 * HOUR).as_deref(), Some("2d ago"));
     }
 
     #[test]

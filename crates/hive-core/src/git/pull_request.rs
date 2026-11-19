@@ -1,6 +1,9 @@
-//! Read-only GitHub/GitLab CLI metadata using the host's existing authentication.
+//! GitHub/GitLab pull and merge requests through the hosting CLIs, using the host's existing
+//! authentication: reading a branch's request, and opening one when the user asks.
+mod create;
 mod gitlab;
 use crate::{command, host::Host};
+pub use create::{Draft, create};
 use serde::Deserialize;
 use std::{path::Path, time::Duration};
 
@@ -173,13 +176,23 @@ fn run_cli(
     provider: Provider,
     args: &[&str],
 ) -> Result<command::Output, Error> {
+    run_cli_within(host, cwd, provider, args, Duration::from_secs(15))
+}
+
+fn run_cli_within(
+    host: &Host,
+    cwd: &Path,
+    provider: Provider,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<command::Output, Error> {
     let command =
         super::hosting::cli_command_on(provider, host, Some(cwd), args).ok_or(Error::Missing)?;
     let output = command::run(
         command,
         &[],
         &command::Cancellation::default(),
-        Duration::from_secs(15),
+        timeout,
         1024 * 1024,
     )?;
     if output.code == Some(127) {

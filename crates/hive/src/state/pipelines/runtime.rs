@@ -20,6 +20,8 @@ pub(super) struct RunRuntime {
     pub(super) patch_job: Option<u64>,
     /// The generation an acceptance check was started for.
     pub(super) accept_job: Option<u64>,
+    /// Pull requests asked for after acceptance, by lane.
+    pub(super) deliveries: HashMap<usize, super::Delivery>,
 }
 
 impl Pipelines {

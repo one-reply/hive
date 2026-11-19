@@ -12,7 +12,7 @@ pub enum Stage {
     Develop(usize),
     /// A QA review agent.
     Review(usize),
-    /// Required checks after the given review.
+    /// Required checks, run before the first review.
     Commands(usize),
     /// The user decides on findings that exhausted the repair budget.
     Decision(usize),
@@ -76,11 +76,11 @@ impl Stage {
     pub fn recipe(run: &Run) -> Vec<Self> {
         let mut stages = vec![Self::Planner, Self::Approval];
         stages.extend((0..run.lanes.len()).map(Self::Develop));
+        if run.lanes.iter().any(|lane| run.shows_check(lane)) {
+            stages.push(Self::Commands(0));
+        }
         for i in 0..run.template.reviews.len() {
             stages.push(Self::Review(i));
-            if i == 0 && run.lanes.iter().any(|lane| run.shows_check(lane)) {
-                stages.push(Self::Commands(i));
-            }
             if run.phase == Phase::Decision(i)
                 || run
                     .timings
@@ -214,8 +214,8 @@ mod tests {
                 Stage::Planner,
                 Stage::Approval,
                 Stage::Develop(0),
-                Stage::Review(0),
                 Stage::Commands(0),
+                Stage::Review(0),
                 Stage::Review(1),
                 Stage::Accept
             ]

@@ -23,6 +23,7 @@ use hive_core::settings::clamp_sidebar_width;
 use crate::app::AppState;
 use crate::state::agents::{AgentSession, AgentsEvent};
 use crate::state::files::SearchMode;
+use crate::state::pipelines::{RunWaits, Waiting};
 use crate::state::projects::Projects;
 use crate::terminal::TerminalPanel;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
@@ -134,6 +135,11 @@ fn attention_notice_key(session: EntityId) -> (&'static str, u64) {
     ("agent", session.as_u64())
 }
 
+/// The id of pipeline `run`'s notification: its next gate or failure replaces the older one.
+fn run_notice_key(run: u64) -> (&'static str, u64) {
+    ("pipeline-run", run)
+}
+
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.on_window_should_close(cx, |window, cx| {
@@ -172,6 +178,40 @@ impl Workspace {
                 window,
                 |this, _, event: &crate::state::pipelines::RevealRun, window, cx| {
                     this.show_pipeline_run(event.0, window, cx)
+                },
+            ),
+            cx.subscribe_in(
+                &pipeline_runs,
+                window,
+                |_, pipelines, event: &RunWaits, window, cx| {
+                    if !AppState::get(cx)
+                        .store
+                        .read(cx)
+                        .state
+                        .settings
+                        .agent_notifications
+                    {
+                        return;
+                    }
+                    let Some((title, body)) = pipelines.read(cx).notice(event, cx) else {
+                        return;
+                    };
+                    let notification = match event.reason {
+                        Waiting::Gate(_) | Waiting::Slow { .. } => Notification::info(body),
+                        Waiting::Failed(_) => Notification::error(body),
+                    };
+                    let run = event.run;
+                    let pipelines = pipelines.clone();
+                    window.push_notification(
+                        notification
+                            .title(title)
+                            .id1::<RunWaits>(run_notice_key(run))
+                            .system()
+                            .on_click(move |_, _, cx| {
+                                pipelines.update(cx, |pipelines, cx| pipelines.reveal(run, cx))
+                            }),
+                        cx,
+                    );
                 },
             ),
             cx.observe_in(&updates, window, |_, _, window, cx| {

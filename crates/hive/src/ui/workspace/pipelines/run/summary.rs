@@ -38,6 +38,7 @@ impl RunView {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let progress = reveal_progress(run.phase(), w, cx)?;
+        let delivery = self.delivery(run, w, cx);
         let repairs: usize = (0..run.template().reviews.len())
             .map(|i| usize::from(run.cycles(i)))
             .sum();
@@ -85,6 +86,7 @@ impl RunView {
             .gap_0()
             .border_color(success.opacity(0.35))
             .child(header)
+            .children(delivery)
             .when(self.summary_expanded || unfolded > 0., |card| {
                 let reports = div()
                     .pt_2()

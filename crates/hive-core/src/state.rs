@@ -29,6 +29,9 @@ pub struct ProjectRef {
     /// Manual sidebar choice; automatic uses the saved workspace at launch.
     #[serde(default, deserialize_with = "lenient::or_default")]
     pub expansion: ProjectExpansion,
+    /// Setup command last used for a new worktree of this project, offered again next time.
+    #[serde(default)]
+    pub setup: String,
 }
 
 impl ProjectRef {
@@ -40,6 +43,7 @@ impl ProjectRef {
             worktrees: WorktreeFilter::default(),
             identity: ProjectIdentity::default(),
             expansion: ProjectExpansion::default(),
+            setup: String::new(),
         }
     }
 
@@ -296,6 +300,17 @@ mod tests {
         let color = state.projects[2].identity.color();
         assert_eq!(color, Some(0x22c55e));
         assert_ne!(color, Some(identity::default_color(1)));
+    }
+
+    #[test]
+    fn a_project_saved_before_setup_commands_loads_without_one_and_keeps_a_saved_one() {
+        let saved = serde_json::json!({"path": "/a", "host": {"kind": "local"}});
+        let mut loaded: ProjectRef = serde_json::from_value(saved).unwrap();
+        assert_eq!(loaded, project("/a"));
+        loaded.setup = "npm ci".into();
+        let again: ProjectRef =
+            serde_json::from_value(serde_json::to_value(&loaded).unwrap()).unwrap();
+        assert_eq!(again.setup, "npm ci");
     }
 
     #[test]

@@ -13,17 +13,21 @@ use hive_core::command::Cancellation;
 use hive_core::host::Host;
 use hive_core::pipeline::{Lane, Phase, Report, Run, Template, Ticket, now_ms, workspace};
 
+mod delivery;
 mod execution;
 mod models;
 mod prompts;
 mod reports;
 mod review;
+mod runs;
 mod runtime;
 mod sessions;
 mod status;
 mod templates;
+mod watch;
 
-pub(crate) use status::RunStatus;
+pub(crate) use delivery::Delivery;
+pub(crate) use status::{RunStatus, Waiting};
 pub(crate) use workspace::ReviewRepo;
 
 type PatchPreview = (
@@ -34,6 +38,15 @@ type PatchPreview = (
 
 pub(crate) struct RevealRun(pub u64);
 impl EventEmitter<RevealRun> for Pipelines {}
+
+/// A run stopped for the user while they may be elsewhere: an agent's report or a check
+/// brought it to a gate, or a step failed. Windows turn it into a notification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunWaits {
+    pub(crate) run: u64,
+    pub(crate) reason: Waiting,
+}
+impl EventEmitter<RunWaits> for Pipelines {}
 
 struct Live {
     phase: Phase,
@@ -49,6 +62,9 @@ pub(crate) struct Pipelines {
     resumes: HashMap<Ticket, ResumeSession>,
     suspended: HashSet<Ticket>,
     session_errors: HashMap<Ticket, String>,
+    /// Attempts already announced as running past their time budget.
+    overdue: HashSet<Ticket>,
+    _watchdog: Task<()>,
     runtime: HashMap<u64, runtime::RunRuntime>,
     next_job: u64,
     agents: Entity<super::agents::Agents>,
@@ -76,11 +92,13 @@ impl Pipelines {
                     return;
                 };
                 match turn_outcome(*status) {
-                    TurnOutcome::Failed => pipelines.session_failed(
-                        ticket,
-                        "The agent reported a failed turn. Open the session to continue or retry the step.".into(),
-                        cx,
-                    ),
+                    TurnOutcome::Failed => {
+                        pipelines.session_failed(
+                            ticket,
+                            "The agent reported a failed turn. Open the session to continue or retry the step.".into(),
+                            cx,
+                        );
+                    }
                     // The live session shows the request; the attempt is still in progress.
                     TurnOutcome::AwaitsUser => cx.notify(),
                     TurnOutcome::InProgress => {}
@@ -138,6 +156,8 @@ impl Pipelines {
             live: HashMap::new(),
             resumes: HashMap::new(),
             session_errors: HashMap::new(),
+            overdue: HashSet::new(),
+            _watchdog: Self::watch(cx),
             runtime,
             next_job: 0,
             agents: agents.clone(),
@@ -189,12 +209,7 @@ impl Pipelines {
                 let status = self
                     .error(run.id())
                     .or(self.agent_request(run, cx))
-                    .or(match run.phase() {
-                        Phase::ApprovePlan => Some("Approve plan"),
-                        Phase::Decision(_) => Some("Review findings"),
-                        Phase::Acceptance => Some("Accept changes"),
-                        _ => None,
-                    })?;
+                    .or(status::Gate::at(run.phase()).map(status::Gate::action))?;
                 Some((
                     run.id(),
                     run.owner().to_path_buf(),
@@ -314,8 +329,17 @@ impl Pipelines {
         // The launch form holds its own copy of the recipe, taken before any later prompt edit.
         let mut template = template;
         template.sync_prompts(self.store.read(cx).state.pipelines.prompts());
+        let setups: Vec<_> = lanes
+            .iter()
+            .map(|lane| (lane.project.clone(), lane.setup.clone()))
+            .collect();
         let mut run = Run::new(id, owner, task, template, lanes)?;
         run.record_stage(None, now_ms());
+        self.store.update(cx, |store, cx| {
+            for (project, setup) in &setups {
+                store.set_project_setup(project, setup, cx);
+            }
+        });
         let saved = self
             .store
             .update(cx, |s, cx| s.checkpoint_pipelines(cx, |l| l.runs.push(run)));

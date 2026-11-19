@@ -50,13 +50,22 @@ impl Pipelines {
                 .and_then(|r| r.error.as_ref())
                 .map(|_| self.store.read(cx).pipeline_checkpoint())
         } else {
-            let failed = matches!(&report, Report::Review { findings, .. } if !findings.is_empty());
+            let failed = matches!(
+                &report,
+                Report::Review { findings, .. } if findings.iter().any(|f| f.severity.blocks())
+            );
+            let before = self.run(id, cx).map(|run| run.phase());
             match self.apply_change(id, cx, |run| {
                 run.report(&ticket, report)?;
                 run.finish_attempt_at(ticket, failed, now_ms());
                 Ok(())
             }) {
-                Ok(saved) => Some(saved),
+                Ok(saved) => {
+                    if let Ok(before) = before {
+                        self.announce_gate(id, before, cx);
+                    }
+                    Some(saved)
+                }
                 Err(error) => {
                     reply(Err(error));
                     return;

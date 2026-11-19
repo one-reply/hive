@@ -158,6 +158,15 @@ pub fn prepare(run: u64, lane: &Lane, stop: &Cancellation) -> Result<PathBuf, Wo
     Ok(intended)
 }
 
+/// Blocking: makes a checkout no agent has used yet ready for work: the project's ignored
+/// files named by `.worktreeinclude`, then the lane's setup command. Nothing is overwritten,
+/// so it is safe to repeat after an interruption.
+pub fn provision(lane: &Lane, checkout: &Path, stop: &Cancellation) -> Result<(), WorktreeError> {
+    worktree::copy_included(&lane.project, checkout, stop)?;
+    worktree::run_setup(&lane.setup, checkout, stop)?;
+    Ok(())
+}
+
 /// No agent has used a checkout the run has not recorded, so it must equal the base commit.
 /// A cancelled `git worktree add` leaves it registered with HEAD set but files missing.
 fn confirm_unused_checkout(path: &Path, base: &str) -> Result<(), GitError> {

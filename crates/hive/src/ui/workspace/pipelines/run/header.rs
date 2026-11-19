@@ -230,7 +230,7 @@ impl RunView {
     }
 }
 
-fn task_title(task: &str) -> String {
+pub(in crate::ui::workspace::pipelines) fn task_title(task: &str) -> String {
     let full = task.trim().lines().next().unwrap_or_default();
     if full.chars().count() > TITLE_CHARS {
         let cut: String = full.chars().take(TITLE_CHARS - 1).collect();

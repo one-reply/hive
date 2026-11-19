@@ -453,6 +453,22 @@ impl Store {
         }
     }
 
+    /// Remembers the worktree setup command a local project last ran, to offer it again.
+    pub(crate) fn set_project_setup(&mut self, path: &Path, setup: &str, cx: &mut Context<Self>) {
+        let Some(project) = self
+            .state
+            .projects
+            .iter_mut()
+            .find(|p| p.host.is_local() && p.path == path)
+        else {
+            return;
+        };
+        if project.setup != setup {
+            project.setup = setup.to_owned();
+            self.commit(cx);
+        }
+    }
+
     /// Edits how a project presents itself; saves only when something changed.
     pub(crate) fn update_identity(
         &mut self,

@@ -5,9 +5,10 @@ use hive_core::agent::{
     AgentKind,
     launch::{AGENTS, pipeline_efforts},
 };
-use hive_core::pipeline::Profile;
+use hive_core::pipeline::{EditApproval, Profile};
 
 mod agents;
+mod edits;
 mod findings;
 mod instructions;
 mod models;
@@ -29,6 +30,8 @@ pub(super) struct Inspector {
     prompt: Option<u64>,
     /// Absent for a lane, which has a QA command instead of instructions.
     prompt_picker: Option<PromptPicker>,
+    /// A lane's choice; unused for the read-only stages.
+    edits: EditApproval,
 }
 impl Inspector {
     pub(super) fn new(
@@ -87,6 +90,10 @@ impl Inspector {
             route,
             prompt,
             prompt_picker: is_stage.then(|| PromptPicker::new(prompt, w, cx)),
+            edits: match item {
+                Item::Lane(i) => t.lanes[i].edits,
+                _ => EditApproval::default(),
+            },
         }
     }
     pub(super) fn apply(&self, item: Item, t: &mut Template, cx: &App) -> Result<(), String> {
@@ -116,6 +123,7 @@ impl Inspector {
                 let lane = &mut t.lanes[i];
                 lane.command = body;
                 lane.profile = profile;
+                lane.edits = self.edits;
                 return Ok(());
             }
         };
@@ -151,6 +159,9 @@ impl TemplateEditor {
             .child(self.instructions(w, cx));
         if matches!(self.selected, Item::Review(_)) {
             fields = fields.child(self.review_routing(cx));
+        }
+        if matches!(self.selected, Item::Lane(_)) {
+            fields = fields.child(self.lane_edits(cx));
         }
         fields
     }

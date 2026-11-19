@@ -13,11 +13,13 @@ use hive_core::pipeline::{Phase, Ticket};
 mod changes;
 mod checkpoint;
 mod decision;
+mod delivery;
 mod details;
 mod elapsed;
 mod evidence;
 mod handoff;
 mod header;
+pub(super) use header::task_title;
 mod interaction;
 use interaction::{actionable, toggle};
 mod sessions;
@@ -31,6 +33,12 @@ use gpui_kit::component::{
     diff::DiffState,
     tab::{Tab, TabBar},
 };
+
+/// How long the run took from its first recorded stage to its last, for lists of runs.
+pub(super) fn length(run: &Run, now: u64) -> Option<String> {
+    let (start, end) = elapsed::range(run.timings(), now)?;
+    Some(elapsed::duration(end.saturating_sub(start)))
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RunTab {

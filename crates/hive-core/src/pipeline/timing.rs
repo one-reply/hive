@@ -94,6 +94,20 @@ impl Run {
         }
     }
 
+    /// Pending attempts whose session has been running for at least `budget_ms`.
+    pub fn attempts_running_over(&self, budget_ms: u64, now: u64) -> Vec<Ticket> {
+        self.pending()
+            .into_iter()
+            .filter(|ticket| {
+                self.timings.iter().any(|row| {
+                    row.attempt == Some(ticket.attempt)
+                        && open(row)
+                        && now.saturating_sub(row.start_ms) >= budget_ms
+                })
+            })
+            .collect()
+    }
+
     /// Whether agent work or a check is being timed, as opposed to a human gate.
     pub fn is_interruptible(&self) -> bool {
         executing(self.phase) && self.timings.iter().any(open)
@@ -150,7 +164,13 @@ mod tests {
         };
         run.start_attempt_at(a, 11);
         run.start_attempt_at(b, 12);
+        run.outstanding = vec![a, b];
+        // Both attempts are pending, but only one has been running long enough to mention.
+        assert_eq!(run.attempts_running_over(10, 21), [a]);
+        assert_eq!(run.attempts_running_over(10, 22), [a, b]);
+        assert!(run.attempts_running_over(10, 12).is_empty());
         run.finish_attempt_at(a, false, 25);
+        assert_eq!(run.attempts_running_over(10, 100), [b]);
         assert_eq!(run.timings[1].end_ms, Some(25));
         assert_eq!(run.timings[2].end_ms, None);
         run.interrupt_timings(None);
@@ -218,6 +238,7 @@ mod check_outcomes {
         run.record_stage(None, 0);
         run.findings.push(Finding {
             lane: 0,
+            severity: Default::default(),
             description: "Review finding".into(),
         });
         run.commands.push(CommandResult {

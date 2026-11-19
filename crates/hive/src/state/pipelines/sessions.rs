@@ -63,6 +63,13 @@ impl Pipelines {
         cx.notify();
     }
 
+    /// Whether the attempt's live agent has stopped to ask the user something.
+    pub(super) fn agent_waits(&self, ticket: &Ticket, cx: &App) -> bool {
+        self.agent_status(ticket, self.agents.read(cx), cx)
+            .and_then(request_label)
+            .is_some()
+    }
+
     pub(super) fn agent_request(&self, run: &Run, cx: &App) -> Option<&'static str> {
         let agents = self.agents.read(cx);
         run.pending()
@@ -93,12 +100,20 @@ impl Pipelines {
         self.live.get(ticket).map(|live| live.session.clone())
     }
 
-    pub(super) fn session_failed(&mut self, ticket: Ticket, error: String, cx: &mut Context<Self>) {
-        if self.session_errors.get(&ticket) != Some(&error) {
-            tracing::warn!(run=ticket.run, attempt=ticket.attempt,%error,"pipeline session needs attention");
-            self.session_errors.insert(ticket, error);
-            cx.notify();
+    /// Records why the attempt's session needs the user; `false` when it was already known.
+    pub(super) fn session_failed(
+        &mut self,
+        ticket: Ticket,
+        error: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.session_errors.get(&ticket) == Some(&error) {
+            return false;
         }
+        tracing::warn!(run=ticket.run, attempt=ticket.attempt,%error,"pipeline session needs attention");
+        self.session_errors.insert(ticket, error);
+        cx.notify();
+        true
     }
 
     pub(super) fn stop_session(&mut self, ticket: &Ticket, cx: &mut Context<Self>) {
@@ -144,11 +159,13 @@ impl Pipelines {
                     }
                 }
             }
-            let resume = self.resumes.remove(&ticket);
-            let prompt = if resume.is_some() {
-                String::new()
-            } else {
-                run.prompt(&ticket)?
+            let (resume, prompt) = match self.resumes.remove(&ticket) {
+                // The user's own Resume reopens the conversation as it was left.
+                Some(session) => (Some(session), String::new()),
+                None => match run.continuation(&ticket) {
+                    Some((session, message)) => (Some(session.clone()), message),
+                    None => (None, run.prompt(&ticket)?),
+                },
             };
             let launch = PipelineLaunch {
                 profile,
@@ -157,6 +174,7 @@ impl Pipelines {
                 prompt,
                 ticket,
                 resume,
+                edits: run.edit_approval(&ticket),
             };
             let session = cx.new(|cx| {
                 TerminalSession::new(
@@ -198,7 +216,14 @@ impl Pipelines {
                                 })
                             });
                         }
-                        p.session_failed(ticket, error, cx);
+                        // A failed turn is announced by the agent itself; a process that
+                        // is gone has nobody left to do it.
+                        if p.session_failed(ticket, error.clone(), cx) {
+                            cx.emit(RunWaits {
+                                run: id,
+                                reason: Waiting::Failed(error),
+                            });
+                        }
                     }
                 }),
                 cx.subscribe(&session, move |p, session, event, cx| {

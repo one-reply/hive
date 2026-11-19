@@ -82,15 +82,21 @@ pub(super) fn report_body(
                             h_flex()
                                 .items_start()
                                 .gap_2()
-                                .child(
-                                    Icon::new(Lucide::CircleAlert)
-                                        .size_3p5()
-                                        .text_color(cx.theme().warning),
-                                )
+                                .child(Icon::new(Lucide::CircleAlert).size_3p5().text_color(
+                                    if f.severity.blocks() {
+                                        cx.theme().warning
+                                    } else {
+                                        cx.theme().muted_foreground
+                                    },
+                                ))
                                 .child(
                                     v_flex()
                                         .gap_1()
-                                        .child(heading(lane.name.clone()))
+                                        .child(heading(format!(
+                                            "{} · {}",
+                                            lane.name,
+                                            f.severity.label()
+                                        )))
                                         .child(div().text_sm().child(f.description.clone())),
                                 ),
                         );

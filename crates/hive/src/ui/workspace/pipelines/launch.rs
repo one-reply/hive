@@ -3,6 +3,7 @@ use super::*;
 use gpui_kit::component::{Disableable as _, button::ButtonVariants as _, input::InputEvent};
 use hive_core::pipeline::{Lane, LanePreset, workspace::BasePreview};
 
+mod again;
 mod repository;
 use repository::{Binding, dropdown, repositories};
 
@@ -142,7 +143,7 @@ impl LaunchForm {
 
     fn add_repository(&mut self, project: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(binding) = self.bindings.iter_mut().find(|b| b.project.is_none()) {
-            binding.bind(Some(project), cx);
+            binding.bind(Some(project), window, cx);
         } else {
             let project_name = repositories(cx)
                 .into_iter()
@@ -158,7 +159,7 @@ impl LaunchForm {
             let preset = LanePreset {
                 name,
                 profile: self.template.development.profile.clone(),
-                command: String::new(),
+                ..Default::default()
             };
             let binding = Binding::new(preset, Some(project), window, cx);
             binding.preview(cx);
@@ -168,9 +169,9 @@ impl LaunchForm {
     }
 
     /// A recipe's lane only empties, so the user can bind it again; an added one goes away.
-    fn remove_repository(&mut self, index: usize, cx: &mut Context<Self>) {
+    fn remove_repository(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if index < self.template.lanes.len() {
-            self.bindings[index].bind(None, cx);
+            self.bindings[index].bind(None, window, cx);
         } else {
             self.bindings.remove(index);
         }
@@ -189,8 +190,11 @@ impl LaunchForm {
                 project: project.clone(),
                 base: preview.commit.clone(),
                 branch: b.branch_name().unwrap_or_default().to_owned(),
+                base_branch: b.base_branch(),
                 command: b.command(preview, cx),
+                setup: b.setup_command(cx),
                 profile: b.preset.profile.clone(),
+                edits: b.preset.edits,
                 ..Default::default()
             });
         }

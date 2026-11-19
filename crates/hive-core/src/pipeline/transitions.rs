@@ -1,6 +1,7 @@
 //! Every transition that may authorize more work lives here. Inputs are validated before mutation.
 use super::*;
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 impl Run {
     /// Consume a structured report only for the invocation authorized to produce it.
@@ -45,11 +46,16 @@ impl Run {
                     .ok_or(Error::InvalidInput("Missing development lane"))?;
                 let handoff = format!("{}: {summary}", self.lanes[lane].name);
                 self.history.push(handoff.clone());
-                self.feedback.push('\n');
-                self.feedback.push_str(&handoff);
+                // A lane that shares this worktree starts later and reads what was just done.
+                for text in std::iter::once(&mut self.feedback)
+                    .chain(self.briefs.iter_mut().map(|(_, brief)| brief))
+                {
+                    text.push('\n');
+                    text.push_str(&handoff);
+                }
                 self.outstanding.retain(|t| t != ticket);
                 if self.outstanding.is_empty() {
-                    self.enter_review(0);
+                    self.begin_qa();
                 }
             }
             (Phase::Review(ix), Report::Review { summary, findings }) => {
@@ -69,21 +75,27 @@ impl Run {
                     .push(format!("{}: {summary}", self.template.reviews[ix].name));
                 for finding in &findings {
                     self.history.push(format!(
-                        "{}: {}",
-                        self.lanes[finding.lane].name, finding.description
+                        "{} ({}): {}",
+                        self.lanes[finding.lane].name,
+                        finding.severity.label(),
+                        finding.description
                     ));
                 }
-                self.findings = findings
+                let (blocking, notes): (Vec<_>, Vec<_>) = findings
                     .into_iter()
                     .filter(|f| {
                         !self
                             .dismissed
                             .iter()
-                            .any(|(gate, accepted)| *gate == ix && accepted == f)
+                            .any(|(gate, accepted)| *gate == ix && f.repeats(accepted))
                     })
-                    .collect();
+                    .partition(|f| f.severity.blocks());
+                self.findings = blocking;
+                self.notes.extend(notes.into_iter().map(|note| (ix, note)));
                 self.outstanding.clear();
-                if ix == 0 && self.lanes.iter().any(Lane::requires_check) {
+                // Only a run saved mid-review by a build that ran the checks afterwards gets
+                // here with a check still owed; skipping it would accept untested work.
+                if ix == 0 && self.owes_checks() {
                     self.phase = Phase::Commands(ix);
                 } else {
                     self.finish_review(ix);
@@ -127,6 +139,8 @@ impl Run {
         let indices: Vec<_> = assigned.into_iter().map(|(ix, _)| ix).collect();
         self.history.push("User approved the plan".into());
         self.feedback.clear();
+        self.briefs.clear();
+        self.continuations.clear();
         self.develop(indices);
         Ok(())
     }
@@ -187,8 +201,27 @@ impl Run {
             ));
         }
         self.commands = results;
-        self.finish_review(ix);
+        // The fingerprint is taken when the first review starts, so having one here means
+        // that review already saw this pass: a run saved by a build that ran the checks
+        // after it. There the checks conclude the review instead of preceding it.
+        let reviewed = self.review_revision.is_some();
+        if reviewed || self.commands.iter().any(|r| !r.success) {
+            self.finish_review(ix);
+        } else {
+            self.enter_review(ix);
+        }
         Ok(())
+    }
+
+    /// Whether an assigned lane's required command has no result in this QA pass.
+    fn owes_checks(&self) -> bool {
+        self.lanes.iter().enumerate().any(|(ix, lane)| {
+            lane.requires_check()
+                && !self
+                    .commands
+                    .iter()
+                    .any(|c| c.lane == ix && c.command == lane.command)
+        })
     }
 
     fn finish_review(&mut self, ix: usize) {
@@ -208,12 +241,24 @@ impl Run {
         }
     }
 
+    /// Starts a QA pass over the current changes: the required checks first, because a red
+    /// test is cheaper to find than a reviewer's turn, then the reviews in order.
+    fn begin_qa(&mut self) {
+        self.review_revision = None;
+        self.findings.clear();
+        self.commands.clear();
+        self.notes.clear();
+        self.briefs.clear();
+        self.continuations.clear();
+        if self.lanes.iter().any(Lane::requires_check) {
+            self.phase = Phase::Commands(0);
+        } else {
+            self.enter_review(0);
+        }
+    }
+
     fn enter_review(&mut self, ix: usize) {
         self.findings.clear();
-        if ix == 0 {
-            self.review_revision = None;
-            self.commands.clear();
-        }
         if ix == self.template.reviews.len() {
             self.phase = Phase::Acceptance;
         } else {
@@ -230,31 +275,13 @@ impl Run {
     }
 
     fn repair(&mut self, ix: usize, note: &str) {
-        let step = &self.template.reviews[ix];
-        let fixed = step
-            .return_lane
-            .as_ref()
-            .and_then(|name| self.lanes.iter().position(|l| l.name == *name));
-        let mut destinations = BTreeSet::new();
-        let mut feedback = vec![format!("{} requested fixes. {note}", step.name)];
-        for f in &self.findings {
-            destinations.insert(fixed.unwrap_or(f.lane));
-            feedback.push(format!("{}: {}", self.lanes[f.lane].name, f.description));
-        }
-        if ix == 0 {
-            for result in self.commands.iter().filter(|c| !c.success) {
-                destinations.insert(result.lane);
-                feedback.push(format!(
-                    "{} failed: {}\n{}",
-                    self.lanes[result.lane].name,
-                    result.command,
-                    check_excerpt(&result.output)
-                ));
-            }
-        }
-        self.feedback = feedback.join("\n");
-        self.history.push(self.feedback.clone());
+        let (feedback, briefs) = self.repair_handoff(ix, note);
+        self.history.push(feedback.clone());
+        self.feedback = feedback;
+        let destinations: Vec<_> = briefs.iter().map(|(lane, _)| *lane).collect();
+        self.briefs = briefs;
         self.develop(destinations);
+        self.continue_conversations();
     }
 
     /// Authorize one additional repair round after the automatic budget is exhausted.
@@ -294,8 +321,8 @@ impl Run {
             return Err(Error::WrongStage("The run is not ready for acceptance"));
         }
         self.history
-            .push("The worktree changed since QA. Reviewing the current files again.".into());
-        self.enter_review(0);
+            .push("The worktree changed since QA. Checking the current files again.".into());
+        self.begin_qa();
         Ok(())
     }
 
@@ -320,6 +347,22 @@ impl Run {
             format!("User requested changes: {note}")
         };
         self.history.push(self.feedback.clone());
+        // The user read these notes at acceptance and may be referring to them.
+        if !self.notes.is_empty() {
+            self.feedback.push_str(
+                "\nReviewer notes that did not block acceptance; address the ones this request covers:",
+            );
+            for (review, finding) in &self.notes {
+                let _ = write!(
+                    self.feedback,
+                    "\n- {} · {}: {}",
+                    self.template.reviews[*review].name,
+                    self.lanes[finding.lane].name,
+                    finding.description
+                );
+            }
+        }
+        self.briefs.clear();
         let active: Vec<_> = self
             .lanes
             .iter()
@@ -328,6 +371,7 @@ impl Run {
             .map(|(i, _)| i)
             .collect();
         self.develop(active);
+        self.continue_conversations();
         Ok(())
     }
 

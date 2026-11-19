@@ -74,5 +74,6 @@ fn project_ref(project: &Project) -> ProjectRef {
         worktrees: project.filter,
         identity: project.identity.clone(),
         expansion: Default::default(),
+        setup: String::new(),
     }
 }

@@ -69,7 +69,7 @@ fn findings_summary(target: &str, rounds: u8) -> String {
         format!("{rounds} rounds")
     };
     format!(
-        "Findings go back to {target} to be fixed. If they remain after {rounds}, Hive asks you."
+        "Blocker and major findings go back to {target} to be fixed. If they remain after {rounds}, Hive asks you. Minor findings wait for you at acceptance."
     )
 }
 
@@ -82,11 +82,11 @@ mod tests {
     fn findings_summary_names_the_target_and_the_round_limit() {
         assert_eq!(
             findings_summary("the lanes they affect", 3),
-            "Findings go back to the lanes they affect to be fixed. If they remain after 3 rounds, Hive asks you."
+            "Blocker and major findings go back to the lanes they affect to be fixed. If they remain after 3 rounds, Hive asks you. Minor findings wait for you at acceptance."
         );
         assert_eq!(
             findings_summary("Web", 1),
-            "Findings go back to Web to be fixed. If they remain after the first round, Hive asks you."
+            "Blocker and major findings go back to Web to be fixed. If they remain after the first round, Hive asks you. Minor findings wait for you at acceptance."
         );
     }
 }
