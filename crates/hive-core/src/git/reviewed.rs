@@ -36,7 +36,7 @@ impl Revision {
             worktree: worktree.into(),
             path: path.into(),
             source: source.clone(),
-            fingerprint: format!("{:x}", Sha256::digest(patch.as_bytes())),
+            fingerprint: super::sha256_hex(&Sha256::digest(patch.as_bytes())),
         })
     }
 
@@ -144,5 +144,29 @@ mod tests {
             assert!(!complete(patch));
         }
         assert!(!complete(&(full + "Binary files a/a and b/a differ\n")));
+    }
+
+    #[test]
+    fn a_complete_patch_keeps_its_legacy_fingerprint() {
+        let patch = format!(
+            "diff --git a/a.rs b/a.rs\nindex {}..{} 100644\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+            "0".repeat(40),
+            "a".repeat(40),
+        );
+        let diff = serde_json::from_value(serde_json::json!({
+            "patch": patch,
+            "hunks": [],
+            "partial_staging": false,
+        }))
+        .unwrap();
+        let legacy = revision("1ac65413e50e21f199138a5457ae195548b31cc9670e3c2d52a526dff50a2d48");
+        let current = Revision::from_diff(
+            &legacy.host,
+            &legacy.worktree,
+            &legacy.path,
+            &legacy.source,
+            &diff,
+        );
+        assert_eq!(current, Some(legacy));
     }
 }
