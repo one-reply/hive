@@ -17,19 +17,19 @@ impl StageChoice {
             Self::Lane => ("Development lane", ""),
             Self::Code => (
                 "Code review",
-                "Review the implementation for correctness, maintainability and missing regression coverage. Report actionable findings and their affected lanes.",
+                "Review the changed code for correctness and maintainability: logic errors, unhandled edge cases and error paths, broken callers of changed functions, logic that duplicates code already in the repository, and missing or weak tests. Report only actionable defects, each with its location, the problem and the expected fix; skip style that the formatter or linter already enforces.",
             ),
             Self::Security => (
                 "Security review",
-                "Review the changed code for vulnerabilities, broken authorization and accidental exposure of sensitive data. Report the affected lane and a defensive fix.",
+                "Review the changed code and the paths it touches for vulnerabilities: untrusted input reaching shell commands, queries, file paths or HTML; missing authentication or authorization checks; secrets in code, logs or errors; unsafe deserialization; risky new dependencies. Report each issue with its location, how it can be exploited and a defensive fix; skip theoretical concerns and code the change does not touch.",
             ),
             Self::Performance => (
                 "Performance review",
-                "Inspect changed paths for performance regressions and unnecessary resource use. Report evidence and the affected lane.",
+                "Inspect the changed paths for performance regressions: extra work on hot paths, I/O or queries inside loops, unbounded memory or result sizes, blocking calls on async or UI threads, missing limits or pagination. Report each issue with its location, its expected cost at realistic input sizes and a fix; do not flag micro-optimizations without evidence.",
             ),
             Self::Custom => (
                 "Custom review",
-                "Review the changes against the approved acceptance criteria. Identify the affected lane for each finding.",
+                "Check the changes against every approved acceptance criterion in each worktree, using the code and tests rather than the developers' summaries. Report each unmet criterion with its evidence and the expected behavior.",
             ),
         }
     }

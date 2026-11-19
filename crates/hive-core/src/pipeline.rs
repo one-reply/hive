@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 mod outcome;
+mod presets;
 mod recipe;
 mod record;
 mod run;
@@ -13,6 +14,7 @@ mod timing;
 mod transitions;
 pub mod workspace;
 pub use outcome::{CheckTally, readable_history};
+pub(crate) use presets::refresh_stock_instructions;
 pub use recipe::unique_name;
 pub use run::{Phase, Run, StageTiming, Ticket};
 pub use stage::{Stage, StageStatus};
@@ -50,6 +52,10 @@ impl From<Error> for String {
     }
 }
 
+/// Version of the starter catalog: 1 added the extra starter recipes, 2 rewrote their stock
+/// instructions.
+pub(crate) const CATALOG_VERSION: u64 = 2;
+
 /// Shared templates and independently resumable task runs on this installation.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -65,7 +71,7 @@ pub struct Library {
 impl Default for Library {
     fn default() -> Self {
         Self {
-            catalog_version: 1,
+            catalog_version: CATALOG_VERSION,
             templates: Template::presets(),
             runs: Vec::new(),
         }
@@ -177,64 +183,7 @@ pub struct Template {
     pub lanes: Vec<LanePreset>,
 }
 
-impl Default for Template {
-    fn default() -> Self {
-        Self {
-            name: "Feature delivery".into(),
-            planner: Step::new(
-                "Plan",
-                "Break the task into repository-specific assignments and acceptance criteria. Ask for clarification when needed.",
-            ),
-            development: Step::new(
-                "Development",
-                "Implement the approved assignment in your worktree. Report what changed and what you verified.",
-            ),
-            reviews: vec![
-                Step::new(
-                    "QA",
-                    "Verify the acceptance criteria across all participating repositories. Report reproducible findings with the affected lane.",
-                ),
-                Step::new(
-                    "Security & performance",
-                    "Review the changes for security and performance regressions. Report specific findings and affected lanes.",
-                ),
-            ],
-            lanes: vec![LanePreset {
-                name: "Development".into(),
-                ..Default::default()
-            }],
-        }
-    }
-}
-
 impl Template {
-    /// Starter recipes for a full feature, a targeted fix or an API/client change.
-    pub fn presets() -> Vec<Self> {
-        let feature = Self::default();
-        let mut fix = Self {
-            name: "Quick fix".into(),
-            ..feature.clone()
-        };
-        fix.reviews.truncate(1);
-        fix.planner.instruction =
-            "Identify the root cause, the smallest complete fix and a regression check.".into();
-        let cross = Self {
-            name: "Cross-repository".into(),
-            lanes: ["API", "Web"]
-                .map(|name| LanePreset {
-                    name: name.into(),
-                    ..Default::default()
-                })
-                .into(),
-            planner: Step::new(
-                "Plan",
-                "Define the shared contract and assign its changes and acceptance criteria to each participating repository.",
-            ),
-            ..feature.clone()
-        };
-        vec![feature, fix, cross]
-    }
-
     /// Checks a draft before it becomes an executable recipe.
     pub fn validate(&self) -> Result<(), Error> {
         self.validate_structure()?;

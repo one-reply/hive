@@ -7,6 +7,9 @@ use gpui_kit::component::{
     menu::{ContextMenuExt as _, PopupMenu},
 };
 
+/// Strength of the selection accent a hovered, unselected template card's border eases to.
+const HOVER_BORDER_OPACITY: f32 = 0.6;
+
 impl PipelinePanel {
     pub(super) fn library(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let state = AppState::get(cx);
@@ -33,7 +36,7 @@ impl PipelinePanel {
         let mut actions = h_flex().gap_2().flex_wrap().child(button_with_size(
             "new-template",
             "New template",
-            ButtonLook::Ghost,
+            ButtonLook::Outline,
             ButtonSize::Medium,
             window,
             cx,
@@ -130,18 +133,20 @@ impl PipelinePanel {
                 .max_w(rems(20.))
                 .flex_1()
                 .border_1()
-                .border_color(if selected { accent } else { cx.theme().border })
+                .bg(cx.theme().sidebar)
+                .border_color(if selected {
+                    accent
+                } else {
+                    hover.mix(cx.theme().border, accent.opacity(HOVER_BORDER_OPACITY))
+                })
+                .on_hover(hover.listener())
                 .rounded_lg()
                 .overflow_hidden()
                 .cursor_pointer()
                 .focus_visible(move |s| s.border_color(accent))
                 .child(map::miniature(t, cx))
                 .child(bottom);
-            cards = cards.child(
-                on_activate(card, cx, pick)
-                    .hover_bg(&hover, cx.theme().sidebar, cx.theme().accent)
-                    .context_menu(menu),
-            );
+            cards = cards.child(on_activate(card, cx, pick).context_menu(menu));
         }
         if templates.is_empty() {
             cards = cards.child(subtle("Create a template to start a run.", cx));

@@ -18,6 +18,8 @@ use std::time::Duration;
 const HOVER_DURATION: Duration = Duration::from_millis(140);
 /// For [`Hover::with_duration`] on rows that span a whole panel.
 pub(crate) const WIDE_HOVER_DURATION: Duration = Duration::from_millis(240);
+/// How much of the primary color stays under the pointer; the rest is the page background.
+const PRIMARY_HOVER_WEIGHT: f32 = 0.85;
 
 /// The eased hover state of one element, sampled for the frame being rendered.
 #[derive(Clone)]
@@ -166,9 +168,13 @@ impl ButtonLook {
                 active_bg: theme.button_danger_active,
                 border: None,
             },
+            // Most bundled themes give primary the same hover color as its idle one, so
+            // the hover is derived: a step toward the page background reads in every theme.
             Self::Primary => ButtonColors {
                 idle_bg: theme.button_primary,
-                hover_bg: theme.button_primary_hover,
+                hover_bg: theme
+                    .button_primary
+                    .mix_oklab(theme.background, PRIMARY_HOVER_WEIGHT),
                 idle_fg: theme.button_primary_foreground,
                 hover_fg: theme.button_primary_foreground,
                 active_bg: theme.button_primary_active,

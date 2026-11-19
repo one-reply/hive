@@ -264,13 +264,10 @@ impl LaunchForm {
             .iter()
             .find(|(p, _)| Some(p) == b.project.as_ref())
             .map(|(_, n)| n.as_str());
-        let mut choices: Vec<_> = projects
+        let choices = projects
             .iter()
-            .map(|(p, n)| (n.clone(), Some(p) == b.project.as_ref(), Some(p.clone())))
+            .map(|(p, n)| (n.clone(), Some(p) == b.project.as_ref(), p.clone()))
             .collect();
-        if b.project.is_some() {
-            choices.push(("Remove from run".into(), false, None));
-        }
         let repo = options_menu(
             dropdown(
                 ("bound-repo", i),
@@ -280,13 +277,7 @@ impl LaunchForm {
             .w_full(),
             choices,
             cx,
-            move |this, p, _, cx| {
-                if p.is_none() && i >= this.template.lanes.len() {
-                    this.bindings.remove(i);
-                } else {
-                    this.bindings[i].bind(p, cx);
-                }
-            },
+            move |this, p, _, cx| this.bindings[i].bind(Some(p), cx),
         );
         let mut group = card(cx).w_full().gap_3();
         if i < self.template.lanes.len() && self.template.lanes.len() > 1 {
@@ -332,7 +323,22 @@ impl LaunchForm {
             subtle("Check before acceptance", cx),
             self.check_menu(i, data.as_ref(), cx),
         ));
-        group = group.child(fields);
+        let remove = icon_action(
+            ("remove-repo", i),
+            "Remove from run",
+            Lucide::X,
+            window,
+            cx,
+            move |this, _, cx| this.remove_repository(i, cx),
+        );
+        group = group.child(
+            h_flex()
+                .w_full()
+                .items_end()
+                .gap_2()
+                .child(fields.flex_1().min_w_0())
+                .child(remove),
+        );
         if let Some(ref_input) = &b.ref_input {
             group = group.child(
                 h_flex()

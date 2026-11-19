@@ -167,6 +167,16 @@ impl LaunchForm {
         cx.notify();
     }
 
+    /// A recipe's lane only empties, so the user can bind it again; an added one goes away.
+    fn remove_repository(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.template.lanes.len() {
+            self.bindings[index].bind(None, cx);
+        } else {
+            self.bindings.remove(index);
+        }
+        cx.notify();
+    }
+
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut lanes = Vec::new();
         for b in &self.bindings {

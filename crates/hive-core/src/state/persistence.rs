@@ -239,7 +239,7 @@ impl State {
 
 /// Retain independent runs and templates when a sibling checkpoint cannot be recovered.
 fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::Library {
-    use crate::pipeline::{Library, Run, Template};
+    use crate::pipeline::{CATALOG_VERSION, Library, Run, Template, refresh_stock_instructions};
     use std::collections::HashSet;
     let Some(value) = value else {
         return Library::default();
@@ -306,10 +306,13 @@ fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::L
             }
         }
     }
+    if catalog_version < 2 {
+        refresh_stock_instructions(&mut templates);
+    }
     Library {
         templates,
         runs,
-        catalog_version: catalog_version.max(1),
+        catalog_version: catalog_version.max(CATALOG_VERSION),
     }
 }
 
@@ -511,6 +514,35 @@ mod tests {
             RecoveryCause::Partial(vec!["pipelines.runs[1]".into()])
         );
         assert_eq!(fs::read(recovery.backup).unwrap(), original);
+    }
+
+    #[test]
+    fn catalog_version_one_recipes_receive_current_stock_instructions_once() {
+        use crate::pipeline::Template;
+        let step = |name: &str, instruction: &str| serde_json::json!({"name": name, "instruction": instruction, "profile": {"agent": "Codex"}});
+        let saved = serde_json::json!({
+            "catalog_version": 1,
+            "templates": [{
+                "name": "Quick fix",
+                "planner": step("Plan", "Identify the root cause, the smallest complete fix and a regression check."),
+                "development": step("Development", "Implement the approved assignment in your worktree. Report what changed and what you verified."),
+                "reviews": [step("QA", "Custom QA")],
+                "lanes": [{"name": "Development"}]
+            }]
+        });
+        let mut lost = vec![];
+        let library = pipelines(Some(saved), &mut lost);
+        assert!(lost.is_empty(), "{lost:?}");
+        let fix = &Template::presets()[1];
+        assert_eq!(library.templates[0].planner, fix.planner);
+        assert_eq!(library.templates[0].development, fix.development);
+        assert_eq!(library.templates[0].reviews[0].instruction, "Custom QA");
+
+        let mut restored = library.clone();
+        restored.templates[0].planner.instruction =
+            "Identify the root cause, the smallest complete fix and a regression check.".into();
+        let reloaded = pipelines(Some(serde_json::to_value(&restored).unwrap()), &mut lost);
+        assert_eq!(reloaded, restored);
     }
 
     #[test]
