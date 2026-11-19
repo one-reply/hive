@@ -16,6 +16,7 @@ pub(crate) mod project_badge;
 pub(crate) mod release_notes;
 pub mod settings;
 pub mod sidebar;
+pub(crate) mod stage_role;
 pub mod status_bar;
 pub(crate) mod stepped_spinner;
 pub(crate) mod syntax;

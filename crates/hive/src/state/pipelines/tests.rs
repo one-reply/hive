@@ -56,6 +56,7 @@ fn duplicates_the_entire_recipe_and_edits_only_the_chosen_copy(cx: &mut TestAppC
         let second = p.duplicate_template(&source, cx).unwrap();
         assert_eq!(second.name, format!("{} 2", first.name));
         let mut edited = first.clone();
+        edited.planner.prompt = None;
         edited.planner.instruction.push_str(" Check both lanes.");
         p.save_template(Some(&first), edited.clone(), cx).unwrap();
         let saved = &p.store.read(cx).state.pipelines.templates;
@@ -65,12 +66,72 @@ fn duplicates_the_entire_recipe_and_edits_only_the_chosen_copy(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn saving_a_template_refreshes_a_stage_whose_prompt_changed_while_it_was_open(
+    cx: &mut TestAppContext,
+) {
+    recovering(cx).update(cx, |p, cx| {
+        let loaded = p.store.read(cx).state.pipelines.templates[0].clone();
+        let id = loaded.planner.prompt.unwrap();
+        let run = p.run(42, cx).unwrap().clone();
+        p.save_prompt(Some(id), "House planner", "Plan the house way.", cx)
+            .unwrap();
+        assert_eq!(p.run(42, cx).unwrap(), &run);
+
+        // The editor still holds the recipe as it was before the prompt changed.
+        let mut draft = loaded.clone();
+        draft.reviews[0].limit = 1;
+        p.save_template(Some(&loaded), draft, cx).unwrap();
+        let saved = &p.store.read(cx).state.pipelines.templates[0];
+        assert_eq!(saved.planner.instruction, "Plan the house way.");
+        assert_eq!(saved.planner.prompt, Some(id));
+        assert_eq!(saved.reviews[0].limit, 1);
+
+        let copy = p.duplicate_prompt(id, cx).unwrap();
+        p.delete_prompt(id, cx).unwrap();
+        let library = &p.store.read(cx).state.pipelines;
+        assert_eq!(library.prompt(copy).unwrap().name, "House planner copy");
+        assert_eq!(library.templates[0].planner.prompt, None);
+        assert_eq!(
+            library.templates[0].planner.instruction,
+            "Plan the house way."
+        );
+    });
+}
+
+#[gpui::test]
+fn rejected_prompt_edit_changes_nothing_and_is_not_announced(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    let store = pipelines.read_with(cx, |p, _| p.store.clone());
+    let announced = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = announced.clone();
+    let _observer = cx.update(|cx| cx.observe(&store, move |_, _| counter.set(counter.get() + 1)));
+    pipelines.update(cx, |p, cx| {
+        let before = p.store.read(cx).state.pipelines.clone();
+        let taken = before.prompts()[1].name.clone();
+        assert!(
+            p.save_prompt(Some(before.prompts()[0].id), &taken, "Text", cx)
+                .is_err()
+        );
+        assert!(p.save_prompt(None, " ", "Text", cx).is_err());
+        assert!(p.duplicate_prompt(u64::MAX, cx).is_err());
+        assert!(p.delete_prompt(u64::MAX, cx).is_err());
+        assert_eq!(p.store.read(cx).state.pipelines, before);
+    });
+    cx.run_until_parked();
+    assert_eq!(announced.get(), 0);
+    pipelines.update(cx, |p, cx| p.save_prompt(None, "Mine", "Text", cx).unwrap());
+    cx.run_until_parked();
+    assert_eq!(announced.get(), 1);
+}
+
+#[gpui::test]
 fn deleting_a_template_preserves_runs_and_rejects_stale_confirmations(cx: &mut TestAppContext) {
     let pipelines = recovering(cx);
     pipelines.update(cx, |p, cx| {
         let run = p.run(42, cx).unwrap().clone();
         let original = run.template().clone();
         let mut edited = original.clone();
+        edited.planner.prompt = None;
         edited.planner.instruction.push_str(" Review the plan.");
         p.save_template(Some(&original), edited.clone(), cx)
             .unwrap();

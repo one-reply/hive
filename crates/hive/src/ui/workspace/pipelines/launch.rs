@@ -336,7 +336,7 @@ impl Render for LaunchForm {
             ),
             templates
                 .into_iter()
-                .map(|t| (t.name.clone(), t == self.template, t))
+                .map(|t| (t.name.clone(), t.name == self.template.name, t))
                 .collect(),
             cx,
             |this, t, w, cx| this.apply_template(t, w, cx),

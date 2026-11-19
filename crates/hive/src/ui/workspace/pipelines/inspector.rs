@@ -9,7 +9,9 @@ use hive_core::pipeline::Profile;
 
 mod agents;
 mod findings;
+mod instructions;
 mod models;
+use instructions::PromptPicker;
 use models::ModelPicker;
 pub(super) struct Inspector {
     picker: ModelPicker,
@@ -23,6 +25,10 @@ pub(super) struct Inspector {
     pub(super) agent: AgentKind,
     effort: String,
     route: Option<String>,
+    /// Library prompt the stage follows; `instruction` then shows that prompt's text.
+    prompt: Option<u64>,
+    /// Absent for a lane, which has a QA command instead of instructions.
+    prompt_picker: Option<PromptPicker>,
 }
 impl Inspector {
     pub(super) fn new(
@@ -31,24 +37,41 @@ impl Inspector {
         w: &mut Window,
         cx: &mut Context<TemplateEditor>,
     ) -> Self {
-        fn stage(step: &hive_core::pipeline::Step) -> (&str, &str, &Profile, u8, Option<String>) {
+        type Fields<'a> = (
+            &'a str,
+            &'a str,
+            &'a Profile,
+            u8,
+            Option<String>,
+            Option<u64>,
+        );
+        fn stage(step: &hive_core::pipeline::Step) -> Fields<'_> {
             (
                 &step.name,
                 &step.instruction,
                 &step.profile,
                 step.limit,
                 step.return_lane.clone(),
+                step.prompt,
             )
         }
-        let (name, body, profile, limit, route) = match item {
+        let (name, body, profile, limit, route, prompt) = match item {
             Item::Planner => stage(&t.planner),
             Item::Development => stage(&t.development),
             Item::Review(i) => stage(&t.reviews[i]),
             Item::Lane(i) => {
                 let l = &t.lanes[i];
-                (l.name.as_str(), l.command.as_str(), &l.profile, 3, None)
+                (
+                    l.name.as_str(),
+                    l.command.as_str(),
+                    &l.profile,
+                    3,
+                    None,
+                    None,
+                )
             }
         };
+        let is_stage = !matches!(item, Item::Lane(_));
         ensure_models(profile.agent, cx);
         Self {
             picker: ModelPicker::new(profile.agent, &profile.model, t, w, cx),
@@ -62,6 +85,8 @@ impl Inspector {
             agent: profile.agent,
             effort: profile.effort.clone(),
             route,
+            prompt,
+            prompt_picker: is_stage.then(|| PromptPicker::new(prompt, w, cx)),
         }
     }
     pub(super) fn apply(&self, item: Item, t: &mut Template, cx: &App) -> Result<(), String> {
@@ -100,6 +125,7 @@ impl Inspector {
         }
         step.name = name;
         step.instruction = body;
+        step.prompt = self.prompt;
         step.profile = profile;
         Ok(())
     }
@@ -131,21 +157,12 @@ impl TemplateEditor {
     fn stage_identity(&self, w: &mut Window, cx: &mut Context<Self>) -> Div {
         let form = &self.inspector;
         let kind = self.role(self.selected);
-        let color = kind.color(cx);
         let lane = matches!(self.selected, Item::Lane(_));
         let title = form.name.read(cx).value();
         let mut identity = v_flex().gap_2().child(
             h_flex()
                 .gap_2()
-                .child(
-                    h_flex()
-                        .size_7()
-                        .flex_none()
-                        .justify_center()
-                        .rounded_md()
-                        .bg(color.opacity(ROLE_TINT_OPACITY))
-                        .child(Icon::new(kind.icon()).size_4().text_color(color)),
-                )
+                .child(kind.tile(cx))
                 .child(
                     subtle(
                         if lane {
@@ -208,107 +225,7 @@ impl TemplateEditor {
         }
         identity
     }
-    fn instructions(&self, w: &mut Window, cx: &mut Context<Self>) -> Div {
-        let form = &self.inspector;
-        let prompt = form.instruction.read(cx).value();
-        let lane = matches!(self.selected, Item::Lane(_));
-        let mut prompt_box = section(cx).child(
-            section_title(
-                if lane {
-                    Lucide::SquareTerminal
-                } else {
-                    Lucide::MessageSquare
-                },
-                if lane {
-                    "Required QA command"
-                } else {
-                    "Instructions"
-                },
-                cx,
-            )
-            .child(icon_action(
-                "edit-stage-prompt",
-                if form.edit_prompt {
-                    "Finish editing"
-                } else {
-                    "Edit"
-                },
-                if form.edit_prompt {
-                    Lucide::Check
-                } else {
-                    Lucide::Pencil
-                },
-                w,
-                cx,
-                |s: &mut Self, w, cx| {
-                    s.inspector.edit_prompt = !s.inspector.edit_prompt;
-                    if s.inspector.edit_prompt {
-                        s.inspector
-                            .instruction
-                            .read(cx)
-                            .focus_handle(cx)
-                            .focus(w, cx);
-                    }
-                    cx.notify()
-                },
-            )),
-        );
-        if form.edit_prompt {
-            prompt_box = prompt_box.child(TextField::textarea(
-                Textarea::new(&form.instruction),
-                &form.instruction,
-                cx,
-            ));
-        } else {
-            let empty = prompt.is_empty();
-            let hover = Hover::new("stage-prompt-preview", w, cx);
-            // The text itself opens the editor: the pencil is easy to miss in a narrow panel.
-            let preview = div()
-                .id("stage-prompt-preview")
-                .role(Role::Button)
-                .aria_label(if lane {
-                    "Edit required QA command"
-                } else {
-                    "Edit instructions"
-                })
-                .tab_index(0)
-                .px_3()
-                .py_2()
-                .rounded_md()
-                .border_1()
-                .border_color(cx.theme().border)
-                .cursor_pointer()
-                .text_sm()
-                .when(empty, |el| el.italic())
-                .text_color(if empty {
-                    cx.theme().muted_foreground
-                } else {
-                    cx.theme().foreground
-                })
-                .child(match (empty, lane) {
-                    (false, _) => prompt,
-                    (true, true) => "No command required".into(),
-                    (true, false) => "No instructions".into(),
-                });
-            prompt_box = prompt_box.child(
-                on_activate(preview, cx, |s: &mut Self, w, cx| {
-                    s.inspector.edit_prompt = true;
-                    s.inspector
-                        .instruction
-                        .read(cx)
-                        .focus_handle(cx)
-                        .focus(w, cx);
-                    cx.notify()
-                })
-                .hover_bg(&hover, cx.theme().transparent, cx.theme().muted),
-            );
-        }
-        prompt_box
-    }
 }
-
-/// The role icon's tile is washed out so the icon on top keeps its contrast.
-const ROLE_TINT_OPACITY: f32 = 0.12;
 
 /// One block of the inspector, divided from the block above it.
 fn section(cx: &App) -> Div {

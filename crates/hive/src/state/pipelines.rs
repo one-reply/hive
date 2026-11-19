@@ -15,6 +15,7 @@ use hive_core::pipeline::{Lane, Phase, Report, Run, Template, Ticket, now_ms, wo
 
 mod execution;
 mod models;
+mod prompts;
 mod reports;
 mod review;
 mod runtime;
@@ -310,6 +311,9 @@ impl Pipelines {
         if id == 0 || self.run(id, cx).is_ok() {
             return Err("Run ID collision. Start again.".into());
         }
+        // The launch form holds its own copy of the recipe, taken before any later prompt edit.
+        let mut template = template;
+        template.sync_prompts(self.store.read(cx).state.pipelines.prompts());
         let mut run = Run::new(id, owner, task, template, lanes)?;
         run.record_stage(None, now_ms());
         let saved = self

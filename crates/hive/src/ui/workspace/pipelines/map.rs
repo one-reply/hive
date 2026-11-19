@@ -1,66 +1,9 @@
 //! Shared stage vocabulary and geometry for the recipe canvas and its library previews.
 use super::editor::Item;
 use super::*;
-use hive_core::pipeline::Step;
 mod layout;
+pub(super) use crate::ui::stage_role::RoleKind;
 pub(super) use layout::{BoxAt, Layout};
-
-#[derive(Clone, Copy)]
-pub(super) enum RoleKind {
-    Plan,
-    Build,
-    Qa,
-    Security,
-    Performance,
-    Review,
-    Human,
-}
-impl RoleKind {
-    pub(super) fn review(index: usize, step: &Step) -> Self {
-        if index == 0 {
-            return Self::Qa;
-        }
-        let name = step.name.to_lowercase();
-        if name.contains("security") {
-            Self::Security
-        } else if name.contains("performance") {
-            Self::Performance
-        } else {
-            Self::Review
-        }
-    }
-    pub(super) fn icon(self) -> Lucide {
-        match self {
-            Self::Plan => Lucide::BrainCircuit,
-            Self::Build => Lucide::CodeXml,
-            Self::Qa => Lucide::ListChecks,
-            Self::Security => Lucide::ShieldCheck,
-            Self::Performance => Lucide::Activity,
-            Self::Review => Lucide::ScanEye,
-            Self::Human => Lucide::UserRoundCheck,
-        }
-    }
-    pub(super) fn color(self, cx: &App) -> Hsla {
-        match self {
-            Self::Plan => cx.theme().magenta,
-            Self::Build => cx.theme().blue,
-            Self::Qa => cx.theme().cyan,
-            Self::Review | Self::Security | Self::Performance => cx.theme().yellow,
-            Self::Human => cx.theme().green,
-        }
-    }
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Plan => "Planning agent",
-            Self::Build => "Development",
-            Self::Qa => "Quality check",
-            Self::Security => "Security review",
-            Self::Performance => "Performance review",
-            Self::Review => "Review agent",
-            Self::Human => "Human decision",
-        }
-    }
-}
 
 /// Node geometry is authored at the default UI size; text, icons and their wires scale together.
 pub(super) fn units(value: f32) -> Rems {

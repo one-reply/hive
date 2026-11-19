@@ -1,8 +1,8 @@
 use super::inspector::Inspector;
 use super::map::{Layout, RoleKind};
 use super::*;
+use hive_core::pipeline::LanePreset;
 use hive_core::pipeline::unique_name;
-use hive_core::pipeline::{LanePreset, Step};
 mod nodes;
 mod structure;
 use structure::{StageChoice, move_item};
@@ -38,7 +38,7 @@ pub(super) struct TemplateEditor {
     renaming: bool,
     compact: bool,
     show_inspector: bool,
-    _models: Subscription,
+    _subscriptions: [Subscription; 2],
 }
 
 impl TemplateEditor {
@@ -62,6 +62,8 @@ impl TemplateEditor {
                     .map(|t| t.name.as_str()),
             );
         }
+        // A prompt edited or deleted since the recipe was saved must not show stale text.
+        template.sync_prompts(AppState::get(cx).store.read(cx).state.pipelines.prompts());
         let name = input(&template.name, "Template name", window, cx);
         let inspector = Inspector::new(Item::Planner, &template, window, cx);
         let models = cx.observe_in(
@@ -72,6 +74,10 @@ impl TemplateEditor {
                 cx.notify()
             },
         );
+        let prompts = cx.observe_in(&AppState::get(cx).store.clone(), window, |s, _, w, cx| {
+            s.sync_prompts(w, cx);
+            cx.notify()
+        });
         Self {
             original,
             parent,
@@ -83,7 +89,7 @@ impl TemplateEditor {
             renaming: false,
             compact: false,
             show_inspector: false,
-            _models: models,
+            _subscriptions: [models, prompts],
         }
     }
     fn apply(&mut self, cx: &App) -> bool {
@@ -120,28 +126,31 @@ impl TemplateEditor {
             cx.notify();
             return;
         }
-        let item = if matches!(kind, StageChoice::Lane) {
-            let i = self.template.lanes.len();
-            self.template.lanes.push(LanePreset {
-                name: unique_name(
-                    "Development lane",
-                    self.template.lanes.iter().map(|l| l.name.as_str()),
-                ),
-                profile: self.template.development.profile.clone(),
-                command: String::new(),
-            });
-            Item::Lane(i)
-        } else {
-            let i = self.template.reviews.len();
-            let (name, prompt) = kind.recipe();
-            self.template.reviews.push(Step {
-                name: unique_name(name, self.template.reviews.iter().map(|s| s.name.as_str())),
-                instruction: prompt.into(),
-                profile: self.template.planner.profile.clone(),
-                limit: 3,
-                return_lane: None,
-            });
-            Item::Review(i)
+        let item = match kind {
+            StageChoice::Lane => {
+                let i = self.template.lanes.len();
+                self.template.lanes.push(LanePreset {
+                    name: unique_name(
+                        kind.label(),
+                        self.template.lanes.iter().map(|l| l.name.as_str()),
+                    ),
+                    profile: self.template.development.profile.clone(),
+                    command: String::new(),
+                });
+                Item::Lane(i)
+            }
+            StageChoice::Review(review) => {
+                let i = self.template.reviews.len();
+                let library = &AppState::get(cx).store.read(cx).state.pipelines;
+                let mut step = library.review_step(review);
+                step.name = unique_name(
+                    &step.name,
+                    self.template.reviews.iter().map(|s| s.name.as_str()),
+                );
+                step.profile = self.template.planner.profile.clone();
+                self.template.reviews.push(step);
+                Item::Review(i)
+            }
         };
         self.load(item, w, cx);
         self.show_inspector = true;

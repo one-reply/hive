@@ -6,18 +6,23 @@ use std::path::PathBuf;
 
 mod outcome;
 mod presets;
+pub(crate) mod prompts;
 mod recipe;
 mod record;
 mod run;
 mod stage;
+mod stock;
 mod timing;
 mod transitions;
 pub mod workspace;
 pub use outcome::{CheckTally, readable_history};
 pub(crate) use presets::refresh_stock_instructions;
+pub use prompts::Prompt;
 pub use recipe::unique_name;
 pub use run::{Phase, Run, StageTiming, Ticket};
 pub use stage::{Stage, StageStatus};
+pub use stock::ReviewKind;
+pub(crate) use stock::{link_stock_prompts, stock_prompts};
 pub use timing::now_ms;
 
 /// Invalid pipeline input or an operation inconsistent with the current checkpoint.
@@ -64,6 +69,8 @@ pub struct Library {
     pub(crate) catalog_version: u64,
     /// Editable recipes available in every local project.
     pub templates: Vec<Template>,
+    // Unique ids and names, mirrored into linked stages: changed only through `prompts.rs`.
+    pub(crate) prompts: Vec<Prompt>,
     /// Task runs keyed by stable local IDs.
     pub runs: Vec<Run>,
 }
@@ -73,6 +80,7 @@ impl Default for Library {
         Self {
             catalog_version: CATALOG_VERSION,
             templates: Template::presets(),
+            prompts: stock_prompts(),
             runs: Vec::new(),
         }
     }
@@ -136,6 +144,10 @@ pub struct Step {
     /// Fixed destination for reviewer findings; otherwise each finding names its lane.
     #[serde(default)]
     pub return_lane: Option<String>,
+    /// Library prompt this stage follows; `instruction` then mirrors that prompt's text.
+    /// `None` means the instructions are the stage's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<u64>,
 }
 
 fn default_limit() -> u8 {
@@ -151,6 +163,15 @@ impl Step {
             profile: Profile::default(),
             limit: default_limit(),
             return_lane: None,
+            prompt: None,
+        }
+    }
+
+    /// A stage that follows a library prompt.
+    pub fn linked(name: &str, prompt: &Prompt) -> Self {
+        Self {
+            prompt: Some(prompt.id),
+            ..Self::new(name, &prompt.text)
         }
     }
 }
@@ -225,6 +246,12 @@ impl Template {
         [&self.planner, &self.development]
             .into_iter()
             .chain(&self.reviews)
+    }
+
+    fn steps_mut(&mut self) -> impl Iterator<Item = &mut Step> {
+        [&mut self.planner, &mut self.development]
+            .into_iter()
+            .chain(&mut self.reviews)
     }
 
     fn profiles(&self) -> impl Iterator<Item = &Profile> {

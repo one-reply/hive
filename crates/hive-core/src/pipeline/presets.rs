@@ -1,28 +1,9 @@
-//! Starter recipes and the stock instructions each of their stages gives its agent.
-//!
-//! Hive appends the task, the lane assignments, the handoff and the report contract to these
-//! texts, so they only describe how to do the stage's work well, not the output format.
-use super::{LanePreset, Step, Template};
-
-const FEATURE_PLAN: &str = "Read the code the task touches in every listed worktree before planning; do not edit files. Give each lane that needs work a self-contained assignment: the modules to change, the expected behavior, and the tests to add or update. Write acceptance criteria as observable checks (a test, a command, a reproducible behavior), not intentions. Leave out lanes that need no changes. Ask the user when the requirements are ambiguous or a decision has real trade-offs instead of guessing.";
-
-const FEATURE_DEVELOPMENT: &str = "Read the code your assignment touches and follow the repository's conventions and agent instructions (AGENTS.md, CLAUDE.md, CONTRIBUTING). Implement the smallest complete change that meets every acceptance criterion and fix root causes, not symptoms. Add or update tests for the new behavior, then run the project's formatter, linter and tests. If the handoff lists findings for your lane, resolve each one and say how. Do not push or switch branches. Report what changed, the commands you ran with their results, and what you could not verify.";
-
-const FEATURE_QA: &str = "Verify, do not fix. In each worktree inspect the actual changes (git status, git diff, the branch's commits) and check every acceptance criterion against the code and tests, not against the developer's summary. Look for unhandled edge cases and error paths, broken callers of changed code, and missing or weak tests. Your sandbox is read-only, so you may be unable to build; Hive runs each lane's configured checks itself. Report only concrete defects, each with its location, a reproduction or failing case, and the expected behavior; skip style preferences.";
-
-const SECURITY_AND_PERFORMANCE: &str = "Review only the changed code and the paths it affects. Security: untrusted input reaching shell commands, queries, file paths or HTML; missing authentication or authorization checks; secrets in code, logs or errors; unsafe deserialization; risky new dependencies. Performance: extra work on hot paths, I/O or queries inside loops, unbounded memory or result sizes, blocking calls on async or UI threads. Report only issues with a concrete exploit or a measurable cost, each with its location and a fix; skip theoretical concerns and code the change does not touch.";
-
-const FIX_PLAN: &str = "Locate the bug by reading the code; do not edit files. Identify the root cause and every caller that shares the faulty path, then assign the smallest complete fix to the lane that owns it. Acceptance criteria must include the original symptom gone and a regression test that fails before the fix and passes after it. Ask the user when you cannot tell what the correct behavior is.";
-
-const FIX_DEVELOPMENT: &str = "Fix the root cause in the shared code path, not only the reported call site. First write a regression test that fails without the fix, then make it pass. Keep the diff focused: no refactoring or unrelated changes. Run the project's formatter, linter and tests. Do not push or switch branches. Report the root cause, the fix, and the test evidence.";
-
-const FIX_QA: &str = "Verify, do not fix. Confirm the change removes the root cause rather than masking the symptom: it covers every caller of the faulty path, and the regression test would fail without the fix. Check that it changes no behavior beyond the fix. Your sandbox is read-only; Hive runs each lane's configured checks itself. Report only concrete defects, each with its location, a reproduction and the expected behavior.";
-
-const CROSS_PLAN: &str = "Read the code on both sides of the boundary in every worktree; do not edit files. Define the shared contract first: endpoints or messages, field names and types, optionality, errors and status values. Repeat it verbatim in every affected assignment so the lanes cannot drift, and state which side stays backward compatible while the other is deployed. Give each lane criteria that verify its side of the contract. Ask the user when the contract involves a product decision.";
-
-const CROSS_DEVELOPMENT: &str = "Implement your side of the contract exactly as the assignment states it. If the contract is wrong or incomplete, stop and report the problem instead of inventing a variant. Keep the backward compatibility the plan requires. Add tests for your side of the contract, including error cases, then run the project's formatter, linter and tests. Do not push or switch branches. Report what changed and how you verified it.";
-
-const CROSS_QA: &str = "Verify, do not fix. Check that every lane implements the same contract: compare names, types, optionality, error codes and status values on both sides, then trace one complete request through the changed code from client to server and back. Your sandbox is read-only; Hive runs each lane's configured checks itself. Report each mismatch against the lane that deviates from the planned contract, with the location on both sides.";
+//! Starter recipes, and the upgrade of the ones saved with retired stock instructions.
+use super::stock::{
+    CONTRACT_DEVELOPER, CONTRACT_PLANNER, CONTRACT_QA_REVIEWER, DEVELOPER, FEATURE_PLANNER,
+    FIX_DEVELOPER, FIX_PLANNER, FIX_QA_REVIEWER, QA_REVIEWER, SECURITY_AND_PERFORMANCE_REVIEWER,
+};
+use super::{LanePreset, Template};
 
 /// Stock instructions shipped before catalog version 2, by stage name. A saved starter recipe
 /// still holding one of them was never edited, so it may receive the current text.
@@ -57,11 +38,11 @@ impl Default for Template {
     fn default() -> Self {
         Self {
             name: "Feature delivery".into(),
-            planner: Step::new("Plan", FEATURE_PLAN),
-            development: Step::new("Development", FEATURE_DEVELOPMENT),
+            planner: FEATURE_PLANNER.stage("Plan"),
+            development: DEVELOPER.stage("Development"),
             reviews: vec![
-                Step::new("QA", FEATURE_QA),
-                Step::new("Security & performance", SECURITY_AND_PERFORMANCE),
+                QA_REVIEWER.stage("QA"),
+                SECURITY_AND_PERFORMANCE_REVIEWER.stage("Security & performance"),
             ],
             lanes: vec![LanePreset {
                 name: "Development".into(),
@@ -77,9 +58,9 @@ impl Template {
         let feature = Self::default();
         let fix = Self {
             name: "Quick fix".into(),
-            planner: Step::new("Plan", FIX_PLAN),
-            development: Step::new("Development", FIX_DEVELOPMENT),
-            reviews: vec![Step::new("QA", FIX_QA)],
+            planner: FIX_PLANNER.stage("Plan"),
+            development: FIX_DEVELOPER.stage("Development"),
+            reviews: vec![FIX_QA_REVIEWER.stage("QA")],
             ..feature.clone()
         };
         let cross = Self {
@@ -90,11 +71,11 @@ impl Template {
                     ..Default::default()
                 })
                 .into(),
-            planner: Step::new("Plan", CROSS_PLAN),
-            development: Step::new("Development", CROSS_DEVELOPMENT),
+            planner: CONTRACT_PLANNER.stage("Plan"),
+            development: CONTRACT_DEVELOPER.stage("Development"),
             reviews: vec![
-                Step::new("QA", CROSS_QA),
-                Step::new("Security & performance", SECURITY_AND_PERFORMANCE),
+                CONTRACT_QA_REVIEWER.stage("QA"),
+                SECURITY_AND_PERFORMANCE_REVIEWER.stage("Security & performance"),
             ],
         };
         vec![feature, fix, cross]
@@ -112,10 +93,7 @@ pub(crate) fn refresh_stock_instructions(templates: &mut [Template]) {
         else {
             continue;
         };
-        let steps = [&mut template.planner, &mut template.development]
-            .into_iter()
-            .chain(&mut template.reviews);
-        for step in steps {
+        for step in template.steps_mut() {
             let retired = RETIRED
                 .iter()
                 .any(|&(name, text)| name == step.name && text == step.instruction);
@@ -131,9 +109,12 @@ pub(crate) fn refresh_stock_instructions(templates: &mut [Template]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::Library;
+    use crate::pipeline::stock::{link_stock_prompts, unlinked};
 
+    /// Feature delivery as a catalog-version-1 file holds it: retired texts, no links.
     fn retired_feature_delivery() -> Template {
-        let mut template = Template::default();
+        let mut template = unlinked(Template::default());
         template.planner.instruction = RETIRED[0].1.into();
         template.development.instruction = RETIRED[3].1.into();
         template.reviews[0].instruction = RETIRED[4].1.into();
@@ -142,10 +123,18 @@ mod tests {
     }
 
     #[test]
-    fn every_preset_stage_has_its_own_stock_instruction() {
+    fn every_preset_stage_follows_a_current_built_in_prompt() {
+        let library = Library::default();
         for preset in Template::presets() {
             for step in preset.steps() {
-                assert!(!step.instruction.trim().is_empty(), "{}", step.name);
+                let prompt = step.prompt.and_then(|id| library.prompt(id));
+                assert_eq!(
+                    prompt.map(|p| &p.text),
+                    Some(&step.instruction),
+                    "{} / {}",
+                    preset.name,
+                    step.name
+                );
                 assert!(
                     !RETIRED.iter().any(|&(_, text)| text == step.instruction),
                     "{} still ships a retired text",
@@ -156,22 +145,25 @@ mod tests {
     }
 
     #[test]
-    fn refresh_replaces_untouched_retired_instructions() {
+    fn refresh_then_link_brings_an_untouched_recipe_to_the_current_preset() {
         let mut templates = [retired_feature_delivery()];
         refresh_stock_instructions(&mut templates);
+        assert_eq!(templates[0], unlinked(Template::default()));
+        link_stock_prompts(&mut templates);
         assert_eq!(templates[0], Template::default());
     }
 
     #[test]
     fn refresh_uses_the_matching_recipe_for_shared_retired_texts() {
-        let mut fix = Template::presets().remove(1);
+        let mut fix = unlinked(Template::presets().remove(1));
         fix.planner.instruction = RETIRED[1].1.into();
         fix.development.instruction = RETIRED[3].1.into();
         fix.reviews[0].instruction = RETIRED[4].1.into();
         let mut templates = [fix];
         refresh_stock_instructions(&mut templates);
-        assert_eq!(templates[0].development.instruction, FIX_DEVELOPMENT);
-        assert_eq!(templates[0].reviews[0].instruction, FIX_QA);
+        assert_eq!(templates[0].development.instruction, FIX_DEVELOPER.text);
+        assert_eq!(templates[0].reviews[0].instruction, FIX_QA_REVIEWER.text);
+        link_stock_prompts(&mut templates);
         assert_eq!(templates[0], Template::presets()[1]);
     }
 
@@ -184,13 +176,13 @@ mod tests {
         let mut templates = [edited.clone(), renamed.clone()];
         refresh_stock_instructions(&mut templates);
         assert_eq!(templates[0].planner.instruction, "Custom planning");
-        assert_eq!(templates[0].development.instruction, FEATURE_DEVELOPMENT);
+        assert_eq!(templates[0].development.instruction, DEVELOPER.text);
         assert_eq!(templates[1], renamed);
     }
 
     #[test]
     fn refresh_keeps_a_retired_text_moved_to_another_stage() {
-        let mut template = Template::default();
+        let mut template = unlinked(Template::default());
         template.reviews[1].instruction = RETIRED[4].1.into();
         let expected = template.clone();
         let mut templates = [template];
