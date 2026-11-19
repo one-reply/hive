@@ -91,17 +91,18 @@ impl RunView {
             .collect::<HashSet<_>>()
             .len();
         let mut meta = h_flex()
-            .gap_2()
+            .gap_x_4()
+            .gap_y_1()
             .flex_wrap()
             .child(status_pill(phase, status_color(status, cx)))
-            .child(meta_chip(Lucide::Workflow, run.template().name.clone(), cx))
-            .child(meta_chip(
+            .child(meta_fact(Lucide::Workflow, run.template().name.clone(), cx))
+            .child(meta_fact(
                 Lucide::FolderGit2,
                 count(repos, "repository", "repositories"),
                 cx,
             ));
         if let Some((start, end)) = range {
-            meta = meta.child(meta_chip(
+            meta = meta.child(meta_fact(
                 Lucide::Timer,
                 format!("{} elapsed", elapsed::duration(end.saturating_sub(start))),
                 cx,
@@ -112,7 +113,7 @@ impl RunView {
                 .filter(|row| row.attempt.is_some())
                 .count();
             if invocations > 0 {
-                meta = meta.child(meta_chip(
+                meta = meta.child(meta_fact(
                     Lucide::Bot,
                     count(invocations, "agent session", "agent sessions"),
                     cx,
@@ -240,16 +241,13 @@ fn task_title(task: &str) -> String {
 }
 
 /// A neutral fact about the run, shaped like the status pill so the row reads as one set.
-fn meta_chip(icon: Lucide, text: impl Into<SharedString>, cx: &App) -> Div {
+/// A read-only fact about the run: icon and muted text, with no outline that would read as a
+/// button.
+fn meta_fact(icon: Lucide, text: impl Into<SharedString>, cx: &App) -> Div {
     let muted = cx.theme().muted_foreground;
     h_flex()
         .flex_none()
         .gap_1p5()
-        .px_2()
-        .py_0p5()
-        .rounded_full()
-        .border_1()
-        .border_color(cx.theme().border)
         .text_xs()
         .text_color(muted)
         .child(Icon::new(icon).size_3().text_color(muted))
