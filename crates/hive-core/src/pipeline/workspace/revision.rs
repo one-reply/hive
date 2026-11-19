@@ -25,7 +25,7 @@ pub fn revision(run: u64, lanes: &[Lane], stop: &Cancellation) -> Result<String,
         let base = super::review::pinned_base(lane)?;
         digest_checkout(&mut hash, &lane.worktree, &base, stop)?;
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(git::sha256_hex(&hash.finalize()))
 }
 
 fn digest_checkout(

@@ -21,6 +21,17 @@ pub mod reviewed;
 pub mod status;
 pub mod verification;
 
+/// Keep persisted revision tokens compatible across digest library versions.
+pub(crate) fn sha256_hex(digest: &sha2::digest::Output<sha2::Sha256>) -> String {
+    std::fmt::from_fn(|formatter| {
+        for byte in digest {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    })
+    .to_string()
+}
+
 /// A `git` invocation that could not run or exited non-zero.
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
