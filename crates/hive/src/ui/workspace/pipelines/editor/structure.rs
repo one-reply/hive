@@ -1,35 +1,20 @@
 //! Adding, reordering and removing stages: the first QA review is a fixed barrier, and lanes
 //! and reviews only move among their own kind.
 use super::*;
+use gpui_kit::component::button::ButtonVariants as _;
+use hive_core::pipeline::ReviewKind;
 
 #[derive(Clone, Copy)]
 pub(super) enum StageChoice {
     Lane,
-    Code,
-    Security,
-    Performance,
-    Custom,
+    Review(ReviewKind),
 }
 impl StageChoice {
-    pub(super) fn recipe(self) -> (&'static str, &'static str) {
+    /// Menu label, which is also the name the new stage starts with.
+    pub(super) fn label(self) -> &'static str {
         match self {
-            Self::Lane => ("Development lane", ""),
-            Self::Code => (
-                "Code review",
-                "Review the implementation for correctness, maintainability and missing regression coverage. Report actionable findings and their affected lanes.",
-            ),
-            Self::Security => (
-                "Security review",
-                "Review the changed code for vulnerabilities, broken authorization and accidental exposure of sensitive data. Report the affected lane and a defensive fix.",
-            ),
-            Self::Performance => (
-                "Performance review",
-                "Inspect changed paths for performance regressions and unnecessary resource use. Report evidence and the affected lane.",
-            ),
-            Self::Custom => (
-                "Custom review",
-                "Review the changes against the approved acceptance criteria. Identify the affected lane for each finding.",
-            ),
+            Self::Lane => "Development lane",
+            Self::Review(kind) => kind.stage_name(),
         }
     }
 }
@@ -50,27 +35,26 @@ fn reorder<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
 }
 impl TemplateEditor {
     pub(super) fn add_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let options = [
-            StageChoice::Lane,
-            StageChoice::Code,
-            StageChoice::Security,
-            StageChoice::Performance,
-            StageChoice::Custom,
-        ]
-        .map(|stage| (stage.recipe().0.to_owned(), false, stage))
-        .into();
+        let options = std::iter::once(StageChoice::Lane)
+            .chain(ReviewKind::ALL.map(StageChoice::Review))
+            .map(|stage| (stage.label().to_owned(), false, stage))
+            .collect();
         options_menu(
             Button::new("add-stage")
                 .small()
                 .cursor_pointer()
                 .icon(Lucide::Plus)
+                .dropdown_caret(true)
                 .label("Add stage"),
             options,
             cx,
             |s, stage, w, cx| s.add(stage, w, cx),
         )
     }
-    pub(super) fn ordering(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(in crate::ui::workspace::pipelines) fn ordering(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let (min, count, index, make): (usize, usize, usize, fn(usize) -> Item) =
             match self.selected {
                 Item::Lane(i) if self.template.lanes.len() > 1 => {
@@ -89,9 +73,12 @@ impl TemplateEditor {
         options.push(("Remove stage".to_owned(), false, None));
         Some(options_menu(
             Button::new("selected-stage-actions")
+                .ghost()
                 .small()
                 .cursor_pointer()
-                .label("Stage actions"),
+                .icon(Lucide::Ellipsis)
+                .accessibility_label("Stage actions")
+                .tooltip("Stage actions"),
             options,
             cx,
             move |s, dest, w, cx| match dest {
@@ -104,19 +91,7 @@ impl TemplateEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Item, StageChoice, Template, move_item, reorder};
-    #[test]
-    fn every_added_review_has_a_runnable_default() {
-        for role in [
-            StageChoice::Code,
-            StageChoice::Security,
-            StageChoice::Performance,
-            StageChoice::Custom,
-        ] {
-            let (name, instruction) = role.recipe();
-            assert!(!name.is_empty() && !instruction.is_empty());
-        }
-    }
+    use super::{Item, Template, move_item, reorder};
     #[test]
     fn cannot_drag_the_qa_barrier_or_move_lanes_into_review() {
         let mut t = Template::default();

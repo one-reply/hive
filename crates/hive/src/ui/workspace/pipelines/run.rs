@@ -49,6 +49,14 @@ impl RunTab {
             Self::Activity => "Activity",
         }
     }
+    fn icon(self) -> Lucide {
+        match self {
+            Self::Timeline => Lucide::ChartGantt,
+            Self::Changes => Lucide::FileDiff,
+            Self::Checks => Lucide::ListChecks,
+            Self::Activity => Lucide::ScrollText,
+        }
+    }
 }
 
 pub(super) struct RunView {

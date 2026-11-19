@@ -119,7 +119,7 @@ pub(crate) fn create_stoppable(
         Some(base) => git::branches::resolve(&project.host, &project.path, base)?,
         None => default_base_ref(project)?,
     };
-    let name = match name.map(sanitize).filter(|name| !name.is_empty()) {
+    let name = match name.map(folder_name).filter(|name| !name.is_empty()) {
         Some(name) => name,
         None => generate_name(
             &taken_names(project)?,
@@ -266,7 +266,7 @@ fn generate_name(taken: &HashSet<String>, seed: u64) -> String {
 
 /// Turns user input into a folder and branch name: runs of anything but letters, digits,
 /// `.`, `_` and `-` become one `-`; leading/trailing `-` and `.` are dropped.
-fn sanitize(name: &str) -> String {
+pub(crate) fn folder_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for c in name.trim().chars() {
         if c.is_alphanumeric() || "._-".contains(c) {
@@ -334,9 +334,9 @@ mod tests {
 
     #[test]
     fn sanitizes_names() {
-        assert_eq!(sanitize("  Fix login bug!  "), "Fix-login-bug");
-        assert_eq!(sanitize("feat/ünïcode..ok"), "feat-ünïcode..ok");
-        assert_eq!(sanitize("../.."), "");
+        assert_eq!(folder_name("  Fix login bug!  "), "Fix-login-bug");
+        assert_eq!(folder_name("feat/ünïcode..ok"), "feat-ünïcode..ok");
+        assert_eq!(folder_name("../.."), "");
     }
 
     #[test]

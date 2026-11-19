@@ -15,12 +15,15 @@ use hive_core::pipeline::{Lane, Phase, Report, Run, Template, Ticket, now_ms, wo
 
 mod execution;
 mod models;
+mod prompts;
 mod reports;
 mod review;
 mod runtime;
 mod sessions;
+mod status;
 mod templates;
 
+pub(crate) use status::RunStatus;
 pub(crate) use workspace::ReviewRepo;
 
 type PatchPreview = (
@@ -266,6 +269,7 @@ impl Pipelines {
             );
         }
         let mut repository_bases = HashMap::new();
+        let mut repositories = Vec::with_capacity(lanes.len());
         for lane in &mut lanes {
             if !self.registered(&lane.project, cx) {
                 return Err(format!(
@@ -297,14 +301,19 @@ impl Pipelines {
                     lane.project.display()
                 ));
             }
+            repositories.push(preview.worktrees_dir.clone());
             lane.base.clone_from(&preview.commit);
             lane.worktree.clear();
         }
+        check_branches(repositories.iter().map(PathBuf::as_path).zip(&lanes))?;
         // JavaScript MCP clients preserve integer identities only within 53 bits.
         let id = RandomState::new().hash_one((&owner, &task)) & ((1_u64 << 53) - 1);
         if id == 0 || self.run(id, cx).is_ok() {
             return Err("Run ID collision. Start again.".into());
         }
+        // The launch form holds its own copy of the recipe, taken before any later prompt edit.
+        let mut template = template;
+        template.sync_prompts(self.store.read(cx).state.pipelines.prompts());
         let mut run = Run::new(id, owner, task, template, lanes)?;
         run.record_stage(None, now_ms());
         let saved = self
@@ -395,6 +404,28 @@ impl Pipelines {
             }
         }
     }
+}
+
+/// Every lane of a new run names a branch Git accepts, and lanes in one repository name the
+/// same one, because they share that repository's checkout.
+fn check_branches<'a>(lanes: impl IntoIterator<Item = (&'a Path, &'a Lane)>) -> Result<(), String> {
+    let mut chosen: HashMap<&Path, &str> = HashMap::new();
+    for (repository, lane) in lanes {
+        let branch = lane.branch.trim();
+        if !hive_core::git::branches::is_valid_name(branch) {
+            return Err(format!("Choose or create a branch for {}.", lane.name));
+        }
+        if chosen
+            .insert(repository, branch)
+            .is_some_and(|previous| previous != branch)
+        {
+            return Err(format!(
+                "Choose the same branch for all lanes in {}.",
+                lane.project.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

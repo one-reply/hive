@@ -42,13 +42,11 @@ impl RunView {
         if let Some(status) = request {
             phase = format!("{phase} · {}", status.label());
         }
-        let status_color = match run.phase() {
-            _ if request.is_some() => cx.theme().warning,
-            Phase::Accepted => cx.theme().success,
-            Phase::ApprovePlan | Phase::Decision(_) | Phase::Acceptance => cx.theme().warning,
-            Phase::Cancelled => cx.theme().muted_foreground,
-            _ => cx.theme().info,
-        };
+        let status = RunStatus::of(
+            run.phase(),
+            pipelines.read(cx).error(run.id()).is_some(),
+            request.is_some(),
+        );
         let mut top = v_flex().px_5().pt_4().pb_3().gap_2();
         let mut title = h_flex().gap_2().items_start().child(
             div()
@@ -86,48 +84,26 @@ impl RunView {
                     .child(SelectableText::new("full-task", run.task().to_owned())),
             );
         }
-        let mut meta = h_flex()
-            .gap_3()
-            .flex_wrap()
-            .child(
-                h_flex()
-                    .gap_1p5()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_full()
-                    .bg(status_color.opacity(0.12))
-                    .child(div().size_1p5().rounded_full().bg(status_color))
-                    .child(div().text_xs().text_color(status_color).child(phase)),
-            )
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Icon::new(Lucide::GitBranch)
-                            .size_3p5()
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .child(subtle(run.template().name.clone(), cx)),
-            );
         let repos = run
             .lanes()
             .iter()
             .map(|l| &l.project)
             .collect::<HashSet<_>>()
             .len();
-        meta = meta.child(subtle(
-            format!(
-                "{repos} {}",
-                if repos == 1 {
-                    "repository"
-                } else {
-                    "repositories"
-                }
-            ),
-            cx,
-        ));
+        let mut meta = h_flex()
+            .gap_x_4()
+            .gap_y_1()
+            .flex_wrap()
+            .child(status_pill(phase, status_color(status, cx)))
+            .child(meta_fact(Lucide::Workflow, run.template().name.clone(), cx))
+            .child(meta_fact(
+                Lucide::FolderGit2,
+                count(repos, "repository", "repositories"),
+                cx,
+            ));
         if let Some((start, end)) = range {
-            meta = meta.child(subtle(
+            meta = meta.child(meta_fact(
+                Lucide::Timer,
                 format!("{} elapsed", elapsed::duration(end.saturating_sub(start))),
                 cx,
             ));
@@ -137,15 +113,9 @@ impl RunView {
                 .filter(|row| row.attempt.is_some())
                 .count();
             if invocations > 0 {
-                meta = meta.child(subtle(
-                    format!(
-                        "{invocations} agent {}",
-                        if invocations == 1 {
-                            "session"
-                        } else {
-                            "sessions"
-                        }
-                    ),
+                meta = meta.child(meta_fact(
+                    Lucide::Bot,
+                    count(invocations, "agent session", "agent sessions"),
                     cx,
                 ));
             }
@@ -196,11 +166,16 @@ impl RunView {
                     .position(|t| *t == self.tab)
                     .unwrap_or_default(),
             )
-            .children(
-                RunTab::ALL
-                    .iter()
-                    .map(|tab| Tab::new().label(tab.label()).cursor_pointer()),
-            )
+            .children(RunTab::ALL.iter().map(|tab| {
+                // `Tab::icon` would drop the label, so the icon goes in as content.
+                // Without its own color it follows the tab's selected and idle text.
+                Tab::new().aria_label(tab.label()).cursor_pointer().child(
+                    h_flex()
+                        .gap_1p5()
+                        .child(Icon::new(tab.icon()).size_3p5())
+                        .child(tab.label()),
+                )
+            }))
             .on_click(cx.listener(|this, ix: &usize, _, cx| {
                 if let Some(tab) = RunTab::ALL.get(*ix) {
                     this.tab = *tab;
@@ -263,6 +238,20 @@ fn task_title(task: &str) -> String {
     } else {
         full.to_owned()
     }
+}
+
+/// A neutral fact about the run, shaped like the status pill so the row reads as one set.
+/// A read-only fact about the run: icon and muted text, with no outline that would read as a
+/// button.
+fn meta_fact(icon: Lucide, text: impl Into<SharedString>, cx: &App) -> Div {
+    let muted = cx.theme().muted_foreground;
+    h_flex()
+        .flex_none()
+        .gap_1p5()
+        .text_xs()
+        .text_color(muted)
+        .child(Icon::new(icon).size_3().text_color(muted))
+        .child(text.into())
 }
 
 #[cfg(test)]

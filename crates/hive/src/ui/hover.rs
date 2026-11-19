@@ -7,7 +7,6 @@
 //! idle and hover colors are both the eased mix, so the library's instant swap has nothing
 //! to swap. The pointer is tracked on a wrapper: a `Button` with a tooltip already owns its
 //! single `on_hover` slot, and a second listener panics.
-use gpui_kit::base::animation::Lerp as _;
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Colorize as _};
@@ -16,6 +15,10 @@ use gpui_kit::*;
 use std::time::Duration;
 
 const HOVER_DURATION: Duration = Duration::from_millis(140);
+/// For [`Hover::with_duration`] on rows that span a whole panel.
+pub(crate) const WIDE_HOVER_DURATION: Duration = Duration::from_millis(240);
+/// How much of the primary color stays under the pointer; the rest is the page background.
+const PRIMARY_HOVER_WEIGHT: f32 = 0.85;
 
 /// The eased hover state of one element, sampled for the frame being rendered.
 #[derive(Clone)]
@@ -29,13 +32,24 @@ pub(crate) struct Hover {
 impl Hover {
     /// `id` must be unique among the hoverable elements the current view renders.
     pub(crate) fn new(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> Self {
+        Self::with_duration(id, HOVER_DURATION, window, cx)
+    }
+
+    /// A wide surface changes a lot of pixels at once, so it eases over a longer `duration`
+    /// than the default to avoid reading as a flash.
+    pub(crate) fn with_duration(
+        id: impl Into<ElementId>,
+        duration: Duration,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
         let id: ElementId = id.into();
         let hovered = window.use_keyed_state((id.clone(), "hovered"), cx, |_, _| false);
         let target = if *hovered.read(cx) { 1. } else { 0. };
         let progress = transition(
             (id.clone(), "hover"),
             target,
-            Transition::new(HOVER_DURATION).ease(ease_in_out),
+            Transition::new(duration).ease(ease_in_out),
             window,
             cx,
         );
@@ -63,25 +77,49 @@ impl Hover {
 
     /// `idle` at rest, `hovered` under the pointer, eased in between.
     pub(crate) fn mix(&self, idle: Hsla, hovered: Hsla) -> Hsla {
-        // A transparent end fades in alpha only; lerping its black channels would dim the
-        // color on the way.
-        let idle = if idle.a == 0. {
-            hovered.alpha(0.)
-        } else {
-            idle
-        };
-        let hovered = if hovered.a == 0. {
-            idle.alpha(0.)
-        } else {
-            hovered
-        };
-        idle.lerp(&hovered, self.progress)
+        mix_colors(idle, hovered, self.progress)
     }
 
     pub(crate) fn listener(&self) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
         let state = self.hovered.clone();
         move |hovered, _, cx| set_hovered(&state, *hovered, cx)
     }
+}
+
+/// The color `progress` of the way from `idle` to `hovered`.
+///
+/// The channels are mixed as red, green and blue. Mixing hue, saturation and lightness
+/// instead turns the hue on its way from a gray to a color, so a gray border would flash
+/// through unrelated colors before it reached the accent.
+fn mix_colors(idle: Hsla, hovered: Hsla, progress: f32) -> Hsla {
+    // A transparent end fades in alpha only; mixing its black channels would dim the
+    // color on the way.
+    let idle = if idle.a == 0. {
+        hovered.alpha(0.)
+    } else {
+        idle
+    };
+    let hovered = if hovered.a == 0. {
+        idle.alpha(0.)
+    } else {
+        hovered
+    };
+    // The resting colors are returned as given, not after a round trip through RGB.
+    if progress <= 0. {
+        return idle;
+    }
+    if progress >= 1. {
+        return hovered;
+    }
+    let (from, to) = (Rgba::from(idle), Rgba::from(hovered));
+    let channel = |from: f32, to: f32| from + (to - from) * progress;
+    Rgba {
+        r: channel(from.r, to.r),
+        g: channel(from.g, to.g),
+        b: channel(from.b, to.b),
+        a: channel(from.a, to.a),
+    }
+    .into()
 }
 
 fn set_hovered(state: &Entity<bool>, hovered: bool, cx: &mut App) {
@@ -153,9 +191,13 @@ impl ButtonLook {
                 active_bg: theme.button_danger_active,
                 border: None,
             },
+            // Most bundled themes give primary the same hover color as its idle one, so
+            // the hover is derived: a step toward the page background reads in every theme.
             Self::Primary => ButtonColors {
                 idle_bg: theme.button_primary,
-                hover_bg: theme.button_primary_hover,
+                hover_bg: theme
+                    .button_primary
+                    .mix_oklab(theme.background, PRIMARY_HOVER_WEIGHT),
                 idle_fg: theme.button_primary_foreground,
                 hover_fg: theme.button_primary_foreground,
                 active_bg: theme.button_primary_active,
@@ -240,4 +282,54 @@ fn styled_button(button: Button, look: ButtonLook, hover: &Hover, cx: &App) -> B
         .when_some(colors.border, |button, border| {
             button.border_1().border_color(border)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mix_colors;
+    use gpui_kit::{Hsla, Rgba, hsla};
+
+    fn channels(color: Hsla) -> [f32; 4] {
+        let rgba = Rgba::from(color);
+        [rgba.r, rgba.g, rgba.b, rgba.a]
+    }
+
+    #[test]
+    fn a_gray_border_reaches_its_accent_without_passing_another_hue() {
+        let gray = hsla(0., 0., 0.2, 1.);
+        let blue = hsla(0.6, 1., 0.6, 0.6);
+        let (from, to) = (channels(gray), channels(blue));
+        for step in 1..10 {
+            let mixed = channels(mix_colors(gray, blue, step as f32 / 10.));
+            for ((mixed, from), to) in mixed.iter().zip(from).zip(to) {
+                let (low, high) = (from.min(to) - 0.002, from.max(to) + 0.002);
+                assert!(
+                    (low..=high).contains(mixed),
+                    "step {step}: {mixed} outside {low}..{high}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resting_colors_are_returned_exactly() {
+        let gray = hsla(0.1, 0.03, 0.2, 1.);
+        let blue = hsla(0.6, 1., 0.6, 0.6);
+        assert_eq!(mix_colors(gray, blue, 0.), gray);
+        assert_eq!(mix_colors(gray, blue, 1.), blue);
+    }
+
+    #[test]
+    fn a_transparent_end_only_fades_the_other_color() {
+        let clear = hsla(0., 0., 0., 0.);
+        let blue = hsla(0.6, 1., 0.6, 1.);
+        let half = channels(mix_colors(clear, blue, 0.5));
+        let full = channels(blue);
+        for index in 0..3 {
+            assert!((half[index] - full[index]).abs() < 0.002);
+        }
+        assert!((half[3] - 0.5).abs() < 0.002);
+        let fading = channels(mix_colors(blue, clear, 0.5));
+        assert!((fading[3] - 0.5).abs() < 0.002);
+    }
 }

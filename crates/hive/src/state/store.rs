@@ -66,6 +66,18 @@ impl Store {
         result
     }
 
+    /// [`Self::edit_pipelines`] for an edit that can be rejected. A rejected edit leaves the
+    /// library as it was, so nothing is saved or announced.
+    pub(crate) fn try_edit_pipelines<T, E>(
+        &mut self,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut hive_core::pipeline::Library) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let result = edit(&mut self.state.pipelines)?;
+        self.commit(cx);
+        Ok(result)
+    }
+
     /// False after a failed load (saving would overwrite the original file) or during shutdown.
     pub(crate) fn can_save(&self) -> bool {
         self.writer.is_some() && !self.stopping

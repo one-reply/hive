@@ -1,5 +1,6 @@
 use super::editor::{Item, TemplateEditor};
 use super::*;
+use crate::ui::hover::SmoothHoverBg as _;
 use hive_core::agent::{
     AgentKind,
     launch::{AGENTS, pipeline_efforts},
@@ -7,7 +8,10 @@ use hive_core::agent::{
 use hive_core::pipeline::Profile;
 
 mod agents;
+mod findings;
+mod instructions;
 mod models;
+use instructions::PromptPicker;
 use models::ModelPicker;
 pub(super) struct Inspector {
     picker: ModelPicker,
@@ -21,6 +25,10 @@ pub(super) struct Inspector {
     pub(super) agent: AgentKind,
     effort: String,
     route: Option<String>,
+    /// Library prompt the stage follows; `instruction` then shows that prompt's text.
+    prompt: Option<u64>,
+    /// Absent for a lane, which has a QA command instead of instructions.
+    prompt_picker: Option<PromptPicker>,
 }
 impl Inspector {
     pub(super) fn new(
@@ -29,24 +37,41 @@ impl Inspector {
         w: &mut Window,
         cx: &mut Context<TemplateEditor>,
     ) -> Self {
-        fn stage(step: &hive_core::pipeline::Step) -> (&str, &str, &Profile, u8, Option<String>) {
+        type Fields<'a> = (
+            &'a str,
+            &'a str,
+            &'a Profile,
+            u8,
+            Option<String>,
+            Option<u64>,
+        );
+        fn stage(step: &hive_core::pipeline::Step) -> Fields<'_> {
             (
                 &step.name,
                 &step.instruction,
                 &step.profile,
                 step.limit,
                 step.return_lane.clone(),
+                step.prompt,
             )
         }
-        let (name, body, profile, limit, route) = match item {
+        let (name, body, profile, limit, route, prompt) = match item {
             Item::Planner => stage(&t.planner),
             Item::Development => stage(&t.development),
             Item::Review(i) => stage(&t.reviews[i]),
             Item::Lane(i) => {
                 let l = &t.lanes[i];
-                (l.name.as_str(), l.command.as_str(), &l.profile, 3, None)
+                (
+                    l.name.as_str(),
+                    l.command.as_str(),
+                    &l.profile,
+                    3,
+                    None,
+                    None,
+                )
             }
         };
+        let is_stage = !matches!(item, Item::Lane(_));
         ensure_models(profile.agent, cx);
         Self {
             picker: ModelPicker::new(profile.agent, &profile.model, t, w, cx),
@@ -60,6 +85,8 @@ impl Inspector {
             agent: profile.agent,
             effort: profile.effort.clone(),
             route,
+            prompt,
+            prompt_picker: is_stage.then(|| PromptPicker::new(prompt, w, cx)),
         }
     }
     pub(super) fn apply(&self, item: Item, t: &mut Template, cx: &App) -> Result<(), String> {
@@ -98,6 +125,7 @@ impl Inspector {
         }
         step.name = name;
         step.instruction = body;
+        step.prompt = self.prompt;
         step.profile = profile;
         Ok(())
     }
@@ -129,21 +157,24 @@ impl TemplateEditor {
     fn stage_identity(&self, w: &mut Window, cx: &mut Context<Self>) -> Div {
         let form = &self.inspector;
         let kind = self.role(self.selected);
-        let color = kind.color(cx);
         let lane = matches!(self.selected, Item::Lane(_));
         let title = form.name.read(cx).value();
         let mut identity = v_flex().gap_2().child(
             h_flex()
                 .gap_2()
-                .child(Icon::new(kind.icon()).size_4().text_color(color))
-                .child(subtle(
-                    if lane {
-                        "Development lane"
-                    } else {
-                        kind.label()
-                    },
-                    cx,
-                )),
+                .child(kind.tile(cx))
+                .child(
+                    subtle(
+                        if lane {
+                            "Development lane"
+                        } else {
+                            kind.label()
+                        },
+                        cx,
+                    )
+                    .flex_1(),
+                )
+                .children(self.ordering(cx)),
         );
         if form.rename {
             identity = identity.child(
@@ -194,144 +225,33 @@ impl TemplateEditor {
         }
         identity
     }
-    fn instructions(&self, w: &mut Window, cx: &mut Context<Self>) -> Div {
-        let form = &self.inspector;
-        let prompt = form.instruction.read(cx).value();
-        let lane = matches!(self.selected, Item::Lane(_));
-        let mut prompt_box = v_flex()
-            .gap_2()
-            .pt_3()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .child(div().flex_1().child(heading(if lane {
-                        "Required QA command"
-                    } else {
-                        "Instructions"
-                    })))
-                    .child(icon_action(
-                        "edit-stage-prompt",
-                        if form.edit_prompt {
-                            "Finish editing"
-                        } else {
-                            "Edit"
-                        },
-                        if form.edit_prompt {
-                            Lucide::Check
-                        } else {
-                            Lucide::Pencil
-                        },
-                        w,
-                        cx,
-                        |s: &mut Self, w, cx| {
-                            s.inspector.edit_prompt = !s.inspector.edit_prompt;
-                            if s.inspector.edit_prompt {
-                                s.inspector
-                                    .instruction
-                                    .read(cx)
-                                    .focus_handle(cx)
-                                    .focus(w, cx);
-                            }
-                            cx.notify()
-                        },
-                    )),
-            );
-        if form.edit_prompt {
-            prompt_box = prompt_box.child(TextField::textarea(
-                Textarea::new(&form.instruction),
-                &form.instruction,
-                cx,
-            ));
-        } else {
-            prompt_box = prompt_box.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(if prompt.is_empty() {
-                        if lane {
-                            "No command required".into()
-                        } else {
-                            "No instructions".into()
-                        }
-                    } else {
-                        prompt
-                    }),
-            );
-        }
-        prompt_box
-    }
-    fn review_routing(&self, cx: &mut Context<Self>) -> Div {
-        let form = &self.inspector;
-        let mut routes = vec![(None, "Affected lanes".into())];
-        routes.extend(
-            self.template
-                .lanes
-                .iter()
-                .map(|l| (Some(l.name.clone()), l.name.clone())),
-        );
-        let mut limits = vec![1, 2, 3, 4, 5];
-        if !limits.contains(&form.limit) {
-            limits.push(form.limit);
-        }
-        let options = limits
-            .into_iter()
-            .map(|n| {
-                (
-                    n,
-                    format!("{n} {}", if n == 1 { "round" } else { "rounds" }),
-                )
-            })
-            .collect();
-        v_flex()
-            .gap_2()
-            .pt_3()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Icon::new(Lucide::CornerUpLeft)
-                            .size_3p5()
-                            .text_color(cx.theme().warning),
-                    )
-                    .child(heading("Findings")),
-            )
-            .child(setting(
-                "Return to",
-                choice(
-                    "stage-route",
-                    &form.route,
-                    routes,
-                    cx,
-                    |s: &mut Self, r, _, _| {
-                        if let Item::Review(i) = s.selected {
-                            s.template.reviews[i].return_lane = r.clone();
-                        }
-                        s.inspector.route = r
-                    },
-                ),
-                cx,
-            ))
-            .child(setting(
-                "Ask after",
-                choice(
-                    "stage-limit",
-                    &form.limit,
-                    options,
-                    cx,
-                    |s: &mut Self, n, _, _| s.inspector.limit = n,
-                ),
-                cx,
-            ))
-    }
 }
 
-fn setting(label: &'static str, value: AnyElement, cx: &App) -> Div {
+/// One block of the inspector, divided from the block above it.
+fn section(cx: &App) -> Div {
+    v_flex()
+        .gap_3()
+        .pt_4()
+        .border_t_1()
+        .border_color(cx.theme().border)
+}
+
+/// A section's icon and name. Trailing actions added by the caller sit at the far end.
+fn section_title(icon: Lucide, title: &'static str, cx: &App) -> Div {
     h_flex()
         .gap_2()
-        .justify_between()
-        .child(subtle(label, cx).flex_none())
-        .child(div().min_w_0().overflow_hidden().child(value))
+        .child(
+            Icon::new(icon)
+                .size_3p5()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(heading(title).flex_1())
+}
+
+/// A label above its control: the panel is too narrow for both on one line.
+fn setting(label: &'static str, value: AnyElement, cx: &App) -> Div {
+    v_flex()
+        .gap_1p5()
+        .child(subtle(label, cx))
+        .child(div().w_full().min_w_0().child(value))
 }

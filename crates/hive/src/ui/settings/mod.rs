@@ -5,6 +5,7 @@ mod ai;
 mod appearance;
 mod files;
 mod git;
+mod pipelines;
 mod project;
 mod shortcuts;
 mod terminal;
@@ -53,35 +54,42 @@ pub fn init(cx: &mut App) {
 
 /// Brings the settings window to the front, opening it if it isn't open yet.
 pub fn open(cx: &mut App) {
-    open_at(None, None, cx);
+    open_at(Target::Current, cx);
 }
 
 /// Opens the settings window on the page of the project at `path`.
 pub fn open_project(host: &Host, path: &Path, cx: &mut App) {
-    open_at(Some((host.clone(), path.to_path_buf())), None, cx);
+    open_at(Target::Project(host.clone(), path.to_path_buf()), cx);
 }
 
 pub(crate) fn open_git(cx: &mut App) {
-    open_at(None, Some(Page::Git), cx);
+    open_at(Target::Page(Page::Git), cx);
 }
 
 pub(crate) fn open_files(cx: &mut App) {
-    open_at(None, Some(Page::Files), cx);
+    open_at(Target::Page(Page::Files), cx);
 }
 
-fn open_at(project: Option<(Host, PathBuf)>, page: Option<Page>, cx: &mut App) {
+/// Opens the Pipelines page with the library prompt `id` ready to edit.
+pub(crate) fn open_prompt(id: u64, cx: &mut App) {
+    open_at(Target::Prompt(id), cx);
+}
+
+/// Where the settings window lands when it opens or comes to the front.
+enum Target {
+    /// What it already shows; the first page when it opens.
+    Current,
+    Project(Host, PathBuf),
+    Page(Page),
+    Prompt(u64),
+}
+
+fn open_at(target: Target, cx: &mut App) {
     if let Some(root) = settings_window(cx) {
         let shown = root.update(cx, |root, window, cx| {
             window.activate_window();
             if let Ok(settings) = root.view().clone().downcast::<SettingsWindow>() {
-                settings.update(cx, |settings, cx| {
-                    if let Some(project) = project {
-                        settings.show_project(project, window, cx);
-                    }
-                    if let Some(page) = page {
-                        settings.show_page(page, window, cx);
-                    }
-                });
+                settings.update(cx, |settings, cx| settings.show(target, window, cx));
             }
         });
         if let Err(err) = shown {
@@ -105,12 +113,7 @@ fn open_at(project: Option<(Host, PathBuf)>, page: Option<Page>, cx: &mut App) {
     if let Err(err) = gpui_kit::open_window(options, cx, |window, cx| {
         cx.new(|cx| {
             let mut settings = SettingsWindow::new(window, cx);
-            if let Some(project) = project {
-                settings.show_project(project, window, cx);
-            }
-            if let Some(page) = page {
-                settings.show_page(page, window, cx);
-            }
+            settings.show(target, window, cx);
             settings
         })
     }) {
@@ -136,6 +139,7 @@ enum Page {
     Terminal,
     Ai,
     Git,
+    Pipelines,
     Files,
     Updates,
 }
@@ -149,7 +153,13 @@ impl Page {
         ),
         (
             "Workspace",
-            &[Page::Terminal, Page::Ai, Page::Git, Page::Files],
+            &[
+                Page::Terminal,
+                Page::Ai,
+                Page::Git,
+                Page::Pipelines,
+                Page::Files,
+            ],
         ),
     ];
 
@@ -160,6 +170,7 @@ impl Page {
             Page::Terminal => "Terminal",
             Page::Ai => "AI",
             Page::Git => "Git",
+            Page::Pipelines => "Pipelines",
             Page::Files => "Files",
             Page::Updates => "Updates",
         }
@@ -173,6 +184,7 @@ impl Page {
             }
             Page::Terminal => "Terminal appearance and the default CLI agent.",
             Page::Git => "Hosting accounts and commit generation.",
+            Page::Pipelines => "Reusable prompts for the stages of your pipeline templates.",
             Page::Files => "File appearance and navigation for every local worktree.",
             Page::Updates => "Your version of Hive and software updates.",
             Page::Ai => {
@@ -188,6 +200,7 @@ impl Page {
             Page::Terminal => Lucide::SquareTerminal,
             Page::Ai => Lucide::Sparkles,
             Page::Git => Lucide::GitBranch,
+            Page::Pipelines => Lucide::Workflow,
             Page::Files => Lucide::Folder,
             Page::Updates => Lucide::Download,
         }
@@ -206,6 +219,7 @@ pub struct SettingsWindow {
     shortcuts: Entity<ShortcutsPage>,
     ai: Entity<AiPage>,
     git: Entity<git::GitPage>,
+    pipelines: Entity<pipelines::PipelinesPage>,
     updates: Entity<updates::UpdatesPage>,
     _subscriptions: Vec<Subscription>,
 }
@@ -222,6 +236,7 @@ impl SettingsWindow {
             shortcuts: cx.new(ShortcutsPage::new),
             ai: cx.new(|cx| AiPage::new(window, cx)),
             git: cx.new(|cx| git::GitPage::new(window, cx)),
+            pipelines: cx.new(|cx| pipelines::PipelinesPage::new(window, cx)),
             updates: cx.new(updates::UpdatesPage::new),
             _subscriptions: vec![
                 cx.observe(&store, |this, _, cx| {
@@ -237,6 +252,19 @@ impl SettingsWindow {
                     }
                 }),
             ],
+        }
+    }
+
+    fn show(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        match target {
+            Target::Current => {}
+            Target::Project(host, path) => self.show_project((host, path), window, cx),
+            Target::Page(page) => self.show_page(page, window, cx),
+            Target::Prompt(id) => {
+                self.show_page(Page::Pipelines, window, cx);
+                self.pipelines
+                    .update(cx, |page, cx| page.edit(id, window, cx));
+            }
         }
     }
 
@@ -438,6 +466,7 @@ impl SettingsWindow {
                     Page::Terminal => terminal::render(window, cx).into_any_element(),
                     Page::Ai => self.ai.clone().into_any_element(),
                     Page::Git => self.git.clone().into_any_element(),
+                    Page::Pipelines => self.pipelines.clone().into_any_element(),
                     Page::Files => files::render(window, cx).into_any_element(),
                     Page::Updates => self.updates.clone().into_any_element(),
                 };

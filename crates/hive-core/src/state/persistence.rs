@@ -36,8 +36,9 @@ pub enum StateError {
 }
 
 /// Version 2 protects pipeline history on downgrade: v1 preserves newer files before rewriting them.
-/// Unversioned and v1 files load with defaults for any missing sections.
-pub const SCHEMA_VERSION: u32 = 2;
+/// Version 3 does the same for the pipeline prompt library and the stage links into it.
+/// Older and unversioned files load with defaults for any missing sections.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Loaded state and, when the file could not be used as written, what happened to it.
 pub struct LoadedState {
@@ -239,7 +240,10 @@ impl State {
 
 /// Retain independent runs and templates when a sibling checkpoint cannot be recovered.
 fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::Library {
-    use crate::pipeline::{Library, Run, Template};
+    use crate::pipeline::{
+        CATALOG_VERSION, Library, Prompt, Run, Template, link_stock_prompts,
+        refresh_stock_instructions, stock_prompts,
+    };
     use std::collections::HashSet;
     let Some(value) = value else {
         return Library::default();
@@ -306,11 +310,38 @@ fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::L
             }
         }
     }
-    Library {
-        templates,
-        runs,
-        catalog_version: catalog_version.max(1),
+    if catalog_version < 2 {
+        refresh_stock_instructions(&mut templates);
     }
+    let mut prompt_ids = HashSet::new();
+    let mut prompt_names = HashSet::new();
+    // A library saved before prompts existed, or whose list is unreadable, starts from the
+    // built-in prompts. A stored list is the user's and stays as it is, even when empty.
+    let prompts = match object.get("prompts") {
+        Some(stored) if stored.is_array() => {
+            items(Some(stored), "pipelines.prompts", lost, |p: &Prompt| {
+                p.is_complete()
+                    && prompt_ids.insert(p.id)
+                    && prompt_names.insert(p.name.to_ascii_lowercase())
+            })
+        }
+        stored => {
+            if stored.is_some() {
+                lost.push("pipelines.prompts".into());
+            }
+            link_stock_prompts(&mut templates);
+            stock_prompts()
+        }
+    };
+    let mut library = Library {
+        templates,
+        prompts,
+        runs,
+        catalog_version: catalog_version.max(CATALOG_VERSION),
+    };
+    // A stage whose prompt was dropped above keeps its mirrored text as its own instructions.
+    library.sync_prompts();
+    library
 }
 
 /// A top-level section, or its default when absent or unreadable.
@@ -483,7 +514,7 @@ mod tests {
         state.pipelines.runs.push(run.clone());
         state.save_to(&path).unwrap();
         let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["version"], SCHEMA_VERSION);
         saved["version"] = 1.into();
         fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
         let previous = State::load_from(&fixture.0).unwrap();
@@ -491,7 +522,7 @@ mod tests {
         assert_eq!(previous.state.pipelines, state.pipelines);
         previous.state.save_to(&path).unwrap();
         saved = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["version"], SCHEMA_VERSION);
         saved["pipelines"]["unknown_future_field"] = 42.into();
         let mut malformed = saved["pipelines"]["runs"][0].clone();
         malformed["id"] = 18.into();
@@ -514,9 +545,40 @@ mod tests {
     }
 
     #[test]
+    fn catalog_version_one_recipes_receive_current_stock_instructions_once() {
+        use crate::pipeline::Template;
+        let step = |name: &str, instruction: &str| serde_json::json!({"name": name, "instruction": instruction, "profile": {"agent": "Codex"}});
+        let saved = serde_json::json!({
+            "catalog_version": 1,
+            "templates": [{
+                "name": "Quick fix",
+                "planner": step("Plan", "Identify the root cause, the smallest complete fix and a regression check."),
+                "development": step("Development", "Implement the approved assignment in your worktree. Report what changed and what you verified."),
+                "reviews": [step("QA", "Custom QA")],
+                "lanes": [{"name": "Development"}]
+            }]
+        });
+        let mut lost = vec![];
+        let library = pipelines(Some(saved), &mut lost);
+        assert!(lost.is_empty(), "{lost:?}");
+        let fix = &Template::presets()[1];
+        assert_eq!(library.templates[0].planner, fix.planner);
+        assert_eq!(library.templates[0].development, fix.development);
+        assert_eq!(library.templates[0].reviews[0].instruction, "Custom QA");
+
+        let mut restored = library.clone();
+        restored.templates[0].planner.prompt = None;
+        restored.templates[0].planner.instruction =
+            "Identify the root cause, the smallest complete fix and a regression check.".into();
+        let reloaded = pipelines(Some(serde_json::to_value(&restored).unwrap()), &mut lost);
+        assert_eq!(reloaded, restored);
+    }
+
+    #[test]
     fn upgrading_recipe_catalog_preserves_edits_and_does_not_restore_renamed_recipes() {
         use crate::pipeline::Template;
         let mut original = Template::default();
+        original.planner.prompt = None;
         original.planner.instruction = "Custom planning instructions".into();
         let mut lost = vec![];
         let mut library = pipelines(
@@ -551,6 +613,134 @@ mod tests {
         );
         assert!(lost.is_empty(), "{lost:?}");
         assert_eq!(library.templates, [retired, lowercase]);
+    }
+
+    /// A template the way a file saved before prompt links holds it: no `prompt` fields.
+    fn without_links(mut template: crate::pipeline::Template) -> crate::pipeline::Template {
+        template.planner.prompt = None;
+        template.development.prompt = None;
+        for review in &mut template.reviews {
+            review.prompt = None;
+        }
+        template
+    }
+
+    #[test]
+    fn version_two_library_gains_stock_prompts_and_links_only_unedited_stages() {
+        use crate::pipeline::{Lane, Library, ReviewKind, Run, Template};
+        let stock = Library::default();
+        let mut saved = without_links(Template::default());
+        saved.development.instruction = "House development rules".into();
+        saved.reviews.push(stock.review_step(ReviewKind::Code));
+        let saved = without_links(saved);
+        let run = Run::new(
+            7,
+            "/api".into(),
+            "Task".into(),
+            saved.clone(),
+            vec![Lane {
+                name: "Development".into(),
+                project: "/api".into(),
+                base: "HEAD".into(),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        let file = serde_json::json!({"catalog_version": 2, "templates": [saved], "runs": [run]});
+        assert!(!file.to_string().contains("\"prompt\""));
+
+        let mut lost = vec![];
+        let library = pipelines(Some(file), &mut lost);
+
+        assert!(lost.is_empty(), "{lost:?}");
+        assert_eq!(library.prompts(), stock.prompts());
+        let loaded = &library.templates[0];
+        assert_eq!(loaded.planner, Template::default().planner);
+        assert_eq!(loaded.development, saved.development);
+        assert_eq!(loaded.reviews[0], Template::default().reviews[0]);
+        assert_eq!(loaded.reviews[2], stock.review_step(ReviewKind::Code));
+        assert_eq!(library.runs, [run]);
+        let reloaded = pipelines(Some(serde_json::to_value(&library).unwrap()), &mut lost);
+        assert!(lost.is_empty(), "{lost:?}");
+        assert_eq!(reloaded, library);
+    }
+
+    #[test]
+    fn damaged_or_duplicate_prompts_are_dropped_and_their_stages_keep_the_text() {
+        use crate::pipeline::Template;
+        let mut template = without_links(Template::default());
+        template.planner.prompt = Some(1001);
+        template.planner.instruction = "Kept planning text".into();
+        template.development.prompt = Some(1000);
+        template.development.instruction = "Stale copy".into();
+        let file = serde_json::json!({
+            "catalog_version": 2,
+            "templates": [template],
+            "prompts": [
+                {"id": 1000, "name": "Mine", "text": "Current text", "future_field": true},
+                {"id": 1000, "name": "Same id", "text": "B"},
+                {"id": 1001, "name": "mine", "text": "C"},
+                {"id": 1002, "name": " ", "text": "D"},
+                {"id": "broken"},
+            ],
+        });
+        let mut lost = vec![];
+        let library = pipelines(Some(file), &mut lost);
+
+        assert_eq!(
+            lost,
+            [1, 2, 3, 4].map(|index| format!("pipelines.prompts[{index}]"))
+        );
+        assert_eq!(library.prompts().len(), 1);
+        assert_eq!(library.prompt(1000).unwrap().name, "Mine");
+        let loaded = &library.templates[0];
+        assert_eq!(loaded.planner.prompt, None);
+        assert_eq!(loaded.planner.instruction, "Kept planning text");
+        assert_eq!(loaded.development.prompt, Some(1000));
+        assert_eq!(loaded.development.instruction, "Current text");
+    }
+
+    #[test]
+    fn emptied_prompt_library_stays_empty_after_reload() {
+        use crate::pipeline::Library;
+        let mut library = Library::default();
+        let unlinked: Vec<_> = library
+            .templates
+            .iter()
+            .cloned()
+            .map(without_links)
+            .collect();
+        for id in library.prompts().iter().map(|p| p.id).collect::<Vec<_>>() {
+            library.delete_prompt(id).unwrap();
+        }
+        let mut lost = vec![];
+        let reloaded = pipelines(Some(serde_json::to_value(&library).unwrap()), &mut lost);
+        assert!(lost.is_empty(), "{lost:?}");
+        assert!(reloaded.prompts().is_empty());
+        assert_eq!(reloaded.templates, unlinked);
+    }
+
+    #[test]
+    fn library_stripped_by_an_older_build_is_reseeded_and_relinked() {
+        use crate::pipeline::Library;
+        // An older build drops the fields it does not know and writes the rest back.
+        let stripped = Library {
+            templates: Library::default()
+                .templates
+                .into_iter()
+                .map(without_links)
+                .collect(),
+            ..Library::default()
+        };
+        let mut file = serde_json::to_value(&stripped).unwrap();
+        file.as_object_mut().unwrap().remove("prompts");
+        let mut lost = vec![];
+        assert_eq!(pipelines(Some(file.clone()), &mut lost), Library::default());
+        assert!(lost.is_empty(), "{lost:?}");
+
+        file["prompts"] = 5.into();
+        assert_eq!(pipelines(Some(file), &mut lost), Library::default());
+        assert_eq!(lost, ["pipelines.prompts"]);
     }
 
     #[test]

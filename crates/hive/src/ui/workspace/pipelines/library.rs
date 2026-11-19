@@ -1,30 +1,32 @@
 //! The library previews executable routes and the selected project's actual runs.
 use super::*;
-use crate::ui::hover::SmoothHoverBg as _;
+use crate::state::pipelines::RunStatus;
+use crate::ui::hover::{SmoothHoverBg as _, WIDE_HOVER_DURATION};
 use gpui_kit::component::{
     button::{ButtonVariant, ButtonVariants as _},
     menu::{ContextMenuExt as _, PopupMenu},
 };
 
-fn count(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
-}
+/// Strength of the selection accent a hovered, unselected template card's border eases to.
+const HOVER_BORDER_OPACITY: f32 = 0.6;
+
 impl PipelinePanel {
     pub(super) fn library(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let lib = &AppState::get(cx).store.read(cx).state.pipelines;
+        let state = AppState::get(cx);
+        let pipelines = state.pipelines.read(cx);
+        let lib = &state.store.read(cx).state.pipelines;
         let templates = lib.templates.clone();
         let runs = lib
             .runs
             .iter()
             .rev()
             .filter(|r| r.owner() == self.project)
-            .map(|r| {
-                (
-                    r.id(),
-                    r.task().to_owned(),
-                    r.template().name.clone(),
-                    phase_label(r),
-                )
+            .map(|r| RunRow {
+                id: r.id(),
+                task: r.task().to_owned(),
+                template: r.template().name.clone(),
+                phase: phase_label(r),
+                status: pipelines.status(r, cx),
             })
             .collect::<Vec<_>>();
         let selected = templates
@@ -34,7 +36,7 @@ impl PipelinePanel {
         let mut actions = h_flex().gap_2().flex_wrap().child(button_with_size(
             "new-template",
             "New template",
-            ButtonLook::Ghost,
+            ButtonLook::Outline,
             ButtonSize::Medium,
             window,
             cx,
@@ -52,6 +54,7 @@ impl PipelinePanel {
                 move |p, w, cx| p.launch(launch.clone(), w, cx),
             ));
         }
+        let history_is_empty = runs.is_empty();
         let mut cards = h_flex().items_stretch().gap_3().flex_wrap();
         for (i, t) in templates.iter().enumerate() {
             let id = SharedString::from(format!("workflow-template-{}", t.name));
@@ -130,57 +133,29 @@ impl PipelinePanel {
                 .max_w(rems(20.))
                 .flex_1()
                 .border_1()
-                .border_color(if selected { accent } else { cx.theme().border })
+                .bg(cx.theme().sidebar)
+                .border_color(if selected {
+                    accent
+                } else {
+                    hover.mix(cx.theme().border, accent.opacity(HOVER_BORDER_OPACITY))
+                })
+                .on_hover(hover.listener())
                 .rounded_lg()
                 .overflow_hidden()
                 .cursor_pointer()
                 .focus_visible(move |s| s.border_color(accent))
                 .child(map::miniature(t, cx))
                 .child(bottom);
-            cards = cards.child(
-                on_activate(card, cx, pick)
-                    .hover_bg(&hover, cx.theme().sidebar, cx.theme().accent)
-                    .context_menu(menu),
-            );
+            cards = cards.child(on_activate(card, cx, pick).context_menu(menu));
         }
         if templates.is_empty() {
             cards = cards.child(subtle("Create a template to start a run.", cx));
         }
-        let mut history = v_flex().when(!runs.is_empty(), |e| {
-            e.border_t_1().border_color(cx.theme().border)
-        });
-        for (i, (id, task, name, status)) in runs.iter().enumerate() {
-            let id = *id;
-            history = history.child(
-                h_flex()
-                    .gap_3()
-                    .py_2p5()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        Icon::new(Lucide::GitPullRequest)
-                            .size_4()
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().truncate().text_sm().child(task.clone()))
-                            .child(subtle(name.clone(), cx)),
-                    )
-                    .child(subtle(status.clone(), cx))
-                    .child(button(
-                        ("open-run", i),
-                        "Open",
-                        ButtonLook::Ghost,
-                        window,
-                        cx,
-                        move |p, w, cx| p.show_run(id, w, cx),
-                    )),
-            );
+        let mut history = v_flex().gap_1();
+        for (i, row) in runs.into_iter().enumerate() {
+            history = history.child(run_row(i, row, window, cx));
         }
-        if runs.is_empty() {
+        if history_is_empty {
             history = history.child(
                 h_flex()
                     .gap_2()
@@ -221,6 +196,82 @@ impl PipelinePanel {
                 ),
         )
     }
+}
+
+/// What the run list shows of one run, read out of the store before rendering.
+struct RunRow {
+    id: u64,
+    task: String,
+    template: String,
+    phase: String,
+    status: RunStatus,
+}
+
+fn run_row(
+    ix: usize,
+    row: RunRow,
+    window: &mut Window,
+    cx: &mut Context<PipelinePanel>,
+) -> AnyElement {
+    let hover = Hover::with_duration(("recent-run", ix), WIDE_HOVER_DURATION, window, cx);
+    let color = status_color(row.status, cx);
+    let focus = cx.theme().ring;
+    let id = row.id;
+    // A finished run's phase repeats its status, so only a live one names the stage it is in.
+    let detail = match row.status {
+        RunStatus::Completed | RunStatus::Cancelled => row.template,
+        _ => format!("{}  ·  {}", row.template, row.phase),
+    };
+    let label = format!("{}, {}", row.task, row.status.label());
+    let row_element = h_flex()
+        .id(("recent-run", ix))
+        .role(Role::Button)
+        .aria_label(label)
+        .tab_index(0)
+        .gap_3()
+        .px_3()
+        .py_2p5()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .cursor_pointer()
+        .focus_visible(move |s| s.border_color(focus))
+        .child(
+            h_flex()
+                .size_8()
+                .flex_none()
+                .justify_center()
+                .rounded_md()
+                .bg(color.opacity(STATUS_TINT_OPACITY))
+                .child(
+                    Icon::new(status_icon(row.status))
+                        .size_4()
+                        .text_color(color),
+                ),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(
+                    div()
+                        .truncate()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(row.task),
+                )
+                .child(subtle(detail, cx).truncate()),
+        )
+        .child(status_pill(row.status.label(), color))
+        .child(
+            Icon::new(Lucide::ChevronRight)
+                .size_4()
+                .text_color(cx.theme().muted_foreground),
+        );
+    on_activate(row_element, cx, move |p, w, cx| p.show_run(id, w, cx))
+        .hover_bg(&hover, cx.theme().background, cx.theme().muted)
+        .into_any_element()
 }
 
 fn template_menu(menu: PopupMenu, panel: &Entity<PipelinePanel>, template: &Template) -> PopupMenu {

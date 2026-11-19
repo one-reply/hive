@@ -203,6 +203,24 @@ pub fn delete(host: &Host, cwd: &Path, name: &str, force: bool) -> Result<(), Gi
     super::run_mutation(host, cwd, &["branch", flag, "--", name]).map(drop)
 }
 
+/// Whether `name` is a branch Git accepts, decided without running Git so a form can check
+/// it on every keystroke. Follows `git check-ref-format --branch` for literal names.
+pub fn is_valid_name(name: &str) -> bool {
+    const FORBIDDEN: &[char] = &[' ', '~', '^', ':', '?', '*', '[', '\\'];
+    !name.is_empty()
+        && name != "@"
+        && !name.starts_with('-')
+        && !name.ends_with('.')
+        && !name.contains("..")
+        && !name.contains("@{")
+        && !name
+            .chars()
+            .any(|c| c.is_ascii_control() || FORBIDDEN.contains(&c))
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
+}
+
 fn validate_name(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {
     if name.starts_with('-') || name.contains("@{") || name.is_empty() {
         return Err(GitError::Invalid("Enter a literal Git branch name.".into()));
@@ -212,7 +230,26 @@ fn validate_name(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Branch, default_start, short_name};
+    use super::{Branch, default_start, is_valid_name, short_name};
+
+    #[test]
+    fn branch_names_follow_git_ref_rules() {
+        for name in [
+            "develop",
+            "feature/login",
+            "fix-1.2",
+            "user/v2_beta",
+            "ünïcode",
+        ] {
+            assert!(is_valid_name(name), "{name}");
+        }
+        for name in [
+            "", "@", "-flag", "a..b", "a b", "end.", "a//b", "/lead", "trail/", ".hidden",
+            "x/.dot", "ref.lock", "a@{1}", "a~1", "a^", "a:b", "a?", "a*", "a[", "a\\b", "tab\t",
+        ] {
+            assert!(!is_valid_name(name), "{name:?}");
+        }
+    }
 
     fn branch(reference: &str) -> Branch {
         Branch {

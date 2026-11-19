@@ -47,7 +47,16 @@ impl Pipelines {
     ) -> Result<(), String> {
         draft.validate().map_err(|e| e.to_string())?;
         let library = &self.store.read(cx).state.pipelines;
-        let slot = library.template_slot(original, &draft.name)?;
+        // The prompt library may have changed while the draft was open: a linked stage takes
+        // the current text, and the loaded copy is brought to what the library now holds.
+        let mut draft = draft;
+        draft.sync_prompts(library.prompts());
+        let original = original.map(|loaded| {
+            let mut current = loaded.clone();
+            current.sync_prompts(library.prompts());
+            current
+        });
+        let slot = library.template_slot(original.as_ref(), &draft.name)?;
         self.store.update(cx, |s, cx| {
             s.edit_pipelines(cx, |library: &mut Library| match slot {
                 Some(index) => library.templates[index] = draft,

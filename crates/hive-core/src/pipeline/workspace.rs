@@ -64,16 +64,25 @@ fn repository(path: &Path) -> Result<Project, GitError> {
     Ok(project)
 }
 
-fn branch(run: u64) -> String {
-    format!("pipeline-{run:x}")
+/// The lane's chosen branch, or the generated one of runs saved before the user chose it.
+fn branch(run: u64, lane: &Lane) -> String {
+    match lane.branch.trim() {
+        "" => format!("pipeline-{run:x}"),
+        name => name.to_owned(),
+    }
+}
+
+/// Branch names may nest with `/`; the checkout folder stays one level deep.
+fn checkout_path(project: &Project, branch: &str) -> PathBuf {
+    project.worktrees_dir().join(worktree::folder_name(branch))
 }
 
 /// Create a private worktree or recover the exact checkout registered under this run's branch.
 /// An interrupted preparation can be retried without destroying files already created.
 pub fn prepare(run: u64, lane: &Lane, stop: &Cancellation) -> Result<PathBuf, WorktreeError> {
     let project = repository(&lane.project)?;
-    let name = branch(run);
-    let intended = project.worktrees_dir().join(&name);
+    let name = branch(run, lane);
+    let intended = checkout_path(&project, &name);
     if !lane.worktree.as_os_str().is_empty() && lane.worktree != intended {
         return Err(GitError::Invalid("Pipeline checkout path has changed.".into()).into());
     }
@@ -128,7 +137,25 @@ pub fn prepare(run: u64, lane: &Lane, stop: &Cancellation) -> Result<PathBuf, Wo
         confirm_unused_checkout(&intended, &oid)?;
         return Ok(intended);
     }
-    Ok(worktree::create_stoppable(&project, Some(&name), Some(&oid), stop)?.path)
+    // The branch keeps the user's exact name; only its folder is sanitized.
+    let path = worktree::path_argument(&intended)?;
+    git::run_stoppable(
+        &Host::Local,
+        &project.path,
+        &[
+            "worktree",
+            "add",
+            "--no-track",
+            "-b",
+            &name,
+            "--",
+            path,
+            &oid,
+        ],
+        stop,
+    )?;
+    tracing::info!(path = ?intended, base = %oid, "created pipeline worktree");
+    Ok(intended)
 }
 
 /// No agent has used a checkout the run has not recorded, so it must equal the base commit.
@@ -152,8 +179,8 @@ fn confirm_unused_checkout(path: &Path, base: &str) -> Result<(), GitError> {
 /// Check checkout registration before background agents or commands operate on a recovered run.
 pub fn verify(run: u64, lane: &Lane) -> Result<(), GitError> {
     let project = repository(&lane.project)?;
-    let name = branch(run);
-    if lane.worktree != project.worktrees_dir().join(&name)
+    let name = branch(run, lane);
+    if lane.worktree != checkout_path(&project, &name)
         || !project
             .worktrees
             .iter()

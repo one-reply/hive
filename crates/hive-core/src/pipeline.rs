@@ -5,17 +5,24 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 mod outcome;
+mod presets;
+pub(crate) mod prompts;
 mod recipe;
 mod record;
 mod run;
 mod stage;
+mod stock;
 mod timing;
 mod transitions;
 pub mod workspace;
 pub use outcome::{CheckTally, readable_history};
+pub(crate) use presets::refresh_stock_instructions;
+pub use prompts::Prompt;
 pub use recipe::unique_name;
 pub use run::{Phase, Run, StageTiming, Ticket};
 pub use stage::{Stage, StageStatus};
+pub use stock::ReviewKind;
+pub(crate) use stock::{link_stock_prompts, stock_prompts};
 pub use timing::now_ms;
 
 /// Invalid pipeline input or an operation inconsistent with the current checkpoint.
@@ -50,6 +57,10 @@ impl From<Error> for String {
     }
 }
 
+/// Version of the starter catalog: 1 added the extra starter recipes, 2 rewrote their stock
+/// instructions.
+pub(crate) const CATALOG_VERSION: u64 = 2;
+
 /// Shared templates and independently resumable task runs on this installation.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -58,6 +69,8 @@ pub struct Library {
     pub(crate) catalog_version: u64,
     /// Editable recipes available in every local project.
     pub templates: Vec<Template>,
+    // Unique ids and names, mirrored into linked stages: changed only through `prompts.rs`.
+    pub(crate) prompts: Vec<Prompt>,
     /// Task runs keyed by stable local IDs.
     pub runs: Vec<Run>,
 }
@@ -65,8 +78,9 @@ pub struct Library {
 impl Default for Library {
     fn default() -> Self {
         Self {
-            catalog_version: 1,
+            catalog_version: CATALOG_VERSION,
             templates: Template::presets(),
+            prompts: stock_prompts(),
             runs: Vec::new(),
         }
     }
@@ -130,6 +144,10 @@ pub struct Step {
     /// Fixed destination for reviewer findings; otherwise each finding names its lane.
     #[serde(default)]
     pub return_lane: Option<String>,
+    /// Library prompt this stage follows; `instruction` then mirrors that prompt's text.
+    /// `None` means the instructions are the stage's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<u64>,
 }
 
 fn default_limit() -> u8 {
@@ -145,6 +163,15 @@ impl Step {
             profile: Profile::default(),
             limit: default_limit(),
             return_lane: None,
+            prompt: None,
+        }
+    }
+
+    /// A stage that follows a library prompt.
+    pub fn linked(name: &str, prompt: &Prompt) -> Self {
+        Self {
+            prompt: Some(prompt.id),
+            ..Self::new(name, &prompt.text)
         }
     }
 }
@@ -177,64 +204,7 @@ pub struct Template {
     pub lanes: Vec<LanePreset>,
 }
 
-impl Default for Template {
-    fn default() -> Self {
-        Self {
-            name: "Feature delivery".into(),
-            planner: Step::new(
-                "Plan",
-                "Break the task into repository-specific assignments and acceptance criteria. Ask for clarification when needed.",
-            ),
-            development: Step::new(
-                "Development",
-                "Implement the approved assignment in your worktree. Report what changed and what you verified.",
-            ),
-            reviews: vec![
-                Step::new(
-                    "QA",
-                    "Verify the acceptance criteria across all participating repositories. Report reproducible findings with the affected lane.",
-                ),
-                Step::new(
-                    "Security & performance",
-                    "Review the changes for security and performance regressions. Report specific findings and affected lanes.",
-                ),
-            ],
-            lanes: vec![LanePreset {
-                name: "Development".into(),
-                ..Default::default()
-            }],
-        }
-    }
-}
-
 impl Template {
-    /// Starter recipes for a full feature, a targeted fix or an API/client change.
-    pub fn presets() -> Vec<Self> {
-        let feature = Self::default();
-        let mut fix = Self {
-            name: "Quick fix".into(),
-            ..feature.clone()
-        };
-        fix.reviews.truncate(1);
-        fix.planner.instruction =
-            "Identify the root cause, the smallest complete fix and a regression check.".into();
-        let cross = Self {
-            name: "Cross-repository".into(),
-            lanes: ["API", "Web"]
-                .map(|name| LanePreset {
-                    name: name.into(),
-                    ..Default::default()
-                })
-                .into(),
-            planner: Step::new(
-                "Plan",
-                "Define the shared contract and assign its changes and acceptance criteria to each participating repository.",
-            ),
-            ..feature.clone()
-        };
-        vec![feature, fix, cross]
-    }
-
     /// Checks a draft before it becomes an executable recipe.
     pub fn validate(&self) -> Result<(), Error> {
         self.validate_structure()?;
@@ -278,6 +248,12 @@ impl Template {
             .chain(&self.reviews)
     }
 
+    fn steps_mut(&mut self) -> impl Iterator<Item = &mut Step> {
+        [&mut self.planner, &mut self.development]
+            .into_iter()
+            .chain(&mut self.reviews)
+    }
+
     fn profiles(&self) -> impl Iterator<Item = &Profile> {
         let lanes = self.lanes.iter().map(|lane| &lane.profile);
         lanes.chain(self.steps().map(|step| &step.profile))
@@ -295,6 +271,10 @@ pub struct Lane {
     pub project: PathBuf,
     /// Starting ref, resolved by preparation to an immutable commit.
     pub base: String,
+    /// Branch the lane commits to: an existing local branch at `base`, or a new one that
+    /// preparation creates there. Empty in runs saved before the user chose it; those use
+    /// the generated `pipeline-<run id>`.
+    pub branch: String,
     /// Actual task worktree; empty until preparation succeeds.
     #[serde(with = "crate::path_encoding::persisted")]
     pub worktree: PathBuf,

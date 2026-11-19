@@ -1,9 +1,15 @@
 use super::*;
-use gpui_kit::component::button::ButtonVariants as _;
+use gpui_kit::component::spinner::Spinner;
 use hive_core::git::branches::short_name;
 
+mod branch;
+use branch::WorkBranch;
+
+/// Repository, branch and check share one row until the drawer is too narrow for them.
+const FIELD_MIN_WIDTH: Pixels = px(170.);
+
 #[derive(Clone, PartialEq)]
-pub(super) enum Check {
+enum Check {
     Suggested,
     Command(String),
     Custom,
@@ -13,11 +19,17 @@ pub(super) struct Binding {
     pub preset: LanePreset,
     pub project: Option<PathBuf>,
     checkout: Option<PathBuf>,
+    /// The base ref being previewed: the chosen branch itself, or where a new one starts.
     reference: String,
-    pub ref_input: Option<Entity<InputState>>,
-    pub check: Check,
-    pub custom_command: Entity<InputState>,
-    _command_changes: Subscription,
+    /// Where a new branch starts unless the user picks another base: their checkout's branch.
+    default_reference: String,
+    ref_input: Option<Entity<InputState>>,
+    branch: WorkBranch,
+    branch_query: Entity<InputState>,
+    branch_open: bool,
+    check: Check,
+    custom_command: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Binding {
@@ -28,29 +40,47 @@ impl Binding {
         cx: &mut Context<LaunchForm>,
     ) -> Self {
         let custom_command = input("", "Shell command", window, cx);
-        let command_changes = cx.subscribe(&custom_command, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        });
+        let branch_query = input("", "Search or name a new branch", window, cx);
+        let subscriptions = vec![
+            cx.subscribe(&custom_command, |_, _, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&branch_query, |this, query, event, cx| match event {
+                InputEvent::Change => cx.notify(),
+                InputEvent::PressEnter { .. } => this.submit_branch_query(&query, cx),
+                _ => {}
+            }),
+        ];
         let (checkout, reference) = initial_ref(project.as_deref(), cx);
         Self {
             preset,
             project,
             checkout,
+            default_reference: reference.clone(),
             reference,
             ref_input: None,
+            branch: WorkBranch::Unchosen,
+            branch_query,
+            branch_open: false,
             check: Check::Suggested,
             custom_command,
-            _command_changes: command_changes,
+            _subscriptions: subscriptions,
         }
     }
     pub(super) fn bind(&mut self, project: Option<PathBuf>, cx: &mut Context<LaunchForm>) {
         (self.checkout, self.reference) = initial_ref(project.as_deref(), cx);
+        self.default_reference.clone_from(&self.reference);
         self.project = project;
         self.ref_input = None;
+        self.branch = WorkBranch::Unchosen;
         self.check = Check::Suggested;
         self.preview(cx);
+    }
+    /// The branch the lane commits to, once the user has chosen or named one.
+    pub(super) fn branch_name(&self) -> Option<&str> {
+        self.branch.name()
     }
     pub(super) fn preview(&self, cx: &mut Context<LaunchForm>) {
         if let Some(project) = &self.project {
@@ -71,6 +101,27 @@ impl Binding {
             self.checkout.as_ref().unwrap_or(project).clone(),
             self.reference.clone(),
         ))
+    }
+    /// `None` for an optional lane the user left without a repository.
+    pub(super) fn state(&self, cx: &App) -> Option<LaneState> {
+        self.project.as_ref()?;
+        if self.ref_input.is_some() {
+            return Some(LaneState::EditingRef);
+        }
+        if self.branch == WorkBranch::Unchosen {
+            return Some(LaneState::NoBranch);
+        }
+        Some(match self.base_preview(cx) {
+            None => LaneState::Reading,
+            Some(Err(_)) => LaneState::Failed,
+            Some(Ok(_))
+                if matches!(self.check, Check::Custom)
+                    && self.custom_command.read(cx).value().trim().is_empty() =>
+            {
+                LaneState::MissingCommand
+            }
+            Some(Ok(_)) => LaneState::Ready,
+        })
     }
     pub(super) fn command(&self, preview: &BasePreview, cx: &App) -> String {
         match &self.check {
@@ -132,29 +183,76 @@ pub(super) fn repositories(cx: &App) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-pub(super) fn select_menu<T: Clone + 'static>(
+/// An outlined dropdown trigger, so every choice on the form reads as editable. Icon and
+/// label travel as one child: the button spreads separate parts apart, which would float
+/// the label in the middle of a wide field instead of next to its icon.
+pub(super) fn dropdown(
     id: impl Into<ElementId>,
     icon: Lucide,
     label: impl Into<SharedString>,
-    options: Vec<(String, bool, T)>,
-    cx: &mut Context<LaunchForm>,
-    select: impl Fn(&mut LaunchForm, T, &mut Window, &mut Context<LaunchForm>) + 'static,
-) -> AnyElement {
-    options_menu(
-        Button::new(id)
-            .small()
-            .ghost()
-            .cursor_pointer()
-            .icon(icon)
-            .label(label),
-        options,
-        cx,
-        select,
-    )
+) -> Button {
+    let label = label.into();
+    Button::new(id)
+        .small()
+        .outline()
+        .cursor_pointer()
+        .dropdown_caret(true)
+        .accessibility_label(label.clone())
+        .child(
+            h_flex()
+                .min_w_0()
+                .gap_1p5()
+                .child(Icon::new(icon).size_3p5().flex_none())
+                .child(div().min_w_0().truncate().child(label)),
+        )
+}
+
+/// A caption above a control; fields share a row and wrap below this width.
+fn labeled(caption: impl IntoElement, control: impl IntoElement) -> Div {
+    v_flex()
+        .flex_1()
+        .min_w(FIELD_MIN_WIDTH)
+        .gap_1()
+        .child(caption)
+        .child(control)
+}
+
+/// A caption whose field must be filled before planning can start.
+fn required(label: &'static str, cx: &App) -> Div {
+    h_flex()
+        .gap_0p5()
+        .child(subtle(label, cx))
+        .child(required_mark(cx))
+}
+
+/// What the repository is doing right now, under its fields.
+enum Notice {
+    Reading,
+    Dirty,
+    Failed(String),
+}
+
+fn notice(notice: Notice, cx: &App) -> Div {
+    let row = h_flex().gap_2().items_center().text_xs();
+    let (color, text) = match notice {
+        Notice::Reading => {
+            return row
+                .text_color(cx.theme().muted_foreground)
+                .child(Spinner::new().icon(Lucide::LoaderCircle).xsmall())
+                .child("Reading repository…");
+        }
+        Notice::Dirty => (
+            cx.theme().warning,
+            "This checkout has local changes. The run uses committed files only.".to_owned(),
+        ),
+        Notice::Failed(error) => (cx.theme().danger, error),
+    };
+    row.child(Icon::new(Lucide::CircleAlert).size_3p5().text_color(color))
+        .child(div().min_w_0().flex_1().text_color(color).child(text))
 }
 
 impl LaunchForm {
-    pub(super) fn repository_row(
+    pub(super) fn repository_card(
         &self,
         i: usize,
         projects: &[(PathBuf, String)],
@@ -166,143 +264,81 @@ impl LaunchForm {
             .iter()
             .find(|(p, _)| Some(p) == b.project.as_ref())
             .map(|(_, n)| n.as_str());
-        let mut choices: Vec<_> = projects
+        let choices = projects
             .iter()
-            .map(|(p, n)| (n.clone(), Some(p) == b.project.as_ref(), Some(p.clone())))
+            .map(|(p, n)| (n.clone(), Some(p) == b.project.as_ref(), p.clone()))
             .collect();
-        if b.project.is_some() {
-            choices.push(("Remove from run".into(), false, None));
-        }
-        let repo = select_menu(
-            ("bound-repo", i),
-            Lucide::Folder,
-            selected.unwrap_or("Choose repository").to_owned(),
+        let repo = options_menu(
+            dropdown(
+                ("bound-repo", i),
+                Lucide::Folder,
+                selected.unwrap_or("Choose repository").to_owned(),
+            )
+            .w_full(),
             choices,
             cx,
-            move |this, p, _, cx| {
-                if p.is_none() && i >= this.template.lanes.len() {
-                    this.bindings.remove(i);
-                } else {
-                    this.bindings[i].bind(p, cx);
-                }
-            },
+            move |this, p, _, cx| this.bindings[i].bind(Some(p), cx),
         );
-        let mut row = h_flex().flex_wrap().gap_2().child(repo);
-        if i < self.template.lanes.len()
-            && self.template.lanes.len() > 1
-            && selected != Some(b.preset.name.as_str())
-        {
-            row = row.child(subtle(b.preset.name.clone(), cx));
+        let mut group = card(cx).w_full().gap_3();
+        if i < self.template.lanes.len() && self.template.lanes.len() > 1 {
+            group = group.child(
+                h_flex()
+                    .gap_1p5()
+                    .child(
+                        Icon::new(Lucide::GitFork)
+                            .size_3p5()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(heading(b.preset.name.clone())),
+            );
         }
-        let mut group = v_flex()
-            .w_full()
-            .gap_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .py_2();
         if b.project.is_none() {
-            return group.child(row.child(subtle("Optional lane", cx)));
+            return group
+                .child(labeled(subtle("Repository", cx), repo))
+                .child(subtle("Optional lane. Leave it empty to skip it.", cx));
         }
         let preview = b.base_preview(cx);
         let data = preview.and_then(|p| p.as_ref().ok()).cloned();
         let message = match preview {
-            Some(Err(e)) => Some(e.clone()),
-            Some(Ok(p)) if p.dirty => {
-                Some("This checkout has local changes. The run will use committed files.".into())
-            }
-            None => Some("Reading repository…".into()),
+            Some(Err(e)) => Some(Notice::Failed(e.clone())),
+            // Only a new branch starts from the user's checkout; a chosen branch is not open.
+            Some(Ok(p)) if p.dirty && matches!(b.branch, WorkBranch::New(_)) => Some(Notice::Dirty),
+            None => Some(Notice::Reading),
             _ => None,
         };
-        let mut branches: Vec<_> = data
-            .as_ref()
-            .into_iter()
-            .flat_map(|p| &p.branches)
-            .map(|branch| {
-                (
-                    branch.name.clone(),
-                    branch.reference == b.reference,
-                    Some(branch.reference.clone()),
-                )
-            })
-            .collect();
-        if !branches
-            .iter()
-            .any(|(_, _, v)| v.as_deref() == Some(&b.reference))
-        {
-            branches.insert(
-                0,
-                (
-                    short_name(&b.reference).to_owned(),
-                    true,
-                    Some(b.reference.clone()),
-                ),
-            );
+        let mut fields = h_flex()
+            .w_full()
+            .flex_wrap()
+            .items_start()
+            .gap_3()
+            .child(labeled(required("Repository", cx), repo))
+            .child(labeled(required("Branch", cx), self.branch_field(i, cx)));
+        if matches!(b.branch, WorkBranch::New(_)) {
+            fields = fields.child(labeled(
+                subtle("From", cx),
+                self.ref_menu(i, data.as_ref(), cx),
+            ));
         }
-        branches.push(("Other branch, tag or commit…".into(), false, None));
-        row = row.child(select_menu(
-            ("pipeline-ref", i),
-            Lucide::GitBranch,
-            short_name(&b.reference).to_owned(),
-            branches,
-            cx,
-            move |this, value, w, cx| {
-                let b = &mut this.bindings[i];
-                if let Some(value) = value {
-                    b.reference = value;
-                    b.ref_input = None;
-                    b.preview(cx);
-                } else {
-                    let editor = input(&b.reference, "Branch, tag or commit", w, cx);
-                    editor.focus_handle(cx).focus(w, cx);
-                    b.ref_input = Some(editor);
-                }
-            },
+        let fields = fields.child(labeled(
+            subtle("Check before acceptance", cx),
+            self.check_menu(i, data.as_ref(), cx),
         ));
-        if let Some(preview) = data {
-            let command = b.command(&preview, cx);
-            let label = if matches!(b.check, Check::Custom) {
-                "Custom check"
-            } else if command.is_empty() {
-                "Agent review"
-            } else {
-                &command
-            };
-            let mut commands = preview.checks;
-            if !b.preset.command.trim().is_empty() && !commands.contains(&b.preset.command) {
-                commands.insert(0, b.preset.command.clone());
-            }
-            let mut checks: Vec<_> = commands
-                .into_iter()
-                .map(|s| (s.clone(), s == command, Check::Command(s)))
-                .collect();
-            checks.push((
-                "Agent review only".into(),
-                command.is_empty() && !matches!(b.check, Check::Custom),
-                Check::Command(String::new()),
-            ));
-            checks.push((
-                "Custom command…".into(),
-                matches!(b.check, Check::Custom),
-                Check::Custom,
-            ));
-            row = row.child(select_menu(
-                ("pipeline-check", i),
-                Lucide::ListChecks,
-                label.to_owned(),
-                checks,
-                cx,
-                move |this, check, w, cx| {
-                    if check == Check::Custom {
-                        this.bindings[i]
-                            .custom_command
-                            .focus_handle(cx)
-                            .focus(w, cx);
-                    }
-                    this.bindings[i].check = check;
-                },
-            ));
-        }
-        group = group.child(row);
+        let remove = icon_action(
+            ("remove-repo", i),
+            "Remove from run",
+            Lucide::X,
+            window,
+            cx,
+            move |this, _, cx| this.remove_repository(i, cx),
+        );
+        group = group.child(
+            h_flex()
+                .w_full()
+                .items_end()
+                .gap_2()
+                .child(fields.flex_1().min_w_0())
+                .child(remove),
+        );
         if let Some(ref_input) = &b.ref_input {
             group = group.child(
                 h_flex()
@@ -334,15 +370,120 @@ impl LaunchForm {
         }
         if matches!(b.check, Check::Custom) {
             group = group.child(field(
-                "Command to pass before acceptance",
+                "Command that must pass before acceptance",
                 &b.custom_command,
                 cx,
             ));
         }
-        if let Some(message) = message {
-            group = group.child(subtle(message, cx));
+        group.when_some(message, |el, m| el.child(notice(m, cx)))
+    }
+
+    fn ref_menu(&self, i: usize, data: Option<&BasePreview>, cx: &mut Context<Self>) -> AnyElement {
+        let b = &self.bindings[i];
+        let mut branches: Vec<_> = data
+            .into_iter()
+            .flat_map(|p| &p.branches)
+            .map(|branch| {
+                (
+                    branch.name.clone(),
+                    branch.reference == b.reference,
+                    Some(branch.reference.clone()),
+                )
+            })
+            .collect();
+        if !branches
+            .iter()
+            .any(|(_, _, v)| v.as_deref() == Some(&b.reference))
+        {
+            branches.insert(
+                0,
+                (
+                    short_name(&b.reference).to_owned(),
+                    true,
+                    Some(b.reference.clone()),
+                ),
+            );
         }
-        group
+        branches.push(("Other branch, tag or commit…".into(), false, None));
+        options_menu(
+            dropdown(
+                ("pipeline-ref", i),
+                Lucide::GitBranch,
+                short_name(&b.reference).to_owned(),
+            )
+            .w_full(),
+            branches,
+            cx,
+            move |this, value, w, cx| {
+                let b = &mut this.bindings[i];
+                if let Some(value) = value {
+                    b.reference = value;
+                    b.ref_input = None;
+                    b.preview(cx);
+                } else {
+                    let editor = input(&b.reference, "Branch, tag or commit", w, cx);
+                    editor.focus_handle(cx).focus(w, cx);
+                    b.ref_input = Some(editor);
+                }
+            },
+        )
+    }
+
+    /// Until the commit is read there are no manifest checks to offer, so the slot stays
+    /// in place but disabled instead of making the row jump when it loads.
+    fn check_menu(
+        &self,
+        i: usize,
+        data: Option<&BasePreview>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let b = &self.bindings[i];
+        let Some(preview) = data else {
+            return dropdown(("pipeline-check", i), Lucide::ListChecks, "Agent review")
+                .w_full()
+                .disabled(true)
+                .into_any_element();
+        };
+        let command = b.command(preview, cx);
+        let label = if matches!(b.check, Check::Custom) {
+            "Custom command"
+        } else if command.is_empty() {
+            "Agent review"
+        } else {
+            &command
+        };
+        let mut commands = preview.checks.clone();
+        if !b.preset.command.trim().is_empty() && !commands.contains(&b.preset.command) {
+            commands.insert(0, b.preset.command.clone());
+        }
+        let mut checks: Vec<_> = commands
+            .into_iter()
+            .map(|s| (s.clone(), s == command, Check::Command(s)))
+            .collect();
+        checks.push((
+            "Agent review only".into(),
+            command.is_empty() && !matches!(b.check, Check::Custom),
+            Check::Command(String::new()),
+        ));
+        checks.push((
+            "Custom command…".into(),
+            matches!(b.check, Check::Custom),
+            Check::Custom,
+        ));
+        options_menu(
+            dropdown(("pipeline-check", i), Lucide::ListChecks, label.to_owned()).w_full(),
+            checks,
+            cx,
+            move |this, check, w, cx| {
+                if check == Check::Custom {
+                    this.bindings[i]
+                        .custom_command
+                        .focus_handle(cx)
+                        .focus(w, cx);
+                }
+                this.bindings[i].check = check;
+            },
+        )
     }
 }
 
