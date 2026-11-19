@@ -137,6 +137,9 @@ mod tests {
     fn a_name_without_a_role_word_has_no_role() {
         assert_eq!(RoleKind::of_prompt("House rules"), None);
         assert_eq!(RoleKind::of_prompt(""), None);
-        assert_eq!(RoleKind::of_prompt("SENIOR ENGINEER"), Some(RoleKind::Build));
+        assert_eq!(
+            RoleKind::of_prompt("SENIOR ENGINEER"),
+            Some(RoleKind::Build)
+        );
     }
 }
