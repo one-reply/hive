@@ -65,6 +65,7 @@ fn shortcut_and_project_switch_preserve_independent_drawer_and_document_focus(
                 project: p.into(),
                 focus: cx.focus_handle(),
                 screen: Screen::Library,
+                draft: None,
                 selected_template: None,
                 _subscriptions: vec![],
             }),

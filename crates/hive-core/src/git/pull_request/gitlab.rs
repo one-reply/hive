@@ -41,7 +41,7 @@ fn response(output: crate::command::Output) -> Result<Option<PullRequest>, Error
     parse(&output.stdout).map(Some)
 }
 
-fn parse(bytes: &[u8]) -> Result<PullRequest, Error> {
+pub(super) fn parse(bytes: &[u8]) -> Result<PullRequest, Error> {
     let mr: MergeRequest = serde_json::from_slice(bytes)
         .map_err(|error| Error::Response(format!("Invalid glab response: {error}")))?;
     let request = PullRequest {

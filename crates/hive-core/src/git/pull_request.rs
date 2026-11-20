@@ -1,6 +1,8 @@
 //! GitHub/GitLab pull and merge requests through the hosting CLIs, using the host's existing
 //! authentication: reading a branch's request, and opening one when the user asks.
 mod create;
+mod published;
+pub use published::{read_link, read_published};
 mod gitlab;
 use crate::{command, host::Host};
 pub use create::{Draft, create};
@@ -90,7 +92,7 @@ impl Check {
             || self.state == "SUCCESS"
     }
 }
-fn web_url(value: &str) -> Option<&str> {
+pub(crate) fn web_url(value: &str) -> Option<&str> {
     let host = value.strip_prefix("https://")?.split('/').next()?;
     (!host.is_empty() && !value.chars().any(char::is_whitespace) && !host.contains('@'))
         .then_some(value)
@@ -137,6 +139,14 @@ impl Error {
             Self::Authentication { provider, .. } => Some(*provider),
             _ => None,
         }
+    }
+}
+
+// GitLab treats a bare host/group/repo as a nested namespace. Its full URL is unambiguous.
+fn repository_argument(provider: Provider, repository: &str) -> std::borrow::Cow<'_, str> {
+    match provider {
+        Provider::GitHub => repository.into(),
+        Provider::GitLab => format!("https://{repository}").into(),
     }
 }
 
@@ -246,12 +256,16 @@ fn github_response(output: command::Output) -> Result<Option<PullRequest>, Error
         }
         return Err(response_error("gh", &output.stderr));
     }
-    let pr: PullRequest = serde_json::from_slice(&output.stdout)
+    parse_github(&output.stdout).map(Some)
+}
+
+fn parse_github(bytes: &[u8]) -> Result<PullRequest, Error> {
+    let pr: PullRequest = serde_json::from_slice(bytes)
         .map_err(|error| Error::Response(format!("Invalid gh response: {error}")))?;
     if pr.number == 0 || pr.web_url().is_none() {
         return Err(Error::Response("Invalid PR number or URL".into()));
     }
-    Ok(Some(pr))
+    Ok(pr)
 }
 
 #[cfg(test)]

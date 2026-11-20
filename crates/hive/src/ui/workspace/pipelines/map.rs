@@ -153,7 +153,7 @@ pub(super) fn grid(cx: &App) -> impl IntoElement {
 
 pub(super) fn miniature(t: &Template, cx: &App) -> impl IntoElement {
     let builds = t.lanes.len().clamp(1, 3);
-    let mut roles = vec![RoleKind::Plan, RoleKind::Build];
+    let mut roles = vec![RoleKind::Plan, RoleKind::Human, RoleKind::Build];
     roles.extend(
         t.reviews
             .iter()
@@ -168,7 +168,7 @@ pub(super) fn miniature(t: &Template, cx: &App) -> impl IntoElement {
     let mut nodes = Vec::new();
     for (col, role) in roles.into_iter().enumerate() {
         let x = (col as f32 + 0.5) / count as f32;
-        let rows = if col == 1 { builds } else { 1 };
+        let rows = if col == 2 { builds } else { 1 };
         for row in 0..rows {
             let y = 0.5 + (row as f32 - (rows as f32 - 1.) / 2.) * 0.31;
             nodes.push((col, x, y, role));

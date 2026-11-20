@@ -7,6 +7,10 @@ use crate::agent::launch::ResumeSession;
 use std::path::{Path, PathBuf};
 
 impl Run {
+    /// Whether this run started from the user's criteria without a planner.
+    pub fn direct_start(&self) -> bool {
+        self.direct_start
+    }
     /// Stable run identity.
     pub fn id(&self) -> u64 {
         self.id
@@ -59,6 +63,63 @@ impl Run {
     pub fn review_revision(&self) -> Option<&str> {
         self.review_revision.as_deref()
     }
+    /// Immutable trees for the most recent QA pass, in lane order.
+    pub fn review_trees(&self) -> &[String] {
+        &self.review_trees
+    }
+    /// Trees the user saw before asking for the last repair.
+    pub fn feedback_trees(&self) -> &[String] {
+        &self.feedback_trees
+    }
+    /// Bind the QA fingerprint and the corresponding Git trees to the same review.
+    pub fn record_review_trees(
+        &mut self,
+        revision: String,
+        trees: Vec<String>,
+    ) -> Result<(), Error> {
+        if trees.len() != self.lanes.len()
+            || !trees
+                .iter()
+                .all(|tree| super::workspace::is_object_name(tree))
+        {
+            return Err(Error::InvalidInput("Invalid review trees"));
+        }
+        self.record_review_revision(revision)?;
+        self.review_trees = trees;
+        Ok(())
+    }
+    /// Pending feedback anchored to an exact checkout tree, grouped by receiving lane.
+    pub fn comments(&self) -> &[(usize, String, crate::git::review_notes::Note)] {
+        &self.comments
+    }
+
+    /// Queue a note only while the same reviewed tree is awaiting acceptance.
+    pub fn add_comment(
+        &mut self,
+        lane: usize,
+        tree: String,
+        note: crate::git::review_notes::Note,
+    ) -> Result<(), Error> {
+        if self.phase != Phase::Acceptance
+            || self.review_trees.get(lane) != Some(&tree)
+            || self.lanes.get(lane).is_none_or(|l| l.assignment.is_empty())
+            || note.text.trim().is_empty()
+        {
+            return Err(Error::InvalidInput(
+                "This comment no longer matches the review.",
+            ));
+        }
+        self.comments.push((lane, tree, note));
+        Ok(())
+    }
+
+    /// Remove the exact queued note, including when its position has become outdated.
+    pub fn remove_comment(&mut self, comment: &(usize, String, crate::git::review_notes::Note)) {
+        if let Some(i) = self.comments.iter().position(|n| n == comment) {
+            self.comments.remove(i);
+        }
+    }
+
     /// Known CLI sessions, linked to the attempts that created them.
     pub fn sessions(&self) -> &[(Ticket, ResumeSession)] {
         &self.sessions
@@ -162,6 +223,7 @@ mod tests {
         };
         run.reports.push((developer, Phase::Development, developed));
         let reviewed = Report::Review {
+            evidence: vec![],
             summary: "QA complete".into(),
             findings: vec![],
         };

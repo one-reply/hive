@@ -12,6 +12,7 @@ use hive_core::pipeline::{Phase, Ticket};
 
 mod changes;
 mod checkpoint;
+mod comments;
 mod decision;
 mod delivery;
 mod details;
@@ -79,6 +80,7 @@ pub(super) struct RunView {
     tab: RunTab,
     editing_plan: bool,
     giving_feedback: bool,
+    since_feedback: bool,
     phase: Option<Phase>,
     selected_stage: Option<Stage>,
     expanded_checks: HashSet<usize>,
@@ -89,6 +91,7 @@ pub(super) struct RunView {
     display: Option<Entity<DiffState>>,
     timer: Option<Task<()>>,
     description_open: bool,
+    criteria_expanded: bool,
     summary_expanded: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -98,6 +101,7 @@ impl RunView {
         let store = app.store.clone();
         let pipelines = app.pipelines.clone();
         let agents = app.agents.clone();
+        let pull_requests = app.pull_requests.clone();
         let run = saved_run(store.read(cx), id).cloned().map(Rc::new);
         let subscriptions = vec![
             cx.observe(&store, move |this, store, cx| {
@@ -105,6 +109,11 @@ impl RunView {
                 let saved = saved_run(state, id);
                 if this.run.as_deref() != saved {
                     this.run = saved.cloned().map(Rc::new);
+                    cx.notify();
+                }
+            }),
+            cx.observe(&pull_requests, |view, _, cx| {
+                if view.phase == Some(Phase::Accepted) {
                     cx.notify();
                 }
             }),
@@ -125,7 +134,8 @@ impl RunView {
                     view.selected_file = None;
                     view.display = None;
                     let id = view.id;
-                    cx.defer(move |cx| pipelines.update(cx, |p, cx| p.load_review(id, cx)));
+                    let since = view.since_feedback;
+                    cx.defer(move |cx| pipelines.update(cx, |p, cx| p.load_review(id, since, cx)));
                 }
                 cx.notify();
             }),
@@ -141,6 +151,7 @@ impl RunView {
             tab: RunTab::Timeline,
             editing_plan: false,
             giving_feedback: false,
+            since_feedback: false,
             phase: None,
             selected_stage: None,
             expanded_checks: HashSet::new(),
@@ -151,6 +162,7 @@ impl RunView {
             display: None,
             timer: None,
             description_open: false,
+            criteria_expanded: false,
             summary_expanded: false,
             _subscriptions: subscriptions,
         }
@@ -216,7 +228,7 @@ impl RunView {
         AppState::get(cx)
             .pipelines
             .clone()
-            .update(cx, |p, cx| p.load_review(self.id, cx));
+            .update(cx, |p, cx| p.load_review(self.id, self.since_feedback, cx));
     }
 }
 impl Render for RunView {
@@ -257,6 +269,8 @@ impl Render for RunView {
         };
         if self.phase != Some(run.phase()) {
             self.phase = Some(run.phase());
+            self.since_feedback = !run.feedback_trees().is_empty()
+                && matches!(run.phase(), Phase::Acceptance | Phase::Accepted);
             self.editing_plan = false;
             self.giving_feedback = false;
             self.plan.clear();
@@ -266,6 +280,15 @@ impl Render for RunView {
                 Phase::Decision(ix) => Some(Stage::Decision(ix)),
                 _ => None,
             };
+            if run.phase() == Phase::Accepted {
+                let id = self.id;
+                cx.defer(move |cx| {
+                    AppState::get(cx)
+                        .pipelines
+                        .clone()
+                        .update(cx, |p, cx| p.refresh_delivery(id, cx))
+                });
+            }
             if matches!(run.phase(), Phase::Acceptance | Phase::Accepted) {
                 let view = cx.weak_entity();
                 cx.defer(move |cx| {

@@ -16,6 +16,7 @@ pub(super) struct RunRuntime {
     pub(super) closing: Vec<TerminalControl>,
     pub(super) review: Option<Result<Vec<ReviewRepo>, String>>,
     pub(super) patch: Option<PatchPreview>,
+    pub(super) since_feedback: bool,
     pub(super) review_job: Option<u64>,
     pub(super) patch_job: Option<u64>,
     /// The generation an acceptance check was started for.

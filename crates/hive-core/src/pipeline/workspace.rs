@@ -65,7 +65,7 @@ fn repository(path: &Path) -> Result<Project, GitError> {
 }
 
 /// The lane's chosen branch, or the generated one of runs saved before the user chose it.
-fn branch(run: u64, lane: &Lane) -> String {
+pub fn branch(run: u64, lane: &Lane) -> String {
     match lane.branch.trim() {
         "" => format!("pipeline-{run:x}"),
         name => name.to_owned(),
@@ -158,6 +158,49 @@ pub fn prepare(run: u64, lane: &Lane, stop: &Cancellation) -> Result<PathBuf, Wo
     Ok(intended)
 }
 
+/// Provision the first pending checkout and identify every lane that shares it.
+pub fn prepare_lanes(
+    run: &super::Run,
+    index: usize,
+    stop: &Cancellation,
+) -> Result<(Vec<usize>, PathBuf), WorktreeError> {
+    let lane = run
+        .lanes()
+        .get(index)
+        .ok_or_else(|| GitError::Invalid("Missing pipeline lane.".into()))?;
+    let name = branch(run.id(), lane);
+    let intended = checkout_path(&repository(&lane.project)?, &name);
+    let mut members = Vec::new();
+    let mut existing = None;
+    for (i, other) in run.lanes().iter().enumerate() {
+        if branch(run.id(), other) != name
+            || (other.project != lane.project
+                && checkout_path(&repository(&other.project)?, &name) != intended)
+        {
+            continue;
+        }
+        if other.base != lane.base {
+            return Err(GitError::Invalid(format!(
+                "Two lanes of {} require different base commits.",
+                lane.project.display()
+            ))
+            .into());
+        }
+        if other.worktree.as_os_str().is_empty() {
+            members.push(i);
+        } else {
+            verify(run.id(), other)?;
+            existing = Some(other.worktree.clone());
+        }
+    }
+    if let Some(path) = existing {
+        return Ok((members, path));
+    }
+    let path = prepare(run.id(), lane, stop)?;
+    provision(lane, &path, stop)?;
+    Ok((members, path))
+}
+
 /// Blocking: makes a checkout no agent has used yet ready for work: the project's ignored
 /// files named by `.worktreeinclude`, then the lane's setup command. Nothing is overwritten,
 /// so it is safe to repeat after an interruption.
@@ -248,7 +291,13 @@ pub fn checks(lanes: &[Lane], cancellation: &Cancellation) -> Vec<CommandResult>
 }
 
 mod review;
-pub use review::{ReviewFile, ReviewRepo, patch, review};
+pub use review::{ReviewFile, ReviewRepo, patch, review, review_round};
+
+mod publication;
+pub use publication::{PublishedBranch, publication};
+mod snapshot;
+pub(super) use snapshot::is_object_name;
+pub use snapshot::{release_trees, reviewed_trees};
 
 mod revision;
 pub use revision::revision;

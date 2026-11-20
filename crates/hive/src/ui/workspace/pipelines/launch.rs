@@ -4,6 +4,7 @@ use gpui_kit::component::{Disableable as _, button::ButtonVariants as _, input::
 use hive_core::pipeline::{Lane, LanePreset, workspace::BasePreview};
 
 mod again;
+mod draft;
 mod repository;
 use repository::{Binding, dropdown, repositories};
 
@@ -26,6 +27,7 @@ enum LaneState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Blocker {
     Task,
+    Criteria,
     Repository,
     Branch,
     Failed,
@@ -37,7 +39,8 @@ enum Blocker {
 impl Blocker {
     fn message(self) -> &'static str {
         match self {
-            Self::Task => "Describe the task to start planning.",
+            Self::Criteria => "Enter acceptance criteria for quick start.",
+            Self::Task => "Describe the task to start the run.",
             Self::Repository => "Add at least one repository.",
             Self::Branch => "Choose or create a branch for each repository.",
             Self::Failed => "A repository can’t be read. Pick another branch or repository.",
@@ -74,6 +77,11 @@ pub(super) struct LaunchForm {
     parent: WeakEntity<PipelinePanel>,
     task: Entity<TextareaState>,
     bindings: Vec<Binding>,
+    criteria: Entity<TextareaState>,
+    direct: bool,
+    frozen: bool,
+    keep_draft: bool,
+    previous_recipe: Option<(Template, Template)>,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -93,7 +101,10 @@ impl LaunchForm {
                 .rows(TASK_ROWS)
                 .placeholder("What should the agents build or fix? Include what “done” looks like.")
         });
+        let criteria = area("", "What should QA verify?", window, cx);
         let subscriptions = vec![
+            cx.observe_self(|form: &mut Self, cx| form.save_draft(cx)),
+            cx.observe(&criteria, |_, _, cx| cx.notify()),
             cx.observe(&projects, |_, _, cx| cx.notify()),
             cx.observe(&pipelines, |_, _, cx| cx.notify()),
             cx.subscribe(&task, |_, _, event, cx| {
@@ -108,6 +119,11 @@ impl LaunchForm {
             parent,
             task,
             bindings: Vec::new(),
+            criteria,
+            direct: false,
+            frozen: false,
+            keep_draft: true,
+            previous_recipe: None,
             error: None,
             _subscriptions: subscriptions,
         };
@@ -117,6 +133,7 @@ impl LaunchForm {
     }
 
     fn apply_template(&mut self, template: Template, window: &mut Window, cx: &mut Context<Self>) {
+        self.direct = false;
         let projects = repositories(cx);
         let mut old = std::mem::take(&mut self.bindings);
         let previous = std::mem::replace(&mut self.template, template);
@@ -178,6 +195,19 @@ impl LaunchForm {
         cx.notify();
     }
 
+    fn can_start_direct(&self) -> bool {
+        self.bindings.iter().filter(|b| b.project.is_some()).count() == 1
+            && self
+                .template
+                .reviews
+                .iter()
+                .filter_map(|s| s.return_lane.as_ref())
+                .all(|name| {
+                    self.bindings
+                        .iter()
+                        .any(|b| b.project.is_some() && &b.preset.name == name)
+                })
+    }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut lanes = Vec::new();
         for b in &self.bindings {
@@ -200,11 +230,27 @@ impl LaunchForm {
         }
         let task = self.task.read(cx).value().trim().to_owned();
         let result = AppState::get(cx).pipelines.clone().update(cx, |p, cx| {
-            p.start(self.project.clone(), task, self.template.clone(), lanes, cx)
+            let options = crate::state::pipelines::LaunchOptions {
+                frozen: self.frozen,
+                direct_criteria: (self.direct && self.can_start_direct())
+                    .then(|| self.criteria.read(cx).value().to_string()),
+            };
+            p.start(
+                self.project.clone(),
+                task,
+                self.template.clone(),
+                lanes,
+                options,
+                cx,
+            )
         });
         match result {
             Ok(id) => {
-                let _ = self.parent.update(cx, |p, cx| p.show_run(id, window, cx));
+                self.keep_draft = false;
+                let _ = self.parent.update(cx, |p, cx| {
+                    p.draft = None;
+                    p.show_run(id, window, cx)
+                });
             }
             Err(e) => {
                 self.error = Some(e);
@@ -216,12 +262,24 @@ impl LaunchForm {
     /// The stages this recipe runs, in order, so the user sees where their approval comes.
     fn route(&self, cx: &App) -> Div {
         let mut route = h_flex().flex_wrap().items_center().gap_1p5();
-        let steps = std::iter::once((Lucide::Map, self.template.planner.name.as_str()))
-            .chain(std::iter::once((Lucide::UserRoundCheck, "Your approval")))
+        let planning = !(self.direct && self.can_start_direct());
+        let checks = self
+            .bindings
+            .iter()
+            .filter_map(|b| Some(b.command(b.base_preview(cx)?.as_ref().ok()?, cx)))
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let checks = (!checks.is_empty()).then(|| format!("Required checks · {checks}"));
+        let steps = planning
+            .then_some((Lucide::Map, self.template.planner.name.as_str()))
+            .into_iter()
+            .chain(planning.then_some((Lucide::UserRoundCheck, "Your approval")))
             .chain(std::iter::once((
                 Lucide::GitBranch,
                 self.template.development.name.as_str(),
             )))
+            .chain(checks.as_deref().map(|label| (Lucide::Terminal, label)))
             .chain(
                 self.template
                     .reviews
@@ -331,7 +389,11 @@ impl Render for LaunchForm {
             .clone();
         let lanes: Vec<_> = self.bindings.iter().filter_map(|b| b.state(cx)).collect();
         let has_task = !self.task.read(cx).value().trim().is_empty();
-        let blocked = blocker(has_task, &lanes);
+        let direct = self.direct && self.can_start_direct();
+        let blocked = blocker(has_task, &lanes).or_else(|| {
+            (direct && self.criteria.read(cx).value().trim().is_empty())
+                .then_some(Blocker::Criteria)
+        });
         let template = options_menu(
             dropdown(
                 "launch-recipe",
@@ -343,7 +405,11 @@ impl Render for LaunchForm {
                 .map(|t| (t.name.clone(), t.name == self.template.name, t))
                 .collect(),
             cx,
-            |this, t, w, cx| this.apply_template(t, w, cx),
+            |this, t, w, cx| {
+                this.frozen = false;
+                this.previous_recipe = None;
+                this.apply_template(t, w, cx)
+            },
         );
         let mut repos = v_flex().w_full().gap_2();
         for i in 0..self.bindings.len() {
@@ -367,13 +433,21 @@ impl Render for LaunchForm {
         let submit = Button::new("start-planning")
             .cursor_pointer()
             .with_size(ButtonSize::Medium)
-            .label("Start planning")
+            .label(if direct {
+                "Start development"
+            } else {
+                "Start planning"
+            })
             .icon(Lucide::Play)
             .disabled(blocked.is_some())
             .on_click(cx.listener(|this, _, w, cx| this.submit(w, cx)))
             .smooth_hover(ButtonLook::Primary, &hover, cx);
         let footer_hint = blocked.map_or(
-            "Agents only plan first. You approve the plan before any code changes.",
+            if direct {
+                "QA and your final acceptance follow development."
+            } else {
+                "You approve the plan before development."
+            },
             Blocker::message,
         );
         let header = v_flex()
@@ -388,9 +462,9 @@ impl Render for LaunchForm {
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child("Describe the task and choose the repositories. A planner drafts the work for your approval."),
+                    .child("Describe the task and choose where to run it."),
             );
-        let workflow = card(cx)
+        let mut workflow = card(cx)
             .w_full()
             .gap_3()
             .child(
@@ -401,11 +475,71 @@ impl Render for LaunchForm {
                     .child(template),
             )
             .child(self.route(cx));
+        if let Some((saved, latest)) = self.previous_recipe.clone() {
+            workflow = workflow.child(
+                h_flex()
+                    .gap_2()
+                    .child(subtle(
+                        if self.frozen {
+                            "Using the saved recipe. The library version has changed."
+                        } else {
+                            "Using the updated library recipe."
+                        },
+                        cx,
+                    ))
+                    .child(button(
+                        "choose-recipe-version",
+                        if self.frozen {
+                            "Use library version"
+                        } else {
+                            "Use saved version"
+                        },
+                        ButtonLook::Outline,
+                        window,
+                        cx,
+                        move |v, w, cx| {
+                            let direct = v.direct;
+                            v.frozen = !v.frozen;
+                            v.apply_template(
+                                if v.frozen {
+                                    saved.clone()
+                                } else {
+                                    latest.clone()
+                                },
+                                w,
+                                cx,
+                            );
+                            v.direct = direct && v.can_start_direct();
+                        },
+                    )),
+            );
+        }
+        if self.can_start_direct() {
+            workflow = workflow.child(button(
+                "quick-start-mode",
+                if direct {
+                    "Use planning and approval"
+                } else {
+                    "Quick start with my criteria"
+                },
+                ButtonLook::Outline,
+                window,
+                cx,
+                |v, _, cx| {
+                    v.direct = !v.direct;
+                    cx.notify();
+                },
+            ));
+        }
         let task = v_flex()
             .gap_2()
             .child(section(
                 required_heading("Task", cx),
-                "Plain language is fine. The planner asks if something is unclear.",
+                if direct {
+                    "Describe the change for the developer."
+                } else {
+                    "Plain language is fine. The planner asks if something is unclear."
+                },
                 None,
                 cx,
             ))
@@ -431,6 +565,20 @@ impl Render for LaunchForm {
             .border_t_1()
             .border_color(cx.theme().border)
             .child(submit)
+            .child(button(
+                "discard-launch-draft",
+                "Discard draft",
+                ButtonLook::Ghost,
+                window,
+                cx,
+                |v, w, cx| {
+                    v.keep_draft = false;
+                    let _ = v.parent.update(cx, |p, cx| {
+                        p.discard_draft(cx);
+                        p.home(w, cx);
+                    });
+                },
+            ))
             .child(subtle(footer_hint, cx));
         let body = v_flex()
             .w_full()
@@ -439,6 +587,9 @@ impl Render for LaunchForm {
             .child(header)
             .child(workflow)
             .child(task)
+            .when(direct, |el| {
+                el.child(paragraph("Acceptance criteria", &self.criteria, cx))
+            })
             .child(repositories)
             .when_some(self.error.clone(), |el, e| {
                 el.child(div().text_sm().text_color(cx.theme().danger).child(e))

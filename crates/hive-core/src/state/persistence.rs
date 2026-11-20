@@ -40,8 +40,9 @@ pub enum StateError {
 /// Version 4 marks a change of meaning: a run's required checks now precede its first review,
 /// so a build that ran them after it would take a saved `commands` phase for a finished
 /// review and skip that review.
+/// Version 5 adds immutable review trees, targeted feedback and direct-to-development runs.
 /// Older and unversioned files load with defaults for any missing sections.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Loaded state and, when the file could not be used as written, what happened to it.
 pub struct LoadedState {
@@ -336,7 +337,19 @@ fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::L
             stock_prompts()
         }
     };
+    let mut draft_owners = HashSet::new();
+    let drafts = items(
+        object.get("drafts"),
+        "pipelines.drafts",
+        lost,
+        |d: &crate::pipeline::draft::LaunchDraft| {
+            d.owner.is_absolute()
+                && d.template.validate_structure().is_ok()
+                && draft_owners.insert(d.owner.clone())
+        },
+    );
     let mut library = Library {
+        drafts,
         templates,
         prompts,
         runs,
@@ -721,6 +734,33 @@ mod tests {
         assert!(lost.is_empty(), "{lost:?}");
         assert!(reloaded.prompts().is_empty());
         assert_eq!(reloaded.templates, unlinked);
+    }
+
+    #[test]
+    fn launch_drafts_survive_reload_and_a_malformed_sibling_is_isolated() {
+        use crate::pipeline::{Library, Template, draft::LaunchDraft};
+        let draft = LaunchDraft {
+            owner: "/web".into(),
+            template: Template::default(),
+            original: None,
+            frozen: false,
+            task: "Keep my task".into(),
+            direct: true,
+            criteria: "return 401".into(),
+            lanes: vec![],
+        };
+        let mut file = serde_json::to_value(Library {
+            drafts: vec![draft.clone()],
+            ..Library::default()
+        })
+        .unwrap();
+        file["drafts"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"owner":9}));
+        let mut lost = vec![];
+        assert_eq!(pipelines(Some(file), &mut lost).drafts, [draft]);
+        assert_eq!(lost, ["pipelines.drafts[1]"]);
     }
 
     #[test]
