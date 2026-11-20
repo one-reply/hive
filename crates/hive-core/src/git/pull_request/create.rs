@@ -1,5 +1,5 @@
 //! Opening a pull or merge request for the branch a worktree has checked out.
-use super::{Error, Provider, response_error, run_cli_within, try_gitlab, web_url};
+use super::{Error, Provider, response_error, run_cli_within, web_url};
 use crate::git::branches;
 use crate::host::Host;
 use std::path::Path;
@@ -20,10 +20,15 @@ pub struct Draft {
     pub base: String,
 }
 
-/// Blocking: opens a pull or merge request for the branch checked out in `cwd` and returns
-/// its web URL. Nothing is pushed: a branch the remote does not have is the CLI's error to
-/// report, so publishing stays the user's explicit step.
-pub fn create(host: &Host, cwd: &Path, draft: &Draft) -> Result<String, Error> {
+/// Open a request from an explicitly named, published branch in the supplied hosting repository.
+pub fn create(
+    provider: Provider,
+    host: &Host,
+    cwd: &Path,
+    repository: &str,
+    branch: &str,
+    draft: &Draft,
+) -> Result<String, Error> {
     if draft.title.trim().is_empty() {
         return Err(Error::Response("Enter a title for the request.".into()));
     }
@@ -31,23 +36,17 @@ pub fn create(host: &Host, cwd: &Path, draft: &Draft) -> Result<String, Error> {
     if !base.is_empty() && !branches::is_valid_name(base) {
         return Err(Error::Response(format!("“{base}” is not a branch name.")));
     }
-    match create_with(Provider::GitHub, host, cwd, draft) {
-        Err(error) if try_gitlab(&error) => create_with(Provider::GitLab, host, cwd, draft),
-        result => result,
+    if !branches::is_valid_name(branch) || repository.is_empty() {
+        return Err(Error::Response(
+            "Invalid published source branch or repository.".into(),
+        ));
     }
-}
-
-fn create_with(
-    provider: Provider,
-    host: &Host,
-    cwd: &Path,
-    draft: &Draft,
-) -> Result<String, Error> {
+    let repository = super::repository_argument(provider, repository);
     let output = run_cli_within(
         host,
         cwd,
         provider,
-        &arguments(provider, draft),
+        &arguments(provider, &repository, branch, draft),
         CREATE_TIMEOUT,
     )?;
     if output.code != Some(0) {
@@ -62,7 +61,12 @@ fn create_with(
 }
 
 /// The CLI arguments that open `draft` without a prompt, an editor or a push.
-fn arguments(provider: Provider, draft: &Draft) -> Vec<&str> {
+fn arguments<'a>(
+    provider: Provider,
+    repository: &'a str,
+    branch: &'a str,
+    draft: &'a Draft,
+) -> Vec<&'a str> {
     let (title, body, base) = (draft.title.trim(), draft.body.as_str(), draft.base.trim());
     let mut arguments = match provider {
         Provider::GitHub => vec!["pr", "create", "--title", title, "--body", body],
@@ -77,6 +81,15 @@ fn arguments(provider: Provider, draft: &Draft) -> Vec<&str> {
             "--push=false",
         ],
     };
+    arguments.extend([
+        "--repo",
+        repository,
+        match provider {
+            Provider::GitHub => "--head",
+            Provider::GitLab => "--source-branch",
+        },
+        branch,
+    ]);
     if !base.is_empty() {
         arguments.push(match provider {
             Provider::GitHub => "--base",
@@ -112,22 +125,26 @@ mod tests {
     #[test]
     fn each_provider_gets_its_own_flags_and_glab_is_told_not_to_push_or_prompt() {
         assert_eq!(
-            arguments(Provider::GitHub, &draft("")),
+            arguments(Provider::GitHub, "host/o/r", "topic", &draft("")),
             [
                 "pr",
                 "create",
                 "--title",
                 "Add login",
                 "--body",
-                "## Task\nAdd login"
+                "## Task\nAdd login",
+                "--repo",
+                "host/o/r",
+                "--head",
+                "topic"
             ]
         );
         assert_eq!(
-            arguments(Provider::GitHub, &draft(" develop "))[6..],
+            arguments(Provider::GitHub, "host/o/r", "topic", &draft(" develop "))[10..],
             ["--base", "develop"]
         );
         let merge_request = draft("develop");
-        let gitlab = arguments(Provider::GitLab, &merge_request);
+        let gitlab = arguments(Provider::GitLab, "host/o/r", "topic", &merge_request);
         assert_eq!(gitlab[..2], ["mr", "create"]);
         assert!(gitlab.contains(&"--yes") && gitlab.contains(&"--push=false"));
         assert_eq!(gitlab[gitlab.len() - 2..], ["--target-branch", "develop"]);
@@ -162,9 +179,16 @@ mod tests {
                 body: String::new(),
                 base: base.into(),
             };
-            let error = create(&Host::Local, nowhere, &draft)
-                .unwrap_err()
-                .to_string();
+            let error = create(
+                Provider::GitHub,
+                &Host::Local,
+                nowhere,
+                "host/o/r",
+                "topic",
+                &draft,
+            )
+            .unwrap_err()
+            .to_string();
             assert!(error.contains(expected), "{error}");
         }
     }

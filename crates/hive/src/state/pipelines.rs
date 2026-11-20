@@ -30,6 +30,12 @@ pub(crate) use delivery::Delivery;
 pub(crate) use status::{RunStatus, Waiting};
 pub(crate) use workspace::ReviewRepo;
 
+#[derive(Default)]
+pub(crate) struct LaunchOptions {
+    pub(crate) frozen: bool,
+    pub(crate) direct_criteria: Option<String>,
+}
+
 type PatchPreview = (
     usize,
     String,
@@ -260,6 +266,7 @@ impl Pipelines {
         task: String,
         template: Template,
         mut lanes: Vec<Lane>,
+        options: LaunchOptions,
         cx: &mut Context<Self>,
     ) -> Result<u64, String> {
         // Every stage waits for a checkpoint, so an unsaved run could only fail.
@@ -328,21 +335,29 @@ impl Pipelines {
         }
         // The launch form holds its own copy of the recipe, taken before any later prompt edit.
         let mut template = template;
-        template.sync_prompts(self.store.read(cx).state.pipelines.prompts());
+        if !options.frozen {
+            template.sync_prompts(self.store.read(cx).state.pipelines.prompts());
+        }
         let setups: Vec<_> = lanes
             .iter()
             .map(|lane| (lane.project.clone(), lane.setup.clone()))
             .collect();
         let mut run = Run::new(id, owner, task, template, lanes)?;
+        if let Some(criteria) = options.direct_criteria {
+            run.start_direct(&criteria)?;
+        }
         run.record_stage(None, now_ms());
         self.store.update(cx, |store, cx| {
             for (project, setup) in &setups {
                 store.set_project_setup(project, setup, cx);
             }
         });
-        let saved = self
-            .store
-            .update(cx, |s, cx| s.checkpoint_pipelines(cx, |l| l.runs.push(run)));
+        let saved = self.store.update(cx, |s, cx| {
+            s.checkpoint_pipelines(cx, |l| {
+                l.drafts.retain(|d| d.owner != run.owner());
+                l.runs.push(run);
+            })
+        });
         self.schedule(id, saved, cx);
         Ok(id)
     }

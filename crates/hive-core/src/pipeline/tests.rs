@@ -59,6 +59,7 @@ fn developed() -> Report {
 }
 fn review(findings: Vec<Finding>) -> Report {
     Report::Review {
+        evidence: vec![],
         summary: "Checked the API contract".into(),
         findings,
     }
@@ -93,6 +94,93 @@ fn check(success: bool) -> CommandResult {
 }
 
 #[test]
+fn targeted_feedback_preserves_the_base_and_runs_all_required_checks_after_one_repair() {
+    let mut run = run_with(&["/api", "/web"], 3);
+    for lane in &mut run.lanes {
+        lane.command = "cargo test".into();
+    }
+    plan(&mut run);
+    for ticket in run.pending() {
+        run.report(&ticket, developed()).unwrap();
+    }
+    let results = vec![
+        check(true),
+        CommandResult {
+            lane: 1,
+            ..check(true)
+        },
+    ];
+    run.command_results(results.clone()).unwrap();
+    let trees = vec!["a".repeat(40), "b".repeat(40)];
+    run.record_review_trees("first".into(), trees.clone())
+        .unwrap();
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![]));
+    assert!(run.request_lane_changes(1, &trees[0], "stale").is_err());
+    use crate::git::{
+        diff::DiffSource,
+        review_notes::{Line, Note},
+    };
+    let notes = [1, 3].map(|n| Note {
+        path: "view.rs".into(),
+        source: DiffSource::Compare(trees[1].clone()),
+        start: Line::Original(n),
+        end: Line::Modified(n),
+        text: format!("Fix line {n}"),
+    });
+    for note in &notes {
+        run.add_comment(1, trees[1].clone(), note.clone()).unwrap();
+    }
+    run.add_comment(0, trees[0].clone(), notes[0].clone())
+        .unwrap();
+    run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+    run.submit_comments(1, &trees[1], &notes).unwrap();
+    assert_eq!(run.comments().len(), 1);
+    assert_eq!(run.comments()[0].0, 0);
+    assert_eq!(run.pending().len(), 1);
+    let fix = run.pending()[0];
+    assert_eq!(fix.lane, Some(1));
+    assert!(run.prompt(&fix).unwrap().contains("line 3"));
+    assert_eq!(run.feedback_trees(), trees);
+    report(&mut run, developed());
+    assert_eq!(run.phase(), Phase::Commands(0));
+    assert!(run.command_results(vec![check(true)]).is_err());
+    run.command_results(results).unwrap();
+    assert_eq!(run.phase(), Phase::Review(0));
+}
+
+#[test]
+fn quick_start_requires_criteria_then_verifies_approved_claims_and_waits_at_acceptance() {
+    let mut run = run_with(&["/one"], 3);
+    assert!(run.start_direct(" ").is_err());
+    assert!(run_with(&["/one", "/two"], 3).start_direct("401").is_err());
+    run.start_direct("Expired session returns 401").unwrap();
+    assert!(!Stage::recipe(&run).contains(&Stage::Approval));
+    assert_eq!(run.pending()[0].lane, Some(0));
+    report(&mut run, developed());
+    let ticket = run.pending()[0];
+    let claim = |criterion: &str| Report::Review {
+        summary: "Ran regression".into(),
+        findings: vec![],
+        evidence: vec![CriterionEvidence {
+            lane: 0,
+            criterion: criterion.into(),
+            evidence: "auth_expired passed".into(),
+        }],
+    };
+    assert!(run.report(&ticket, claim("Always 200")).is_err());
+    run.report(&ticket, claim("Expired session returns 401"))
+        .unwrap();
+    let legacy =
+        serde_json::from_str::<Report>(r#"{"kind":"review","summary":"Verified","findings":[]}"#)
+            .unwrap();
+    report(&mut run, legacy);
+    assert_eq!(run.phase(), Phase::Acceptance);
+    let saved = serde_json::to_string(&run).unwrap();
+    assert_eq!(serde_json::from_str::<Run>(&saved).unwrap(), run);
+}
+
+#[test]
 fn two_repositories_join_before_review_and_only_affected_lane_repairs() {
     let mut run = run_with(&["/api", "/web"], 3);
     plan(&mut run);
@@ -119,6 +207,32 @@ fn two_repositories_join_before_review_and_only_affected_lane_repairs() {
     assert_eq!(another_pass.phase, Phase::Development);
     run.accept().unwrap();
     assert_eq!(run.phase, Phase::Accepted);
+}
+
+#[test]
+fn delivery_combines_both_developers_reports_for_one_worktree() {
+    let mut run = run_with(&["/shared", "/shared"], 3);
+    plan(&mut run);
+    for text in ["Updated the API", "Updated the caller"] {
+        report(
+            &mut run,
+            Report::Developed {
+                summary: text.into(),
+            },
+        );
+    }
+    assert_eq!(run.delivery_lanes(), [0]);
+    let body = run.pull_request_text(0).unwrap().1;
+    assert!(body.contains("Updated the API") && body.contains("Updated the caller"));
+    run.phase = Phase::Accepted;
+    run.record_request(0, "https://github.com/acme/shared/pull/3");
+    run.record_request(1, "https://github.com/acme/shared/pull/4");
+    let restored: Run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+    assert_eq!(
+        restored.request_url(0),
+        Some("https://github.com/acme/shared/pull/3")
+    );
+    assert_eq!(restored.request_url(1), None);
 }
 
 #[test]

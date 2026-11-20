@@ -94,7 +94,8 @@ project while agents run.
 2. Describe the task and choose **Start planning**. The launch sheet selects your
    project and starting branch, and suggests checks from committed manifests.
    Use the repository, branch and check menus to override those choices or add
-   another repository. Each run gets its own Git worktrees.
+   another repository. Hive saves your draft for this project. **Run again** opens the saved recipe and offers the current version if it changed.
+   For a single-lane fix, **Quick start with my criteria** goes straight to development. Hive shows checkout preparation and the setup command before the first agent starts.
 3. Review the planner’s assignments and acceptance criteria, then choose **Approve
    plan**. Different repositories can develop in parallel. Click **Open live
    session** to see a running CLI and respond to questions or permission requests.
@@ -104,7 +105,12 @@ project while agents run.
 5. Open **Timeline** to see stage durations, parallel lanes and decision points.
    **Changes** groups files by repository and loads the selected diff. **Checks**
    shows test outcomes, and **Activity** retains the handoff history. Accept the
-   changes or return them to development. The task worktrees remain available for commits and pull requests.
+   changes after checking the evidence for each approved criterion. Add line comments in a diff
+   and send them together to one lane, or use **Request changes** for the whole task.
+   On the next review, **Since your feedback** shows the edits in that round.
+6. Commit and push the reviewed changes in the task worktree. The accepted run offers one pull
+   or merge request per branch. Hive verifies the published commit against the review before
+   creating the request. An existing request shows its checks and a link to the first failure.
 
 ## A closer look
 
@@ -334,9 +340,10 @@ Shortcuts can be changed in **Settings → Application → Shortcuts**.
 ## Data and credentials
 
 - Project references, workspace layouts, shell directories, and settings are stored in `~/.hive/state.json`.
-- Pipeline templates, task prompts, assignments, review findings, decisions and bounded QA command output are saved locally in the same state file. Each selected agent receives the task context for its role.
+- Pipeline templates, launch drafts, task prompts, assignments, line comments, review findings, decisions and bounded QA command output are saved locally in the same state file. Each selected agent receives the task context for its role.
 - Unsaved editor drafts are stored under `~/.hive/editor-recovery/`; they can contain
   source code that has not been saved to the project yet.
+- Pipeline review snapshots are local Git trees retained under `refs/hive/pipelines/` until the run is deleted.
 - Worktrees created by Hive live beside the repository in `<repo>-worktrees/`.
 - API keys entered in Hive are stored in **macOS Keychain**, separately from settings.
 - Usage indicators read existing CLI credentials and contact the provider's usage

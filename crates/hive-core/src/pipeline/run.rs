@@ -67,6 +67,8 @@ pub struct Run {
     /// Local project that owns this task in the sidebar.
     #[serde(with = "crate::path_encoding::persisted")]
     pub(super) owner: PathBuf,
+    #[serde(default)]
+    pub(super) direct_start: bool,
     /// Original user request.
     pub(super) task: String,
     /// Recipe frozen at launch.
@@ -91,6 +93,16 @@ pub struct Run {
     /// Content fingerprint taken before QA, checked again on final acceptance.
     #[serde(default)]
     pub(super) review_revision: Option<String>,
+    /// Permanent addresses of delivered requests, keyed by representative lane.
+    #[serde(default)]
+    pub(super) requests: Vec<(usize, String)>,
+    #[serde(default)]
+    pub(super) review_trees: Vec<String>,
+    #[serde(default)]
+    pub(super) feedback_trees: Vec<String>,
+    /// Unsent line notes with their receiving lane and reviewed tree.
+    #[serde(default, deserialize_with = "crate::state::lenient::elements")]
+    pub(super) comments: Vec<(usize, String, crate::git::review_notes::Note)>,
     /// Known CLI session IDs, linked to the exact attempts that created them.
     #[serde(default)]
     pub(super) sessions: Vec<(Ticket, ResumeSession)>,
@@ -163,6 +175,11 @@ impl Run {
             commands: vec![],
             sessions: vec![],
             review_revision: None,
+            requests: vec![],
+            direct_start: false,
+            review_trees: vec![],
+            feedback_trees: vec![],
+            comments: vec![],
             outstanding: vec![],
             last_attempt: 0,
             rounds: vec![0; reviews],
@@ -279,11 +296,11 @@ impl Run {
         }
         let contract = match self.phase {
             Phase::Planning => {
-                r#"Plan only. Ask the user if necessary. Report {"kind":"plan","assignments":[{"lane":0,"task":"...","criteria":"..."}]} with one entry per required lane."#
+                r#"Plan only. Ask the user if necessary. Report {"kind":"plan","assignments":[{"lane":0,"task":"...","criteria":"..."}]} with one entry per required lane. Put each separately testable acceptance criterion on its own line."#
             }
             Phase::Development => super::handoff::DEVELOPED_CONTRACT,
             Phase::Review(_) => {
-                r#"Inspect the participating worktrees together. A lane's changes are everything after its base commit: `git diff <base commit>` shows committed and uncommitted edits together, `git status` lists new files. Report {"kind":"review","summary":"evidence","findings":[{"lane":0,"severity":"major","description":"issue, reproduction and expected behavior"}]}. Severity is "blocker" (breaks an acceptance criterion, the build or the tests, or loses data), "major" (a defect to fix before merging) or "minor" (an improvement that should not hold the change back). Blocker and major findings return the work to development; minor ones are shown to the user. Use an empty list to pass."#
+                r#"Inspect the participating worktrees together. A lane's changes are everything after its base commit: `git diff <base commit>` shows committed and uncommitted edits together, `git status` lists new files. Report {"kind":"review","summary":"evidence","evidence":[{"lane":0,"criterion":"exact approved line","evidence":"specific test or observation"}],"findings":[{"lane":0,"severity":"major","description":"issue, reproduction and expected behavior"}]}. Severity is "blocker" (breaks an acceptance criterion, the build or the tests, or loses data), "major" (a defect to fix before merging) or "minor" (an improvement that should not hold the change back). Blocker and major findings return the work to development; minor ones are shown to the user. List only criteria you actually confirmed. Unverified criteria have no evidence entry. Use an empty findings list to pass."#
             }
             _ => return Err(Error::WrongStage("This gate has no agent")),
         };
@@ -322,6 +339,13 @@ impl Run {
         if self.id == 0
             || !self.owner.is_absolute()
             || self.lanes.is_empty()
+            || [self.review_trees(), self.feedback_trees()]
+                .iter()
+                .any(|trees| {
+                    !trees.is_empty()
+                        && (trees.len() != self.lanes.len()
+                            || trees.iter().any(|oid| !workspace::is_object_name(oid)))
+                })
             || self.template.validate_structure().is_err()
             || self.rounds.len() != self.template.reviews.len()
             || self.last_attempt > u64::MAX / 2

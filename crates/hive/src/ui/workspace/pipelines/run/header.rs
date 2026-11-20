@@ -137,7 +137,11 @@ impl RunView {
                             .size_4()
                             .text_color(cx.theme().warning),
                     )
-                    .child(div().text_sm().child(error))
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(SelectableText::new("pipeline-failure", error)),
+                    )
                     .child(button(
                         "retry-run",
                         "Retry interrupted work",

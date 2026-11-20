@@ -74,7 +74,11 @@ impl std::fmt::Display for StageStatus {
 impl Stage {
     /// Stages in recipe order; a decision appears only once the run has reached it.
     pub fn recipe(run: &Run) -> Vec<Self> {
-        let mut stages = vec![Self::Planner, Self::Approval];
+        let mut stages = if run.direct_start() {
+            vec![]
+        } else {
+            vec![Self::Planner, Self::Approval]
+        };
         stages.extend((0..run.lanes.len()).map(Self::Develop));
         if run.lanes.iter().any(|lane| run.shows_check(lane)) {
             stages.push(Self::Commands(0));

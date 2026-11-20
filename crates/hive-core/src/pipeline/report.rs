@@ -63,6 +63,17 @@ impl Finding {
     }
 }
 
+/// Evidence reported by a reviewer for one approved criterion.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CriterionEvidence {
+    /// Assigned lane.
+    pub lane: usize,
+    /// Exact approved line of acceptance criteria.
+    pub criterion: String,
+    /// Test or observation the reviewer used to confirm it.
+    pub evidence: String,
+}
+
 /// Result submitted by the bound agent for a particular attempt.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -81,6 +92,9 @@ pub enum Report {
     Review {
         /// Review evidence.
         summary: String,
+        /// Confirmed criteria, absent in reports from earlier versions.
+        #[serde(default)]
+        evidence: Vec<CriterionEvidence>,
         /// Outstanding issues.
         findings: Vec<Finding>,
     },

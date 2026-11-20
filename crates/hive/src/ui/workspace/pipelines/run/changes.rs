@@ -31,7 +31,33 @@ impl RunView {
                 cx.notify();
             },
         ));
+        if !run.feedback_trees().is_empty()
+            && !run.review_trees().is_empty()
+            && matches!(run.phase(), Phase::Acceptance | Phase::Accepted)
+        {
+            for (since, label) in [(true, "Since your feedback"), (false, "All changes")] {
+                head = head.child(button(
+                    label,
+                    label,
+                    if since == self.since_feedback {
+                        ButtonLook::Primary
+                    } else {
+                        ButtonLook::Outline
+                    },
+                    w,
+                    cx,
+                    move |v, _, cx| {
+                        v.since_feedback = since;
+                        v.refresh_changes(cx);
+                        cx.notify();
+                    },
+                ));
+            }
+        }
         page = page.child(head);
+        if run.phase() == Phase::Acceptance && !run.comments().is_empty() {
+            page = page.child(self.comment_actions(run, w, cx));
+        }
         match pipelines.read(cx).review(self.id) {
             None => page = page.child(subtle("Reading worktree changes…", cx)),
             Some(Err(e)) => {
@@ -235,16 +261,26 @@ impl RunView {
                     .into_any_element()
             }
             Some((_, _, Ok(files))) => {
-                if let Some(display) = &self.display {
-                    Diff::new(display).flex_1().min_h_0().into_any_element()
-                } else {
+                if self.display.is_none() {
                     let files = files.clone();
-                    let display =
-                        cx.new(|cx| DiffState::new(files, cx).with_mode(DiffMode::Unified));
-                    let view = Diff::new(&display).flex_1().min_h_0().into_any_element();
-                    self.display = Some(display);
-                    view
+                    self.display =
+                        Some(cx.new(|cx| DiffState::new(files, cx).with_mode(DiffMode::Unified)));
                 }
+                let display = self.display.as_ref().expect("display was just initialized");
+                let view = cx.weak_entity();
+                Diff::new(display)
+                    .when(
+                        run.phase() == Phase::Acceptance && run.review_trees().get(lane).is_some(),
+                        |d| {
+                            d.on_add_annotation(move |range, w, cx| {
+                                let _ =
+                                    view.update(cx, |v, cx| v.comment(lane, &path, range, w, cx));
+                            })
+                        },
+                    )
+                    .flex_1()
+                    .min_h_0()
+                    .into_any_element()
             }
             Some((_, _, Err(error))) => div()
                 .p_4()
@@ -258,6 +294,10 @@ impl RunView {
             .flex_1()
             .min_h_0()
             .child(header)
+            .when(
+                run.phase() == Phase::Acceptance && !run.comments().is_empty(),
+                |panel| panel.child(self.comment_actions(run, w, cx)),
+            )
             .child(body)
             .into_any_element()
     }

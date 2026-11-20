@@ -10,18 +10,22 @@ impl Pipelines {
         }
     }
 
-    pub(crate) fn load_review(&mut self, id: u64, cx: &mut Context<Self>) {
-        if self.runtime(id).is_some_and(|r| r.review_job.is_some()) {
+    pub(crate) fn load_review(&mut self, id: u64, since_feedback: bool, cx: &mut Context<Self>) {
+        if self
+            .runtime(id)
+            .is_some_and(|r| r.review_job.is_some() && r.since_feedback == since_feedback)
+        {
             return;
         }
         let Ok(run) = self.run(id, cx) else { return };
-        let lanes = run.lanes().to_vec();
+        let run = run.clone();
         self.clear_review(id);
+        self.runtime_mut(id).since_feedback = since_feedback;
         let read = self.next_job();
         self.runtime_mut(id).review_job = Some(read);
-        let work = cx
-            .background_executor()
-            .spawn(async move { workspace::review(id, &lanes).map_err(|e| e.to_string()) });
+        let work = cx.background_executor().spawn(async move {
+            workspace::review_round(&run, since_feedback).map_err(|e| e.to_string())
+        });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |p, cx| {
@@ -89,6 +93,53 @@ impl Pipelines {
         .detach();
         cx.notify();
     }
+    pub(crate) fn edit_comments(
+        &mut self,
+        id: u64,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut Run) -> Result<(), hive_core::pipeline::Error>,
+    ) -> Result<(), String> {
+        self.store.update(cx, |s, cx| {
+            s.try_edit_pipelines(cx, |lib| {
+                let run = lib
+                    .runs
+                    .iter_mut()
+                    .find(|r| r.id() == id)
+                    .ok_or("Run unavailable")?;
+                edit(run).map_err(|e| e.to_string())
+            })
+        })
+    }
+
+    pub(crate) fn send_comments(
+        &mut self,
+        id: u64,
+        lane: usize,
+        tree: String,
+        batch: Vec<hive_core::git::review_notes::Note>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let Ok(run) = self.run(id, cx) else {
+            return Task::ready(Err("Run is unavailable".into()));
+        };
+        let expected = run.review_revision().map(str::to_owned);
+        let lanes = run.lanes().to_vec();
+        let work = cx.background_executor().spawn(async move {
+            workspace::revision(id, &lanes, &Cancellation::default()).map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this,cx| {
+            let actual = work.await?;
+            this.update(cx,|p,cx| {
+                if p.run(id,cx)?.review_revision() != expected.as_deref() {return Err("Outdated position. Review the current diff.".into());}
+                if expected.as_deref() != Some(&actual) {
+                    p.edit(id,cx,|r| Ok(r.recheck()?))?;
+                    return Err("Outdated comment position. The files changed and QA is checking them again.".into());
+                }
+                p.edit(id,cx,|r| Ok(r.submit_comments(lane,&tree,&batch)?))
+            }).map_err(|e|e.to_string())?
+        })
+    }
+
     pub(crate) fn accepting(&self, id: u64) -> bool {
         self.runtime(id).is_some_and(|r| r.accept_job.is_some())
     }

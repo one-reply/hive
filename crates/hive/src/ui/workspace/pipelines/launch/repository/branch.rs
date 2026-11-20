@@ -7,23 +7,6 @@ use hive_core::git::branches::{Branch, is_valid_name};
 const MENU_WIDTH: Pixels = px(340.);
 const MENU_LIST_HEIGHT: Pixels = px(260.);
 
-/// Nothing is chosen until the user picks or names a branch: the run commits there.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum WorkBranch {
-    Unchosen,
-    Existing(String),
-    New(String),
-}
-
-impl WorkBranch {
-    pub(super) fn name(&self) -> Option<&str> {
-        match self {
-            Self::Unchosen => None,
-            Self::Existing(name) | Self::New(name) => Some(name),
-        }
-    }
-}
-
 /// What the typed text can become besides a listed branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Create {
