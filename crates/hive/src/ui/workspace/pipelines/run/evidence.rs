@@ -22,7 +22,7 @@ impl RunView {
             && let Some(check) = r
                 .commands()
                 .iter()
-                .find(|c| c.lane == *lane && c.passed_tests().contains(test))
+                .find(|c| c.lane == *lane && c.passed_test(test))
         {
             list = list.child(subtle(format!("{} · {test} · passed", check.command), cx));
         }

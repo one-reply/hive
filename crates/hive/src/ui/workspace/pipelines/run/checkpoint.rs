@@ -190,6 +190,23 @@ impl RunView {
                             |v, _, cx| v.edit(cx, |r| Ok(r.repair_regression()?)),
                         ));
                 }
+                row = row.child(button(
+                    "skip-regression",
+                    "Continue without this test",
+                    ButtonLook::Ghost,
+                    w,
+                    cx,
+                    |_, w, cx| {
+                        Self::ask_reason(
+                            "Continue without the independent test",
+                            "Its criterion will need other evidence at acceptance.".into(),
+                            "Why can this run continue without it?",
+                            w,
+                            cx,
+                            |run, reason| Ok(run.skip_regression(&reason)?),
+                        );
+                    },
+                ));
             }
             Phase::Decision(_) => {
                 row = row.child(button(

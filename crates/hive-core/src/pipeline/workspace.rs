@@ -1,5 +1,5 @@
 //! Local Git checkouts, required commands and acceptance diffs for a pipeline run.
-use super::{CommandResult, Lane};
+use super::{CommandResult, Lane, test_output};
 use crate::{
     command::{self, Cancellation},
     git::{self, GitError, diff::DiffSource, status::Change},
@@ -258,11 +258,17 @@ pub fn checks(lanes: &[Lane], cancellation: &Cancellation) -> Vec<CommandResult>
             break;
         }
         let command = Host::Local.command("/bin/sh", &["-c", &lane.command], Some(&lane.worktree));
-        let (exit_code, output) = match command::run_with_log_tail(
+        // Test names come from the start of stdout, which the saved tail no longer holds.
+        let mut stdout = Vec::new();
+        let (exit_code, output) = match command::run_with_observed_log_tail(
             command,
             cancellation,
             Duration::from_secs(30 * 60),
             CHECK_OUTPUT,
+            |chunk| {
+                let room = test_output::REPORT_STDOUT.saturating_sub(stdout.len());
+                stdout.extend_from_slice(&chunk[..chunk.len().min(room)]);
+            },
         ) {
             Ok(result) => {
                 let mut output = String::from_utf8_lossy(&result.stdout).into_owned();
@@ -279,12 +285,18 @@ pub fn checks(lanes: &[Lane], cancellation: &Cancellation) -> Vec<CommandResult>
             }
             Err(error) => (None, error.to_string()),
         };
+        let passed = if exit_code == Some(0) {
+            test_output::passed_tests(&String::from_utf8_lossy(&stdout))
+        } else {
+            Vec::new()
+        };
         results.push(CommandResult {
             lane: index,
             command: lane.command.clone(),
             success: exit_code == Some(0),
             exit_code,
             output,
+            passed,
         });
     }
     results

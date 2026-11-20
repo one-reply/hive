@@ -106,7 +106,7 @@ impl Run {
                         .commands
                         .iter()
                         .find(|c| c.lane == lane)
-                        .is_some_and(|c| c.passed_tests().iter().any(|n| n == test))
+                        .is_some_and(|c| c.passed_test(test))
                 {
                     return EvidenceSource::Test(test);
                 }

@@ -24,6 +24,7 @@ mod header;
 pub(super) use header::task_title;
 mod interaction;
 use interaction::{actionable, toggle};
+mod reason;
 mod sessions;
 use sessions::LiveSession;
 mod stage;

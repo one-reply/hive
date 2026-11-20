@@ -186,6 +186,7 @@ mod tests {
             success: true,
             output: String::new(),
             exit_code: Some(0),
+            passed: vec![],
         });
         assert_eq!(tally(&run), (0, 1));
         run.commands[0].command = "cargo test".into();

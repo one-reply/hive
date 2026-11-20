@@ -157,6 +157,17 @@ pub struct CommandResult {
     pub exit_code: Option<i32>,
     /// Bounded terminal output or diagnostic.
     pub output: String,
+    /// Tests a completed harness reported as passing, read from the whole stdout before
+    /// `output` kept only its tail. Empty for a failed command or an unknown report format.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passed: Vec<String>,
+}
+
+impl CommandResult {
+    /// Whether this successful command reported `name` as a passing test.
+    pub fn passed_test(&self, name: &str) -> bool {
+        self.success && self.passed.iter().any(|passed| passed == name)
+    }
 }
 
 #[cfg(test)]

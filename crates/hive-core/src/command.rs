@@ -239,13 +239,29 @@ pub(crate) fn run_with_log_tail(
     timeout: Duration,
     limit: usize,
 ) -> Result<Output, Error> {
+    run_with_observed_log_tail(command, cancellation, timeout, limit, |_| {})
+}
+
+/// Like [`run_with_log_tail`], handing every stdout chunk to `observe` before the tail drops
+/// it: a report at the start of a long log is otherwise gone by the time the command exits.
+#[cfg(feature = "desktop")]
+pub(crate) fn run_with_observed_log_tail(
+    command: Command,
+    cancellation: &Cancellation,
+    timeout: Duration,
+    limit: usize,
+    mut observe: impl FnMut(&[u8]),
+) -> Result<Output, Error> {
     supervise(
         command,
         &[],
         cancellation,
         timeout,
         Capture::LogTail(limit),
-        |output, bytes| Capture::LogTail(limit).append(output, bytes),
+        |output, bytes| {
+            observe(bytes);
+            Capture::LogTail(limit).append(output, bytes)
+        },
         |_, _| {},
     )
 }

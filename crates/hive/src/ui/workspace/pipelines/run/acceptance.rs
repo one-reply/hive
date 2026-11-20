@@ -52,8 +52,10 @@ impl RunView {
                 w,
                 cx,
                 move |_, w, cx| {
-                    let input = area(
-                        "",
+                    let (criterion, revision) = (line.clone(), revision.clone());
+                    Self::ask_reason(
+                        label,
+                        line.clone(),
                         if manual {
                             "What did you observe?"
                         } else {
@@ -61,40 +63,15 @@ impl RunView {
                         },
                         w,
                         cx,
+                        move |run, note| {
+                            let decision = if manual {
+                                CriterionDecision::Manual(note)
+                            } else {
+                                CriterionDecision::Exception(note)
+                            };
+                            Ok(run.decide_criterion(lane, &criterion, &revision, decision)?)
+                        },
                     );
-                    let view = cx.weak_entity();
-                    let (line, revision) = (line.clone(), revision.clone());
-                    w.open_alert_dialog(cx, move |d, _, cx| {
-                        let (line, revision, input, view) =
-                            (line.clone(), revision.clone(), input.clone(), view.clone());
-                        d.title(label)
-                            .child(subtle(line.clone(), cx))
-                            .child(paragraph("Details", &input, cx))
-                            .button_props(
-                                DialogButtonProps::default()
-                                    .ok_text("Save")
-                                    .show_cancel(true)
-                                    .on_ok(move |_, _, cx| {
-                                        let note = input.read(cx).value().trim().to_owned();
-                                        if note.is_empty() {
-                                            return false;
-                                        }
-                                        let decision = if manual {
-                                            CriterionDecision::Manual(note)
-                                        } else {
-                                            CriterionDecision::Exception(note)
-                                        };
-                                        let _ = view.update(cx, |v, cx| {
-                                            v.edit(cx, |r| {
-                                                Ok(r.decide_criterion(
-                                                    lane, &line, &revision, decision,
-                                                )?)
-                                            })
-                                        });
-                                        true
-                                    }),
-                            )
-                    });
                 },
             ));
         }

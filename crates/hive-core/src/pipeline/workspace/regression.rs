@@ -2,11 +2,14 @@
 use super::{snapshot::Scratch, *};
 use crate::pipeline::test_output::{cargo_outcome, js_outcome};
 use crate::pipeline::{Phase, RegressionStep, RegressionTest, Run, TestRunner};
+use serde::Deserialize;
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const REPORT_LIMIT: usize = 4 * 1024 * 1024;
+/// Extensions of the script configuration files Jest, Vitest and Vite accept.
+const SCRIPT_EXTENSIONS: [&str; 6] = ["js", "mjs", "cjs", "ts", "mts", "cts"];
 
 /// Outcome for the exact command phase that scheduled it.
 pub enum RegressionResult {
@@ -220,47 +223,7 @@ fn execute(
             ]);
             cmd
         }
-        runner => {
-            let jest = runner == TestRunner::Jest;
-            let name = if jest { "jest" } else { "vitest" };
-            let file = cwd.join(path);
-            let exe = file
-                .ancestors()
-                .skip(1)
-                .take_while(|p| p.starts_with(cwd))
-                .map(|p| p.join("node_modules/.bin").join(name))
-                .find(|p| p.is_file())
-                .ok_or_else(|| {
-                    format!("The project has no installed {name} executable. Check worktree setup.")
-                })?;
-            let mut cmd = Host::Local.command(
-                exe.to_str().ok_or("Invalid local runner path")?,
-                &[],
-                Some(cwd),
-            );
-            let exact = format!("^{}$", regex::escape(&test.name));
-            if jest {
-                cmd.args([
-                    "--runInBand",
-                    "--no-watchman",
-                    "--json",
-                    "--runTestsByPath",
-                    &test.path,
-                    "--testNamePattern",
-                    &exact,
-                ]);
-            } else {
-                cmd.args([
-                    "run",
-                    &test.path,
-                    "--reporter=json",
-                    "--testNamePattern",
-                    &exact,
-                ]);
-            }
-            cmd.arg("--outputFile").arg(&report);
-            cmd
-        }
+        _ => js_command(test, cwd, &report)?,
     };
     cmd.env("CI", "1").env("NO_COLOR", "1");
     let out = command::run_with_log_tail(cmd, stop, TEST_TIMEOUT, CHECK_OUTPUT)
@@ -269,7 +232,7 @@ fn execute(
     let observed = match test.runner {
         TestRunner::Cargo => cargo_outcome(&stdout, &test.name, &test.expected, baseline),
         _ => js_outcome(
-            &read_report(&report).map_err(|error| {
+            &read_regular_file(&report).map_err(|error| {
                 format!(
                     "Cannot read the {:?} report for {}: {error}. {}",
                     test.runner,
@@ -330,7 +293,90 @@ fn execute(
     ))
 }
 
-fn read_report(path: &Path) -> std::io::Result<Vec<u8>> {
+/// The runner installed nearest to the test, started where it finds its configuration.
+pub(super) fn js_command(
+    test: &RegressionTest,
+    checkout: &Path,
+    report: &Path,
+) -> Result<std::process::Command, String> {
+    let jest = test.runner == TestRunner::Jest;
+    let name = if jest { "jest" } else { "vitest" };
+    let file = checkout.join(&test.path);
+    let folders = || {
+        file.ancestors()
+            .skip(1)
+            .take_while(|dir| dir.starts_with(checkout))
+    };
+    let exe = folders()
+        .map(|dir| dir.join("node_modules/.bin").join(name))
+        .find(|exe| exe.is_file())
+        .ok_or_else(|| {
+            format!("The project has no installed {name} executable. Check worktree setup.")
+        })?;
+    // Neither runner looks above its working directory for configuration, so a test in a
+    // nested package starts from the nearest folder that configures the runner.
+    let root = folders()
+        .find(|dir| configures(dir, test.runner))
+        .unwrap_or(checkout);
+    let path = file
+        .strip_prefix(root)
+        .ok()
+        .and_then(Path::to_str)
+        .ok_or("Invalid test path")?;
+    let mut cmd = Host::Local.command(
+        exe.to_str().ok_or("Invalid local runner path")?,
+        &[],
+        Some(root),
+    );
+    let exact = format!("^{}$", regex::escape(&test.name));
+    if jest {
+        cmd.args([
+            "--runInBand",
+            "--no-watchman",
+            "--json",
+            "--runTestsByPath",
+            path,
+            "--testNamePattern",
+            &exact,
+        ]);
+    } else {
+        cmd.args(["run", path, "--reporter=json", "--testNamePattern", &exact]);
+    }
+    cmd.arg("--outputFile").arg(report);
+    Ok(cmd)
+}
+
+/// The one key of `package.json` that matters here: any `jest` section configures Jest.
+#[derive(Deserialize)]
+struct Manifest {
+    jest: Option<serde::de::IgnoredAny>,
+}
+
+/// Whether `dir` holds the configuration `runner` reads from its working directory.
+fn configures(dir: &Path, runner: TestRunner) -> bool {
+    let has = |stem: &str, extensions: &[&str]| {
+        extensions
+            .iter()
+            .any(|extension| dir.join(format!("{stem}.{extension}")).is_file())
+    };
+    match runner {
+        TestRunner::Cargo => false,
+        TestRunner::Jest => {
+            has("jest.config", &SCRIPT_EXTENSIONS)
+                || has("jest.config", &["json"])
+                || read_regular_file(&dir.join("package.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
+                    .is_some_and(|manifest| manifest.jest.is_some())
+        }
+        TestRunner::Vitest => {
+            has("vitest.config", &SCRIPT_EXTENSIONS) || has("vite.config", &SCRIPT_EXTENSIONS)
+        }
+    }
+}
+
+/// Reads a file the checkout or a test run controls: never through a link, never unbounded.
+fn read_regular_file(path: &Path) -> std::io::Result<Vec<u8>> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -341,7 +387,7 @@ fn read_report(path: &Path) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     file.take(REPORT_LIMIT as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > REPORT_LIMIT {
-        return Err(std::io::Error::other("Test report exceeds 4 MiB"));
+        return Err(std::io::Error::other("File exceeds 4 MiB"));
     }
     Ok(bytes)
 }

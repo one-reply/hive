@@ -152,8 +152,8 @@ impl Run {
                 );
             }
         }
-        for check in &self.commands {
-            for name in check.passed_tests().into_iter().take(128) {
+        for check in self.commands.iter().filter(|check| check.success) {
+            for name in check.passed.iter().take(128) {
                 let _ = writeln!(prompt, "Lane {} passed test: {name}", check.lane);
             }
         }

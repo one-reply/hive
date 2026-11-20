@@ -1,45 +1,58 @@
 //! Test identities observed in completed Rust libtest and Jest-compatible runner reports.
-use super::{CommandResult, RegressionTest};
+use super::RegressionTest;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-impl CommandResult {
-    /// Unambiguous names reported as passing by a completed test harness.
-    pub fn passed_tests(&self) -> Vec<String> {
-        if !self.success || self.exit_code != Some(0) {
-            return vec![];
-        }
-        // The command log can contain stderr after the JSON written to stdout.
-        let mut names: Vec<String> = if let Some(Ok(report)) =
-            serde_json::Deserializer::from_str(&self.output)
+/// How much of a command's stdout is read for test names.
+pub(super) const REPORT_STDOUT: usize = 8 * 1024 * 1024;
+/// Saved names of one command, in bytes: they are written to `state.json` with the run.
+const PASSED_NAMES: usize = 256 * 1024;
+/// Lines that may start a JSON report, tried from the end of stdout.
+const REPORT_CANDIDATES: usize = 8;
+
+/// Unambiguous names a completed harness reported as passing on the `stdout` of a command
+/// that exited successfully, sorted.
+pub(super) fn passed_tests(stdout: &str) -> Vec<String> {
+    let mut names: Vec<String> = match js_report(stdout) {
+        Some(report) if !report.passed_cleanly() => return vec![],
+        Some(report) => report
+            .test_results
+            .into_iter()
+            .flat_map(|s| s.assertion_results)
+            .filter(|a| a.status == "passed" && !a.full_name.trim().is_empty())
+            .map(|a| a.full_name)
+            .collect(),
+        None => cargo_passes(stdout),
+    };
+    names.sort_unstable();
+    let mut size = 0;
+    // ponytail: names past the budget are dropped and need other evidence; save name hashes
+    // instead if suites outgrow it.
+    names
+        .chunk_by(|a, b| a == b)
+        .filter(|group| group.len() == 1)
+        .map(|group| group[0].clone())
+        .take_while(|name| {
+            size += name.len();
+            size <= PASSED_NAMES
+        })
+        .collect()
+}
+
+/// The last Jest-compatible report on stdout. A package manager prints its banner before the
+/// report and a runner may log after it, so the report rarely starts the output.
+fn js_report(stdout: &str) -> Option<JsReport> {
+    stdout
+        .rmatch_indices("\n{")
+        .map(|(newline, _)| newline + 1)
+        .chain(stdout.starts_with('{').then_some(0))
+        .take(REPORT_CANDIDATES)
+        .find_map(|start| {
+            serde_json::Deserializer::from_str(&stdout[start..])
                 .into_iter::<JsReport>()
-                .next()
-        {
-            if !report.success
-                || report.was_interrupted
-                || report.num_failed_tests != 0
-                || report.num_failed_test_suites != 0
-                || report.num_runtime_error_test_suites != 0
-            {
-                return vec![];
-            }
-            report
-                .test_results
-                .into_iter()
-                .flat_map(|s| s.assertion_results)
-                .filter(|a| a.status == "passed" && !a.full_name.trim().is_empty())
-                .map(|a| a.full_name)
-                .collect()
-        } else {
-            cargo_passes(&self.output)
-        };
-        names.sort_unstable();
-        names
-            .chunk_by(|a, b| a == b)
-            .filter(|group| group.len() == 1)
-            .map(|group| group[0].clone())
-            .collect()
-    }
+                .next()?
+                .ok()
+        })
 }
 
 fn cargo_passes(output: &str) -> Vec<String> {
@@ -106,6 +119,18 @@ struct JsReport {
     was_interrupted: bool,
     test_results: Vec<JsSuite>,
 }
+
+impl JsReport {
+    /// Whether the run finished and nothing in it failed.
+    fn passed_cleanly(&self) -> bool {
+        self.success
+            && !self.was_interrupted
+            && self.num_failed_tests == 0
+            && self.num_failed_test_suites == 0
+            && self.num_runtime_error_test_suites == 0
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct JsSuite {
@@ -162,15 +187,44 @@ mod tests {
     use super::*;
     use crate::pipeline::TestRunner;
 
-    fn passes(output: &str) -> Vec<String> {
-        CommandResult {
-            lane: 0,
-            command: "check".into(),
-            success: true,
-            exit_code: Some(0),
-            output: output.into(),
+    /// The captured failing report, as the same run prints it when its only test passes.
+    fn passing_report(fixture: &str) -> serde_json::Value {
+        let mut report: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        report["success"] = true.into();
+        report["numFailedTests"] = 0.into();
+        report["numFailedTestSuites"] = 0.into();
+        report["testResults"][0]["assertionResults"][0]["status"] = "passed".into();
+        report
+    }
+
+    #[test]
+    fn a_js_report_is_read_after_a_package_manager_banner_and_before_later_logs() {
+        let report = passing_report(include_str!("fixtures/jest-failed.json"));
+        let banner = "\n> web@1.0.0 test\n> jest --json\n\n";
+        for body in [
+            report.to_string(),
+            serde_json::to_string_pretty(&report).unwrap(),
+        ] {
+            let stdout = format!("{banner}{body}\nDone in 1.2s\n{{\"level\":\"info\"}}\n");
+            assert_eq!(passed_tests(&stdout), ["returns_two"], "{stdout}");
         }
-        .passed_tests()
+        // A failed run proves nothing, whatever else the log looks like.
+        let failed = include_str!("fixtures/jest-failed.json");
+        let libtest =
+            "running 1 test\ntest returns_two ... ok\ntest result: ok. 1 passed; 0 failed;";
+        assert!(passed_tests(&format!("{libtest}\n{failed}")).is_empty());
+        // Only the last few candidate lines are parsed: a flood of JSON log lines after the
+        // report hides it rather than costing one parse per line.
+        let flood = "{\"level\":\"info\"}\n".repeat(REPORT_CANDIDATES);
+        assert!(passed_tests(&format!("{report}\n{flood}")).is_empty());
+    }
+
+    #[test]
+    fn saved_names_stay_within_their_budget() {
+        let names = ["a", "b", "c"].map(|letter| letter.repeat(PASSED_NAMES / 2 - 1));
+        let lines: String = names.iter().map(|n| format!("test {n} ... ok\n")).collect();
+        let stdout = format!("running 3 tests\n{lines}test result: ok. 3 passed; 0 failed;");
+        assert_eq!(passed_tests(&stdout), names[..2]);
     }
 
     #[test]
@@ -208,7 +262,7 @@ mod tests {
         ));
         let passed = "running 1 test\ntest returns_two ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;";
         assert!(cargo_outcome(passed, "returns_two", "", false));
-        assert_eq!(passes(passed), ["returns_two"]);
+        assert_eq!(passed_tests(passed), ["returns_two"]);
         for unverified in [
             "running 0 tests",
             "test test_a ... ok",
@@ -217,7 +271,7 @@ mod tests {
             &passed.replace(" ... ok", " ... ignored"),
             &format!("{passed}\n{passed}"),
         ] {
-            assert!(passes(unverified).is_empty(), "{unverified}");
+            assert!(passed_tests(unverified).is_empty(), "{unverified}");
         }
     }
 
@@ -266,7 +320,7 @@ mod tests {
                 let output = report.to_string();
                 assert_eq!(js_outcome(output.as_bytes(), &file, &test, false), verified);
                 assert_eq!(
-                    passes(&format!("{output}\nrunner diagnostics")).len(),
+                    passed_tests(&format!("{output}\nrunner diagnostics")).len(),
                     usize::from(verified)
                 );
             }

@@ -103,7 +103,8 @@ project while agents run.
    **Independent regression test** to have a separate agent write one Cargo, Jest,
    or Vitest test. Hive checks that it fails for the expected reason on the base
    commit, then runs the same test against the fix. Changing the test requires
-   your approval and repeats both checks.
+   your approval and repeats both checks. If the test cannot be reproduced in this
+   checkout, **Continue without this test** records your reason and moves on.
 3. Review the planner’s assignments and acceptance criteria, then choose **Approve
    plan**. In **Cross-repository**, edit the shared API contract above the lane
    assignments. API, Web, and QA receive that approved text. Different repositories

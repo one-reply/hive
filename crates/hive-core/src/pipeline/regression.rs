@@ -358,6 +358,38 @@ impl Run {
         Ok(())
     }
 
+    /// Continue without the independent test when it cannot be reproduced in this checkout:
+    /// setup that edits tracked files, a test that needs a second file, an unsupported
+    /// layout. Its criterion then needs other evidence at acceptance, like any other.
+    pub fn skip_regression(&mut self, reason: &str) -> Result<(), Error> {
+        if !matches!(self.phase, Phase::Regression(step) if step.needs_user()) {
+            return Err(Error::InactiveAttempt);
+        }
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(Error::InvalidInput(
+                "Enter a reason to continue without the test.",
+            ));
+        }
+        let regression = self.regression.take().ok_or(Error::InactiveAttempt)?;
+        self.history.push(format!(
+            "User continued without the independent regression test: {reason}"
+        ));
+        if regression.after_development {
+            self.begin_qa();
+            return Ok(());
+        }
+        // The developer starts in a checkout that may still hold the author's file.
+        if let Some(test) = &regression.test {
+            self.feedback = format!(
+                "An earlier step left an unverified regression test in {}. Keep it only if it is correct.",
+                test.path
+            );
+        }
+        self.develop([0]);
+        Ok(())
+    }
+
     pub(super) fn regression_valid(&self, step: RegressionStep) -> bool {
         self.lanes.len() == 1
             && self.regression.as_ref().is_some_and(|r| {

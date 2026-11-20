@@ -248,6 +248,7 @@ mod check_outcomes {
             success: true,
             exit_code: Some(0),
             output: String::new(),
+            passed: vec![],
         });
         run.phase = Phase::Development;
         run.record_stage(Some(Phase::Commands(0)), 1);

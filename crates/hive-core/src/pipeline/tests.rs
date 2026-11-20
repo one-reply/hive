@@ -96,6 +96,7 @@ fn check(success: bool) -> CommandResult {
             "expected 3, got 2"
         }
         .into(),
+        passed: vec![],
     }
 }
 
@@ -684,6 +685,7 @@ fn check_history_keeps_only_the_tail_of_a_long_log() {
         success: false,
         exit_code: Some(1),
         output: output.clone(),
+        passed: vec![],
     }])
     .unwrap();
     let entry = run
@@ -817,8 +819,7 @@ fn acceptance_distinguishes_claims_named_tests_and_human_decisions_on_the_same_r
     report(&mut run, developed());
     let mut result = check(true);
     result.command = "cargo test".into();
-    result.output =
-        "running 1 test\ntest auth::expired ... ok\n\ntest result: ok. 1 passed; 0 failed;".into();
+    result.passed = vec!["auth::expired".into()];
     run.checked_at(vec![result], Some("v1".into())).unwrap();
     run.record_review_revision("v1".into()).unwrap();
     report(
@@ -1051,4 +1052,75 @@ fn old_cross_repository_templates_and_runs_keep_their_distinct_workflows() {
     assert!(library.templates[2].shared_contract);
     assert!(!library.runs[0].template.shared_contract);
     assert_eq!(library.runs[0], saved);
+}
+
+#[test]
+fn an_unreproducible_regression_test_is_left_behind_only_with_a_reason() {
+    use workspace::RegressionResult;
+    let blocked = |developed_first: bool| {
+        let mut run = run_with(&["/api"], 3);
+        run.enable_regression().unwrap();
+        run.start_direct("Returns two").unwrap();
+        let test = RegressionTest {
+            runner: TestRunner::Cargo,
+            path: "tests/count.rs".into(),
+            name: "returns_two".into(),
+            expected: "two expected".into(),
+        };
+        report(&mut run, Report::Regression { test });
+        if developed_first {
+            run.record_regression(RegressionResult::Matched {
+                blob: "a".repeat(40),
+                revision: "base".into(),
+                detail: "failed as expected".into(),
+            })
+            .unwrap();
+            report(&mut run, developed());
+        }
+        run.record_regression(RegressionResult::NeedsDecision {
+            detail: "Baseline setup modified tracked source files.".into(),
+            changed_blob: None,
+        })
+        .unwrap();
+        assert_eq!(run.phase(), Phase::Regression(RegressionStep::Decision));
+        run
+    };
+
+    let mut run = blocked(false);
+    let waiting = run.clone();
+    assert!(run.skip_regression("  ").is_err());
+    assert_eq!(run, waiting);
+    run.skip_regression(" Setup rewrites the lockfile ")
+        .unwrap();
+    assert_eq!(run.phase(), Phase::Development);
+    assert!(run.regression().is_none());
+    assert!(run.valid_snapshot());
+    assert!(run.skip_regression("again").is_err());
+    let reason = "regression test: Setup rewrites the lockfile";
+    assert!(run.history().iter().any(|line| line.ends_with(reason)));
+    let prompt = run.prompt(&run.pending()[0]).unwrap();
+    assert!(prompt.contains("unverified regression test in tests/count.rs"));
+    // The run finishes like one that never asked for the test, and the criterion stays open.
+    report(&mut run, developed());
+    run.record_review_trees("first".into(), vec!["a".repeat(40)])
+        .unwrap();
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase(), Phase::Acceptance);
+    assert!(!run.criterion_source(0, "Returns two").closes());
+
+    let mut run = blocked(true);
+    run.skip_regression("The runner layout is unsupported")
+        .unwrap();
+    assert_eq!(run.phase(), Phase::Review(0));
+    assert!(run.valid_snapshot());
+
+    let mut run = run_with(&["/api"], 3);
+    run.enable_regression().unwrap();
+    run.start_direct("Returns two\nRestores draft").unwrap();
+    assert_eq!(run.phase(), Phase::Regression(RegressionStep::Choose));
+    run.skip_regression("No criterion suits a test").unwrap();
+    assert_eq!(run.phase(), Phase::Development);
+    let prompt = run.prompt(&run.pending()[0]).unwrap();
+    assert!(!prompt.contains("regression test"));
 }

@@ -165,6 +165,7 @@ mod tests {
             success: true,
             exit_code: Some(0),
             output: String::new(),
+            passed: vec![],
         }])
         .unwrap();
         let note = Finding {
