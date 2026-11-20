@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 mod delivery;
+pub mod draft;
 mod handoff;
 mod outcome;
 mod presets;
@@ -22,7 +23,7 @@ pub use outcome::{CheckTally, readable_history};
 pub(crate) use presets::refresh_stock_instructions;
 pub use prompts::Prompt;
 pub use recipe::unique_name;
-pub use report::{Assignment, CommandResult, Finding, Report, Severity};
+pub use report::{Assignment, CommandResult, CriterionEvidence, Finding, Report, Severity};
 pub use run::{Phase, Run, StageTiming, Ticket};
 pub use stage::{Stage, StageStatus};
 pub use stock::ReviewKind;
@@ -75,6 +76,8 @@ pub struct Library {
     pub templates: Vec<Template>,
     // Unique ids and names, mirrored into linked stages: changed only through `prompts.rs`.
     pub(crate) prompts: Vec<Prompt>,
+    /// Unsubmitted forms, one per project.
+    pub drafts: Vec<draft::LaunchDraft>,
     /// Task runs keyed by stable local IDs.
     pub runs: Vec<Run>,
 }
@@ -86,6 +89,7 @@ impl Default for Library {
             templates: Template::presets(),
             prompts: stock_prompts(),
             runs: Vec::new(),
+            drafts: Vec::new(),
         }
     }
 }

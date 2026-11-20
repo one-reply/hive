@@ -128,6 +128,7 @@ fn multi_repo_checks_and_acceptance_use_task_worktrees_and_report_new_files() {
     run.report(
         &run.pending()[0],
         Report::Review {
+            evidence: vec![],
             summary: "Contracts agree".into(),
             findings: vec![],
         },
@@ -158,6 +159,125 @@ fn multi_repo_checks_and_acceptance_use_task_worktrees_and_report_new_files() {
         "original\n"
     );
     assert!(!web.project.join("new-file").exists());
+}
+
+#[test]
+fn published_branch_must_match_the_review_and_round_diff_only_shows_the_repair() {
+    let dir = Scratch::new("published-round");
+    let stop = Cancellation::default();
+    let mut lane = dir.lane("web");
+    lane.branch = "fix/login".into();
+    lane.worktree = prepare(52, &lane, &stop).unwrap();
+    let cwd = lane.worktree.clone();
+    let mut run = Run::new(
+        52,
+        lane.project.clone(),
+        "Login".into(),
+        Template::default(),
+        vec![lane],
+    )
+    .unwrap();
+    run.start_direct("Returns 401").unwrap();
+    for i in 0..30 {
+        fs::write(cwd.join(format!("file{i}")), "first\n").unwrap();
+    }
+    let staged = git::run(&Host::Local, &cwd, &["write-tree"]).unwrap();
+    let (_, old) = reviewed_trees(52, run.lanes(), &stop).unwrap();
+    assert_eq!(
+        git::run(&Host::Local, &cwd, &["write-tree"]).unwrap(),
+        staged
+    );
+    fs::write(cwd.join("file13"), "corrected\n").unwrap();
+    let (revision, new) = reviewed_trees(52, run.lanes(), &stop).unwrap();
+    run.review_revision = Some(revision);
+    run.review_trees = new;
+    run.feedback_trees = old;
+    run.phase = Phase::Accepted;
+    let all = review_round(&run, false).unwrap();
+    let round = review_round(&run, true).unwrap();
+    assert_eq!(all[0].files.len(), 30);
+    assert_eq!(round[0].files.len(), 1);
+    assert_eq!(round[0].files[0].path, "file13");
+    let diff = patch(52, &run.lanes[0], &round[0].files[0]).unwrap();
+    assert!(diff.contains("-first") && diff.contains("+corrected"));
+    assert!(
+        publication::published_remote(&run, 0)
+            .unwrap_err()
+            .to_string()
+            .contains("Commit")
+    );
+    git(&cwd, &["add", "-A"]);
+    git(&cwd, &["commit", "-qm", "accepted work"]);
+    let remote = dir.0.join("origin.git");
+    git(&dir.0, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    git(&cwd, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    assert!(
+        publication::published_remote(&run, 0)
+            .unwrap_err()
+            .to_string()
+            .contains("Push")
+    );
+    git(&cwd, &["push", "-qu", "origin", "fix/login"]);
+    assert_eq!(
+        publication::published_remote(&run, 0).unwrap().1,
+        "fix/login"
+    );
+    git(&cwd, &["switch", "-qc", "unrelated"]);
+    assert!(
+        publication::published_remote(&run, 0)
+            .unwrap_err()
+            .to_string()
+            .contains("another branch")
+    );
+    git(&cwd, &["switch", "-q", "fix/login"]);
+    fs::write(cwd.join("contract"), "different").unwrap();
+    git(&cwd, &["commit", "-qam", "later"]);
+    assert!(
+        publication::published_remote(&run, 0)
+            .unwrap_err()
+            .to_string()
+            .contains("differ")
+    );
+    release_trees(52, run.lanes()).unwrap();
+    assert!(
+        git::run(
+            &Host::Local,
+            &cwd,
+            &["for-each-ref", "refs/hive/pipelines/52"]
+        )
+        .unwrap()
+        .is_empty()
+    );
+}
+
+#[test]
+fn shared_lanes_provision_once_even_when_setup_creates_local_files() {
+    let dir = Scratch::new("shared-setup");
+    let mut one = dir.lane("repo");
+    one.setup = "echo one >> marker".into();
+    let two = Lane {
+        name: "Web".into(),
+        setup: "echo two >> marker".into(),
+        ..one.clone()
+    };
+    let mut run = Run::new(
+        44,
+        one.project.clone(),
+        "Both".into(),
+        Template::default(),
+        vec![one, two],
+    )
+    .unwrap();
+    let (members, path) = prepare_lanes(&run, 0, &Cancellation::default()).unwrap();
+    assert_eq!(members, [0, 1]);
+    for i in members {
+        run.record_worktree(i, path.clone());
+    }
+    assert_eq!(fs::read_to_string(path.join("marker")).unwrap(), "one\n");
+    for lane in &mut run.lanes {
+        lane.assignment = "Assigned".into();
+    }
+    assert_eq!(run.delivery_lanes(), [0]);
 }
 
 #[test]
@@ -357,6 +477,12 @@ fn distinct_dirty_edits_inside_the_same_gitlink_change_acceptance_identity() {
     assert_ne!(first, second);
     fs::write(lane.worktree.join("library/new-file"), "untracked").unwrap();
     assert_ne!(second, key());
+    assert!(
+        reviewed_trees(1, std::slice::from_ref(&lane), &Cancellation::default())
+            .unwrap_err()
+            .to_string()
+            .contains("nested checkouts")
+    );
 }
 
 #[test]

@@ -4,10 +4,10 @@ use hive_core::agent::launch::{Launch, validate_pipeline_profile};
 use hive_core::pipeline::CommandResult;
 
 enum Work {
-    Prepared(usize, PathBuf),
+    Prepared(Vec<usize>, PathBuf),
     Checked(Vec<CommandResult>),
     Dispatch,
-    ReviewRevision(String),
+    ReviewRevision((String, Vec<String>)),
 }
 
 impl Pipelines {
@@ -91,7 +91,8 @@ impl Pipelines {
                 .enumerate()
                 .find(|(_, l)| l.worktree.as_os_str().is_empty())
             {
-                for profile in [&run.template().planner.profile]
+                for profile in (!run.direct_start())
+                    .then_some(&run.template().planner.profile)
                     .into_iter()
                     .chain(run.template().reviews.iter().map(|s| &s.profile))
                     .chain(run.lanes().iter().map(|l| &l.profile))
@@ -104,23 +105,11 @@ impl Pipelines {
                 if cancel.is_cancelled() {
                     return Err("Cancelled".into());
                 }
-                let path = workspace::prepare(id, lane, &cancel).map_err(|e| e.to_string())?;
-                if run
-                    .lanes()
-                    .iter()
-                    .any(|other| other.worktree == path && other.base != lane.base)
-                {
-                    return Err(format!(
-                        "Two lanes of {} require different base commits.",
-                        lane.project.display()
-                    ));
-                }
-                // Lanes of one repository share a checkout: the first to arrive prepares it,
-                // with its own setup command.
-                if !run.lanes().iter().any(|other| other.worktree == path) {
-                    workspace::provision(lane, &path, &cancel).map_err(|e| e.to_string())?;
-                }
-                return Ok(Work::Prepared(index, path));
+                let (members, path) =
+                    workspace::prepare_lanes(&run, index, &cancel).map_err(|e| {
+                        format!("Preparing {} ({}): {e}", lane.name, lane.project.display())
+                    })?;
+                return Ok(Work::Prepared(members, path));
             }
             for lane in run.lanes() {
                 if cancel.is_cancelled() {
@@ -129,7 +118,7 @@ impl Pipelines {
                 workspace::verify(id, lane).map_err(|e| e.to_string())?;
             }
             if run.phase() == Phase::Review(0) && run.review_revision().is_none() {
-                return workspace::revision(id, run.lanes(), &cancel)
+                return workspace::reviewed_trees(id, run.lanes(), &cancel)
                     .map(Work::ReviewRevision)
                     .map_err(|e| e.to_string());
             }
@@ -147,11 +136,13 @@ impl Pipelines {
                 }
                 let result = match result {
                     // Git may finish registering a checkout during cancellation. Keep its path visible.
-                    Ok(Work::Prepared(index, path)) => {
+                    Ok(Work::Prepared(members, path)) => {
                         let saved = p.store.update(cx, |s, cx| {
                             s.checkpoint_pipelines(cx, |library| {
                                 if let Some(run) = library.runs.iter_mut().find(|r| r.id() == id) {
-                                    run.record_worktree(index, path);
+                                    for index in members {
+                                        run.record_worktree(index, path.clone());
+                                    }
                                 }
                             })
                         });
@@ -171,8 +162,8 @@ impl Pipelines {
                         p.announce_gate(id, phase, cx);
                         applied
                     }
-                    Ok(Work::ReviewRevision(hash)) => {
-                        p.edit(id, cx, |r| Ok(r.record_review_revision(hash)?))
+                    Ok(Work::ReviewRevision((hash, trees))) => {
+                        p.edit(id, cx, |r| Ok(r.record_review_trees(hash, trees)?))
                     }
                     Ok(Work::Dispatch) => p.dispatch(id, cx),
                 };

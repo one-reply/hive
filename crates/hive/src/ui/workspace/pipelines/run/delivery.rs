@@ -1,10 +1,10 @@
-//! After acceptance: taking each lane's branch to the Git panel and to a pull request.
+//! After acceptance: taking each reviewed branch to the Git panel and to a pull request.
 use super::*;
 use crate::state::pipelines::Delivery;
 use hive_core::git::pull_request::Draft;
 
 impl RunView {
-    /// One row per lane with accepted work: where its changes are and what to do with them.
+    /// One row per checkout with accepted work: where its changes are and what to do with them.
     pub(super) fn delivery(
         &self,
         run: &Run,
@@ -16,10 +16,7 @@ impl RunView {
         }
         let mut rows = v_flex().gap_2().pt_2();
         let mut any = false;
-        for (ix, lane) in run.lanes().iter().enumerate() {
-            if lane.assignment.trim().is_empty() || lane.worktree.as_os_str().is_empty() {
-                continue;
-            }
+        for ix in run.delivery_lanes() {
             any = true;
             rows = rows.child(self.delivery_row(run, ix, w, cx));
         }
@@ -40,8 +37,55 @@ impl RunView {
                 .child(div().text_sm().truncate().child(lane_label(lane)))
                 .child(subtle(lane.worktree.display().to_string(), cx).truncate()),
         );
+        let app = AppState::get(cx);
+        let branch = hive_core::pipeline::workspace::branch(run.id(), lane);
+        let head = format!("{:?}", hive_core::projects::Head::Branch(branch));
+        let cached = match app
+            .pull_requests
+            .read(cx)
+            .status(&Host::Local, &lane.worktree, &head)
+        {
+            Some(crate::state::pull_requests::Status::Ready(snapshot)) => {
+                snapshot.request().cloned()
+            }
+            _ => None,
+        };
+        let pr = match &state {
+            Some(Delivery::Existing(pr)) => Some(
+                cached
+                    .filter(|p| p.web_url() == pr.web_url())
+                    .unwrap_or_else(|| pr.clone()),
+            ),
+            Some(Delivery::Opened(url)) => cached.filter(|p| p.web_url() == Some(url)),
+            _ => None,
+        };
+        if let Some(pr) = pr
+            && let Some(url) = pr.web_url().map(str::to_owned)
+        {
+            row = row
+                .child(subtle(format!("{} · {}", pr.state, pr.checks()), cx))
+                .child(button(
+                    ("view-existing-request", ix),
+                    "View PR",
+                    ButtonLook::Primary,
+                    w,
+                    cx,
+                    move |_, _, cx| cx.open_url(&url),
+                ));
+            if let Some(url) = pr.failed_check_url().map(str::to_owned) {
+                row = row.child(button(
+                    ("failed-ci", ix),
+                    "Open failing check",
+                    ButtonLook::Outline,
+                    w,
+                    cx,
+                    move |_, _, cx| cx.open_url(&url),
+                ));
+            }
+            return row;
+        }
         let (project, worktree) = (lane.project.clone(), lane.worktree.clone());
-        row = row.child(button(
+        let open_worktree = button(
             ("open-run-worktree", ix),
             "Open worktree",
             ButtonLook::Outline,
@@ -57,37 +101,47 @@ impl RunView {
                     });
                 w.dispatch_action(Box::new(TogglePipelines), cx);
             },
-        ));
+        );
         match state {
             Some(Delivery::Opening) => row.child(subtle("Opening pull request…", cx)),
-            Some(Delivery::Opened(url)) => row.child(button(
-                ("view-run-pull-request", ix),
-                "View pull request",
-                ButtonLook::Primary,
-                w,
-                cx,
-                move |_, _, cx| cx.open_url(&url),
-            )),
-            failed => {
-                let row = row.child(button(
-                    ("create-run-pull-request", ix),
-                    "Create pull request…",
-                    ButtonLook::Outline,
+            Some(Delivery::Opened(url)) => {
+                row.child(subtle("Check status unavailable", cx))
+                    .child(button(
+                        ("view-run-pull-request", ix),
+                        "View pull request",
+                        ButtonLook::Primary,
+                        w,
+                        cx,
+                        move |_, _, cx| cx.open_url(&url),
+                    ))
+            }
+            None | Some(Delivery::Checking | Delivery::Existing(_)) => {
+                row.child(subtle("Checking publication…", cx))
+            }
+            Some(Delivery::Failed(error)) => row
+                .child(subtle(error, cx))
+                .child(open_worktree)
+                .child(button(
+                    ("refresh-delivery", ix),
+                    "Refresh",
+                    ButtonLook::Ghost,
                     w,
                     cx,
-                    move |v, w, cx| v.draft_pull_request(ix, w, cx),
-                ));
-                match failed {
-                    Some(Delivery::Failed(error)) => row.child(
-                        div()
-                            .w_full()
-                            .text_sm()
-                            .text_color(cx.theme().danger)
-                            .child(SelectableText::new(("pull-request-error", ix), error)),
-                    ),
-                    _ => row,
-                }
-            }
+                    |v, _, cx| {
+                        AppState::get(cx)
+                            .pipelines
+                            .clone()
+                            .update(cx, |p, cx| p.refresh_delivery(v.id, cx))
+                    },
+                )),
+            Some(Delivery::Ready) => row.child(button(
+                ("create-run-pull-request", ix),
+                "Create pull request…",
+                ButtonLook::Outline,
+                w,
+                cx,
+                move |v, w, cx| v.draft_pull_request(ix, w, cx),
+            )),
         }
     }
 
@@ -150,7 +204,16 @@ fn lane_label(lane: &hive_core::pipeline::Lane) -> String {
     if lane.branch.is_empty() {
         lane.name.clone()
     } else {
-        format!("{}  ·  {}", lane.name, lane.branch)
+        format!(
+            "{}  ·  {} → {}",
+            lane.name,
+            lane.branch,
+            if lane.base_branch.is_empty() {
+                "default branch"
+            } else {
+                &lane.base_branch
+            }
+        )
     }
 }
 
@@ -180,7 +243,7 @@ mod tests {
         };
         assert_eq!(lane_label(&lane), "API");
         lane.branch = "feature/login".into();
-        assert_eq!(lane_label(&lane), "API  ·  feature/login");
+        assert_eq!(lane_label(&lane), "API  ·  feature/login → default branch");
         assert!(pull_request_hint("feature/login").starts_with("Branch feature/login must"));
         assert!(pull_request_hint("").starts_with("The branch must"));
     }

@@ -10,6 +10,23 @@ impl LaunchForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.frozen = true;
+        self.previous_recipe = AppState::get(cx)
+            .store
+            .read(cx)
+            .state
+            .pipelines
+            .templates
+            .iter()
+            .find(|t| t.name == run.template().name && *t != run.template())
+            .map(|latest| (run.template().clone(), latest.clone()));
+        self.direct = run.direct_start();
+        if self.direct
+            && let Some(lane) = run.lanes().first()
+        {
+            self.criteria
+                .update(cx, |c, cx| c.set_value(&lane.criteria, window, cx));
+        }
         self.task
             .update(cx, |task, cx| task.set_value(run.task(), window, cx));
         let registered = repositories(cx);

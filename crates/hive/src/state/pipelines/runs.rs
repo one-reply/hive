@@ -9,9 +9,21 @@ impl Pipelines {
         if !matches!(run.phase(), Phase::Accepted | Phase::Cancelled) {
             return Err("Stop the run before deleting it.".into());
         }
-        self.store.update(cx, |store, cx| {
-            store.edit_pipelines(cx, |library| library.runs.retain(|run| run.id() != id))
+        let lanes = run.lanes().to_vec();
+        let saved = self.store.update(cx, |store, cx| {
+            store.checkpoint_pipelines(cx, |library| library.runs.retain(|run| run.id() != id))
         });
+        cx.background_executor()
+            .spawn(async move {
+                // A failed save leaves the run on disk. Its review trees must survive too.
+                if !matches!(saved.recv().await, Ok(Ok(()))) {
+                    return;
+                }
+                if let Err(error) = workspace::release_trees(id, &lanes) {
+                    tracing::warn!(%error,run=id,"could not release pipeline review snapshots");
+                }
+            })
+            .detach();
         self.suspended.retain(|ticket| ticket.run != id);
         self.session_errors.retain(|ticket, _| ticket.run != id);
         self.resumes.retain(|ticket, _| ticket.run != id);

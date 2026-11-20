@@ -6,6 +6,40 @@ use std::fmt::Write as _;
 const TITLE_CHARS: usize = 72;
 
 impl Run {
+    /// Verified web address of a request created or discovered for this run.
+    pub fn request_url(&self, lane: usize) -> Option<&str> {
+        self.requests
+            .iter()
+            .find(|(i, _)| *i == lane)
+            .and_then(|(_, url)| crate::git::pull_request::web_url(url))
+    }
+
+    /// Remember the hosting service's permanent address for a delivered checkout.
+    pub fn record_request(&mut self, lane: usize, url: &str) {
+        if self.phase == super::Phase::Accepted
+            && self.delivery_lanes().contains(&lane)
+            && crate::git::pull_request::web_url(url).is_some()
+        {
+            self.requests.retain(|(i, _)| *i != lane);
+            self.requests.push((lane, url.to_owned()));
+        }
+    }
+
+    /// Representative lane for each checkout containing assigned work.
+    pub fn delivery_lanes(&self) -> Vec<usize> {
+        let mut seen = std::collections::HashSet::new();
+        self.lanes
+            .iter()
+            .enumerate()
+            .filter(|(_, lane)| {
+                !lane.assignment.trim().is_empty()
+                    && !lane.worktree.as_os_str().is_empty()
+                    && seen.insert(&lane.worktree)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     /// Title and Markdown description of a pull request for `lane`'s branch: the task, the
     /// lane's last development report and the evidence QA left. `None` for a lane the plan
     /// gave no work.
@@ -20,13 +54,29 @@ impl Run {
             title.push('…');
         }
         let mut body = format!("## Task\n\n{task}\n");
-        if let Some((_, Report::Developed { summary })) =
-            self.stage_reports(Stage::Develop(lane)).next_back()
-        {
-            let _ = write!(body, "\n## Changes\n\n{}\n", summary.trim());
+        let included = |index: usize| {
+            index == lane
+                || self.lanes.get(index).is_some_and(|l| {
+                    !l.assignment.is_empty()
+                        && !l.worktree.as_os_str().is_empty()
+                        && l.worktree == self.lanes[lane].worktree
+                })
+        };
+        let members: Vec<_> = (0..self.lanes.len()).filter(|&i| included(i)).collect();
+        for &i in &members {
+            if let Some((_, Report::Developed { summary })) =
+                self.stage_reports(Stage::Develop(i)).next_back()
+            {
+                let label = if members.len() > 1 {
+                    format!("Changes · {}", self.lanes[i].name)
+                } else {
+                    "Changes".into()
+                };
+                let _ = write!(body, "\n## {label}\n\n{}\n", summary.trim());
+            }
         }
         let mut evidence = Vec::new();
-        for result in self.commands.iter().filter(|result| result.lane == lane) {
+        for result in self.commands.iter().filter(|result| included(result.lane)) {
             evidence.push(format!(
                 "- `{}`: {}",
                 result.command,
@@ -46,7 +96,7 @@ impl Run {
         let notes: Vec<_> = self
             .notes
             .iter()
-            .filter(|(_, note)| note.lane == lane)
+            .filter(|(_, note)| included(note.lane))
             .map(|(_, note)| format!("- {}", note.description))
             .collect();
         if !notes.is_empty() {
@@ -111,6 +161,7 @@ mod tests {
             description: "Rename the handler".into(),
         };
         let review = |findings| Report::Review {
+            evidence: vec![],
             summary: "Criteria hold".into(),
             findings,
         };

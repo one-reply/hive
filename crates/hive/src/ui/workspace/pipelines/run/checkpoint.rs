@@ -1,6 +1,9 @@
 //! Controls for the gate the run waits at: plan approval, repair decisions and acceptance.
 use super::*;
 
+/// Leave room for the diff and navigation when a plan has many criteria.
+const CRITERIA_PREVIEW: usize = 3;
+
 impl RunView {
     pub(super) fn checkpoint_actions(
         &mut self,
@@ -181,6 +184,75 @@ impl RunView {
             ));
         }
         let mut block = v_flex().gap_2().child(row);
+        if run.phase() == Phase::Acceptance {
+            let mut rows = v_flex().gap_1();
+            let mut total = 0;
+            for (ix, lane) in run
+                .lanes()
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| !l.assignment.is_empty())
+            {
+                for line in lane
+                    .criteria
+                    .lines()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    total += 1;
+                    if total > CRITERIA_PREVIEW && !self.criteria_expanded {
+                        continue;
+                    }
+                    let proof = (0..run.template().reviews.len())
+                        .filter_map(|i| run.stage_reports(Stage::Review(i)).next_back())
+                        .find_map(|(_, report)| {
+                            let hive_core::pipeline::Report::Review { evidence, .. } = report
+                            else {
+                                return None;
+                            };
+                            evidence
+                                .iter()
+                                .find(|e| e.lane == ix && e.criterion == line)
+                                .map(|e| e.evidence.as_str())
+                        });
+                    rows = rows.child(subtle(
+                        format!(
+                            "{} · {line} — {}",
+                            lane.name,
+                            proof.map_or_else(
+                                || "No evidence reported".to_owned(),
+                                |s| format!("Confirmed · {s}")
+                            )
+                        ),
+                        cx,
+                    ));
+                }
+            }
+            let mut title = h_flex().gap_2().child(heading("Acceptance criteria"));
+            if total > CRITERIA_PREVIEW {
+                title = title.child(button(
+                    "expand-criteria",
+                    if self.criteria_expanded {
+                        "Show fewer".into()
+                    } else {
+                        format!("Show all {total}")
+                    },
+                    ButtonLook::Ghost,
+                    w,
+                    cx,
+                    |v, _, cx| {
+                        v.criteria_expanded = !v.criteria_expanded;
+                        cx.notify();
+                    },
+                ));
+            }
+            let rows = div()
+                .id("acceptance-criteria")
+                .max_h(rems(9.))
+                .overflow_y_scroll()
+                .child(rows);
+            block = block.child(v_flex().gap_1().child(title).child(rows));
+        }
         if run.phase() == Phase::Acceptance
             && let Some(notes) = review_notes(run, cx)
         {

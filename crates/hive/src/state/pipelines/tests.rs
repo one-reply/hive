@@ -190,7 +190,14 @@ fn refuses_to_start_a_run_that_cannot_be_saved(cx: &mut TestAppContext) {
         let owner = before[0].owner().to_path_buf();
         let lanes = before[0].lanes().to_vec();
         let error = p
-            .start(owner, "Another".into(), Template::default(), lanes, cx)
+            .start(
+                owner,
+                "Another".into(),
+                Template::default(),
+                lanes,
+                Default::default(),
+                cx,
+            )
             .unwrap_err();
         assert!(error.contains("cannot be saved"));
         assert_eq!(p.store.read(cx).state.pipelines.runs, before);

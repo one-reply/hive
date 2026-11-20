@@ -3,17 +3,10 @@ use gpui_kit::component::spinner::Spinner;
 use hive_core::git::branches::short_name;
 
 mod branch;
-use branch::WorkBranch;
+use hive_core::pipeline::draft::{DraftCheck as Check, DraftLane, WorkBranch};
 
 /// Repository, branch and check share one row until the drawer is too narrow for them.
 const FIELD_MIN_WIDTH: Pixels = px(170.);
-
-#[derive(Clone, PartialEq)]
-enum Check {
-    Suggested,
-    Command(String),
-    Custom,
-}
 
 pub(super) struct Binding {
     pub preset: LanePreset,
@@ -72,6 +65,11 @@ impl Binding {
         );
         let branch_query = input("", "Search or name a new branch", window, cx);
         let subscriptions = vec![
+            cx.subscribe(&setup, |_, _, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&custom_command, |_, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
@@ -99,6 +97,35 @@ impl Binding {
             setup,
             _subscriptions: subscriptions,
         }
+    }
+    pub(super) fn draft(&self, cx: &App) -> DraftLane {
+        DraftLane {
+            preset: self.preset.clone(),
+            project: self.project.clone(),
+            reference: self.reference.clone(),
+            branch: self.branch.clone(),
+            check: self.check.clone(),
+            custom_command: self.custom_command.read(cx).value().to_string(),
+            setup: self.setup.read(cx).value().to_string(),
+        }
+    }
+    pub(super) fn from_draft(
+        draft: DraftLane,
+        window: &mut Window,
+        cx: &mut Context<LaunchForm>,
+    ) -> Self {
+        let mut binding = Self::new(draft.preset, draft.project, window, cx);
+        binding.reference = draft.reference;
+        binding.branch = draft.branch;
+        binding.check = draft.check;
+        binding
+            .custom_command
+            .update(cx, |i, cx| i.set_value(draft.custom_command, window, cx));
+        binding
+            .setup
+            .update(cx, |i, cx| i.set_value(draft.setup, window, cx));
+        binding.preview(cx);
+        binding
     }
     pub(super) fn bind(
         &mut self,

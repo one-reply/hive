@@ -20,7 +20,7 @@ impl PipelinePanel {
         let lib = &state.store.read(cx).state.pipelines;
         let templates = lib.templates.clone();
         let now = hive_core::pipeline::now_ms();
-        let runs = lib
+        let mut runs = lib
             .runs
             .iter()
             .rev()
@@ -45,6 +45,16 @@ impl PipelinePanel {
                 }
             })
             .collect::<Vec<_>>();
+        let saved_template = lib
+            .drafts
+            .iter()
+            .find(|d| d.owner == self.project)
+            .map(|d| d.template.clone());
+        let outside_attention = pipelines
+            .attention(cx)
+            .into_iter()
+            .filter(|(_, owner, _)| owner != &self.project)
+            .collect::<Vec<_>>();
         let selected = templates
             .iter()
             .position(|t| Some(&t.name) == self.selected_template.as_ref())
@@ -58,16 +68,28 @@ impl PipelinePanel {
             cx,
             |p, w, cx| p.edit(None, w, cx),
         ));
-        if let Some(t) = templates.get(selected) {
-            let launch = t.clone();
+        let has_draft = saved_template.is_some() || self.draft.is_some();
+        if has_draft || templates.get(selected).is_some() {
+            let launch = saved_template.or_else(|| templates.get(selected).cloned());
             actions = actions.child(button_with_size(
                 "launch-template",
-                "Start run",
+                if has_draft {
+                    "Resume draft"
+                } else {
+                    "Start run"
+                },
                 ButtonLook::Primary,
                 ButtonSize::Medium,
                 window,
                 cx,
-                move |p, w, cx| p.launch(launch.clone(), w, cx),
+                move |p, w, cx| {
+                    if let Some(draft) = p.draft.clone() {
+                        p.screen = Screen::Launch(draft);
+                        cx.notify();
+                    } else if let Some(template) = &launch {
+                        p.launch(template.clone(), w, cx);
+                    }
+                },
             ));
         }
         let history_is_empty = runs.is_empty();
@@ -82,7 +104,7 @@ impl PipelinePanel {
                 cx.notify()
             };
             let summary = format!(
-                "{}   ·   {}",
+                "{}   ·   {}   ·   2 decisions",
                 count(t.lanes.len(), "lane", "lanes"),
                 count(t.reviews.len(), "review", "reviews")
             );
@@ -168,8 +190,38 @@ impl PipelinePanel {
             cards = cards.child(subtle("Create a template to start a run.", cx));
         }
         let mut history = v_flex().gap_1();
+        let group = |s: RunStatus| match s {
+            RunStatus::NeedsYou | RunStatus::Failed => (0, "Needs you"),
+            RunStatus::Running => (1, "Running"),
+            _ => (2, "Recent"),
+        };
+        runs.sort_by_key(|r| group(r.status).0);
+        let mut previous = None;
         for (i, row) in runs.into_iter().enumerate() {
+            let (_, section) = group(row.status);
+            if previous != Some(section) {
+                history = history.child(heading(section));
+                previous = Some(section);
+            }
             history = history.child(run_row(i, row, window, cx));
+        }
+        if !outside_attention.is_empty() {
+            history = history.child(heading("Needs you in other projects"));
+            for (id, owner, task) in outside_attention {
+                history = history.child(button(
+                    ("other-project-run", id as usize),
+                    format!("{} · {}", path_name(&owner), task),
+                    ButtonLook::Ghost,
+                    window,
+                    cx,
+                    move |_, _, cx| {
+                        AppState::get(cx)
+                            .pipelines
+                            .clone()
+                            .update(cx, |p, cx| p.reveal(id, cx))
+                    },
+                ));
+            }
         }
         if history_is_empty {
             history = history.child(
@@ -203,13 +255,7 @@ impl PipelinePanel {
                         .child(actions),
                 )
                 .child(cards)
-                .child(
-                    v_flex()
-                        .gap_2()
-                        .pt_3()
-                        .child(heading("Recent runs"))
-                        .child(history),
-                ),
+                .child(v_flex().gap_2().pt_3().child(history)),
         )
     }
 }

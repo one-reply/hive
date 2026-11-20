@@ -58,7 +58,30 @@ impl Run {
                     self.begin_qa();
                 }
             }
-            (Phase::Review(ix), Report::Review { summary, findings }) => {
+            (
+                Phase::Review(ix),
+                Report::Review {
+                    summary,
+                    findings,
+                    evidence,
+                },
+            ) => {
+                for item in &evidence {
+                    if item.evidence.trim().is_empty()
+                        || self.lanes.get(item.lane).is_none_or(|l| {
+                            l.assignment.is_empty()
+                                || !l
+                                    .criteria
+                                    .lines()
+                                    .map(str::trim)
+                                    .any(|line| !line.is_empty() && line == item.criterion)
+                        })
+                    {
+                        return Err(Error::InvalidInput(
+                            "Evidence must identify an approved criterion and a concrete observation",
+                        ));
+                    }
+                }
                 if summary.trim().is_empty() {
                     return Err(Error::InvalidInput("Include review evidence"));
                 }
@@ -108,6 +131,33 @@ impl Run {
             }
         }
         self.reports.push(handoff);
+        Ok(())
+    }
+
+    /// Begin a fresh single-lane run with the user's own assignment and acceptance criteria.
+    pub fn start_direct(&mut self, criteria: &str) -> Result<(), Error> {
+        if self.phase != Phase::Planning
+            || !self.history.is_empty()
+            || self.lanes.len() != 1
+            || criteria.trim().is_empty()
+            || self
+                .template
+                .reviews
+                .iter()
+                .filter_map(|s| s.return_lane.as_ref())
+                .any(|name| name != &self.lanes[0].name)
+        {
+            return Err(Error::InvalidInput(
+                "Quick start needs one lane and explicit acceptance criteria",
+            ));
+        }
+        self.direct_start = true;
+        self.outstanding.clear();
+        self.lanes[0].assignment = self.task.clone();
+        self.lanes[0].criteria = criteria.trim().to_owned();
+        self.history
+            .push("User started development with explicit acceptance criteria".into());
+        self.develop([0]);
         Ok(())
     }
 
@@ -245,6 +295,7 @@ impl Run {
     /// test is cheaper to find than a reviewer's turn, then the reviews in order.
     fn begin_qa(&mut self) {
         self.review_revision = None;
+        self.review_trees.clear();
         self.findings.clear();
         self.commands.clear();
         self.notes.clear();
@@ -336,11 +387,68 @@ impl Run {
         Ok(())
     }
 
+    /// Submit the selected draft notes as one repair, retaining later notes and other recipients.
+    pub fn submit_comments(
+        &mut self,
+        lane: usize,
+        tree: &str,
+        batch: &[crate::git::review_notes::Note],
+    ) -> Result<(), Error> {
+        if batch.is_empty()
+            || batch.iter().any(|n| {
+                !self
+                    .comments
+                    .iter()
+                    .any(|(i, t, note)| *i == lane && t == tree && note == n)
+            })
+        {
+            return Err(Error::InvalidInput(
+                "The comment batch changed. Review the remaining notes.",
+            ));
+        }
+        self.request_lane_changes(lane, tree, &crate::git::review_notes::prompt(batch))?;
+        for note in batch {
+            self.remove_comment(&(lane, tree.to_owned(), note.clone()));
+        }
+        Ok(())
+    }
+
+    /// Return a batch of line comments to the developer of the selected reviewed checkout.
+    pub fn request_lane_changes(
+        &mut self,
+        lane: usize,
+        tree: &str,
+        note: &str,
+    ) -> Result<(), Error> {
+        if self.phase != Phase::Acceptance {
+            return Err(Error::WrongStage("The result is no longer awaiting review"));
+        }
+        if self.lanes.get(lane).is_none_or(|l| l.assignment.is_empty())
+            || self.review_trees.get(lane).is_none_or(|t| t != tree)
+            || note.trim().is_empty()
+        {
+            return Err(Error::InvalidInput(
+                "The comment position is stale. Review the current diff.",
+            ));
+        }
+        self.feedback_trees.clone_from(&self.review_trees);
+        self.feedback = format!(
+            "User requested changes to {} (reviewed tree {tree}):\n{note}",
+            self.lanes[lane].name
+        );
+        self.history.push(self.feedback.clone());
+        self.briefs = vec![(lane, self.feedback.clone())];
+        self.develop([lane]);
+        self.continue_conversations();
+        Ok(())
+    }
+
     /// Return a final result to its active development lanes for another review cycle.
     pub fn request_changes(&mut self, note: &str) -> Result<(), Error> {
         if self.phase != Phase::Acceptance {
             return Err(Error::WrongStage("There is no result awaiting acceptance"));
         }
+        self.feedback_trees.clone_from(&self.review_trees);
         self.feedback = if note.trim().is_empty() {
             "User requested another pass. Compare the implementation with the approved assignment and address any remaining gaps.".into()
         } else {

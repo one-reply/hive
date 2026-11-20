@@ -31,6 +31,7 @@ pub(super) struct PipelinePanel {
     project: PathBuf,
     pub(super) focus: FocusHandle,
     screen: Screen,
+    draft: Option<Entity<launch::LaunchForm>>,
     selected_template: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -48,6 +49,7 @@ impl PipelinePanel {
             project,
             focus: cx.focus_handle(),
             screen: Screen::Library,
+            draft: None,
             selected_template: None,
             _subscriptions: subscriptions,
         }
@@ -77,35 +79,79 @@ impl PipelinePanel {
             Screen::Editor(cx.new(|cx| editor::TemplateEditor::new(original, parent, window, cx)));
         cx.notify();
     }
-    /// Opens the new-run form filled in from run `id`: its task, recipe and repositories.
+    fn discard_draft(&mut self, cx: &mut Context<Self>) {
+        self.draft = None;
+        AppState::get(cx).store.clone().update(cx, |s, cx| {
+            s.edit_pipelines(cx, |l| l.drafts.retain(|d| d.owner != self.project))
+        });
+    }
+    /// Start from the task, recipe and repositories saved in this run.
     fn launch_again(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.draft.is_some()
+            || AppState::get(cx)
+                .store
+                .read(cx)
+                .state
+                .pipelines
+                .drafts
+                .iter()
+                .any(|d| d.owner == self.project)
+        {
+            let panel = cx.weak_entity();
+            window.open_alert_dialog(cx, move |alert, _, _| {
+                let panel = panel.clone();
+                alert
+                    .confirm()
+                    .title("Replace the current run draft?")
+                    .ok_text("Replace draft")
+                    .on_ok(move |_, w, cx| {
+                        let _ = panel.update(cx, |p, cx| {
+                            p.discard_draft(cx);
+                            p.launch_again(id, w, cx);
+                        });
+                        true
+                    })
+            });
+            return;
+        }
         let library = &AppState::get(cx).store.read(cx).state.pipelines;
         let Some(run) = library.runs.iter().find(|run| run.id() == id).cloned() else {
             return;
         };
-        // The library's current recipe of that name, so later edits apply; the run's own
-        // copy when the recipe was renamed or deleted since.
-        let template = library
-            .templates
-            .iter()
-            .find(|template| template.name == run.template().name)
-            .unwrap_or(run.template())
-            .clone();
+        let template = run.template().clone();
         let parent = cx.weak_entity();
         let project = self.project.clone();
-        self.screen = Screen::Launch(cx.new(|cx| {
+        let draft = cx.new(|cx| {
             let mut form = launch::LaunchForm::new(project, template, parent, window, cx);
             form.repeat(&run, window, cx);
             form
-        }));
+        });
+        self.screen = Screen::Launch(draft.clone());
+        self.draft = Some(draft);
         cx.notify();
     }
     fn launch(&mut self, template: Template, window: &mut Window, cx: &mut Context<Self>) {
         let parent = cx.weak_entity();
         let project = self.project.clone();
-        self.screen = Screen::Launch(
-            cx.new(|cx| launch::LaunchForm::new(project, template, parent, window, cx)),
-        );
+        let draft = self.draft.get_or_insert_with(|| {
+            let saved = AppState::get(cx)
+                .store
+                .read(cx)
+                .state
+                .pipelines
+                .drafts
+                .iter()
+                .find(|d| d.owner == project)
+                .cloned();
+            cx.new(|cx| {
+                let mut form = launch::LaunchForm::new(project, template, parent, window, cx);
+                if let Some(saved) = saved {
+                    form.restore_draft(saved, window, cx);
+                }
+                form
+            })
+        });
+        self.screen = Screen::Launch(draft.clone());
         cx.notify();
     }
 }
@@ -159,6 +205,18 @@ impl Render for PipelinePanel {
 
 fn phase_label(run: &Run) -> String {
     use hive_core::pipeline::Phase::*;
+    if matches!(run.phase(), Planning | Development)
+        && let Some(lane) = run
+            .lanes()
+            .iter()
+            .find(|l| l.worktree.as_os_str().is_empty())
+    {
+        return if lane.setup.trim().is_empty() {
+            format!("Preparing {}", lane.name)
+        } else {
+            format!("Preparing {} · {}", lane.name, lane.setup.trim())
+        };
+    }
     match run.phase() {
         Planning => "Planning".into(),
         ApprovePlan => "Plan approval".into(),

@@ -1,8 +1,9 @@
 //! A portable review prompt, with source-side coordinates kept independent of the UI.
 use super::diff::DiffSource;
+use serde::{Deserialize, Serialize};
 
 /// One endpoint of a comment in the original or modified file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Line {
     /// One-based line in the original file.
     Original(usize),
@@ -19,7 +20,7 @@ impl std::fmt::Display for Line {
 }
 
 /// A comment captured against a specific diff source and inclusive range.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     /// Repository-relative path (quoted when formatted).
     pub path: String,
