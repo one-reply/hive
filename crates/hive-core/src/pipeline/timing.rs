@@ -13,10 +13,11 @@ pub fn now_ms() -> u64 {
 }
 
 fn executing(phase: Phase) -> bool {
-    matches!(
-        phase,
-        Phase::Planning | Phase::Development | Phase::Review(_) | Phase::Commands(_)
-    )
+    matches!(phase, Phase::Regression(step) if !step.needs_user())
+        || matches!(
+            phase,
+            Phase::Planning | Phase::Development | Phase::Review(_) | Phase::Commands(_)
+        )
 }
 
 fn open(row: &StageTiming) -> bool {

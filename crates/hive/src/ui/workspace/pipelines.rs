@@ -235,6 +235,14 @@ fn phase_label(run: &Run) -> String {
         Planning => "Planning".into(),
         ApprovePlan => "Plan approval".into(),
         Development => "Development".into(),
+        Regression(step) => match step {
+            hive_core::pipeline::RegressionStep::Choose => "Select regression criterion",
+            hive_core::pipeline::RegressionStep::Author => "Writing regression test",
+            hive_core::pipeline::RegressionStep::Baseline => "Reproducing on base",
+            hive_core::pipeline::RegressionStep::Candidate => "Checking the fix",
+            hive_core::pipeline::RegressionStep::Decision => "Regression needs a decision",
+        }
+        .into(),
         Review(i) => run
             .template()
             .reviews

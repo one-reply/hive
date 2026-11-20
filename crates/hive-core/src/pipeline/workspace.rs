@@ -293,6 +293,8 @@ pub fn checks(lanes: &[Lane], cancellation: &Cancellation) -> Vec<CommandResult>
 mod review;
 pub use review::{ReviewFile, ReviewRepo, patch, review, review_round};
 
+mod regression;
+pub use regression::{RegressionResult, run_regression};
 mod publication;
 pub use publication::{PublishedBranch, publication};
 mod snapshot;

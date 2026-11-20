@@ -18,6 +18,19 @@ fn review_outcome(findings: &[Finding]) -> (String, bool) {
 impl RunView {
     pub(super) fn checks(&self, r: &Run, w: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut list = v_flex().gap_1().child(heading("Required checks"));
+        if let Some((lane, test)) = &self.selected_test
+            && let Some(check) = r
+                .commands()
+                .iter()
+                .find(|c| c.lane == *lane && c.passed_tests().contains(test))
+        {
+            list = list.child(subtle(format!("{} · {test} · passed", check.command), cx));
+        }
+        if let Some(regression) = r.regression() {
+            list = list
+                .child(heading("Independent regression test"))
+                .child(subtle(regression.description(), cx));
+        }
         let mut count = 0;
         for (i, lane) in r
             .lanes()

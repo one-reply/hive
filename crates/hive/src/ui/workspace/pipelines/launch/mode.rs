@@ -18,13 +18,14 @@ impl LaunchForm {
             .filter(|b| b.project.is_some())
             .map(|b| b.preset.name.as_str())
             .collect();
-        direct_start_allowed(
-            &bound,
-            self.template
-                .reviews
-                .iter()
-                .filter_map(|s| s.return_lane.as_deref()),
-        )
+        !self.template.shared_contract
+            && direct_start_allowed(
+                &bound,
+                self.template
+                    .reviews
+                    .iter()
+                    .filter_map(|s| s.return_lane.as_deref()),
+            )
     }
 
     /// Offered when the library's recipe has changed since the run being repeated.

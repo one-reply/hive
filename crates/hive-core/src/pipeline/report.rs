@@ -70,6 +70,9 @@ pub struct CriterionEvidence {
     pub lane: usize,
     /// Exact approved line of acceptance criteria.
     pub criterion: String,
+    /// Named result in this lane's required check, verified by Hive before it counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test: Option<String>,
     /// Test or observation the reviewer used to confirm it.
     pub evidence: String,
 }
@@ -112,8 +115,16 @@ fn criterion_text(line: &str) -> &str {
 pub enum Report {
     /// Proposed repository-specific work.
     Plan {
+        /// One proposed interface agreement shared by every participating lane.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        contract: String,
         /// Ordered lane assignments.
         assignments: Vec<Assignment>,
+    },
+    /// Independent test selected before implementation.
+    Regression {
+        /// Identity of the test written in the assigned worktree.
+        test: super::RegressionTest,
     },
     /// Implementation or repair completed.
     Developed {
@@ -156,6 +167,7 @@ mod tests {
         CriterionEvidence {
             lane: 0,
             criterion: criterion.into(),
+            test: None,
             evidence: evidence.into(),
         }
     }

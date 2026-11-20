@@ -47,7 +47,13 @@ fn plan(run: &mut Run) {
             criteria: "Build and tests pass".into(),
         })
         .collect();
-    report(run, Report::Plan { assignments });
+    report(
+        run,
+        Report::Plan {
+            assignments,
+            contract: String::new(),
+        },
+    );
     assert_eq!(run.phase, Phase::ApprovePlan);
     run.approve().unwrap();
 }
@@ -166,6 +172,16 @@ fn a_whole_task_request_carries_the_queued_line_comments_and_acceptance_waits_fo
     report(&mut run, review(vec![]));
     report(&mut run, review(vec![]));
     assert_eq!(run.phase(), Phase::Acceptance);
+    assert!(run.can_accept().is_err());
+    for index in 0..2 {
+        run.decide_criterion(
+            index,
+            "Build and tests pass",
+            "first",
+            CriterionDecision::Manual("Exercised the assigned scenario".into()),
+        )
+        .unwrap();
+    }
     assert!(run.can_accept().is_ok());
     let comment = |text: &str| Note {
         path: "view.rs".into(),
@@ -218,6 +234,7 @@ fn quick_start_requires_criteria_then_verifies_approved_claims_and_waits_at_acce
         evidence: vec![CriterionEvidence {
             lane: 0,
             criterion: criterion.into(),
+            test: None,
             evidence: "auth_expired passed".into(),
         }],
     };
@@ -252,6 +269,7 @@ fn two_repositories_join_before_review_and_only_affected_lane_repairs() {
     assert!(run.prompt(&run.pending()[0]).unwrap().contains("task_id"));
     report(&mut run, developed());
     assert_eq!(run.phase, Phase::Review(0));
+    run.record_review_revision("latest".into()).unwrap();
     report(&mut run, review(vec![]));
     assert_eq!(run.phase, Phase::Review(1));
     report(&mut run, review(vec![]));
@@ -259,6 +277,15 @@ fn two_repositories_join_before_review_and_only_affected_lane_repairs() {
     let mut another_pass = run.clone();
     another_pass.request_changes(" ").unwrap();
     assert_eq!(another_pass.phase, Phase::Development);
+    for index in 0..2 {
+        run.decide_criterion(
+            index,
+            "Build and tests pass",
+            "latest",
+            CriterionDecision::Manual("Verified".into()),
+        )
+        .unwrap();
+    }
     run.accept().unwrap();
     assert_eq!(run.phase, Phase::Accepted);
 }
@@ -531,9 +558,11 @@ fn wrong_or_duplicate_assignments_leave_the_planner_attempt_available() {
     for report in [
         developed(),
         Report::Plan {
+            contract: String::new(),
             assignments: vec![assignment.clone(), assignment.clone()],
         },
         Report::Plan {
+            contract: String::new(),
             assignments: vec![Assignment {
                 lane: 55,
                 ..assignment.clone()
@@ -548,6 +577,7 @@ fn wrong_or_duplicate_assignments_leave_the_planner_attempt_available() {
     run.report(
         &ticket,
         Report::Plan {
+            contract: String::new(),
             assignments: vec![assignment],
         },
     )
@@ -602,7 +632,13 @@ fn reviewer_prompt_lists_only_lanes_with_assigned_work() {
         task: "Update the client".into(),
         criteria: "Tests pass".into(),
     }];
-    report(&mut run, Report::Plan { assignments });
+    report(
+        &mut run,
+        Report::Plan {
+            assignments,
+            contract: String::new(),
+        },
+    );
     run.approve().unwrap();
     report(&mut run, developed());
     assert!(matches!(run.phase, Phase::Review(_)));
@@ -770,4 +806,249 @@ fn edit_approval_is_a_lanes_own_choice_and_an_unknown_saved_value_asks() {
     for ticket in &developers {
         assert_eq!(loaded.edit_approval(ticket), EditApproval::CliDefault);
     }
+}
+
+#[test]
+fn acceptance_distinguishes_claims_named_tests_and_human_decisions_on_the_same_revision() {
+    let mut run = run_with(&["/api"], 3);
+    run.lanes[0].command = "cargo test".into();
+    run.start_direct("Reject expired sessions\nRestore draft")
+        .unwrap();
+    report(&mut run, developed());
+    let mut result = check(true);
+    result.command = "cargo test".into();
+    result.output =
+        "running 1 test\ntest auth::expired ... ok\n\ntest result: ok. 1 passed; 0 failed;".into();
+    run.checked_at(vec![result], Some("v1".into())).unwrap();
+    run.record_review_revision("v1".into()).unwrap();
+    report(
+        &mut run,
+        Report::Review {
+            summary: "Checked auth".into(),
+            findings: vec![],
+            evidence: vec![
+                CriterionEvidence {
+                    lane: 0,
+                    criterion: "Reject expired sessions".into(),
+                    test: Some("auth::expired".into()),
+                    evidence: "expired test".into(),
+                },
+                CriterionEvidence {
+                    lane: 0,
+                    criterion: "Restore draft".into(),
+                    test: Some("absent".into()),
+                    evidence: "looks correct".into(),
+                },
+            ],
+        },
+    );
+    report(&mut run, review(vec![]));
+    assert!(matches!(
+        run.criterion_source(0, "Reject expired sessions"),
+        EvidenceSource::Test("auth::expired")
+    ));
+    assert!(!run.criterion_source(0, "Restore draft").closes());
+    assert!(run.can_accept().is_err());
+    assert!(
+        run.decide_criterion(
+            0,
+            "Restore draft",
+            "old",
+            CriterionDecision::Manual("Observed".into())
+        )
+        .is_err()
+    );
+    run.verify_criterion(0, "Restore draft", "v1").unwrap();
+    let prompt = run.prompt(&run.pending()[0]).unwrap();
+    assert!(prompt.contains("Recheck this acceptance criterion in lane 0: Restore draft"));
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase(), Phase::Acceptance);
+    run.decide_criterion(
+        0,
+        "Restore draft",
+        "v1",
+        CriterionDecision::Exception("Deferred native QA".into()),
+    )
+    .unwrap();
+    assert!(run.can_accept().is_ok());
+    run.recheck().unwrap();
+    assert!(!run.criterion_source(0, "Restore draft").closes());
+    assert!(!run.criterion_source(0, "Reject expired sessions").closes());
+}
+
+#[test]
+fn shared_contract_is_approved_once_and_independent_review_ignores_author_summary() {
+    let mut run = run_with(&["/api", "/web"], 3);
+    run.template.shared_contract = true;
+    let assignments: Vec<_> = (0..2)
+        .map(|lane| Assignment {
+            lane,
+            task: "Implement".into(),
+            criteria: "Keeps old clients".into(),
+        })
+        .collect();
+    let ticket = run.pending()[0];
+    assert!(
+        run.report(
+            &ticket,
+            Report::Plan {
+                assignments: assignments.clone(),
+                contract: String::new()
+            }
+        )
+        .is_err()
+    );
+    run.report(
+        &ticket,
+        Report::Plan {
+            assignments,
+            contract: "Old clients: 1 week".into(),
+        },
+    )
+    .unwrap();
+    run.approve_with_contract(
+        vec![
+            ("API".into(), "Keeps old clients".into()),
+            ("Web".into(), "Keeps old clients".into()),
+        ],
+        "Old clients: 2 weeks",
+    )
+    .unwrap();
+    for ticket in run.pending() {
+        assert!(
+            run.prompt(&ticket)
+                .unwrap()
+                .contains("Old clients: 2 weeks")
+        );
+        run.report(
+            &ticket,
+            Report::Developed {
+                summary: "Unverified author hint".into(),
+            },
+        )
+        .unwrap();
+    }
+    let restored: Run = serde_json::from_slice(&serde_json::to_vec(&run).unwrap()).unwrap();
+    let prompt = restored.prompt(&restored.pending()[0]).unwrap();
+    assert!(prompt.contains("Old clients: 2 weeks"));
+    assert!(!prompt.contains("Unverified author hint"));
+    assert!(
+        restored
+            .history()
+            .iter()
+            .any(|s| s.contains("Unverified author hint"))
+    );
+}
+
+#[test]
+fn independent_regression_pins_the_test_and_repeats_both_checks_after_explicit_approval() {
+    use workspace::RegressionResult;
+    let mut run = run_with(&["/api"], 3);
+    assert!(run_with(&["/api", "/web"], 3).enable_regression().is_err());
+    run.enable_regression().unwrap();
+    run.start_direct("Returns two\nRestores draft").unwrap();
+    assert_eq!(run.phase(), Phase::Regression(RegressionStep::Choose));
+    assert!(run.choose_regression("unapproved").is_err());
+    run.choose_regression("Returns two").unwrap();
+    let ticket = run.pending()[0];
+    assert_eq!(ticket.lane, None);
+    assert!(run.continuation(&ticket).is_none());
+    let mut test = RegressionTest {
+        runner: TestRunner::Cargo,
+        path: "../outside.rs".into(),
+        name: "returns_two".into(),
+        expected: "two expected".into(),
+    };
+    assert!(
+        run.report(&ticket, Report::Regression { test: test.clone() })
+            .is_err()
+    );
+    test.path = "tests/count.rs".into();
+    report(&mut run, Report::Regression { test });
+    let a = "a".repeat(40);
+    let b = "b".repeat(40);
+    let matched = |blob: &str, revision: &str| RegressionResult::Matched {
+        blob: blob.into(),
+        revision: revision.into(),
+        detail: "observed result".into(),
+    };
+    run.record_regression(RegressionResult::NeedsDecision {
+        detail: "No tests ran".into(),
+        changed_blob: None,
+    })
+    .unwrap();
+    assert!(run.pending().is_empty());
+    run.retry_regression(None).unwrap();
+    run.record_regression(matched(&a, "base")).unwrap();
+    assert!(
+        run.prompt(&run.pending()[0])
+            .unwrap()
+            .contains("tests/count.rs")
+    );
+    report(&mut run, developed());
+    let checkpoint = run.clone();
+    assert!(run.record_regression(matched(&b, "candidate")).is_err());
+    assert_eq!(run, checkpoint);
+    run.record_regression(RegressionResult::NeedsDecision {
+        detail: "Changed test".into(),
+        changed_blob: Some(b.clone()),
+    })
+    .unwrap();
+    let mut run: Run = serde_json::from_slice(&serde_json::to_vec(&run).unwrap()).unwrap();
+    assert!(run.valid_snapshot());
+    assert!(run.retry_regression(Some(&a)).is_err());
+    run.retry_regression(Some(&b)).unwrap();
+    assert_eq!(run.phase(), Phase::Regression(RegressionStep::Baseline));
+    run.record_regression(matched(&b, "base")).unwrap();
+    assert_eq!(run.phase(), Phase::Regression(RegressionStep::Candidate));
+    run.record_regression(matched(&b, "candidate")).unwrap();
+    run.record_review_trees("stale".into(), vec![a.clone()])
+        .unwrap();
+    assert_eq!(run.phase(), Phase::Regression(RegressionStep::Decision));
+    run.retry_regression(None).unwrap();
+    run.record_regression(matched(&b, "new")).unwrap();
+    run.record_review_trees("new".into(), vec![a]).unwrap();
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![]));
+    assert!(matches!(
+        run.criterion_source(0, "Returns two"),
+        EvidenceSource::Test("returns_two")
+    ));
+    assert!(run.can_accept().is_err());
+    let mut corrupted = checkpoint;
+    corrupted.regression.as_mut().unwrap().blob = Some("--invalid".into());
+    assert!(!corrupted.valid_snapshot());
+}
+
+#[test]
+fn old_cross_repository_templates_and_runs_keep_their_distinct_workflows() {
+    let mut library = Library::default();
+    let mut recipe = library.templates[2].clone();
+    recipe.shared_contract = false;
+    let mut frozen = run_with(&["/api", "/web"], 3);
+    frozen.template = recipe.clone();
+    let mut old = serde_json::to_value(&frozen).unwrap();
+    for field in [
+        "regression",
+        "decisions",
+        "qa_focus",
+        "review_brief",
+        "check_revision",
+        "first_review_attempt",
+        "contract",
+    ] {
+        old.as_object_mut().unwrap().remove(field);
+    }
+    old["template"]
+        .as_object_mut()
+        .unwrap()
+        .remove("shared_contract");
+    let saved: Run = serde_json::from_value(old).unwrap();
+    assert!(saved.valid_snapshot());
+    library.templates[2] = recipe;
+    library.runs.push(saved.clone());
+    library.upgrade_shared_contract();
+    assert!(library.templates[2].shared_contract);
+    assert!(!library.runs[0].template.shared_contract);
+    assert_eq!(library.runs[0], saved);
 }

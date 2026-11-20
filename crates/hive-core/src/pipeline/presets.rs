@@ -38,6 +38,7 @@ impl Default for Template {
     fn default() -> Self {
         Self {
             name: "Feature delivery".into(),
+            shared_contract: false,
             planner: FEATURE_PLANNER.stage("Plan"),
             development: DEVELOPER.stage("Development"),
             reviews: vec![
@@ -65,6 +66,7 @@ impl Template {
         };
         let cross = Self {
             name: "Cross-repository".into(),
+            shared_contract: true,
             lanes: ["API", "Web"]
                 .map(|name| LanePreset {
                     name: name.into(),

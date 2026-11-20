@@ -141,6 +141,7 @@ mod tests {
         run.report(
             &ticket,
             Report::Plan {
+                contract: String::new(),
                 assignments: vec![Assignment {
                     lane: 1,
                     task: "Implement".into(),

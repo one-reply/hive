@@ -43,11 +43,27 @@ impl Run {
             return None;
         }
         let (_, session) = self.continuations.iter().find(|(t, _)| t == ticket)?;
-        let message = format!(
+        let mut message = format!(
             "Continue your earlier work in this worktree.\n\n{}\n\n{DEVELOPED_CONTRACT}",
             self.handoff(ticket)
         );
+        if !self.contract.is_empty() {
+            let _ = writeln!(message, "\nShared contract:\n{}", self.contract);
+        }
+        self.write_developer_constraints(&mut message);
         Some((session, message))
+    }
+
+    pub(super) fn write_developer_constraints(&self, prompt: &mut String) {
+        if let Some(r) = self.regression()
+            && let Some(test) = &r.test
+        {
+            let _ = writeln!(
+                prompt,
+                "\nThe independent test for ‘{}’ is already written: {} in {}. Preserve this exact test while implementing the fix.",
+                r.criterion, test.name, test.path
+            );
+        }
     }
 
     /// The record of a repair request for the reviewers and the history, and one brief per
@@ -107,6 +123,23 @@ impl Run {
     /// Appends what a reviewer starts with: the checks Hive already ran on these changes and
     /// the findings the user accepted at this review.
     pub(super) fn write_review_context(&self, review: usize, prompt: &mut String) {
+        if !self.review_brief.is_empty() {
+            let _ = writeln!(prompt, "Previous review request:\n{}", self.review_brief);
+            for (lane, (old, new)) in self
+                .feedback_trees
+                .iter()
+                .zip(&self.review_trees)
+                .enumerate()
+            {
+                let _ = writeln!(prompt, "Lane {lane} repaired changes: git diff {old} {new}");
+            }
+        }
+        if let Some((lane, line)) = &self.qa_focus {
+            let _ = writeln!(
+                prompt,
+                "Recheck this acceptance criterion in lane {lane}: {line}"
+            );
+        }
         if !self.commands.is_empty() {
             prompt.push_str("\nRequired checks Hive ran on these changes:\n");
             for result in &self.commands {
@@ -117,6 +150,11 @@ impl Run {
                     result.command,
                     if result.success { "passed" } else { "failed" }
                 );
+            }
+        }
+        for check in &self.commands {
+            for name in check.passed_tests().into_iter().take(128) {
+                let _ = writeln!(prompt, "Lane {} passed test: {name}", check.lane);
             }
         }
         let mut accepted = self

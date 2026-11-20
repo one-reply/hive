@@ -50,6 +50,7 @@ impl LaunchForm {
                 .clone();
             Some((original, latest))
         });
+        self.regression = saved.regression;
         self.direct = saved.direct;
         self.frozen = saved.frozen;
         self.task
@@ -76,6 +77,7 @@ impl LaunchForm {
                 .or_else(|| self.frozen.then(|| self.template.clone())),
             frozen: self.frozen,
             task: self.task.read(cx).value().to_string(),
+            regression: self.regression,
             direct: self.direct,
             criteria: self.criteria.read(cx).value().to_string(),
             lanes: self.bindings.iter().map(|b| b.draft(cx)).collect(),
@@ -155,6 +157,7 @@ mod tests {
             original: None,
             frozen: false,
             task: task.into(),
+            regression: false,
             direct: false,
             criteria: String::new(),
             lanes: vec![],

@@ -8,6 +8,8 @@ pub enum Stage {
     Planner,
     /// The user approves or edits the plan.
     Approval,
+    /// Independent regression workflow.
+    Regression,
     /// Development in one lane.
     Develop(usize),
     /// A QA review agent.
@@ -79,6 +81,9 @@ impl Stage {
         } else {
             vec![Self::Planner, Self::Approval]
         };
+        if run.regression().is_some() {
+            stages.push(Self::Regression);
+        }
         stages.extend((0..run.lanes.len()).map(Self::Develop));
         if run.lanes.iter().any(|lane| run.shows_check(lane)) {
             stages.push(Self::Commands(0));
@@ -103,6 +108,7 @@ impl Stage {
         Some(match phase {
             Phase::Planning => Self::Planner,
             Phase::ApprovePlan => Self::Approval,
+            Phase::Regression(_) => Self::Regression,
             Phase::Development => Self::Develop(lane?),
             Phase::Review(i) => Self::Review(i),
             Phase::Commands(i) => Self::Commands(i),
@@ -115,6 +121,7 @@ impl Stage {
     /// Name from the frozen recipe, or the gate's fixed name.
     pub fn title(self, run: &Run) -> String {
         match self {
+            Self::Regression => "Independent regression test".into(),
             Self::Planner => run.template.planner.name.clone(),
             Self::Approval => "Plan approval".into(),
             Self::Develop(i) => run.lanes.get(i).map(|l| l.name.clone()).unwrap_or_default(),
@@ -167,6 +174,9 @@ impl Stage {
         if self.is_active(run) {
             return match self {
                 Self::Approval => StageStatus::AwaitingApproval,
+                Self::Regression if matches!(run.phase,Phase::Regression(step) if step.needs_user()) => {
+                    StageStatus::NeedsYou
+                }
                 Self::Decision(_) | Self::Accept => StageStatus::NeedsYou,
                 _ => StageStatus::InProgress,
             };

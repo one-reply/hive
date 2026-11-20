@@ -23,6 +23,7 @@ pub(super) struct LaunchForm {
     task: Entity<TextareaState>,
     bindings: Vec<Binding>,
     criteria: Entity<TextareaState>,
+    regression: bool,
     direct: bool,
     frozen: bool,
     keep_draft: bool,
@@ -68,6 +69,7 @@ impl LaunchForm {
             original: None,
             frozen: false,
             task: String::new(),
+            regression: false,
             direct: false,
             criteria: String::new(),
             lanes: Vec::new(),
@@ -79,6 +81,7 @@ impl LaunchForm {
             task,
             bindings: Vec::new(),
             criteria,
+            regression: false,
             direct: false,
             frozen: false,
             keep_draft: true,
@@ -182,6 +185,7 @@ impl LaunchForm {
         let result = AppState::get(cx).pipelines.clone().update(cx, |p, cx| {
             let options = crate::state::pipelines::LaunchOptions {
                 frozen: self.frozen,
+                regression: self.regression && self.can_start_direct(),
                 direct_criteria: (self.direct && self.can_start_direct())
                     .then(|| self.criteria.read(cx).value().to_string()),
             };
@@ -366,6 +370,23 @@ impl Render for LaunchForm {
             )
             .child(self.route(cx))
             .children(self.recipe_version(window, cx))
+            .when(self.can_start_direct(), |card| {
+                card.child(button(
+                    "independent-regression",
+                    if self.regression {
+                        "Independent regression test: on"
+                    } else {
+                        "Independent regression test: off"
+                    },
+                    ButtonLook::Outline,
+                    window,
+                    cx,
+                    |v, _, cx| {
+                        v.regression = !v.regression;
+                        cx.notify();
+                    },
+                ))
+            })
             .children(self.quick_start_toggle(direct, window, cx));
         let task = v_flex()
             .gap_2()

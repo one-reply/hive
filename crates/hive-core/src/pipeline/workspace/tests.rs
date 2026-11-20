@@ -82,6 +82,7 @@ fn multi_repo_checks_and_acceptance_use_task_worktrees_and_report_new_files() {
     run.report(
         &plan,
         Report::Plan {
+            contract: String::new(),
             assignments: (0..2)
                 .map(|lane| Assignment {
                     lane,
@@ -672,4 +673,100 @@ fn a_new_checkout_gets_the_projects_ignored_files_and_setup_and_a_retry_repeats_
             .files
             .is_empty()
     );
+}
+
+#[test]
+fn independent_cargo_test_checks_the_base_and_pinned_candidate_without_touching_the_main_checkout()
+{
+    use crate::pipeline::{RegressionStep, RegressionTest, TestRunner};
+    let temp = Scratch::new("independent-regression");
+    let mut lane = temp.lane("api");
+    let project = &lane.project;
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname='counter'\nversion='0.1.0'\nedition='2024'\n",
+    )
+    .unwrap();
+    fs::create_dir(project.join("src")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn count() -> u8 { 1 }\n").unwrap();
+    fs::write(project.join(".gitignore"), "/target\n/Cargo.lock\n").unwrap();
+    fs::create_dir(project.join(".cargo")).unwrap();
+    fs::write(
+        project.join(".cargo/config.toml"),
+        "[net]\noffline = true\n",
+    )
+    .unwrap();
+    git(project, &["add", "."]);
+    git(project, &["commit", "-qm", "counter fixture"]);
+    lane.base = preview(project, "main").unwrap().commit;
+    let stop = Cancellation::default();
+    lane.worktree = prepare(89, &lane, &stop).unwrap();
+    let mut run = Run::new(
+        89,
+        project.clone(),
+        "Fix count".into(),
+        Template::default(),
+        vec![lane.clone()],
+    )
+    .unwrap();
+    run.enable_regression().unwrap();
+    run.start_direct("Returns two").unwrap();
+    let path = "tests/counter.rs";
+    fs::create_dir(lane.worktree.join("tests")).unwrap();
+    let test = "#[test] fn returns_two() {assert_eq!(counter::count(), 2, \"expected two\");}";
+    fs::write(lane.worktree.join(path), test).unwrap();
+    run.report(
+        &run.pending()[0],
+        Report::Regression {
+            test: RegressionTest {
+                runner: TestRunner::Cargo,
+                path: path.into(),
+                name: "returns_two".into(),
+                expected: "expected two".into(),
+            },
+        },
+    )
+    .unwrap();
+    let execute = |r: &mut Run| {
+        let result = run_regression(r, &stop).unwrap();
+        r.record_regression(result).unwrap();
+    };
+    execute(&mut run);
+    assert_eq!(
+        run.phase(),
+        Phase::Development,
+        "{}",
+        run.regression().unwrap().description()
+    );
+    fs::write(
+        lane.worktree.join("src/lib.rs"),
+        "pub fn count() -> u8 { 2 }\n",
+    )
+    .unwrap();
+    fs::write(lane.worktree.join(path), format!("{test}\n")).unwrap();
+    run.report(
+        &run.pending()[0],
+        Report::Developed {
+            summary: "Fixed count".into(),
+        },
+    )
+    .unwrap();
+    execute(&mut run);
+    assert_eq!(run.phase(), Phase::Regression(RegressionStep::Decision));
+    let replacement = run.regression().unwrap().changed_blob().unwrap().to_owned();
+    run.retry_regression(Some(&replacement)).unwrap();
+    execute(&mut run);
+    assert_eq!(run.phase(), Phase::Regression(RegressionStep::Candidate));
+    execute(&mut run);
+    assert_eq!(
+        run.phase(),
+        Phase::Review(0),
+        "{}",
+        run.regression().unwrap().description()
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("src/lib.rs")).unwrap(),
+        "pub fn count() -> u8 { 1 }\n"
+    );
+    assert!(!project.join(path).exists());
 }
