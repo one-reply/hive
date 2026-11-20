@@ -1,8 +1,8 @@
-# Generated source
+# Original three-piece logo (archived)
 
 2026-11-03 · built-in `imagegen` · transparent bitmap sketch `generated-mark.png`.
-The geometry was then normalized manually in `../Hive.icon/Assets/mark.svg`.
-The final requested palette is black and white; colors are defined by `icon.json`.
+This sketch documents Hive’s original icon. The current honeycomb mark lives in
+`../Hive.icon/Assets/mark.svg`.
 
 ## Prompt
 

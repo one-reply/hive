@@ -1,3 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <path fill="#000000" d="M256 192h64l64 64v512l-64 64h-64l-64-64V256z M416 448h192v128H416z M704 192h64l64 64v512l-64 64h-64l-64-64V256z"/>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="1024" height="1024" viewBox="-82.4 -82.4 676.8 676.8">
+  <defs>
+    <polygon id="cell" points="36,0 18,31.1769 -18,31.1769 -36,0 -18,-31.1769 18,-31.1769"/>
+  </defs>
+  <g fill="#000000">
+    <use xlink:href="#cell" x="80.5" y="87.125"/>
+    <use xlink:href="#cell" x="80.5" y="154.675"/>
+    <use xlink:href="#cell" x="80.5" y="222.225"/>
+    <use xlink:href="#cell" x="80.5" y="289.775"/>
+    <use xlink:href="#cell" x="80.5" y="357.325"/>
+    <use xlink:href="#cell" x="80.5" y="424.875"/>
+    <use xlink:href="#cell" x="139" y="120.9"/>
+    <use xlink:href="#cell" x="139" y="188.45"/>
+    <use xlink:href="#cell" x="139" y="256"/>
+    <use xlink:href="#cell" x="139" y="323.55"/>
+    <use xlink:href="#cell" x="139" y="391.1"/>
+    <use xlink:href="#cell" x="197.5" y="222.225"/>
+    <use xlink:href="#cell" x="197.5" y="289.775"/>
+    <use xlink:href="#cell" x="256" y="256"/>
+    <use xlink:href="#cell" x="314.5" y="222.225"/>
+    <use xlink:href="#cell" x="314.5" y="289.775"/>
+    <use xlink:href="#cell" x="373" y="120.9"/>
+    <use xlink:href="#cell" x="373" y="188.45"/>
+    <use xlink:href="#cell" x="373" y="256"/>
+    <use xlink:href="#cell" x="373" y="323.55"/>
+    <use xlink:href="#cell" x="373" y="391.1"/>
+    <use xlink:href="#cell" x="431.5" y="87.125"/>
+    <use xlink:href="#cell" x="431.5" y="154.675"/>
+    <use xlink:href="#cell" x="431.5" y="222.225"/>
+    <use xlink:href="#cell" x="431.5" y="289.775"/>
+    <use xlink:href="#cell" x="431.5" y="357.325"/>
+    <use xlink:href="#cell" x="431.5" y="424.875"/>
+  </g>
 </svg>
