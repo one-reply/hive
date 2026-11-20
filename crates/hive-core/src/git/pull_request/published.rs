@@ -2,7 +2,8 @@
 use super::*;
 use serde::Deserialize;
 
-/// Find the open request or a finished request for this exact commit and repository.
+/// Find the open request, or the merged one for this exact commit, in this repository. A
+/// request closed without merging does not count, so its branch can be offered again.
 pub fn read_published(
     host: &Host,
     cwd: &Path,
@@ -80,22 +81,8 @@ pub fn read_published(
 
 /// Refresh a previously delivered request by its permanent web address even if its branch was deleted.
 pub fn read_link(host: &Host, cwd: &Path, url: &str) -> Result<PullRequest, Error> {
-    let invalid = || Error::Response("Invalid saved request address.".into());
-    let address = web_url(url)
-        .and_then(|s| s.strip_prefix("https://"))
-        .ok_or_else(invalid)?;
-    let (provider, (repository, number)) =
-        if let Some(parts) = address.rsplit_once("/-/merge_requests/") {
-            (Provider::GitLab, parts)
-        } else {
-            (
-                Provider::GitHub,
-                address.rsplit_once("/pull/").ok_or_else(invalid)?,
-            )
-        };
-    if !repository.contains('/') || number.parse::<u64>().ok().filter(|i| *i > 0).is_none() {
-        return Err(invalid());
-    }
+    let (provider, repository, number) = request_address(url)
+        .ok_or_else(|| Error::Response("Invalid saved request address.".into()))?;
     let selector = repository_argument(provider, repository);
     let args = match provider {
         Provider::GitHub => vec![
@@ -121,6 +108,17 @@ pub fn read_link(host: &Host, cwd: &Path, url: &str) -> Result<PullRequest, Erro
     }
 }
 
+/// The hosting service, CLI repository selector and request number a saved web address names.
+fn request_address(url: &str) -> Option<(Provider, &str, &str)> {
+    let address = web_url(url)?.strip_prefix("https://")?;
+    let (provider, (repository, number)) = match address.rsplit_once("/-/merge_requests/") {
+        Some(parts) => (Provider::GitLab, parts),
+        None => (Provider::GitHub, address.rsplit_once("/pull/")?),
+    };
+    (repository.contains('/') && number.parse::<u64>().is_ok_and(|n| n > 0))
+        .then_some((provider, repository, number))
+}
+
 fn same_repository_pr(bytes: &[u8], commit: &str) -> Result<Option<PullRequest>, Error> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -134,7 +132,11 @@ fn same_repository_pr(bytes: &[u8], commit: &str) -> Result<Option<PullRequest>,
         .map_err(|e| Error::Response(format!("Invalid PR list: {e}")))?;
     let found = candidates
         .into_iter()
-        .find(|c| !c.is_cross_repository && (c.request.state == "OPEN" || c.head_ref_oid == commit))
+        .find(|c| {
+            !c.is_cross_repository
+                && (c.request.state == "OPEN"
+                    || (c.request.state == "MERGED" && c.head_ref_oid == commit))
+        })
         .map(|c| c.request);
     if found
         .as_ref()
@@ -161,7 +163,8 @@ fn same_project_mr(bytes: &[u8], commit: &str) -> Result<Option<u64>, Error> {
         .find(|e| {
             e.iid > 0
                 && e.source_project_id == Some(e.target_project_id)
-                && (e.state == "opened" || e.sha.as_deref() == Some(commit))
+                && (e.state == "opened"
+                    || (e.state == "merged" && e.sha.as_deref() == Some(commit)))
         })
         .map(|e| e.iid))
 }
@@ -180,6 +183,49 @@ mod tests {
             1
         );
         assert!(same_repository_pr(rows, "later").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_request_closed_without_merging_leaves_its_branch_free_for_a_new_one() {
+        let closed = br#"[{"number":4,"url":"https://github.com/o/r/pull/4","state":"CLOSED","isCrossRepository":false,"headRefOid":"accepted"}]"#;
+        assert!(same_repository_pr(closed, "accepted").unwrap().is_none());
+        let reopened = br#"[{"number":5,"url":"https://github.com/o/r/pull/5","state":"OPEN","isCrossRepository":false,"headRefOid":"accepted"},{"number":4,"url":"https://github.com/o/r/pull/4","state":"CLOSED","isCrossRepository":false,"headRefOid":"accepted"}]"#;
+        assert_eq!(
+            same_repository_pr(reopened, "accepted")
+                .unwrap()
+                .unwrap()
+                .number,
+            5
+        );
+        let rows = br#"[{"iid":7,"source_project_id":3,"target_project_id":3,"state":"closed","sha":"accepted"},{"iid":8,"source_project_id":3,"target_project_id":3,"state":"merged","sha":"accepted"}]"#;
+        assert_eq!(same_project_mr(rows, "accepted").unwrap(), Some(8));
+        assert_eq!(same_project_mr(rows, "later").unwrap(), None);
+        assert!(same_repository_pr(b"{}", "accepted").is_err());
+    }
+
+    #[test]
+    fn a_saved_address_names_its_provider_repository_and_number() {
+        assert_eq!(
+            request_address("https://github.com/acme/tool/pull/12"),
+            Some((Provider::GitHub, "github.com/acme/tool", "12"))
+        );
+        assert_eq!(
+            request_address("https://gitlab.example.com/team/nested/repo/-/merge_requests/3"),
+            Some((Provider::GitLab, "gitlab.example.com/team/nested/repo", "3"))
+        );
+        for malformed in [
+            "",
+            "github.com/acme/tool/pull/12",
+            "http://github.com/acme/tool/pull/12",
+            "https://github.com/acme/tool/pull/0",
+            "https://github.com/acme/tool/pull/12/files",
+            "https://github.com/acme/tool/issues/12",
+            "https://github.com/pull/12",
+            "https://user@github.com/acme/tool/pull/12",
+            "https://github.com/acme/tool/pull/12 --web",
+        ] {
+            assert_eq!(request_address(malformed), None, "{malformed:?}");
+        }
     }
 
     #[test]

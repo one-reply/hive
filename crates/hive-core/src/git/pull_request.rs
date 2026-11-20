@@ -55,6 +55,10 @@ impl PullRequest {
     pub fn web_url(&self) -> Option<&str> {
         web_url(&self.url)
     }
+    /// Whether the request was closed without merging, under either service's spelling.
+    pub fn is_abandoned(&self) -> bool {
+        self.state.eq_ignore_ascii_case("closed")
+    }
     /// Current check summary, deliberately conservative for future status values.
     pub fn checks(&self) -> &'static str {
         let checks = self.status_check_rollup.as_deref().unwrap_or_default();

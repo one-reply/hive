@@ -85,18 +85,23 @@ impl PipelinePanel {
             s.edit_pipelines(cx, |l| l.drafts.retain(|d| d.owner != self.project))
         });
     }
+    /// The recipe of the draft this project would resume: an open form the user has changed,
+    /// or one saved earlier. A form left as it opened is not a draft.
+    fn draft_template(&self, cx: &App) -> Option<Template> {
+        if let Some(form) = self.draft.as_ref().map(|form| form.read(cx))
+            && form.is_modified(cx)
+        {
+            return Some(form.template().clone());
+        }
+        let drafts = &AppState::get(cx).store.read(cx).state.pipelines.drafts;
+        drafts
+            .iter()
+            .find(|d| d.owner == self.project)
+            .map(|d| d.template.clone())
+    }
     /// Start from the task, recipe and repositories saved in this run.
     fn launch_again(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        if self.draft.is_some()
-            || AppState::get(cx)
-                .store
-                .read(cx)
-                .state
-                .pipelines
-                .drafts
-                .iter()
-                .any(|d| d.owner == self.project)
-        {
+        if self.draft_template(cx).is_some() {
             let panel = cx.weak_entity();
             window.open_alert_dialog(cx, move |alert, _, _| {
                 let panel = panel.clone();
@@ -106,6 +111,10 @@ impl PipelinePanel {
                     .ok_text("Replace draft")
                     .on_ok(move |_, w, cx| {
                         let _ = panel.update(cx, |p, cx| {
+                            // The replaced form must not write itself back afterwards.
+                            if let Some(form) = &p.draft {
+                                form.update(cx, |form, _| form.abandon());
+                            }
                             p.discard_draft(cx);
                             p.launch_again(id, w, cx);
                         });
@@ -121,6 +130,7 @@ impl PipelinePanel {
         let template = run.template().clone();
         let parent = cx.weak_entity();
         let project = self.project.clone();
+        // An untouched form may still be open; the repeated run takes its place.
         let draft = cx.new(|cx| {
             let mut form = launch::LaunchForm::new(project, template, parent, window, cx);
             form.repeat(&run, window, cx);
@@ -133,6 +143,10 @@ impl PipelinePanel {
     fn launch(&mut self, template: Template, window: &mut Window, cx: &mut Context<Self>) {
         let parent = cx.weak_entity();
         let project = self.project.clone();
+        // A form left as it opened holds nothing to resume: the chosen recipe starts anew.
+        if self.draft_template(cx).is_none() {
+            self.draft = None;
+        }
         let draft = self.draft.get_or_insert_with(|| {
             let saved = AppState::get(cx)
                 .store

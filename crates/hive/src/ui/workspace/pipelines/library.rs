@@ -45,11 +45,7 @@ impl PipelinePanel {
                 }
             })
             .collect::<Vec<_>>();
-        let saved_template = lib
-            .drafts
-            .iter()
-            .find(|d| d.owner == self.project)
-            .map(|d| d.template.clone());
+        let draft_template = self.draft_template(cx);
         let outside_attention = pipelines
             .attention(cx)
             .into_iter()
@@ -68,9 +64,8 @@ impl PipelinePanel {
             cx,
             |p, w, cx| p.edit(None, w, cx),
         ));
-        let has_draft = saved_template.is_some() || self.draft.is_some();
-        if has_draft || templates.get(selected).is_some() {
-            let launch = saved_template.or_else(|| templates.get(selected).cloned());
+        let has_draft = draft_template.is_some();
+        if let Some(launch) = draft_template.or_else(|| templates.get(selected).cloned()) {
             actions = actions.child(button_with_size(
                 "launch-template",
                 if has_draft {
@@ -82,14 +77,7 @@ impl PipelinePanel {
                 ButtonSize::Medium,
                 window,
                 cx,
-                move |p, w, cx| {
-                    if let Some(draft) = p.draft.clone() {
-                        p.screen = Screen::Launch(draft);
-                        cx.notify();
-                    } else if let Some(template) = &launch {
-                        p.launch(template.clone(), w, cx);
-                    }
-                },
+                move |p, w, cx| p.launch(launch.clone(), w, cx),
             ));
         }
         let history_is_empty = runs.is_empty();
@@ -190,15 +178,11 @@ impl PipelinePanel {
             cards = cards.child(subtle("Create a template to start a run.", cx));
         }
         let mut history = v_flex().gap_1();
-        let group = |s: RunStatus| match s {
-            RunStatus::NeedsYou | RunStatus::Failed => (0, "Needs you"),
-            RunStatus::Running => (1, "Running"),
-            _ => (2, "Recent"),
-        };
-        runs.sort_by_key(|r| group(r.status).0);
+        // The sort is stable, so each section keeps the newest run first.
+        runs.sort_by_key(|r| history_section(r.status).0);
         let mut previous = None;
         for (i, row) in runs.into_iter().enumerate() {
-            let (_, section) = group(row.status);
+            let (_, section) = history_section(row.status);
             if previous != Some(section) {
                 history = history.child(heading(section));
                 previous = Some(section);
@@ -315,4 +299,29 @@ fn confirm_delete(template: &Template, window: &mut Window, cx: &mut App) {
                 true
             })
     });
+}
+
+/// Where a run is listed in the history, in display order: what waits for the user comes
+/// before what is working, and finished runs come last.
+fn history_section(status: RunStatus) -> (u8, &'static str) {
+    match status {
+        RunStatus::NeedsYou | RunStatus::Failed => (0, "Needs you"),
+        RunStatus::Running => (1, "Running"),
+        RunStatus::Completed | RunStatus::Cancelled => (2, "Recent"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RunStatus, history_section};
+
+    #[test]
+    fn runs_that_wait_for_the_user_are_listed_before_working_and_finished_ones() {
+        use RunStatus::*;
+        let mut runs = [Completed, Running, Failed, Cancelled, NeedsYou];
+        runs.sort_by_key(|status| history_section(*status).0);
+        assert_eq!(runs, [Failed, NeedsYou, Running, Completed, Cancelled]);
+        assert_eq!(history_section(Failed).1, history_section(NeedsYou).1);
+        assert_eq!(history_section(Completed).1, history_section(Cancelled).1);
+    }
 }
