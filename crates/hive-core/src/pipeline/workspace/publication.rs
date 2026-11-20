@@ -45,11 +45,32 @@ fn hosted_repository(
     }
     let server = if ssh {
         let name = server.as_str().split(':').next().ok_or_else(invalid)?;
-        git::hosting::Server::parse(&resolve_ssh(name)?).map_err(|_| invalid())?
+        git::hosting::Server::parse(web_host(&resolve_ssh(name)?)).map_err(|_| invalid())?
     } else {
         server
     };
     Ok(format!("{}/{path}", server.as_str()))
+}
+
+/// The hosting CLIs sign in to the service's own name, not to the SSH endpoint it offers on
+/// port 443 for networks that block port 22.
+fn web_host(ssh_host: &str) -> &str {
+    if ssh_host.eq_ignore_ascii_case("ssh.github.com") {
+        "github.com"
+    } else if ssh_host.eq_ignore_ascii_case("altssh.gitlab.com") {
+        "gitlab.com"
+    } else {
+        ssh_host
+    }
+}
+
+/// The host OpenSSH would connect to, from the effective configuration `ssh -G` prints.
+fn configured_hostname(config: &str) -> Option<&str> {
+    config
+        .lines()
+        .find_map(|line| line.strip_prefix("hostname "))
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
 }
 
 fn ssh_hostname(alias: &str) -> Result<String, GitError> {
@@ -63,9 +84,7 @@ fn ssh_hostname(alias: &str) -> Result<String, GitError> {
     )
     .map_err(|e| GitError::Invalid(format!("Resolving SSH host {alias}: {e}")))?;
     if output.code == Some(0)
-        && let Some(host) = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .find_map(|line| line.strip_prefix("hostname "))
+        && let Some(host) = configured_hostname(&String::from_utf8_lossy(&output.stdout))
     {
         return Ok(host.to_owned());
     }
@@ -167,12 +186,37 @@ mod tests {
             hosted_repository("git@work:acme/tool.git", |_| Ok("github.com".into())).unwrap(),
             "github.com/acme/tool"
         );
+        // The port-443 SSH endpoints are not hosts the CLIs sign in to.
+        for (ssh, web) in [
+            ("ssh.github.com", "github.com/acme/tool"),
+            ("altssh.gitlab.com", "gitlab.com/acme/tool"),
+            ("git.example.com", "git.example.com/acme/tool"),
+        ] {
+            assert_eq!(
+                hosted_repository("git@host:acme/tool.git", |_| Ok(ssh.into())).unwrap(),
+                web
+            );
+        }
         for url in [
             "/local/path",
             "file:///local/repo",
             "https://github.com/a/../b",
         ] {
             assert!(hosted_repository(url, |h| Ok(h.to_owned())).is_err());
+        }
+    }
+
+    #[test]
+    fn ssh_configuration_names_the_host_and_malformed_output_names_none() {
+        let config = "host work\nuser git\nhostname ssh.github.com\nport 443\nhostkeyalias x\n";
+        assert_eq!(configured_hostname(config), Some("ssh.github.com"));
+        for output in [
+            "",
+            "user git\nport 22\n",
+            "hostname \n",
+            "hostkeyalias github.com\n",
+        ] {
+            assert_eq!(configured_hostname(output), None, "{output:?}");
         }
     }
 }

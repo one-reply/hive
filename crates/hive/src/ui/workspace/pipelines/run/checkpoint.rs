@@ -3,6 +3,8 @@ use super::*;
 
 /// Leave room for the diff and navigation when a plan has many criteria.
 const CRITERIA_PREVIEW: usize = 3;
+/// The expanded list scrolls inside this height instead of pushing the decision off screen.
+const CRITERIA_MAX_HEIGHT: Rems = rems(9.);
 
 impl RunView {
     pub(super) fn checkpoint_actions(
@@ -212,7 +214,7 @@ impl RunView {
                             };
                             evidence
                                 .iter()
-                                .find(|e| e.lane == ix && e.criterion == line)
+                                .find(|e| e.lane == ix && e.confirms(line))
                                 .map(|e| e.evidence.as_str())
                         });
                     rows = rows.child(subtle(
@@ -248,7 +250,7 @@ impl RunView {
             }
             let rows = div()
                 .id("acceptance-criteria")
-                .max_h(rems(9.))
+                .max_h(CRITERIA_MAX_HEIGHT)
                 .overflow_y_scroll()
                 .child(rows);
             block = block.child(v_flex().gap_1().child(title).child(rows));

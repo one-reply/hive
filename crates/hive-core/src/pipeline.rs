@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 mod delivery;
 pub mod draft;
+mod feedback;
 mod handoff;
 mod outcome;
 mod presets;

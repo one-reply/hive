@@ -649,6 +649,135 @@ fn a_pull_request_needs_accepted_work_and_its_outcome_is_kept_for_the_lane(
     });
 }
 
+/// The fixture run at `phase` after a review of `tree`, its lane assigned and bound to a
+/// checkout Git never made.
+fn reviewed(run: &Run, phase: Phase, tree: &str) -> Run {
+    let mut run = run.clone();
+    run.record_worktree(0, "/unused-pipeline-test-project-worktrees/missing".into());
+    let mut saved = serde_json::to_value(&run).unwrap();
+    saved["phase"] = serde_json::to_value(phase).unwrap();
+    saved["outstanding"] = serde_json::json!([]);
+    saved["review_revision"] = "reviewed".into();
+    saved["review_trees"] = serde_json::json!([tree]);
+    saved["lanes"][0]["assignment"] = "Add login".into();
+    serde_json::from_value(saved).unwrap()
+}
+
+fn line_comment(tree: &str) -> hive_core::git::review_notes::Note {
+    use hive_core::git::{diff::DiffSource, review_notes::Line};
+    hive_core::git::review_notes::Note {
+        path: "login.rs".into(),
+        source: DiffSource::Compare(tree.into()),
+        start: Line::Modified(3),
+        end: Line::Modified(4),
+        text: "Handle the expired session".into(),
+    }
+}
+
+#[gpui::test]
+fn acceptance_waits_until_queued_line_comments_are_sent_or_removed(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        let tree = "a".repeat(40);
+        p.store.update(cx, |s, _| {
+            let run = &mut s.state.pipelines.runs[0];
+            *run = reviewed(run, Phase::Acceptance, &tree);
+        });
+        let note = line_comment(&tree);
+        p.edit_comments(42, cx, |r| r.add_comment(0, tree.clone(), note.clone()))
+            .unwrap();
+        // A comment on a tree the review no longer shows is refused and nothing is saved.
+        let stale = p.edit_comments(42, cx, |r| r.add_comment(0, "b".repeat(40), note.clone()));
+        assert!(stale.unwrap_err().contains("no longer matches"));
+        assert_eq!(p.run(42, cx).unwrap().comments().len(), 1);
+
+        let unsent = p.accept(42, cx).unwrap_err();
+        assert!(unsent.contains("line comments"), "{unsent}");
+        assert!(!p.accepting(42));
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Acceptance);
+
+        let queued = (0, tree.clone(), note.clone());
+        p.edit_comments(42, cx, |r| {
+            r.remove_comment(&queued);
+            Ok(())
+        })
+        .unwrap();
+        p.accept(42, cx).unwrap();
+        assert!(p.accepting(42));
+    });
+}
+
+#[gpui::test]
+async fn comments_for_an_unreadable_checkout_stay_queued_and_the_run_stays_at_acceptance(
+    cx: &mut TestAppContext,
+) {
+    let pipelines = recovering(cx);
+    let tree = "a".repeat(40);
+    let note = line_comment(&tree);
+    let sending = pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        p.store.update(cx, |s, _| {
+            let run = &mut s.state.pipelines.runs[0];
+            *run = reviewed(run, Phase::Acceptance, &tree);
+        });
+        p.edit_comments(42, cx, |r| r.add_comment(0, tree.clone(), note.clone()))
+            .unwrap();
+        p.send_comments(42, 0, tree.clone(), vec![note.clone()], cx)
+    });
+    assert!(sending.await.is_err());
+    pipelines.read_with(cx, |p, cx| {
+        let run = p.run(42, cx).unwrap();
+        assert_eq!(run.phase(), Phase::Acceptance);
+        assert_eq!(run.comments(), [(0, tree.clone(), note.clone())]);
+        assert!(run.pending().is_empty());
+    });
+    let missing = pipelines.update(cx, |p, cx| p.send_comments(7, 0, tree, vec![note], cx));
+    assert!(missing.await.unwrap_err().contains("unavailable"));
+}
+
+#[gpui::test]
+fn delivery_is_checked_only_after_acceptance_and_a_missing_checkout_is_not_an_error(
+    cx: &mut TestAppContext,
+) {
+    use super::Delivery;
+    let pipelines = recovering(cx);
+    let tree = "a".repeat(40);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        let store = p.store.clone();
+        let at = |phase, s: &mut Store| {
+            let run = &mut s.state.pipelines.runs[0];
+            *run = reviewed(run, phase, &tree);
+        };
+        store.update(cx, |s, _| at(Phase::Acceptance, s));
+        p.refresh_delivery(42, cx);
+        assert_eq!(p.delivery(42, 0), None);
+        store.update(cx, |s, _| at(Phase::Accepted, s));
+        p.refresh_delivery(42, cx);
+        assert_eq!(p.delivery(42, 0), Some(&Delivery::Checking));
+    });
+    cx.run_until_parked();
+    pipelines.update(cx, |p, cx| {
+        // Git has no such checkout, so the hosting CLI was never asked and nothing is recorded.
+        assert!(
+            matches!(p.delivery(42, 0), Some(Delivery::Unpublished(_))),
+            "{:?}",
+            p.delivery(42, 0)
+        );
+        assert_eq!(p.run(42, cx).unwrap().request_url(0), None);
+        // A request the user starts while a check is running is not overwritten by its answer.
+        p.refresh_delivery(42, cx);
+        assert_eq!(p.delivery(42, 0), Some(&Delivery::Checking));
+        p.runtime_mut(42).deliveries.insert(0, Delivery::Opening);
+        p.refresh_delivery(42, cx);
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, _| {
+        assert_eq!(p.delivery(42, 0), Some(&Delivery::Opening));
+    });
+}
+
 fn lane_on(name: &str, branch: &str) -> Lane {
     Lane {
         name: name.into(),

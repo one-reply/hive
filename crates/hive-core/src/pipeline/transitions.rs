@@ -1,7 +1,6 @@
 //! Every transition that may authorize more work lives here. Inputs are validated before mutation.
 use super::*;
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 
 impl Run {
     /// Consume a structured report only for the invocation authorized to produce it.
@@ -67,16 +66,10 @@ impl Run {
                 },
             ) => {
                 for item in &evidence {
-                    if item.evidence.trim().is_empty()
-                        || self.lanes.get(item.lane).is_none_or(|l| {
-                            l.assignment.is_empty()
-                                || !l
-                                    .criteria
-                                    .lines()
-                                    .map(str::trim)
-                                    .any(|line| !line.is_empty() && line == item.criterion)
-                        })
-                    {
+                    if self.lanes.get(item.lane).is_none_or(|l| {
+                        l.assignment.is_empty()
+                            || !l.criteria.lines().any(|line| item.confirms(line))
+                    }) {
                         return Err(Error::InvalidInput(
                             "Evidence must identify an approved criterion and a concrete observation",
                         ));
@@ -318,7 +311,7 @@ impl Run {
         }
     }
 
-    fn develop(&mut self, lanes: impl IntoIterator<Item = usize>) {
+    pub(super) fn develop(&mut self, lanes: impl IntoIterator<Item = usize>) {
         self.phase = Phase::Development;
         for lane in lanes {
             self.schedule(Some(lane));
@@ -377,109 +370,25 @@ impl Run {
         Ok(())
     }
 
-    /// Accept the current cross-repository changes after all checks pass.
-    pub fn accept(&mut self) -> Result<(), Error> {
+    /// Whether the user may accept now. A line comment still queued blocks it: accepting ends
+    /// the review it was written for, so it could never be sent.
+    pub fn can_accept(&self) -> Result<(), Error> {
         if self.phase != Phase::Acceptance {
             return Err(Error::WrongStage("The run is not ready for acceptance"));
         }
+        if !self.comments.is_empty() {
+            return Err(Error::InvalidInput(
+                "Send or remove your line comments before accepting.",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Accept the current cross-repository changes after all checks pass.
+    pub fn accept(&mut self) -> Result<(), Error> {
+        self.can_accept()?;
         self.phase = Phase::Accepted;
         self.history.push("User accepted the changes".into());
-        Ok(())
-    }
-
-    /// Submit the selected draft notes as one repair, retaining later notes and other recipients.
-    pub fn submit_comments(
-        &mut self,
-        lane: usize,
-        tree: &str,
-        batch: &[crate::git::review_notes::Note],
-    ) -> Result<(), Error> {
-        if batch.is_empty()
-            || batch.iter().any(|n| {
-                !self
-                    .comments
-                    .iter()
-                    .any(|(i, t, note)| *i == lane && t == tree && note == n)
-            })
-        {
-            return Err(Error::InvalidInput(
-                "The comment batch changed. Review the remaining notes.",
-            ));
-        }
-        self.request_lane_changes(lane, tree, &crate::git::review_notes::prompt(batch))?;
-        for note in batch {
-            self.remove_comment(&(lane, tree.to_owned(), note.clone()));
-        }
-        Ok(())
-    }
-
-    /// Return a batch of line comments to the developer of the selected reviewed checkout.
-    pub fn request_lane_changes(
-        &mut self,
-        lane: usize,
-        tree: &str,
-        note: &str,
-    ) -> Result<(), Error> {
-        if self.phase != Phase::Acceptance {
-            return Err(Error::WrongStage("The result is no longer awaiting review"));
-        }
-        if self.lanes.get(lane).is_none_or(|l| l.assignment.is_empty())
-            || self.review_trees.get(lane).is_none_or(|t| t != tree)
-            || note.trim().is_empty()
-        {
-            return Err(Error::InvalidInput(
-                "The comment position is stale. Review the current diff.",
-            ));
-        }
-        self.feedback_trees.clone_from(&self.review_trees);
-        self.feedback = format!(
-            "User requested changes to {} (reviewed tree {tree}):\n{note}",
-            self.lanes[lane].name
-        );
-        self.history.push(self.feedback.clone());
-        self.briefs = vec![(lane, self.feedback.clone())];
-        self.develop([lane]);
-        self.continue_conversations();
-        Ok(())
-    }
-
-    /// Return a final result to its active development lanes for another review cycle.
-    pub fn request_changes(&mut self, note: &str) -> Result<(), Error> {
-        if self.phase != Phase::Acceptance {
-            return Err(Error::WrongStage("There is no result awaiting acceptance"));
-        }
-        self.feedback_trees.clone_from(&self.review_trees);
-        self.feedback = if note.trim().is_empty() {
-            "User requested another pass. Compare the implementation with the approved assignment and address any remaining gaps.".into()
-        } else {
-            format!("User requested changes: {note}")
-        };
-        self.history.push(self.feedback.clone());
-        // The user read these notes at acceptance and may be referring to them.
-        if !self.notes.is_empty() {
-            self.feedback.push_str(
-                "\nReviewer notes that did not block acceptance; address the ones this request covers:",
-            );
-            for (review, finding) in &self.notes {
-                let _ = write!(
-                    self.feedback,
-                    "\n- {} · {}: {}",
-                    self.template.reviews[*review].name,
-                    self.lanes[finding.lane].name,
-                    finding.description
-                );
-            }
-        }
-        self.briefs.clear();
-        let active: Vec<_> = self
-            .lanes
-            .iter()
-            .enumerate()
-            .filter(|(_, l)| !l.assignment.trim().is_empty())
-            .map(|(i, _)| i)
-            .collect();
-        self.develop(active);
-        self.continue_conversations();
         Ok(())
     }
 

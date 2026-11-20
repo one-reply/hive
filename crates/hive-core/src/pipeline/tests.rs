@@ -150,6 +150,59 @@ fn targeted_feedback_preserves_the_base_and_runs_all_required_checks_after_one_r
 }
 
 #[test]
+fn a_whole_task_request_carries_the_queued_line_comments_and_acceptance_waits_for_unsent_ones() {
+    use crate::git::{
+        diff::DiffSource,
+        review_notes::{Line, Note},
+    };
+    let mut run = run_with(&["/api", "/web"], 3);
+    plan(&mut run);
+    for ticket in run.pending() {
+        run.report(&ticket, developed()).unwrap();
+    }
+    let trees = vec!["a".repeat(40), "b".repeat(40)];
+    run.record_review_trees("first".into(), trees.clone())
+        .unwrap();
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase(), Phase::Acceptance);
+    assert!(run.can_accept().is_ok());
+    let comment = |text: &str| Note {
+        path: "view.rs".into(),
+        source: DiffSource::Compare(trees[1].clone()),
+        start: Line::Modified(4),
+        end: Line::Modified(6),
+        text: text.into(),
+    };
+    run.add_comment(1, trees[1].clone(), comment("Rename the handler"))
+        .unwrap();
+    // A comment written against a tree that a later round replaced.
+    let outdated = (0, "c".repeat(40), comment("Written for an earlier tree"));
+    run.comments.push(outdated.clone());
+    let unsent = run.accept().unwrap_err().to_string();
+    assert!(unsent.contains("line comments"), "{unsent}");
+    assert_eq!(run.phase(), Phase::Acceptance);
+
+    run.request_changes("Tighten the errors").unwrap();
+    assert_eq!(run.comments(), std::slice::from_ref(&outdated));
+    assert_eq!(run.pending().len(), 2);
+    for ticket in run.pending() {
+        let prompt = run.prompt(&ticket).unwrap();
+        assert!(prompt.contains("Tighten the errors"), "{prompt}");
+        assert!(prompt.contains("Line comments for Role 1"), "{prompt}");
+        assert!(prompt.contains("Rename the handler"), "{prompt}");
+        assert!(!prompt.contains("earlier tree"), "{prompt}");
+    }
+    assert!(
+        run.history()
+            .iter()
+            .any(|line| line.contains("Rename the handler"))
+    );
+    run.remove_comment(&outdated);
+    assert!(run.comments().is_empty());
+}
+
+#[test]
 fn quick_start_requires_criteria_then_verifies_approved_claims_and_waits_at_acceptance() {
     let mut run = run_with(&["/one"], 3);
     assert!(run.start_direct(" ").is_err());
@@ -169,7 +222,8 @@ fn quick_start_requires_criteria_then_verifies_approved_claims_and_waits_at_acce
         }],
     };
     assert!(run.report(&ticket, claim("Always 200")).is_err());
-    run.report(&ticket, claim("Expired session returns 401"))
+    // The reviewer repeats the line as a list item; that still names the approved criterion.
+    run.report(&ticket, claim(" - Expired session returns 401 "))
         .unwrap();
     let legacy =
         serde_json::from_str::<Report>(r#"{"kind":"review","summary":"Verified","findings":[]}"#)
