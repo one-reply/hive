@@ -1,7 +1,7 @@
 # Hive icons
 
-A modular H: three separate shapes, with the same geometry at every size.
-The light variant is black on white; the dark variant is white on black.
+The H consists of 27 whole hexagons on a honeycomb grid. The light icon uses
+black cells on white. The dark icon uses white cells on black.
 
 | File | Purpose |
 | --- | --- |
@@ -9,10 +9,10 @@ The light variant is black on white; the dark variant is white on black.
 | `hive-light.png`, `hive-dark.png` | Transparent 1024×1024 canvas, with 100 px macOS padding around an 824×824 tile |
 | `Hive-light.iconset/`, `Hive-dark.iconset/` | Ten PNGs each: 16, 32, 128, 256, 512 pt at 1× and 2×, up to 1024 physical pixels |
 | `Hive-light.icns`, `Hive-dark.icns` | Complete static macOS icon sets |
-| `source/generated-mark.png` | Generated sketch before normalizing the geometry into SVG; not an app resource |
+| `source/` | Archived sketch and prompt for the original three-piece H |
 
 In the UI, `Icon::data` uses the same SVG as a mask with the current theme color.
-The logo appears in the title bar and welcome screen.
+The logo appears on the welcome screen.
 
 ## Rebuilding
 
@@ -47,4 +47,3 @@ Finder and Dock behavior. See the [release process](../../../../docs/RELEASING.m
 
 - [Apple: Icon Composer](https://developer.apple.com/documentation/xcode/creating-your-app-icon-using-icon-composer)
 - [Apple: iconset contents](https://developer.apple.com/library/archive/documentation/Xcode/Reference/xcode_ref-Asset_Catalog_Format/IconSetType.html)
-- Generated sketch: the built-in `imagegen` tool, with the [original prompt](source/prompt.md).
