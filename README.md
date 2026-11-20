@@ -11,8 +11,10 @@
 
 Run Claude Code, Codex, OpenCode, and other CLI agents side by side in isolated
 Git worktrees. Give each task its own terminals, search and edit the code, review
-diffs, resolve conflicts, and commit from one workspace. Agents can start helpers
-and exchange messages through Hive’s MCP tools or CLI.
+diffs, resolve conflicts, and commit from one workspace. For work that spans
+repositories, Pipelines lets you assign development and review to different
+agents, send feedback on individual lines, and open a pull or merge request for
+the changes you accepted.
 
 Built in Rust with GPUI, Hive runs natively on Apple Silicon Macs and also works
 with Linux projects over SSH.
@@ -48,7 +50,7 @@ Older builds need one manual installation of a version that includes the updater
 | --- | --- |
 | **Organize your work** | Add local or SSH Linux projects, create and remove Git worktrees, reorder projects, and customize their names, colors, and icons. |
 | **Start a task** | Create a worktree from a chosen base branch and launch a terminal, Claude Code, Codex, OpenCode, or Antigravity with **Create & Start**. |
-| **Run a pipeline** | Plan a task across local repositories, approve parallel development lanes, and review fixes with QA and security agents. Choose a CLI and model for each role. |
+| **Run a pipeline** | Plan work across local repositories or start a single-lane fix with your own criteria. Choose the CLI and model for each role, review evidence, and send changes back to the responsible developer. |
 | **Run agents in terminals** | Use terminal tabs and split panes, with text selection, scrollback, and clipboard image paste. See running agents on their worktree cards. |
 | **Let agents work together** | Codex and Claude Code receive pane-specific MCP tools to list, start, message, read, wait for, and interrupt sibling agents. The `hive agent` CLI also supports coordination. |
 | **Edit files** | Find files with **⌘P** or search local file contents with **⌘⇧F**. Use syntax highlighting, completion, inline Git blame, image previews, explicit saves, and recovery drafts. |
@@ -94,8 +96,12 @@ project while agents run.
 2. Describe the task and choose **Start planning**. The launch sheet selects your
    project and starting branch, and suggests checks from committed manifests.
    Use the repository, branch and check menus to override those choices or add
-   another repository. Hive saves your draft for this project. **Run again** opens the saved recipe and offers the current version if it changed.
-   For a single-lane fix, **Quick start with my criteria** goes straight to development. Hive shows checkout preparation and the setup command before the first agent starts.
+   another repository. After editing the form, choose **Resume draft** in the
+   project’s pipeline library to pick up where you left off. **Run again** lets
+   you choose between the original recipe and its updated template.
+   If one repository lane receives every review, **Quick start with my criteria**
+   goes straight to development. The preview shows the checks and approval steps
+   for the selected mode.
 3. Review the planner’s assignments and acceptance criteria, then choose **Approve
    plan**. Different repositories can develop in parallel. Click **Open live
    session** to see a running CLI and respond to questions or permission requests.
@@ -105,12 +111,16 @@ project while agents run.
 5. Open **Timeline** to see stage durations, parallel lanes and decision points.
    **Changes** groups files by repository and loads the selected diff. **Checks**
    shows test outcomes, and **Activity** retains the handoff history. Accept the
-   changes after checking the evidence for each approved criterion. Add line comments in a diff
-   and send them together to one lane, or use **Request changes** for the whole task.
-   On the next review, **Since your feedback** shows the edits in that round.
+   changes after checking the evidence for each approved criterion. Send queued
+   line comments to one lane, include them in a task-wide **Request changes**,
+   or remove them before accepting. On the next review, **Since your feedback**
+   shows the edits in that round.
 6. Commit and push the reviewed changes in the task worktree. The accepted run offers one pull
    or merge request per branch. Hive verifies the published commit against the review before
-   creating the request. An existing request shows its checks and a link to the first failure.
+   creating the request. If a commit or push is still needed, choose **Open
+   worktree**, complete the Git step and refresh delivery. Reopening the run
+   brings back the request and its status, including a merged request for the
+   reviewed commit.
 
 ## A closer look
 

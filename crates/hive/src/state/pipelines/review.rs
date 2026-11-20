@@ -149,9 +149,7 @@ impl Pipelines {
     pub(crate) fn accept(&mut self, id: u64, cx: &mut Context<Self>) -> Result<(), String> {
         self.ensure_reports_saved(id)?;
         let run = self.run(id, cx)?;
-        if run.phase() != Phase::Acceptance {
-            return Err("This run is not awaiting acceptance.".into());
-        }
+        run.can_accept().map_err(|e| e.to_string())?;
         if self.accepting(id) {
             return Ok(());
         }

@@ -102,6 +102,19 @@ impl RunView {
                 w.dispatch_action(Box::new(TogglePipelines), cx);
             },
         );
+        let refresh = button(
+            ("refresh-delivery", ix),
+            "Refresh",
+            ButtonLook::Ghost,
+            w,
+            cx,
+            |v, _, cx| {
+                AppState::get(cx)
+                    .pipelines
+                    .clone()
+                    .update(cx, |p, cx| p.refresh_delivery(v.id, cx))
+            },
+        );
         match state {
             Some(Delivery::Opening) => row.child(subtle("Opening pull request…", cx)),
             Some(Delivery::Opened(url)) => {
@@ -118,22 +131,15 @@ impl RunView {
             None | Some(Delivery::Checking | Delivery::Existing(_)) => {
                 row.child(subtle("Checking publication…", cx))
             }
-            Some(Delivery::Failed(error)) => row
-                .child(subtle(error, cx))
+            // A step the user still owes is not an error and stays muted.
+            Some(Delivery::Unpublished(step)) => row
                 .child(open_worktree)
-                .child(button(
-                    ("refresh-delivery", ix),
-                    "Refresh",
-                    ButtonLook::Ghost,
-                    w,
-                    cx,
-                    |v, _, cx| {
-                        AppState::get(cx)
-                            .pipelines
-                            .clone()
-                            .update(cx, |p, cx| p.refresh_delivery(v.id, cx))
-                    },
-                )),
+                .child(refresh)
+                .child(delivery_message(ix, step, cx.theme().muted_foreground)),
+            Some(Delivery::Failed(error)) => row
+                .child(open_worktree)
+                .child(refresh)
+                .child(delivery_message(ix, error, cx.theme().danger)),
             Some(Delivery::Ready) => row.child(button(
                 ("create-run-pull-request", ix),
                 "Create pull request…",
@@ -200,6 +206,16 @@ impl RunView {
 }
 
 /// A lane as the delivery row names it: its role and the branch holding its work.
+/// Why the row has no request yet, on its own line and selectable: a hosting CLI's error is
+/// something to copy.
+fn delivery_message(ix: usize, text: String, color: Hsla) -> Div {
+    div()
+        .w_full()
+        .text_sm()
+        .text_color(color)
+        .child(SelectableText::new(("delivery-message", ix), text))
+}
+
 fn lane_label(lane: &hive_core::pipeline::Lane) -> String {
     if lane.branch.is_empty() {
         lane.name.clone()

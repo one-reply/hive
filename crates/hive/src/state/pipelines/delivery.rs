@@ -11,6 +11,9 @@ pub(crate) enum Delivery {
     Opening,
     /// A known request whose current checks are unavailable.
     Opened(String),
+    /// What the user still has to do in the worktree before a request can be opened.
+    Unpublished(String),
+    /// The hosting CLI's error.
     Failed(String),
 }
 
@@ -55,34 +58,36 @@ impl Pipelines {
             let run = run.clone();
             let work = cx.background_executor().spawn(async move {
                 if let Some(url) = run.request_url(ix) {
-                    return match pull_request::read_link(
-                        &Host::Local,
-                        &run.lanes()[ix].project,
-                        url,
-                    ) {
-                        Ok(pr) => Delivery::Existing(pr),
+                    match pull_request::read_link(&Host::Local, &run.lanes()[ix].project, url) {
+                        // A request closed without merging no longer delivers this branch.
+                        Ok(pr) if pr.is_abandoned() => {}
+                        Ok(pr) => return Delivery::Existing(pr),
                         Err(error) => {
                             tracing::warn!(%error,run=id,"could not refresh request checks");
-                            Delivery::Opened(url.to_owned())
+                            return Delivery::Opened(url.to_owned());
                         }
-                    };
+                    }
                 }
-                let checked = || -> Result<Delivery, String> {
-                    let source = workspace::publication(&run, ix).map_err(|e| e.to_string())?;
-                    let snapshot = pull_request::read_published(
-                        &Host::Local,
-                        &run.lanes()[ix].worktree,
-                        &source.repository,
-                        &source.branch,
-                        &source.commit,
-                    )
-                    .map_err(|e| e.to_string())?;
-                    Ok(snapshot
+                let source = match workspace::publication(&run, ix) {
+                    Ok(source) => source,
+                    Err(error) => return Delivery::Unpublished(error.to_string()),
+                };
+                match pull_request::read_published(
+                    &Host::Local,
+                    &run.lanes()[ix].worktree,
+                    &source.repository,
+                    &source.branch,
+                    &source.commit,
+                ) {
+                    Ok(snapshot) => snapshot
                         .request()
                         .cloned()
-                        .map_or(Delivery::Ready, Delivery::Existing))
-                };
-                checked().unwrap_or_else(Delivery::Failed)
+                        .map_or(Delivery::Ready, Delivery::Existing),
+                    Err(error) => {
+                        tracing::warn!(%error, run = id, lane = ix, "could not read the published request");
+                        Delivery::Failed(error.to_string())
+                    }
+                }
             });
             cx.spawn(async move |this, cx| {
                 let result = work.await;
@@ -106,8 +111,9 @@ impl Pipelines {
         }
     }
 
-    /// Opens a pull or merge request for the branch in `lane`'s worktree. Hive never pushes
-    /// for this: an unpublished branch comes back as the hosting CLI's own error.
+    /// Opens a pull or merge request for the branch in `lane`'s worktree, unless the published
+    /// branch already has one. Hive never pushes for this: the accepted commit has to be on
+    /// the remote branch already.
     pub(crate) fn open_pull_request(
         &mut self,
         id: u64,

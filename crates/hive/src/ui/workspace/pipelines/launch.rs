@@ -5,71 +5,16 @@ use hive_core::pipeline::{Lane, LanePreset, workspace::BasePreview};
 
 mod again;
 mod draft;
+mod mode;
+mod readiness;
 mod repository;
+mod route;
+use readiness::{Blocker, LaneState, blocker};
 use repository::{Binding, dropdown, repositories};
 
 const COMPOSER_WIDTH: Pixels = px(800.);
 /// Tall enough for a few sentences of intent and acceptance criteria without scrolling.
 const TASK_ROWS: usize = 6;
-
-/// Where one repository of the run stands before planning can start.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LaneState {
-    Ready,
-    NoBranch,
-    Reading,
-    Failed,
-    EditingRef,
-    MissingCommand,
-}
-
-/// The first thing that keeps **Start planning** disabled, named so the user knows what to do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Blocker {
-    Task,
-    Criteria,
-    Repository,
-    Branch,
-    Failed,
-    EditingRef,
-    MissingCommand,
-    Reading,
-}
-
-impl Blocker {
-    fn message(self) -> &'static str {
-        match self {
-            Self::Criteria => "Enter acceptance criteria for quick start.",
-            Self::Task => "Describe the task to start the run.",
-            Self::Repository => "Add at least one repository.",
-            Self::Branch => "Choose or create a branch for each repository.",
-            Self::Failed => "A repository can’t be read. Pick another branch or repository.",
-            Self::EditingRef => "Press Use ref to apply the branch, tag or commit.",
-            Self::MissingCommand => "Enter the custom check command.",
-            Self::Reading => "Reading repositories…",
-        }
-    }
-}
-
-/// Things the user must fix come before a read that only needs time.
-fn blocker(has_task: bool, lanes: &[LaneState]) -> Option<Blocker> {
-    if !has_task {
-        return Some(Blocker::Task);
-    }
-    if lanes.is_empty() {
-        return Some(Blocker::Repository);
-    }
-    [
-        (LaneState::NoBranch, Blocker::Branch),
-        (LaneState::Failed, Blocker::Failed),
-        (LaneState::EditingRef, Blocker::EditingRef),
-        (LaneState::MissingCommand, Blocker::MissingCommand),
-        (LaneState::Reading, Blocker::Reading),
-    ]
-    .into_iter()
-    .find(|(state, _)| lanes.contains(state))
-    .map(|(_, blocker)| blocker)
-}
 
 pub(super) struct LaunchForm {
     project: PathBuf,
@@ -81,6 +26,10 @@ pub(super) struct LaunchForm {
     direct: bool,
     frozen: bool,
     keep_draft: bool,
+    /// The form as it opened, before any change of the user's.
+    pristine: hive_core::pipeline::draft::LaunchDraft,
+    /// The pending write of the draft; dropping it cancels the write.
+    draft_save: Option<Task<()>>,
     previous_recipe: Option<(Template, Template)>,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -103,7 +52,7 @@ impl LaunchForm {
         });
         let criteria = area("", "What should QA verify?", window, cx);
         let subscriptions = vec![
-            cx.observe_self(|form: &mut Self, cx| form.save_draft(cx)),
+            cx.observe_self(|form: &mut Self, cx| form.schedule_draft_save(cx)),
             cx.observe(&criteria, |_, _, cx| cx.notify()),
             cx.observe(&projects, |_, _, cx| cx.notify()),
             cx.observe(&pipelines, |_, _, cx| cx.notify()),
@@ -113,6 +62,16 @@ impl LaunchForm {
                 }
             }),
         ];
+        let pristine = hive_core::pipeline::draft::LaunchDraft {
+            owner: project.clone(),
+            template: template.clone(),
+            original: None,
+            frozen: false,
+            task: String::new(),
+            direct: false,
+            criteria: String::new(),
+            lanes: Vec::new(),
+        };
         let mut this = Self {
             project,
             template: template.clone(),
@@ -123,11 +82,15 @@ impl LaunchForm {
             direct: false,
             frozen: false,
             keep_draft: true,
+            pristine,
+            draft_save: None,
             previous_recipe: None,
             error: None,
             _subscriptions: subscriptions,
         };
         this.apply_template(template, window, cx);
+        // The recipe's default repositories are part of how the form opens.
+        this.pristine = this.snapshot(cx);
         this.task.focus_handle(cx).focus(window, cx);
         this
     }
@@ -195,19 +158,6 @@ impl LaunchForm {
         cx.notify();
     }
 
-    fn can_start_direct(&self) -> bool {
-        self.bindings.iter().filter(|b| b.project.is_some()).count() == 1
-            && self
-                .template
-                .reviews
-                .iter()
-                .filter_map(|s| s.return_lane.as_ref())
-                .all(|name| {
-                    self.bindings
-                        .iter()
-                        .any(|b| b.project.is_some() && &b.preset.name == name)
-                })
-    }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut lanes = Vec::new();
         for b in &self.bindings {
@@ -246,7 +196,7 @@ impl LaunchForm {
         });
         match result {
             Ok(id) => {
-                self.keep_draft = false;
+                self.abandon();
                 let _ = self.parent.update(cx, |p, cx| {
                     p.draft = None;
                     p.show_run(id, window, cx)
@@ -257,47 +207,6 @@ impl LaunchForm {
                 cx.notify();
             }
         }
-    }
-
-    /// The stages this recipe runs, in order, so the user sees where their approval comes.
-    fn route(&self, cx: &App) -> Div {
-        let mut route = h_flex().flex_wrap().items_center().gap_1p5();
-        let planning = !(self.direct && self.can_start_direct());
-        let checks = self
-            .bindings
-            .iter()
-            .filter_map(|b| Some(b.command(b.base_preview(cx)?.as_ref().ok()?, cx)))
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let checks = (!checks.is_empty()).then(|| format!("Required checks · {checks}"));
-        let steps = planning
-            .then_some((Lucide::Map, self.template.planner.name.as_str()))
-            .into_iter()
-            .chain(planning.then_some((Lucide::UserRoundCheck, "Your approval")))
-            .chain(std::iter::once((
-                Lucide::GitBranch,
-                self.template.development.name.as_str(),
-            )))
-            .chain(checks.as_deref().map(|label| (Lucide::Terminal, label)))
-            .chain(
-                self.template
-                    .reviews
-                    .iter()
-                    .map(|s| (Lucide::ShieldCheck, s.name.as_str())),
-            )
-            .chain(std::iter::once((Lucide::Check, "Acceptance")));
-        for (i, (icon, name)) in steps.enumerate() {
-            if i > 0 {
-                route = route.child(
-                    Icon::new(Lucide::ChevronRight)
-                        .size_3()
-                        .text_color(cx.theme().muted_foreground),
-                );
-            }
-            route = route.child(stage_chip(icon, name.to_owned(), cx));
-        }
-        route
     }
 }
 
@@ -311,25 +220,6 @@ fn required_heading(title: &'static str, cx: &App) -> Div {
         .gap_0p5()
         .child(heading(title))
         .child(required_mark(cx))
-}
-
-fn stage_chip(icon: Lucide, name: String, cx: &App) -> Div {
-    h_flex()
-        .flex_none()
-        .gap_1p5()
-        .px_2()
-        .py_0p5()
-        .rounded_full()
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().background)
-        .text_xs()
-        .child(
-            Icon::new(icon)
-                .size_3()
-                .text_color(cx.theme().muted_foreground),
-        )
-        .child(name)
 }
 
 /// A section title with one line on why it matters, and an optional action on the right.
@@ -464,7 +354,7 @@ impl Render for LaunchForm {
                     .text_color(cx.theme().muted_foreground)
                     .child("Describe the task and choose where to run it."),
             );
-        let mut workflow = card(cx)
+        let workflow = card(cx)
             .w_full()
             .gap_3()
             .child(
@@ -474,63 +364,9 @@ impl Render for LaunchForm {
                     .child(heading("Workflow"))
                     .child(template),
             )
-            .child(self.route(cx));
-        if let Some((saved, latest)) = self.previous_recipe.clone() {
-            workflow = workflow.child(
-                h_flex()
-                    .gap_2()
-                    .child(subtle(
-                        if self.frozen {
-                            "Using the saved recipe. The library version has changed."
-                        } else {
-                            "Using the updated library recipe."
-                        },
-                        cx,
-                    ))
-                    .child(button(
-                        "choose-recipe-version",
-                        if self.frozen {
-                            "Use library version"
-                        } else {
-                            "Use saved version"
-                        },
-                        ButtonLook::Outline,
-                        window,
-                        cx,
-                        move |v, w, cx| {
-                            let direct = v.direct;
-                            v.frozen = !v.frozen;
-                            v.apply_template(
-                                if v.frozen {
-                                    saved.clone()
-                                } else {
-                                    latest.clone()
-                                },
-                                w,
-                                cx,
-                            );
-                            v.direct = direct && v.can_start_direct();
-                        },
-                    )),
-            );
-        }
-        if self.can_start_direct() {
-            workflow = workflow.child(button(
-                "quick-start-mode",
-                if direct {
-                    "Use planning and approval"
-                } else {
-                    "Quick start with my criteria"
-                },
-                ButtonLook::Outline,
-                window,
-                cx,
-                |v, _, cx| {
-                    v.direct = !v.direct;
-                    cx.notify();
-                },
-            ));
-        }
+            .child(self.route(cx))
+            .children(self.recipe_version(window, cx))
+            .children(self.quick_start_toggle(direct, window, cx));
         let task = v_flex()
             .gap_2()
             .child(section(
@@ -572,7 +408,7 @@ impl Render for LaunchForm {
                 window,
                 cx,
                 |v, w, cx| {
-                    v.keep_draft = false;
+                    v.abandon();
                     let _ = v.parent.update(cx, |p, cx| {
                         p.discard_draft(cx);
                         p.home(w, cx);
@@ -609,42 +445,7 @@ impl Render for LaunchForm {
 
 #[cfg(test)]
 mod tests {
-    use super::{Blocker, LaneState, Path, PathBuf, Template, blocker, default_projects};
-
-    #[test]
-    fn a_missing_task_is_named_before_anything_else() {
-        assert_eq!(blocker(false, &[]), Some(Blocker::Task));
-        assert_eq!(blocker(false, &[LaneState::Failed]), Some(Blocker::Task));
-    }
-
-    #[test]
-    fn a_run_needs_at_least_one_repository() {
-        assert_eq!(blocker(true, &[]), Some(Blocker::Repository));
-    }
-
-    #[test]
-    fn a_fix_the_user_must_make_outranks_a_read_in_progress() {
-        let lanes = [LaneState::Reading, LaneState::MissingCommand];
-        assert_eq!(blocker(true, &lanes), Some(Blocker::MissingCommand));
-        let lanes = [LaneState::EditingRef, LaneState::Failed];
-        assert_eq!(blocker(true, &lanes), Some(Blocker::Failed));
-        assert_eq!(
-            blocker(true, &[LaneState::Ready, LaneState::Reading]),
-            Some(Blocker::Reading)
-        );
-    }
-
-    #[test]
-    fn a_lane_without_a_branch_blocks_planning_before_slower_reads() {
-        let lanes = [LaneState::Reading, LaneState::NoBranch];
-        assert_eq!(blocker(true, &lanes), Some(Blocker::Branch));
-        assert_eq!(blocker(false, &lanes), Some(Blocker::Task));
-    }
-
-    #[test]
-    fn ready_lanes_and_a_task_unblock_planning() {
-        assert_eq!(blocker(true, &[LaneState::Ready, LaneState::Ready]), None);
-    }
+    use super::{Path, PathBuf, Template, default_projects};
 
     #[test]
     fn matching_lanes_keep_their_repository_when_the_owner_matches_a_later_lane() {
