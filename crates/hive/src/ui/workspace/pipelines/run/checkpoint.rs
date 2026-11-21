@@ -25,6 +25,7 @@ impl RunView {
                     cx,
                     |v, _, cx| v.approve(cx),
                 ));
+                let contract = run.shared_contract().to_owned();
                 let plan = run
                     .lanes()
                     .iter()
@@ -45,6 +46,7 @@ impl RunView {
                         v.tab = RunTab::Timeline;
                         v.selected_stage = Some(Stage::Approval);
                         if v.editing_plan {
+                            v.contract = area(&contract, "Shared contract", w, cx);
                             v.plan = plan
                                 .iter()
                                 .map(|(task, criteria)| {
@@ -67,7 +69,16 @@ impl RunView {
                     Some(Err(error)) if !accepting => Some(error.clone()),
                     _ => None,
                 };
-                if let Some(error) = unreadable {
+                if run.review_revision().is_none() && !accepting {
+                    row = row.child(button(
+                        "recheck-current-files",
+                        "Recheck current files",
+                        ButtonLook::Outline,
+                        w,
+                        cx,
+                        |v, _, cx| v.edit(cx, |r| Ok(r.recheck()?)),
+                    ));
+                } else if let Some(error) = unreadable {
                     row = row
                         .child(
                             div()
@@ -86,6 +97,11 @@ impl RunView {
                                 cx.notify();
                             },
                         ));
+                } else if reviewed
+                    && !accepting
+                    && let Err(reason) = run.can_accept()
+                {
+                    row = row.child(subtle(reason.to_string(), cx));
                 } else if reviewed && !accepting {
                     row = row.child(button(
                         "accept-pipeline",
@@ -121,6 +137,74 @@ impl RunView {
                     |v, _, cx| {
                         v.tab = RunTab::Changes;
                         cx.notify();
+                    },
+                ));
+            }
+            Phase::Regression(step) if step.needs_user() => {
+                use hive_core::pipeline::RegressionStep;
+                let regression = run.regression()?;
+                row = row.child(subtle(regression.description(), cx));
+                if step == RegressionStep::Choose {
+                    for (ix, (_, line)) in run.criteria().enumerate() {
+                        let line = line.to_owned();
+                        row = row.child(button(
+                            ("regression-criterion", ix),
+                            line.clone(),
+                            ButtonLook::Outline,
+                            w,
+                            cx,
+                            move |v, _, cx| v.edit(cx, |r| Ok(r.choose_regression(&line)?)),
+                        ));
+                    }
+                } else {
+                    if let Some(blob) = regression.changed_blob() {
+                        let blob = blob.to_owned();
+                        row = row.child(button(
+                            "approve-test",
+                            "Approve revised test and recheck base",
+                            ButtonLook::Outline,
+                            w,
+                            cx,
+                            move |v, _, cx| v.edit(cx, |r| Ok(r.retry_regression(Some(&blob))?)),
+                        ));
+                    }
+                    row = row
+                        .child(button(
+                            "retry-test",
+                            "Retry check",
+                            ButtonLook::Outline,
+                            w,
+                            cx,
+                            |v, _, cx| v.edit(cx, |r| Ok(r.retry_regression(None)?)),
+                        ))
+                        .child(button(
+                            "repair-test",
+                            if regression.can_repair() {
+                                "Return to developer"
+                            } else {
+                                "Revise reproducer"
+                            },
+                            ButtonLook::Outline,
+                            w,
+                            cx,
+                            |v, _, cx| v.edit(cx, |r| Ok(r.repair_regression()?)),
+                        ));
+                }
+                row = row.child(button(
+                    "skip-regression",
+                    "Continue without this test",
+                    ButtonLook::Ghost,
+                    w,
+                    cx,
+                    |_, w, cx| {
+                        Self::ask_reason(
+                            "Continue without the independent test",
+                            "Its criterion will need other evidence at acceptance.".into(),
+                            "Why can this run continue without it?",
+                            w,
+                            cx,
+                            |run, reason| Ok(run.skip_regression(&reason)?),
+                        );
                     },
                 ));
             }
@@ -189,45 +273,10 @@ impl RunView {
         if run.phase() == Phase::Acceptance {
             let mut rows = v_flex().gap_1();
             let mut total = 0;
-            for (ix, lane) in run
-                .lanes()
-                .iter()
-                .enumerate()
-                .filter(|(_, l)| !l.assignment.is_empty())
-            {
-                for line in lane
-                    .criteria
-                    .lines()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                {
-                    total += 1;
-                    if total > CRITERIA_PREVIEW && !self.criteria_expanded {
-                        continue;
-                    }
-                    let proof = (0..run.template().reviews.len())
-                        .filter_map(|i| run.stage_reports(Stage::Review(i)).next_back())
-                        .find_map(|(_, report)| {
-                            let hive_core::pipeline::Report::Review { evidence, .. } = report
-                            else {
-                                return None;
-                            };
-                            evidence
-                                .iter()
-                                .find(|e| e.lane == ix && e.confirms(line))
-                                .map(|e| e.evidence.as_str())
-                        });
-                    rows = rows.child(subtle(
-                        format!(
-                            "{} · {line} — {}",
-                            lane.name,
-                            proof.map_or_else(
-                                || "No evidence reported".to_owned(),
-                                |s| format!("Confirmed · {s}")
-                            )
-                        ),
-                        cx,
-                    ));
+            for (ix, line) in run.criteria() {
+                total += 1;
+                if total <= CRITERIA_PREVIEW || self.criteria_expanded {
+                    rows = rows.child(self.criterion_row(run, ix, line, total, w, cx));
                 }
             }
             let mut title = h_flex().gap_2().child(heading("Acceptance criteria"));

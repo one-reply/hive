@@ -20,6 +20,7 @@ impl LaunchForm {
             .iter()
             .find(|t| t.name == run.template().name && *t != run.template())
             .map(|latest| (run.template().clone(), latest.clone()));
+        self.regression = run.regression().is_some();
         self.direct = run.direct_start();
         if self.direct
             && let Some(lane) = run.lanes().first()

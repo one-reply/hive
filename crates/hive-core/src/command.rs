@@ -239,13 +239,29 @@ pub(crate) fn run_with_log_tail(
     timeout: Duration,
     limit: usize,
 ) -> Result<Output, Error> {
+    run_with_observed_log_tail(command, cancellation, timeout, limit, |_| {})
+}
+
+/// Like [`run_with_log_tail`], handing every stdout chunk to `observe` before the tail drops
+/// it: a report at the start of a long log is otherwise gone by the time the command exits.
+#[cfg(feature = "desktop")]
+pub(crate) fn run_with_observed_log_tail(
+    command: Command,
+    cancellation: &Cancellation,
+    timeout: Duration,
+    limit: usize,
+    mut observe: impl FnMut(&[u8]),
+) -> Result<Output, Error> {
     supervise(
         command,
         &[],
         cancellation,
         timeout,
         Capture::LogTail(limit),
-        |output, bytes| Capture::LogTail(limit).append(output, bytes),
+        |output, bytes| {
+            observe(bytes);
+            Capture::LogTail(limit).append(output, bytes)
+        },
         |_, _| {},
     )
 }
@@ -272,6 +288,66 @@ pub(crate) fn stream_stdout(
         },
         |_, _| {},
     )
+}
+
+/// Leaves a long-lived child nothing of Hive's but its standard streams.
+///
+/// macOS cannot create a pipe or a pty that is close-on-exec from the start, so a child
+/// spawned at the wrong instant inherits a descriptor another thread was still marking. A
+/// short command only delays that pipe's end of file. A pane or a language server holds it
+/// for as long as it lives, and whoever reads the pipe waits out its whole deadline.
+///
+/// Call it last: a `pre_exec` closure added afterwards could open a descriptor that stays.
+#[cfg(feature = "desktop")]
+pub(crate) fn keep_only_standard_streams(command: &mut Command) {
+    let descriptors = descriptor_limit();
+    // SAFETY: between fork and exec the closure only calls `fcntl`, which is
+    // async-signal-safe, and marking a descriptor in the child leaves the parent's untouched.
+    unsafe {
+        command.pre_exec(move || {
+            for descriptor in 3..descriptors {
+                libc::fcntl(descriptor, libc::F_SETFD, libc::FD_CLOEXEC);
+            }
+            Ok(())
+        });
+    }
+}
+
+/// macOS allows a process 61 440 descriptors by default (`kern.maxfilesperproc`).
+#[cfg(feature = "desktop")]
+const DESCRIPTOR_SCAN: libc::rlim_t = 65_536;
+
+/// One past the highest descriptor number this process can hold. Read before the fork:
+/// only the loop over it is async-signal-safe.
+#[cfg(feature = "desktop")]
+fn descriptor_limit() -> libc::c_int {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a valid, writable `rlimit`.
+    let known = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0;
+    // ponytail: an unlimited or unreadable limit is scanned up to this bound; list `/dev/fd`
+    // in the child if a profile ever shows the scan.
+    let bound = if known {
+        limit.rlim_cur.min(DESCRIPTOR_SCAN)
+    } else {
+        DESCRIPTOR_SCAN
+    };
+    libc::c_int::try_from(bound).unwrap_or(libc::c_int::MAX)
+}
+
+/// A descriptor left inheritable, the way another thread's pipe is on macOS until it is
+/// marked, parked on a number no shell opens for itself.
+#[cfg(all(test, feature = "desktop"))]
+pub(crate) fn inheritable_descriptor() -> std::os::fd::OwnedFd {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let file = std::fs::File::open("/dev/null").expect("/dev/null opens");
+    // SAFETY: duplicates a descriptor this function owns; `F_DUPFD` leaves the copy inheritable.
+    let parked = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 100) };
+    assert!(parked >= 100, "{}", io::Error::last_os_error());
+    // SAFETY: `fcntl` just returned this descriptor and nothing else owns it.
+    unsafe { OwnedFd::from_raw_fd(parked) }
 }
 
 fn supervise(

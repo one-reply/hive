@@ -1,0 +1,19 @@
+{
+  "success": false,
+  "numFailedTests": 1,
+  "numFailedTestSuites": 1,
+  "testResults": [
+    {
+      "name": "/fixture/returns.test.js",
+      "assertionResults": [
+        {
+          "fullName": "returns_two",
+          "status": "failed",
+          "failureMessages": [
+            "Error: returns two expected"
+          ]
+        }
+      ]
+    }
+  ]
+}

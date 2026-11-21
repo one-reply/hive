@@ -10,6 +10,7 @@ use gpui_kit::component::{
 use hive_core::agent::AgentStatus;
 use hive_core::pipeline::{Phase, Ticket};
 
+mod acceptance;
 mod changes;
 mod checkpoint;
 mod comments;
@@ -23,6 +24,7 @@ mod header;
 pub(super) use header::task_title;
 mod interaction;
 use interaction::{actionable, toggle};
+mod reason;
 mod sessions;
 use sessions::LiveSession;
 mod stage;
@@ -72,6 +74,7 @@ pub(super) struct RunView {
     id: u64,
     run: Option<Rc<Run>>,
     note: Entity<TextareaState>,
+    contract: Entity<TextareaState>,
     plan: Vec<(Entity<TextareaState>, Entity<TextareaState>)>,
     session: Option<(Ticket, Entity<TerminalView>)>,
     /// Keeps keyboard focus inside the run when its live session closes.
@@ -84,6 +87,7 @@ pub(super) struct RunView {
     phase: Option<Phase>,
     selected_stage: Option<Stage>,
     expanded_checks: HashSet<usize>,
+    selected_test: Option<(usize, String)>,
     expanded_reviews: HashSet<usize>,
     expanded_reports: HashSet<u64>,
     expanded_events: HashSet<usize>,
@@ -144,6 +148,7 @@ impl RunView {
             id,
             run,
             note: area("", "Feedback or decision rationale", window, cx),
+            contract: area("", "Shared contract", window, cx),
             plan: vec![],
             session: None,
             focus: cx.focus_handle(),
@@ -155,6 +160,7 @@ impl RunView {
             phase: None,
             selected_stage: None,
             expanded_checks: HashSet::new(),
+            selected_test: None,
             expanded_reviews: HashSet::new(),
             expanded_reports: HashSet::new(),
             expanded_events: HashSet::new(),
@@ -190,7 +196,10 @@ impl RunView {
                 )
             })
             .collect::<Vec<_>>();
-        self.edit(cx, |run| Ok(run.approve_with(assignments)?));
+        let contract = self.contract.read(cx).value().to_string();
+        self.edit(cx, |run| {
+            Ok(run.approve_with_contract(assignments, &contract)?)
+        });
     }
     pub(super) fn terminal(&mut self, ticket: Ticket, w: &mut Window, cx: &mut Context<Self>) {
         if ticket.run != self.id {
@@ -269,6 +278,7 @@ impl Render for RunView {
         };
         if self.phase != Some(run.phase()) {
             self.phase = Some(run.phase());
+            self.selected_test = None;
             self.since_feedback = !run.feedback_trees().is_empty()
                 && matches!(run.phase(), Phase::Acceptance | Phase::Accepted);
             self.editing_plan = false;

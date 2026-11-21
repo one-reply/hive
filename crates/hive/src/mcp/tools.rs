@@ -91,7 +91,7 @@ struct PipelineReport {
     /// The exact ticket object from Hive, with run, attempt and optional lane.
     #[schemars(with = "serde_json::Map<String,Value>")]
     ticket: hive_core::pipeline::Ticket,
-    /// The typed plan, developed, or review result matching the example in your stage instructions.
+    /// The typed plan, regression, developed, or review result matching the example in your stage instructions.
     #[schemars(with = "serde_json::Map<String,Value>")]
     result: hive_core::pipeline::Report,
 }

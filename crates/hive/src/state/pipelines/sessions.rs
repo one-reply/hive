@@ -132,7 +132,9 @@ impl Pipelines {
         let run = self.run(id, cx)?.clone();
         let role = match run.phase() {
             Phase::Planning => PipelineRole::Plan,
-            Phase::Development => PipelineRole::Develop,
+            Phase::Regression(hive_core::pipeline::RegressionStep::Author) | Phase::Development => {
+                PipelineRole::Develop
+            }
             Phase::Review(_) => PipelineRole::Review,
             _ => return Ok(()),
         };

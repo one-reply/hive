@@ -6,6 +6,7 @@ impl LaunchForm {
     pub(super) fn route(&self, cx: &App) -> Div {
         let mut route = h_flex().flex_wrap().items_center().gap_1p5();
         let planning = !(self.direct && self.can_start_direct());
+        let regression = self.regression && self.can_start_direct();
         let checks = self
             .bindings
             .iter()
@@ -18,10 +19,12 @@ impl LaunchForm {
             .then_some((Lucide::Map, self.template.planner.name.as_str()))
             .into_iter()
             .chain(planning.then_some((Lucide::UserRoundCheck, "Your approval")))
+            .chain(regression.then_some((Lucide::Terminal, "Reproduce on base")))
             .chain(std::iter::once((
                 Lucide::GitBranch,
                 self.template.development.name.as_str(),
             )))
+            .chain(regression.then_some((Lucide::Terminal, "Verify fix")))
             .chain(checks.as_deref().map(|label| (Lucide::Terminal, label)))
             .chain(
                 self.template

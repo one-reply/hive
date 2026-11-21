@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+mod acceptance;
+pub use acceptance::{CriterionDecision, EvidenceSource};
 mod delivery;
 pub mod draft;
 mod feedback;
@@ -13,10 +15,13 @@ mod presets;
 pub(crate) mod prompts;
 mod recipe;
 mod record;
+mod regression;
+pub use regression::{Regression, RegressionStep, RegressionTest, TestRunner};
 mod report;
 mod run;
 mod stage;
 mod stock;
+mod test_output;
 mod timing;
 mod transitions;
 pub mod workspace;
@@ -64,8 +69,8 @@ impl From<Error> for String {
 }
 
 /// Version of the starter catalog: 1 added the extra starter recipes, 2 rewrote their stock
-/// instructions.
-pub(crate) const CATALOG_VERSION: u64 = 2;
+/// instructions, 3 added the shared contract to Cross-repository.
+pub(crate) const CATALOG_VERSION: u64 = 3;
 
 /// Shared templates and independently resumable task runs on this installation.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,6 +222,8 @@ pub struct LanePreset {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Template {
+    /// Require one shared, human-approved interface contract for all stages.
+    pub shared_contract: bool,
     /// Library display name.
     pub name: String,
     /// Initial read-only planner.

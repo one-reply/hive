@@ -5,7 +5,8 @@ use hive_core::pipeline::CommandResult;
 
 enum Work {
     Prepared(Vec<usize>, PathBuf),
-    Checked(Vec<CommandResult>),
+    Checked(Vec<CommandResult>, Option<String>),
+    Regression(hive_core::pipeline::workspace::RegressionResult),
     Dispatch,
     ReviewRevision((String, Vec<String>)),
 }
@@ -40,7 +41,7 @@ impl Pipelines {
                     return;
                 }
                 let Ok(run) = p.run(id, cx) else { return };
-                if run.pending().is_empty() && !matches!(run.phase(), Phase::Commands(_)) {
+                if run.pending().is_empty() && !run.has_command_work() {
                     return;
                 }
                 if !p.registered(run.owner(), cx)
@@ -122,8 +123,18 @@ impl Pipelines {
                     .map(Work::ReviewRevision)
                     .map_err(|e| e.to_string());
             }
+            if matches!(run.phase(), Phase::Regression(_)) && run.has_command_work() {
+                return workspace::run_regression(&run, &cancel)
+                    .map(Work::Regression)
+                    .map_err(|e| e.to_string());
+            }
             if matches!(run.phase(), Phase::Commands(_)) {
-                return Ok(Work::Checked(workspace::checks(run.lanes(), &cancel)));
+                let before =
+                    workspace::revision(id, run.lanes(), &cancel).map_err(|e| e.to_string())?;
+                let checks = workspace::checks(run.lanes(), &cancel);
+                let after =
+                    workspace::revision(id, run.lanes(), &cancel).map_err(|e| e.to_string())?;
+                return Ok(Work::Checked(checks, (before == after).then_some(after)));
             }
             Ok(Work::Dispatch)
         });
@@ -157,13 +168,20 @@ impl Pipelines {
                     }
                     _ if !current => return,
                     Err(error) => Err(error),
-                    Ok(Work::Checked(results)) => {
-                        let applied = p.edit(id, cx, |run| Ok(run.command_results(results)?));
+                    Ok(Work::Regression(result)) => {
+                        let applied = p.edit(id, cx, |run| Ok(run.record_regression(result)?));
+                        p.announce_gate(id, phase, cx);
+                        applied
+                    }
+                    Ok(Work::Checked(results, revision)) => {
+                        let applied = p.edit(id, cx, |run| Ok(run.checked_at(results, revision)?));
                         p.announce_gate(id, phase, cx);
                         applied
                     }
                     Ok(Work::ReviewRevision((hash, trees))) => {
-                        p.edit(id, cx, |r| Ok(r.record_review_trees(hash, trees)?))
+                        let applied = p.edit(id, cx, |r| Ok(r.record_review_trees(hash, trees)?));
+                        p.announce_gate(id, phase, cx);
+                        applied
                     }
                     Ok(Work::Dispatch) => p.dispatch(id, cx),
                 };

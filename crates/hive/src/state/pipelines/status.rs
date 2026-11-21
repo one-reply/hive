@@ -24,6 +24,13 @@ impl RunStatus {
             _ if failed => Self::Failed,
             _ if agent_waits => Self::NeedsYou,
             Phase::ApprovePlan | Phase::Decision(_) | Phase::Acceptance => Self::NeedsYou,
+            Phase::Regression(step) => {
+                if step.needs_user() {
+                    Self::NeedsYou
+                } else {
+                    Self::Running
+                }
+            }
             Phase::Planning | Phase::Development | Phase::Review(_) | Phase::Commands(_) => {
                 Self::Running
             }
@@ -47,11 +54,13 @@ pub(crate) enum Gate {
     Plan,
     Decision,
     Acceptance,
+    Regression,
 }
 
 impl Gate {
     pub(crate) fn at(phase: Phase) -> Option<Self> {
         match phase {
+            Phase::Regression(step) if step.needs_user() => Some(Self::Regression),
             Phase::ApprovePlan => Some(Self::Plan),
             Phase::Decision(_) => Some(Self::Decision),
             Phase::Acceptance => Some(Self::Acceptance),
@@ -62,6 +71,7 @@ impl Gate {
     /// What the user is asked to do, as the attention list words it.
     pub(crate) fn action(self) -> &'static str {
         match self {
+            Self::Regression => "Review regression test",
             Self::Plan => "Approve plan",
             Self::Decision => "Review findings",
             Self::Acceptance => "Accept changes",
@@ -70,6 +80,7 @@ impl Gate {
 
     fn headline(self) -> &'static str {
         match self {
+            Self::Regression => "Regression test needs your decision",
             Self::Plan => "Plan ready for approval",
             Self::Decision => "Review needs your decision",
             Self::Acceptance => "Changes ready to accept",

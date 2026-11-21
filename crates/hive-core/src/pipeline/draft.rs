@@ -19,6 +19,9 @@ pub struct LaunchDraft {
     pub frozen: bool,
     /// Task entered by the user.
     pub task: String,
+    /// Request an independently authored regression test for a single lane.
+    #[serde(default)]
+    pub regression: bool,
     /// Bypass planning with explicit criteria.
     #[serde(default)]
     pub direct: bool,

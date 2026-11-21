@@ -55,6 +55,7 @@ impl Run {
             self.lanes[lane].name
         );
         self.history.push(self.feedback.clone());
+        self.review_brief.clone_from(&self.feedback);
         self.briefs = vec![(lane, self.feedback.clone())];
         self.develop([lane]);
         self.continue_conversations();
@@ -109,6 +110,7 @@ impl Run {
                 );
             }
         }
+        self.review_brief.clone_from(&self.feedback);
         self.briefs.clear();
         let active: Vec<_> = self
             .lanes

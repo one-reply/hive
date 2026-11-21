@@ -93,6 +93,12 @@ impl Run {
         if !evidence.is_empty() {
             let _ = write!(body, "\n## Verification\n\n{}\n", evidence.join("\n"));
         }
+        if self.phase == super::Phase::Accepted {
+            body.push_str("\n## Acceptance criteria\n\n");
+            for (index, line) in self.criteria().filter(|(index, _)| included(*index)) {
+                let _ = writeln!(body, "- {line} — {}", self.criterion_source(index, line));
+            }
+        }
         let notes: Vec<_> = self
             .notes
             .iter()
@@ -135,7 +141,13 @@ mod tests {
             task: "Add the endpoint".into(),
             criteria: "Tests pass".into(),
         }];
-        report(&mut run, Report::Plan { assignments });
+        report(
+            &mut run,
+            Report::Plan {
+                assignments,
+                contract: String::new(),
+            },
+        );
         run.approve().unwrap();
         // Nothing is developed yet; the request still names the task.
         let (title, body) = run.pull_request_text(0).unwrap();
@@ -153,6 +165,7 @@ mod tests {
             success: true,
             exit_code: Some(0),
             output: String::new(),
+            passed: vec![],
         }])
         .unwrap();
         let note = Finding {
@@ -165,8 +178,16 @@ mod tests {
             summary: "Criteria hold".into(),
             findings,
         };
+        run.record_review_revision("verified".into()).unwrap();
         report(&mut run, review(vec![note]));
         report(&mut run, review(vec![]));
+        run.decide_criterion(
+            0,
+            "Tests pass",
+            "verified",
+            crate::pipeline::CriterionDecision::Manual("Exercised login".into()),
+        )
+        .unwrap();
         run.accept().unwrap();
         let (_, body) = run.pull_request_text(0).unwrap();
         let sections: Vec<_> = body.split("\n## ").skip(1).collect();
@@ -175,6 +196,7 @@ mod tests {
             [
                 "Changes\n\nAdded POST /login and its tests.\n",
                 "Verification\n\n- `cargo test`: passed\n- QA: Criteria hold\n- Security & performance: Criteria hold\n",
+                "Acceptance criteria\n\n- Tests pass — Manually verified · Exercised login\n",
                 "Open reviewer notes\n\n- Rename the handler\n",
             ]
         );

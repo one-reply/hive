@@ -99,19 +99,27 @@ project while agents run.
    another repository. After editing the form, choose **Resume draft** in the
    project’s pipeline library to pick up where you left off. **Run again** lets
    you choose between the original recipe and its updated template.
-   If one repository lane receives every review, **Quick start with my criteria**
-   goes straight to development. The preview shows the checks and approval steps
-   for the selected mode.
+   For a single-lane task, **Quick start with my criteria** skips planning. Turn on
+   **Independent regression test** to have a separate agent write one Cargo, Jest,
+   or Vitest test. Hive checks that it fails for the expected reason on the base
+   commit, then runs the same test against the fix. Changing the test requires
+   your approval and repeats both checks. If the test cannot be reproduced in this
+   checkout, **Continue without this test** records your reason and moves on.
 3. Review the planner’s assignments and acceptance criteria, then choose **Approve
-   plan**. Different repositories can develop in parallel. Click **Open live
+   plan**. In **Cross-repository**, edit the shared API contract above the lane
+   assignments. API, Web, and QA receive that approved text. Different repositories
+   can develop in parallel. Click **Open live
    session** to see a running CLI and respond to questions or permission requests.
-4. QA and subsequent reviewers inspect the work together. A finding returns to
+4. QA starts with the approved criteria, worktrees and check results. After a repair,
+   QA also receives the earlier finding or command failure. A finding returns to
    its development lane, followed by a fresh QA pass. After the configured repair
    limit, **Needs attention** takes you to the decision. Required commands must pass.
 5. Open **Timeline** to see stage durations, parallel lanes and decision points.
    **Changes** groups files by repository and loads the selected diff. **Checks**
    shows test outcomes, and **Activity** retains the handoff history. Accept the
-   changes after checking the evidence for each approved criterion. Send queued
+   changes when each criterion has a named passing test, a recorded manual observation,
+   or an explicitly accepted exception with a reason. **Return to QA** asks for
+   a fresh review of one criterion. The PR includes the evidence by criterion. Send queued
    line comments to one lane, include them in a task-wide **Request changes**,
    or remove them before accepting. On the next review, **Since your feedback**
    shows the edits in that round.
