@@ -13,6 +13,8 @@ pub enum Phase {
     Planning,
     /// The proposed plan is available for human editing and approval.
     ApprovePlan,
+    /// Independently authored test and its two executions.
+    Regression(RegressionStep),
     /// Independent repositories may develop simultaneously.
     Development,
     /// One read-only reviewer sees every repository.
@@ -75,6 +77,10 @@ pub struct Run {
     pub(super) template: Template,
     /// Approved repository bindings.
     pub(super) lanes: Vec<Lane>,
+    #[serde(default)]
+    pub(super) contract: String,
+    #[serde(default)]
+    pub(super) regression: Option<Regression>,
     /// Current gate.
     pub(super) phase: Phase,
     /// Chronological handoffs, decisions and test outcomes.
@@ -103,6 +109,16 @@ pub struct Run {
     /// Unsent line notes with their receiving lane and reviewed tree.
     #[serde(default, deserialize_with = "crate::state::lenient::elements")]
     pub(super) comments: Vec<(usize, String, crate::git::review_notes::Note)>,
+    #[serde(default)]
+    pub(super) decisions: Vec<acceptance::RecordedDecision>,
+    #[serde(default)]
+    pub(super) qa_focus: Option<(usize, String)>,
+    #[serde(default)]
+    pub(super) review_brief: String,
+    #[serde(default)]
+    pub(super) check_revision: Option<String>,
+    #[serde(default)]
+    pub(super) first_review_attempt: u64,
     /// Known CLI session IDs, linked to the exact attempts that created them.
     #[serde(default)]
     pub(super) sessions: Vec<(Ticket, ResumeSession)>,
@@ -168,6 +184,8 @@ impl Run {
             template,
             lanes,
             phase: Phase::Planning,
+            contract: String::new(),
+            regression: None,
             history: vec![],
             timings: vec![],
             reports: vec![],
@@ -180,6 +198,11 @@ impl Run {
             review_trees: vec![],
             feedback_trees: vec![],
             comments: vec![],
+            decisions: vec![],
+            qa_focus: None,
+            review_brief: String::new(),
+            check_revision: None,
+            first_review_attempt: 0,
             outstanding: vec![],
             last_attempt: 0,
             rounds: vec![0; reviews],
@@ -231,6 +254,7 @@ impl Run {
         }
         match self.phase {
             Phase::Planning => Some(&self.template.planner),
+            Phase::Regression(RegressionStep::Author) => Some(&self.template.development),
             Phase::Development => Some(&self.template.development),
             Phase::Review(ix) => self.template.reviews.get(ix),
             _ => None,
@@ -240,6 +264,9 @@ impl Run {
     /// Effective CLI profile, including per-lane development overrides.
     pub fn profile(&self, ticket: &Ticket) -> Option<&Profile> {
         let step = self.step(ticket)?;
+        if self.phase == Phase::Regression(RegressionStep::Author) {
+            return self.lanes.first().map(|l| &l.profile);
+        }
         Some(
             ticket
                 .lane
@@ -266,7 +293,18 @@ impl Run {
     /// Prompt for an invocation, including the current plan and cross-repository context.
     pub fn prompt(&self, ticket: &Ticket) -> Result<String, Error> {
         let step = self.step(ticket).ok_or(Error::InactiveAttempt)?;
+        if self.phase == Phase::Regression(RegressionStep::Author) {
+            return self.regression_prompt();
+        }
         let mut prompt = format!("{}\n\nUser task:\n{}\n", step.instruction, self.task);
+        if self.template.shared_contract {
+            if self.phase == Phase::Planning {
+                prompt.push_str("\nSupply one top-level contract string in the plan report for all lanes: interface, errors, compatibility, rollout where applicable. Reference it from each assignment.\n");
+            }
+            if !self.contract.is_empty() {
+                let _ = writeln!(prompt, "\nShared contract:\n{}", self.contract);
+            }
+        }
         let reviewing = matches!(self.phase, Phase::Review(_));
         for (i, lane) in self.lanes.iter().enumerate() {
             // A reviewer may only file findings against lanes that have work to review.
@@ -288,19 +326,25 @@ impl Run {
             );
         }
         let handoff = self.handoff(ticket);
-        if !handoff.is_empty() {
+        if !reviewing && !handoff.is_empty() {
             let _ = writeln!(prompt, "\nHandoff:\n{handoff}");
+        }
+        if self.phase == Phase::Development {
+            self.write_developer_constraints(&mut prompt);
         }
         if let Phase::Review(ix) = self.phase {
             self.write_review_context(ix, &mut prompt);
         }
         let contract = match self.phase {
+            Phase::Planning if self.template.shared_contract => {
+                r#"Report {"kind":"plan","contract":"the proposed API, compatibility and rollout","assignments":[{"lane":0,"task":"...","criteria":"..."}]}. Include each required lane and put each testable criterion on its own line."#
+            }
             Phase::Planning => {
                 r#"Plan only. Ask the user if necessary. Report {"kind":"plan","assignments":[{"lane":0,"task":"...","criteria":"..."}]} with one entry per required lane. Put each separately testable acceptance criterion on its own line."#
             }
             Phase::Development => super::handoff::DEVELOPED_CONTRACT,
             Phase::Review(_) => {
-                r#"Inspect the participating worktrees together. A lane's changes are everything after its base commit: `git diff <base commit>` shows committed and uncommitted edits together, `git status` lists new files. Report {"kind":"review","summary":"evidence","evidence":[{"lane":0,"criterion":"exact approved line","evidence":"specific test or observation"}],"findings":[{"lane":0,"severity":"major","description":"issue, reproduction and expected behavior"}]}. Severity is "blocker" (breaks an acceptance criterion, the build or the tests, or loses data), "major" (a defect to fix before merging) or "minor" (an improvement that should not hold the change back). Blocker and major findings return the work to development; minor ones are shown to the user. List only criteria you actually confirmed. Unverified criteria have no evidence entry. Use an empty findings list to pass."#
+                r#"Inspect the participating worktrees together. A lane's changes are everything after its base commit: `git diff <base commit>` shows committed and uncommitted edits together, `git status` lists new files. Report {"kind":"review","summary":"evidence","evidence":[{"lane":0,"criterion":"exact approved line","evidence":"specific test or observation","test":"optional exact passing test name from Hive output"}],"findings":[{"lane":0,"severity":"major","description":"issue, reproduction and expected behavior"}]}. Severity is "blocker" (breaks an acceptance criterion, the build or the tests, or loses data), "major" (a defect to fix before merging) or "minor" (an improvement that should not hold the change back). Blocker and major findings return the work to development; minor ones are shown to the user. List only criteria you actually confirmed. Unverified criteria have no evidence entry. Use an empty findings list to pass."#
             }
             _ => return Err(Error::WrongStage("This gate has no agent")),
         };
@@ -380,6 +424,14 @@ impl Run {
         }
         let aggregate = self.outstanding.len() == 1 && self.outstanding[0].lane.is_none();
         match self.phase {
+            Phase::Regression(step) => {
+                self.regression_valid(step)
+                    && if step == RegressionStep::Author {
+                        aggregate
+                    } else {
+                        self.outstanding.is_empty()
+                    }
+            }
             Phase::Planning => aggregate,
             Phase::Review(ix) => ix < self.rounds.len() && aggregate,
             Phase::Development => {

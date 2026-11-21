@@ -84,6 +84,16 @@ impl Run {
         {
             return Err(Error::InvalidInput("Invalid review trees"));
         }
+        if self.phase == Phase::Review(0)
+            && let Some(r) = self.regression.as_mut()
+            && r.candidate_revision.as_ref() != Some(&revision)
+        {
+            self.outstanding.clear();
+            r.problem = "The candidate changed between the regression check and QA. Retry the candidate test.".into();
+            r.blocked_at = Some(super::RegressionStep::Candidate);
+            self.phase = Phase::Regression(super::RegressionStep::Decision);
+            return Ok(());
+        }
         self.record_review_revision(revision)?;
         self.review_trees = trees;
         Ok(())
@@ -167,12 +177,39 @@ impl Run {
         Ok(())
     }
 
+    /// Proposed or approved contract in this frozen run.
+    pub fn shared_contract(&self) -> &str {
+        &self.contract
+    }
+
     /// Approves the plan with the user's edits, one `(task, criteria)` per lane in order.
     pub fn approve_with(&mut self, assignments: Vec<(String, String)>) -> Result<(), Error> {
+        self.approve_plan(assignments, None)
+    }
+
+    /// Approves edited assignments and the single shared contract together.
+    pub fn approve_with_contract(
+        &mut self,
+        assignments: Vec<(String, String)>,
+        contract: &str,
+    ) -> Result<(), Error> {
+        self.approve_plan(assignments, Some(contract))
+    }
+
+    fn approve_plan(
+        &mut self,
+        assignments: Vec<(String, String)>,
+        contract: Option<&str>,
+    ) -> Result<(), Error> {
         if self.phase != Phase::ApprovePlan || assignments.len() != self.lanes.len() {
             return Err(Error::WrongStage("The proposed plan has changed."));
         }
         let mut edited = self.clone();
+        if edited.template.shared_contract
+            && let Some(contract) = contract
+        {
+            edited.contract = contract.trim().into();
+        }
         for (lane, (task, criteria)) in edited.lanes.iter_mut().zip(assignments) {
             lane.assignment = task;
             lane.criteria = criteria;

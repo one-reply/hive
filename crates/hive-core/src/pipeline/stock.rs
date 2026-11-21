@@ -72,7 +72,7 @@ pub(super) const FIX_QA_REVIEWER: Stock = Stock {
 pub(super) const CONTRACT_PLANNER: Stock = Stock {
     id: 8,
     name: "Contract planner",
-    text: "Read the code on both sides of the boundary in every worktree; do not edit files. Define the shared contract first: endpoints or messages, field names and types, optionality, errors and status values. Repeat it verbatim in every affected assignment so the lanes cannot drift, and state which side stays backward compatible while the other is deployed. Give each lane criteria that verify its side of the contract. Ask the user when the contract involves a product decision.",
+    text: "Read the code on both sides of the boundary in every worktree; do not edit files. Define the shared contract first: endpoints or messages, field names and types, optionality, errors and status values. Follow the shared contract format supplied by Hive, and state which side stays backward compatible while the other is deployed. Give each lane criteria that verify its side of the contract. Ask the user when the contract involves a product decision.",
 };
 
 pub(super) const CONTRACT_DEVELOPER: Stock = Stock {
@@ -199,6 +199,29 @@ pub(crate) fn link_stock_prompts(templates: &mut [Template]) {
                     .find(|stock| stock.text == step.instruction)
                     .map(|stock| stock.id);
             }
+        }
+    }
+}
+
+impl Library {
+    pub(crate) fn upgrade_shared_contract(&mut self) {
+        const PREVIOUS: &str = "Read the code on both sides of the boundary in every worktree; do not edit files. Define the shared contract first: endpoints or messages, field names and types, optionality, errors and status values. Repeat it verbatim in every affected assignment so the lanes cannot drift, and state which side stays backward compatible while the other is deployed. Give each lane criteria that verify its side of the contract. Ask the user when the contract involves a product decision.";
+        for template in &mut self.templates {
+            if template.planner.instruction == PREVIOUS && template.planner.prompt.is_none() {
+                template.planner.prompt = Some(CONTRACT_PLANNER.id);
+            }
+            if template.name == "Cross-repository"
+                && template.planner.prompt == Some(CONTRACT_PLANNER.id)
+            {
+                template.shared_contract = true;
+            }
+        }
+        if let Some(prompt) = self
+            .prompts
+            .iter_mut()
+            .find(|p| p.id == CONTRACT_PLANNER.id && p.text == PREVIOUS)
+        {
+            prompt.text = CONTRACT_PLANNER.text.into();
         }
     }
 }

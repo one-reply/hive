@@ -10,7 +10,16 @@ impl Run {
         }
         let handoff = (*ticket, self.phase, report.clone());
         match (self.phase, report) {
-            (Phase::Planning, Report::Plan { assignments }) => {
+            (Phase::Regression(RegressionStep::Author), Report::Regression { test }) => {
+                self.submit_regression_test(test)?;
+            }
+            (
+                Phase::Planning,
+                Report::Plan {
+                    assignments,
+                    contract,
+                },
+            ) => {
                 if assignments.is_empty() {
                     return Err(Error::InvalidInput(
                         "Provide one task and acceptance criteria per selected lane",
@@ -24,6 +33,14 @@ impl Run {
                         || a.criteria.trim().is_empty()
                 }) {
                     return Err(Error::InvalidAssignment(invalid.lane));
+                }
+                if self.template.shared_contract {
+                    if contract.trim().is_empty() {
+                        return Err(Error::InvalidInput(
+                            "Supply a shared contract for approval.",
+                        ));
+                    }
+                    self.contract = contract.trim().to_owned();
                 }
                 for lane in &mut self.lanes {
                     lane.assignment.clear();
@@ -54,7 +71,7 @@ impl Run {
                 }
                 self.outstanding.retain(|t| t != ticket);
                 if self.outstanding.is_empty() {
-                    self.begin_qa();
+                    self.begin_validation();
                 }
             }
             (
@@ -131,6 +148,7 @@ impl Run {
     pub fn start_direct(&mut self, criteria: &str) -> Result<(), Error> {
         if self.phase != Phase::Planning
             || !self.history.is_empty()
+            || self.template.shared_contract
             || self.lanes.len() != 1
             || criteria.trim().is_empty()
             || self
@@ -150,7 +168,7 @@ impl Run {
         self.lanes[0].criteria = criteria.trim().to_owned();
         self.history
             .push("User started development with explicit acceptance criteria".into());
-        self.develop([0]);
+        self.start_development(vec![0]);
         Ok(())
     }
 
@@ -158,6 +176,11 @@ impl Run {
     pub fn approve(&mut self) -> Result<(), Error> {
         if self.phase != Phase::ApprovePlan {
             return Err(Error::WrongStage("The plan is not awaiting approval"));
+        }
+        if self.template.shared_contract && self.contract.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "Enter a shared contract before approving.",
+            ));
         }
         let assigned: Vec<_> = self
             .lanes
@@ -184,7 +207,7 @@ impl Run {
         self.feedback.clear();
         self.briefs.clear();
         self.continuations.clear();
-        self.develop(indices);
+        self.start_development(indices);
         Ok(())
     }
 
@@ -256,6 +279,17 @@ impl Run {
         Ok(())
     }
 
+    /// Records the revision which stayed unchanged throughout command execution.
+    pub fn checked_at(
+        &mut self,
+        results: Vec<CommandResult>,
+        revision: Option<String>,
+    ) -> Result<(), Error> {
+        self.command_results(results)?;
+        self.check_revision = revision;
+        Ok(())
+    }
+
     /// Whether an assigned lane's required command has no result in this QA pass.
     fn owes_checks(&self) -> bool {
         self.lanes.iter().enumerate().any(|(ix, lane)| {
@@ -271,7 +305,11 @@ impl Run {
         let issues =
             !self.findings.is_empty() || (ix == 0 && self.commands.iter().any(|r| !r.success));
         if !issues {
-            self.enter_review(ix + 1);
+            if self.qa_focus.take().is_some() {
+                self.phase = Phase::Acceptance;
+            } else {
+                self.enter_review(ix + 1);
+            }
         } else if self.rounds[ix] >= self.template.reviews[ix].limit {
             self.phase = Phase::Decision(ix);
             self.history.push(format!(
@@ -286,7 +324,10 @@ impl Run {
 
     /// Starts a QA pass over the current changes: the required checks first, because a red
     /// test is cheaper to find than a reviewer's turn, then the reviews in order.
-    fn begin_qa(&mut self) {
+    pub(super) fn begin_qa(&mut self) {
+        self.first_review_attempt = self.last_attempt.saturating_add(1);
+        self.qa_focus = None;
+        self.check_revision = None;
         self.review_revision = None;
         self.review_trees.clear();
         self.findings.clear();
@@ -321,6 +362,10 @@ impl Run {
     fn repair(&mut self, ix: usize, note: &str) {
         let (feedback, briefs) = self.repair_handoff(ix, note);
         self.history.push(feedback.clone());
+        self.review_brief.clone_from(&feedback);
+        if !self.review_trees.is_empty() {
+            self.feedback_trees.clone_from(&self.review_trees);
+        }
         self.feedback = feedback;
         let destinations: Vec<_> = briefs.iter().map(|(lane, _)| *lane).collect();
         self.briefs = briefs;
@@ -354,7 +399,7 @@ impl Run {
         ));
         self.dismissed.push((ix, finding));
         if self.findings.is_empty() && (ix != 0 || self.commands.iter().all(|r| r.success)) {
-            self.enter_review(ix + 1);
+            self.finish_review(ix);
         }
         Ok(())
     }
@@ -366,7 +411,7 @@ impl Run {
         }
         self.history
             .push("The worktree changed since QA. Checking the current files again.".into());
-        self.begin_qa();
+        self.begin_validation();
         Ok(())
     }
 
@@ -379,6 +424,19 @@ impl Run {
         if !self.comments.is_empty() {
             return Err(Error::InvalidInput(
                 "Send or remove your line comments before accepting.",
+            ));
+        }
+        if self.commands.iter().any(|c| !c.success) || self.owes_checks() {
+            return Err(Error::InvalidInput(
+                "Pass the required checks before accepting.",
+            ));
+        }
+        if self
+            .criteria()
+            .any(|(lane, line)| !self.criterion_source(lane, line).closes())
+        {
+            return Err(Error::InvalidInput(
+                "Verify each criterion or record a reason to accept it.",
             ));
         }
         Ok(())

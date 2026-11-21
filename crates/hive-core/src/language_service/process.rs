@@ -61,13 +61,14 @@ impl Process {
             root: root.into(),
             message: error.to_string(),
         };
-        let mut child = command
+        command
             .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(fail)?;
+            .stderr(Stdio::piped());
+        // A server lives as long as its project is open.
+        crate::command::keep_only_standard_streams(&mut command);
+        let mut child = command.spawn().map_err(fail)?;
         let Some(input) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -315,6 +316,33 @@ mod tests {
             "{:?}",
             first.err()
         );
+    }
+
+    #[test]
+    fn a_server_inherits_no_descriptor_besides_its_standard_streams() {
+        use std::os::fd::AsRawFd;
+        let descriptor = crate::command::inheritable_descriptor();
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            &format!(
+                "test -e /dev/fd/{} && echo inherited >&2; exit 0",
+                descriptor.as_raw_fd()
+            ),
+        ]);
+        let (sender, _frames) = mpsc::sync_channel(4);
+        let process = Process::spawn(
+            command,
+            &Host::Local,
+            Path::new("/"),
+            0,
+            sender,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        // The head arrives when the shell has exited and its stderr is closed.
+        let head = process.stderr_head.recv().unwrap();
+        assert_eq!(String::from_utf8_lossy(&head), "");
     }
 
     #[test]

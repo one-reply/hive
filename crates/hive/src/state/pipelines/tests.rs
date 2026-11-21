@@ -350,6 +350,7 @@ fn submit(
 
 fn plan(lanes: usize) -> Report {
     Report::Plan {
+        contract: String::new(),
         assignments: (0..lanes)
             .map(|lane| hive_core::pipeline::Assignment {
                 lane,

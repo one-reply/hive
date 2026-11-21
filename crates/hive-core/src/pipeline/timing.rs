@@ -13,10 +13,11 @@ pub fn now_ms() -> u64 {
 }
 
 fn executing(phase: Phase) -> bool {
-    matches!(
-        phase,
-        Phase::Planning | Phase::Development | Phase::Review(_) | Phase::Commands(_)
-    )
+    matches!(phase, Phase::Regression(step) if !step.needs_user())
+        || matches!(
+            phase,
+            Phase::Planning | Phase::Development | Phase::Review(_) | Phase::Commands(_)
+        )
 }
 
 fn open(row: &StageTiming) -> bool {
@@ -247,6 +248,7 @@ mod check_outcomes {
             success: true,
             exit_code: Some(0),
             output: String::new(),
+            passed: vec![],
         });
         run.phase = Phase::Development;
         run.record_stage(Some(Phase::Commands(0)), 1);

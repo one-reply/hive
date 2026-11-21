@@ -62,6 +62,15 @@ impl RunView {
         }
         match stage {
             Stage::Approval => {
+                if r.template().shared_contract {
+                    detail = if self.editing_plan {
+                        detail.child(paragraph("Shared contract", &self.contract, cx))
+                    } else {
+                        detail
+                            .child(heading("Shared contract"))
+                            .child(div().text_sm().child(r.shared_contract().to_owned()))
+                    };
+                }
                 let mut assigned = 0;
                 for (i, lane) in r.lanes().iter().enumerate() {
                     let fields = self.editing_plan.then(|| self.plan.get(i)).flatten();
@@ -154,6 +163,11 @@ impl RunView {
                         cx.notify();
                     },
                 )))
+            }
+            Stage::Regression => {
+                if let Some(test) = r.regression() {
+                    detail = detail.child(subtle(test.description(), cx));
+                }
             }
             Stage::Planner => {}
         }

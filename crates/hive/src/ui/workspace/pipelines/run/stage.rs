@@ -20,6 +20,7 @@ impl StageIcon for Stage {
                 .map_or(Lucide::ListChecks, |review| {
                     RoleKind::review(i, review).icon()
                 }),
+            Self::Regression => Lucide::ListChecks,
             Self::Commands(_) => Lucide::Terminal,
             Self::Accept => Lucide::ClipboardCheck,
         }

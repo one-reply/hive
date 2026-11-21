@@ -1,0 +1,19 @@
+{
+  "success": false,
+  "numFailedTests": 1,
+  "numFailedTestSuites": 1,
+  "testResults": [
+    {
+      "name": "/fixture/returns.test.mjs",
+      "assertionResults": [
+        {
+          "fullName": "returns_two",
+          "status": "failed",
+          "failureMessages": [
+            "AssertionError: returns two expected: expected 1 to be 2 // Object.is equality"
+          ]
+        }
+      ]
+    }
+  ]
+}

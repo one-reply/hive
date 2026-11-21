@@ -42,7 +42,8 @@ pub enum StateError {
 /// review and skip that review.
 /// Version 5 adds immutable review trees, targeted feedback and direct-to-development runs.
 /// Older and unversioned files load with defaults for any missing sections.
-pub const SCHEMA_VERSION: u32 = 5;
+/// Version 6 records criterion decisions, shared contracts and regression checkpoints.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Loaded state and, when the file could not be used as written, what happened to it.
 pub struct LoadedState {
@@ -356,6 +357,9 @@ fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::L
         catalog_version: catalog_version.max(CATALOG_VERSION),
     };
     // A stage whose prompt was dropped above keeps its mirrored text as its own instructions.
+    if catalog_version < 3 {
+        library.upgrade_shared_contract();
+    }
     library.sync_prompts();
     library
 }
@@ -745,6 +749,7 @@ mod tests {
             original: None,
             frozen: false,
             task: "Keep my task".into(),
+            regression: false,
             direct: true,
             criteria: "return 401".into(),
             lanes: vec![],

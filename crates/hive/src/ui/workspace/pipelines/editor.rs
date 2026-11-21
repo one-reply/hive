@@ -287,14 +287,31 @@ impl Render for TemplateEditor {
                 },
             ));
         }
-        bar = bar.child(self.add_menu(cx)).child(button(
-            "save-template",
-            "Save",
-            ButtonLook::Primary,
-            window,
-            cx,
-            |s, w, cx| s.save(w, cx),
-        ));
+        bar = bar
+            .child(button(
+                "shared-contract",
+                if self.template.shared_contract {
+                    "Shared contract: on"
+                } else {
+                    "Shared contract: off"
+                },
+                ButtonLook::Outline,
+                window,
+                cx,
+                |v, _, cx| {
+                    v.template.shared_contract = !v.template.shared_contract;
+                    cx.notify();
+                },
+            ))
+            .child(self.add_menu(cx))
+            .child(button(
+                "save-template",
+                "Save",
+                ButtonLook::Primary,
+                window,
+                cx,
+                |s, w, cx| s.save(w, cx),
+            ));
         let mut body = h_flex().flex_1().min_h_0().items_stretch();
         if !self.compact || !self.show_inspector {
             body = body.child(self.canvas(window, cx));

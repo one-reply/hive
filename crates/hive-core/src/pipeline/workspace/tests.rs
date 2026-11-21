@@ -82,6 +82,7 @@ fn multi_repo_checks_and_acceptance_use_task_worktrees_and_report_new_files() {
     run.report(
         &plan,
         Report::Plan {
+            contract: String::new(),
             assignments: (0..2)
                 .map(|lane| Assignment {
                     lane,
@@ -672,4 +673,210 @@ fn a_new_checkout_gets_the_projects_ignored_files_and_setup_and_a_retry_repeats_
             .files
             .is_empty()
     );
+}
+
+#[test]
+fn independent_cargo_test_checks_the_base_and_pinned_candidate_without_touching_the_main_checkout()
+{
+    use crate::pipeline::{RegressionStep, RegressionTest, TestRunner};
+    let temp = Scratch::new("independent-regression");
+    let mut lane = temp.lane("api");
+    let project = &lane.project;
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname='counter'\nversion='0.1.0'\nedition='2024'\n",
+    )
+    .unwrap();
+    fs::create_dir(project.join("src")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn count() -> u8 { 1 }\n").unwrap();
+    fs::write(project.join(".gitignore"), "/target\n/Cargo.lock\n").unwrap();
+    fs::create_dir(project.join(".cargo")).unwrap();
+    fs::write(
+        project.join(".cargo/config.toml"),
+        "[net]\noffline = true\n",
+    )
+    .unwrap();
+    git(project, &["add", "."]);
+    git(project, &["commit", "-qm", "counter fixture"]);
+    lane.base = preview(project, "main").unwrap().commit;
+    let stop = Cancellation::default();
+    lane.worktree = prepare(89, &lane, &stop).unwrap();
+    let mut run = Run::new(
+        89,
+        project.clone(),
+        "Fix count".into(),
+        Template::default(),
+        vec![lane.clone()],
+    )
+    .unwrap();
+    run.enable_regression().unwrap();
+    run.start_direct("Returns two").unwrap();
+    let path = "tests/counter.rs";
+    fs::create_dir(lane.worktree.join("tests")).unwrap();
+    let test = "#[test] fn returns_two() {assert_eq!(counter::count(), 2, \"expected two\");}";
+    fs::write(lane.worktree.join(path), test).unwrap();
+    run.report(
+        &run.pending()[0],
+        Report::Regression {
+            test: RegressionTest {
+                runner: TestRunner::Cargo,
+                path: path.into(),
+                name: "returns_two".into(),
+                expected: "expected two".into(),
+            },
+        },
+    )
+    .unwrap();
+    let execute = |r: &mut Run| {
+        let result = run_regression(r, &stop).unwrap();
+        r.record_regression(result).unwrap();
+    };
+    execute(&mut run);
+    assert_eq!(
+        run.phase(),
+        Phase::Development,
+        "{}",
+        run.regression().unwrap().description()
+    );
+    fs::write(
+        lane.worktree.join("src/lib.rs"),
+        "pub fn count() -> u8 { 2 }\n",
+    )
+    .unwrap();
+    fs::write(lane.worktree.join(path), format!("{test}\n")).unwrap();
+    run.report(
+        &run.pending()[0],
+        Report::Developed {
+            summary: "Fixed count".into(),
+        },
+    )
+    .unwrap();
+    execute(&mut run);
+    assert_eq!(run.phase(), Phase::Regression(RegressionStep::Decision));
+    let replacement = run.regression().unwrap().changed_blob().unwrap().to_owned();
+    run.retry_regression(Some(&replacement)).unwrap();
+    execute(&mut run);
+    assert_eq!(run.phase(), Phase::Regression(RegressionStep::Candidate));
+    execute(&mut run);
+    assert_eq!(
+        run.phase(),
+        Phase::Review(0),
+        "{}",
+        run.regression().unwrap().description()
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("src/lib.rs")).unwrap(),
+        "pub fn count() -> u8 { 1 }\n"
+    );
+    assert!(!project.join(path).exists());
+}
+
+#[test]
+fn passing_test_names_survive_a_log_longer_than_the_saved_tail() {
+    let dir = Scratch::new("long-check-log");
+    let name = "suite::a_descriptively_named_case_that_fills_the_log";
+    let harness = format!(
+        r#"echo "running 1500 tests"; i=0; while [ $i -lt 1500 ]; do echo "test {name}_$i ... ok"; i=$((i+1)); done; echo "test result: ok. 1500 passed; 0 failed; 0 ignored;""#
+    );
+    let lane = |command: String| Lane {
+        name: "api".into(),
+        assignment: "Fix".into(),
+        worktree: dir.0.clone(),
+        command,
+        ..Lane::default()
+    };
+    let lanes = [lane(harness.clone()), lane(format!("{harness}; exit 1"))];
+    let results = checks(&lanes, &Cancellation::default());
+    let [passed, failed] = results.as_slice() else {
+        panic!("one result per lane: {results:?}");
+    };
+    assert!(passed.output.starts_with("[Showing the last 64 KiB"));
+    // The saved tail has lost the harness header, so it names nothing on its own.
+    assert!(test_output::passed_tests(&passed.output).is_empty());
+    assert_eq!(passed.passed.len(), 1500);
+    assert!(passed.passed_test(&format!("{name}_0")));
+    assert!(passed.passed_test(&format!("{name}_1499")));
+    assert!(!passed.passed_test(&format!("{name}_1500")));
+    // A command that failed proves no test, whatever it printed.
+    assert!(!failed.success);
+    assert!(failed.passed.is_empty());
+}
+
+#[test]
+fn js_runners_start_in_the_nearest_folder_that_configures_them() {
+    use crate::pipeline::{RegressionTest, TestRunner};
+    let dir = Scratch::new("js-runner-root");
+    let root = &dir.0;
+    let touch = |path: &str, text: &str| {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    let command = |runner, path: &str| {
+        let test = RegressionTest {
+            runner,
+            path: path.into(),
+            name: "adds (1 + 1)".into(),
+            expected: "expected 2".into(),
+        };
+        regression::js_command(&test, root, &root.join("result.json"))
+    };
+    let args = |command: &std::process::Command| -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    };
+    let web = "packages/web/src/sum.test.ts";
+    touch(web, "");
+    assert!(
+        command(TestRunner::Jest, web).is_err(),
+        "no runner installed"
+    );
+
+    // A hoisted runner and no configuration of its own: the checkout root, like a single package.
+    touch("node_modules/.bin/jest", "");
+    touch("node_modules/.bin/vitest", "");
+    let jest = command(TestRunner::Jest, web).unwrap();
+    assert_eq!(jest.get_current_dir(), Some(root.as_path()));
+    assert_eq!(jest.get_program(), root.join("node_modules/.bin/jest"));
+    assert!(args(&jest).contains(&web.to_owned()));
+
+    // The package's own configuration moves the working directory, not the hoisted runner.
+    touch("packages/web/jest.config.ts", "");
+    let jest = command(TestRunner::Jest, web).unwrap();
+    assert_eq!(jest.get_current_dir(), Some(&*root.join("packages/web")));
+    assert_eq!(jest.get_program(), root.join("node_modules/.bin/jest"));
+    let passed = args(&jest);
+    assert!(
+        passed
+            .windows(2)
+            .any(|pair| pair == ["--runTestsByPath", "src/sum.test.ts"]),
+        "{passed:?}"
+    );
+    assert!(passed.contains(&r"^adds \(1 \+ 1\)$".to_owned()));
+
+    // A `jest` section in package.json configures its folder; a manifest without one, or an
+    // unreadable one, does not.
+    let api = "packages/api/lib/deep/sum.spec.js";
+    touch(api, "");
+    touch("packages/api/package.json", r#"{"name":"api","jest":{}}"#);
+    touch("packages/api/lib/package.json", r#"{"name":"lib"}"#);
+    touch("packages/api/lib/deep/package.json", "{");
+    let jest = command(TestRunner::Jest, api).unwrap();
+    assert_eq!(jest.get_current_dir(), Some(&*root.join("packages/api")));
+    assert!(args(&jest).contains(&"lib/deep/sum.spec.js".to_owned()));
+
+    // Vitest reads Vite's configuration too, and the nearest installed runner wins.
+    let vitest = command(TestRunner::Vitest, web).unwrap();
+    assert_eq!(vitest.get_current_dir(), Some(root.as_path()));
+    touch("packages/web/vite.config.mts", "");
+    touch("packages/web/node_modules/.bin/vitest", "");
+    let vitest = command(TestRunner::Vitest, web).unwrap();
+    assert_eq!(vitest.get_current_dir(), Some(&*root.join("packages/web")));
+    assert_eq!(
+        vitest.get_program(),
+        root.join("packages/web/node_modules/.bin/vitest")
+    );
+    assert_eq!(args(&vitest)[..2], ["run", "src/sum.test.ts"]);
 }

@@ -11,26 +11,32 @@ pub(in crate::pipeline) fn is_object_name(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|c| c.is_ascii_hexdigit())
 }
 
-struct PrivateIndex(PathBuf);
-impl Drop for PrivateIndex {
+pub(super) struct Scratch(pub(super) PathBuf);
+impl Drop for Scratch {
     fn drop(&mut self) {
         if let Err(error) = fs::remove_dir_all(&self.0) {
-            tracing::warn!(%error, path = ?self.0, "could not clean private review index");
+            tracing::warn!(%error, path = ?self.0, "could not clean private pipeline directory");
         }
+    }
+}
+
+impl Scratch {
+    pub(super) fn new(run: u64) -> Result<Self, GitError> {
+        let dir = std::env::temp_dir().join(format!(
+            "hive-review-{:x}",
+            RandomState::new().hash_one(run)
+        ));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir)
+            .map_err(|e| GitError::Invalid(format!("Creating private pipeline directory: {e}")))?;
+        Ok(Self(dir))
     }
 }
 
 fn snapshot(run: u64, lane: &Lane, stop: &Cancellation) -> Result<String, GitError> {
     let cwd = &lane.worktree;
-    let dir = std::env::temp_dir().join(format!(
-        "hive-review-{:x}",
-        RandomState::new().hash_one(run)
-    ));
-    fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&dir)
-        .map_err(|e| GitError::Invalid(format!("Creating private review index: {e}")))?;
-    let private = PrivateIndex(dir);
+    let private = Scratch::new(run)?;
     let index = private.0.join("index");
     // Seed from the real index to retain force-added ignored files and staged deletions.
     let path = git::bytes(

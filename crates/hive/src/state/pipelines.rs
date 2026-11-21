@@ -33,6 +33,7 @@ pub(crate) use workspace::ReviewRepo;
 #[derive(Default)]
 pub(crate) struct LaunchOptions {
     pub(crate) frozen: bool,
+    pub(crate) regression: bool,
     pub(crate) direct_criteria: Option<String>,
 }
 
@@ -144,10 +145,9 @@ impl Pipelines {
             .pipelines
             .runs
             .iter()
-            .filter(|run| matches!(run.phase(), Phase::Commands(_)))
+            .filter(|run| run.has_command_work())
             .map(|run| {
-                let error =
-                    "Hive restarted during a required check. Retry to run the command again.";
+                let error = "Hive restarted during a check. Retry to run the command again.";
                 let runtime = runtime::RunRuntime {
                     error: Some(error.into()),
                     ..Default::default()
@@ -343,6 +343,9 @@ impl Pipelines {
             .map(|lane| (lane.project.clone(), lane.setup.clone()))
             .collect();
         let mut run = Run::new(id, owner, task, template, lanes)?;
+        if options.regression {
+            run.enable_regression()?;
+        }
         if let Some(criteria) = options.direct_criteria {
             run.start_direct(&criteria)?;
         }
@@ -388,7 +391,9 @@ impl Pipelines {
             return Err(error);
         }
         run.record_stage(Some(previous), now_ms());
-        if run.phase() != Phase::Accepted {
+        if run.phase() != Phase::Accepted
+            && !(previous == Phase::Acceptance && run.phase() == previous)
+        {
             self.clear_review(id);
         }
         Ok(self.store.update(cx, |s, cx| {

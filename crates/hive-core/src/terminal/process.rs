@@ -55,6 +55,8 @@ pub(super) fn spawn(mut command: Command, size: WindowSize) -> io::Result<(Child
             Ok(())
         });
     }
+    // After login_tty: the pane keeps its tty and nothing else of Hive's.
+    crate::command::keep_only_standard_streams(&mut command);
     let child = command.spawn()?;
     Ok((child, File::from(pty.controller)))
 }
@@ -167,8 +169,33 @@ fn shell_user() -> io::Result<(String, String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::remove_inherited_agent_env;
+    use super::{remove_inherited_agent_env, spawn};
+    use alacritty_terminal::event::WindowSize;
+    use std::os::fd::AsRawFd;
     use std::process::Command;
+
+    #[test]
+    fn a_pane_inherits_no_descriptor_besides_its_tty() {
+        let descriptor = crate::command::inheritable_descriptor();
+        let parked = descriptor.as_raw_fd();
+        let passes = |script: &str| {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", script]);
+            let size = WindowSize {
+                num_lines: 24,
+                num_cols: 80,
+                cell_width: 1,
+                cell_height: 1,
+            };
+            let (mut child, _pty) = spawn(command, size).expect("a pty and /bin/sh");
+            child.wait().expect("the shell exits").success()
+        };
+        assert!(passes("test -e /dev/fd/1"), "the tty is standard output");
+        assert!(
+            passes(&format!("test ! -e /dev/fd/{parked}")),
+            "the shell inherited descriptor {parked}"
+        );
+    }
 
     #[test]
     fn child_shell_does_not_inherit_claude_code_markers() {

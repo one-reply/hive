@@ -55,7 +55,18 @@ pub(super) fn report_body(
     let mut body = v_flex().gap_1();
     let id = ticket.attempt as usize;
     match report {
-        Report::Plan { assignments } => {
+        Report::Regression { test } => {
+            body = body.child(subtle(format!("{} · {}", test.path, test.name), cx));
+        }
+        Report::Plan {
+            assignments,
+            contract,
+        } => {
+            if !contract.is_empty() {
+                body = body
+                    .child(heading("Shared contract"))
+                    .child(div().text_sm().child(contract.clone()));
+            }
             for assignment in assignments {
                 if let Some(lane) = run.lanes().get(assignment.lane) {
                     body = body
