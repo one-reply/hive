@@ -3,6 +3,7 @@ use super::*;
 use gpui_kit::component::{Disableable as _, button::ButtonVariants as _, input::InputEvent};
 use hive_core::pipeline::{Lane, LanePreset, workspace::BasePreview};
 
+mod actions;
 mod again;
 mod draft;
 mod mode;
@@ -14,7 +15,7 @@ use repository::{Binding, dropdown, repositories};
 
 const COMPOSER_WIDTH: Pixels = px(800.);
 /// Tall enough for a few sentences of intent and acceptance criteria without scrolling.
-const TASK_ROWS: usize = 6;
+const TASK_ROWS: usize = 8;
 
 pub(super) struct LaunchForm {
     project: PathBuf,
@@ -161,6 +162,14 @@ impl LaunchForm {
         cx.notify();
     }
 
+    /// The first thing that keeps the run from starting, `None` once it can.
+    fn blocked_by(&self, cx: &App) -> Option<Blocker> {
+        let lanes: Vec<_> = self.bindings.iter().filter_map(|b| b.state(cx)).collect();
+        let has_task = !self.task.read(cx).value().trim().is_empty();
+        let missing_criteria = self.is_direct() && self.criteria.read(cx).value().trim().is_empty();
+        blocker(has_task, &lanes, missing_criteria)
+    }
+
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut lanes = Vec::new();
         for b in &self.bindings {
@@ -226,26 +235,9 @@ fn required_heading(title: &'static str, cx: &App) -> Div {
         .child(required_mark(cx))
 }
 
-/// A section title with one line on why it matters, and an optional action on the right.
-fn section(
-    title: impl IntoElement,
-    hint: &'static str,
-    action: Option<AnyElement>,
-    cx: &App,
-) -> Div {
-    h_flex()
-        .w_full()
-        .items_end()
-        .justify_between()
-        .gap_3()
-        .child(
-            v_flex()
-                .min_w_0()
-                .gap_0p5()
-                .child(title)
-                .child(subtle(hint, cx)),
-        )
-        .children(action)
+/// A section title with one line on why it matters.
+fn section(title: impl IntoElement, hint: &'static str, cx: &App) -> Div {
+    v_flex().gap_0p5().child(title).child(subtle(hint, cx))
 }
 
 fn default_projects(
@@ -271,9 +263,10 @@ fn default_projects(
     result
 }
 
-impl Render for LaunchForm {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let projects = repositories(cx);
+impl LaunchForm {
+    /// The recipe and the stages it runs, so the user knows what the run does before
+    /// describing the task.
+    fn header(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let templates = AppState::get(cx)
             .store
             .read(cx)
@@ -281,14 +274,7 @@ impl Render for LaunchForm {
             .pipelines
             .templates
             .clone();
-        let lanes: Vec<_> = self.bindings.iter().filter_map(|b| b.state(cx)).collect();
-        let has_task = !self.task.read(cx).value().trim().is_empty();
-        let direct = self.direct && self.can_start_direct();
-        let blocked = blocker(has_task, &lanes).or_else(|| {
-            (direct && self.criteria.read(cx).value().trim().is_empty())
-                .then_some(Blocker::Criteria)
-        });
-        let template = options_menu(
+        let recipe = options_menu(
             dropdown(
                 "launch-recipe",
                 Lucide::Workflow,
@@ -305,10 +291,28 @@ impl Render for LaunchForm {
                 this.apply_template(t, w, cx)
             },
         );
-        let mut repos = v_flex().w_full().gap_2();
-        for i in 0..self.bindings.len() {
-            repos = repos.child(self.repository_card(i, &projects, window, cx));
-        }
+        v_flex()
+            .gap_3()
+            .child(
+                h_flex()
+                    .w_full()
+                    .flex_wrap()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("New run"),
+                    )
+                    .child(h_flex().gap_2().child(subtle("Workflow", cx)).child(recipe)),
+            )
+            .child(self.route(cx))
+            .children(self.recipe_version(window, cx))
+    }
+
+    fn repositories(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let projects = repositories(cx);
         let add = options_menu(
             Button::new("add-pipeline-repo")
                 .small()
@@ -323,81 +327,30 @@ impl Render for LaunchForm {
             cx,
             |this, p, w, cx| this.add_repository(p, w, cx),
         );
-        let hover = Hover::new("start-planning", window, cx).enabled(blocked.is_none());
-        let submit = Button::new("start-planning")
-            .cursor_pointer()
-            .with_size(ButtonSize::Medium)
-            .label(if direct {
-                "Start development"
-            } else {
-                "Start planning"
-            })
-            .icon(Lucide::Play)
-            .disabled(blocked.is_some())
-            .on_click(cx.listener(|this, _, w, cx| this.submit(w, cx)))
-            .smooth_hover(ButtonLook::Primary, &hover, cx);
-        let footer_hint = blocked.map_or(
-            if direct {
-                "QA and your final acceptance follow development."
-            } else {
-                "You approve the plan before development."
-            },
-            Blocker::message,
-        );
-        let header = v_flex()
-            .gap_1()
-            .child(
-                div()
-                    .text_3xl()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("New run"),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Describe the task and choose where to run it."),
-            );
-        let workflow = card(cx)
-            .w_full()
-            .gap_3()
-            .child(
-                h_flex()
-                    .gap_3()
-                    .flex_wrap()
-                    .child(heading("Workflow"))
-                    .child(template),
-            )
-            .child(self.route(cx))
-            .children(self.recipe_version(window, cx))
-            .when(self.can_start_direct(), |card| {
-                card.child(button(
-                    "independent-regression",
-                    if self.regression {
-                        "Independent regression test: on"
-                    } else {
-                        "Independent regression test: off"
-                    },
-                    ButtonLook::Outline,
-                    window,
-                    cx,
-                    |v, _, cx| {
-                        v.regression = !v.regression;
-                        cx.notify();
-                    },
-                ))
-            })
-            .children(self.quick_start_toggle(direct, window, cx));
+        let mut section = v_flex().gap_2().child(section(
+            required_heading("Repositories", cx),
+            "Agents commit to the chosen branch in a separate worktree, so your checkout stays as it is.",
+            cx,
+        ));
+        for i in 0..self.bindings.len() {
+            section = section.child(self.repository_card(i, &projects, window, cx));
+        }
+        // The menu button keeps its own width instead of stretching across the column.
+        section.child(h_flex().child(add))
+    }
+}
+
+impl Render for LaunchForm {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let task = v_flex()
             .gap_2()
             .child(section(
                 required_heading("Task", cx),
-                if direct {
+                if self.is_direct() {
                     "Describe the change for the developer."
                 } else {
                     "Plain language is fine. The planner asks if something is unclear."
                 },
-                None,
                 cx,
             ))
             .child(TextField::textarea(
@@ -405,62 +358,28 @@ impl Render for LaunchForm {
                 &self.task,
                 cx,
             ));
-        let repositories = v_flex()
-            .gap_2()
-            .child(section(
-                required_heading("Repositories", cx),
-                "Agents commit to the chosen branch in a separate worktree, so your checkout stays as it is.",
-                Some(add),
-                cx,
-            ))
-            .child(repos);
-        let footer = h_flex()
-            .w_full()
-            .gap_3()
-            .flex_wrap()
-            .pt_4()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(submit)
-            .child(button(
-                "discard-launch-draft",
-                "Discard draft",
-                ButtonLook::Ghost,
-                window,
-                cx,
-                |v, w, cx| {
-                    v.abandon();
-                    let _ = v.parent.update(cx, |p, cx| {
-                        p.discard_draft(cx);
-                        p.home(w, cx);
-                    });
-                },
-            ))
-            .child(subtle(footer_hint, cx));
         let body = v_flex()
             .w_full()
             .max_w(COMPOSER_WIDTH)
             .gap_6()
-            .child(header)
-            .child(workflow)
+            .child(self.header(window, cx))
             .child(task)
-            .when(direct, |el| {
-                el.child(paragraph("Acceptance criteria", &self.criteria, cx))
-            })
-            .child(repositories)
-            .when_some(self.error.clone(), |el, e| {
-                el.child(div().text_sm().text_color(cx.theme().danger).child(e))
-            })
-            .child(footer);
-        scroll(
-            "pipeline-launch",
-            h_flex()
-                .items_start()
-                .justify_center()
-                .pt_6()
-                .pb_8()
-                .child(body),
-        )
+            .child(self.repositories(window, cx))
+            .children(self.options(window, cx));
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .capture_action(cx.listener(Self::start_on_secondary_enter))
+            .child(scroll(
+                "pipeline-launch",
+                h_flex()
+                    .items_start()
+                    .justify_center()
+                    .pt_2()
+                    .pb_8()
+                    .child(body),
+            ))
+            .child(self.action_bar(window, cx))
     }
 }
 
