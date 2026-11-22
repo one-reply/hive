@@ -40,6 +40,7 @@ mod header;
 mod operation;
 mod pull_request;
 mod review;
+mod scroll;
 #[cfg(test)]
 mod tests;
 
@@ -76,7 +77,11 @@ pub(crate) struct GitPanel {
     /// Filter and folded groups of the worktrees that are not shown.
     list_views: WorktreeMemory<ListView>,
     changes_list: ListState,
+    /// The rows `changes_list` holds: a group, and for a file row its position in
+    /// `change_files`.
     change_rows: Vec<(usize, Option<usize>)>,
+    /// The status files `change_rows` was built from.
+    change_files: std::rc::Rc<[FileChange]>,
     /// Session-only height of the commit message box.
     message_size: commit::MessageSize,
     /// The footer's menu of Git actions.
@@ -171,6 +176,7 @@ impl GitPanel {
             list_views: WorktreeMemory::default(),
             changes_list: ListState::new(0, ListAlignment::Top, ROW_HEIGHT),
             change_rows: Vec::new(),
+            change_files: Default::default(),
             message_size: commit::MessageSize::default(),
             actions_menu: commit::ActionsMenu::default(),
             _subscriptions: subscriptions,
@@ -192,6 +198,9 @@ impl GitPanel {
         let view = self
             .list_views
             .switch(self.draft_target.as_ref(), target, shown);
+        // Another worktree's list starts at its top, even where it names the same files.
+        self.change_rows.clear();
+        self.change_files = Default::default();
         self.collapsed = view.collapsed;
         if self.filter.read(cx).value().as_ref() != view.filter {
             self.filter

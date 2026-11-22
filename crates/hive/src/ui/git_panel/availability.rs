@@ -64,7 +64,8 @@ impl Entry {
 pub(super) enum PushTarget {
     /// The branch of the same name that the current one tracks on a remote.
     Upstream,
-    /// A branch the push creates on the selected remote, which it then tracks.
+    /// A branch the push creates on the selected remote, which it then tracks: the branch
+    /// has no upstream, or the one it names is gone from the remote.
     NewBranch,
     /// The remote branch the current one tracks has another name, as after
     /// `git switch -c topic origin/develop`. Like Git's `push.default=simple`, Hive does not
@@ -333,7 +334,7 @@ pub(super) fn push_entry(facts: &Facts) -> Entry {
     match facts.push {
         Some(PushTarget::Upstream) => Entry::Push,
         Some(PushTarget::NewBranch | PushTarget::Elsewhere) => Entry::Publish,
-        None => match facts.status.and_then(|status| status.upstream.as_ref()) {
+        None => match facts.status.and_then(Status::tracked_upstream) {
             Some(_) => Entry::Push,
             None => Entry::Publish,
         },
@@ -406,7 +407,7 @@ fn replay(status: &Status, facts: &Facts) -> Option<Blocker> {
 
 /// Pull only fast-forwards a clean worktree.
 fn pull(status: &Status, facts: &Facts) -> Option<Blocker> {
-    if status.upstream.is_none() {
+    if status.tracked_upstream().is_none() {
         return Some(Blocker::NoUpstream);
     }
     replay(status, facts)

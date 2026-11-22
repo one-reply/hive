@@ -197,6 +197,27 @@ fn setup_runs_in_the_checkout_and_a_failure_carries_its_command_and_log() {
 }
 
 #[test]
+fn a_setup_that_never_finishes_reports_its_last_output() {
+    let scratch = Scratch::new("hung-setup");
+    let error = setup_within(
+        "echo 'fetching packages'; echo 'waiting for the registry' >&2; exec sleep 600",
+        &scratch.checkout(),
+        &Cancellation::default(),
+        Duration::from_secs(3),
+    )
+    .unwrap_err();
+    let ProvisionError::Setup {
+        outcome, output, ..
+    } = &error
+    else {
+        panic!("{error}");
+    };
+    assert_eq!(outcome, "timed out");
+    assert!(output.contains("fetching packages"), "{output}");
+    assert!(output.contains("waiting for the registry"), "{output}");
+}
+
+#[test]
 fn a_folder_is_named_by_a_pattern_for_its_contents_and_anchored_paths_look_inside() {
     let patterns = IncludePatterns::parse(
         "cache/**\nbuild/*\nconfig/local/*.yml\n.vscode/settings.json\n**/x\n",

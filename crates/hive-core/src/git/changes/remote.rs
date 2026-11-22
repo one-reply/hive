@@ -67,7 +67,8 @@ pub(super) fn fetch(
 ) -> Result<Synced, GitError> {
     fetch_remote(host, cwd, remote, stop)?;
     let status = status::read(host, cwd)?;
-    let tracks_remote = match (&status.branch, &status.upstream) {
+    // A branch whose upstream is gone has nothing to count incoming commits against.
+    let tracks_remote = match (&status.branch, status.tracked_upstream()) {
         (Some(branch), Some(_)) => upstream_remote(host, cwd, branch)?.as_deref() == Some(remote),
         _ => false,
     };
@@ -84,6 +85,9 @@ pub(super) fn pull(host: &Host, cwd: &Path, stop: &Cancellation) -> Result<Synce
         return Err(GitError::Invalid(
             "Publish this branch or configure an upstream before pulling.".into(),
         ));
+    }
+    if before.upstream_gone {
+        return Err(unpublished(&before));
     }
     run_stoppable(
         host,
@@ -224,10 +228,21 @@ pub(super) fn upstream_route(
     if status.oid.is_none() {
         return Err(GitError::Invalid("Create the first commit first.".into()));
     }
-    if status.branch.is_some() && status.upstream.is_none() {
-        return Err(GitError::Invalid("Publish this branch first.".into()));
+    if status.branch.is_some() && status.tracked_upstream().is_none() {
+        return Err(unpublished(&status));
     }
     push_route(host, cwd, remote, false)
+}
+
+/// Why a branch without a usable upstream cannot be pulled, synced or force-pushed. Both
+/// texts name Publish, which the Git panel offers for exactly these branches.
+fn unpublished(status: &status::Status) -> GitError {
+    GitError::Invalid(match &status.upstream {
+        Some(upstream) if status.upstream_gone => format!(
+            "{upstream} does not exist on the remote: it was deleted there, or never pushed. Publish this branch to create it."
+        ),
+        _ => "Publish this branch first.".into(),
+    })
 }
 
 /// Blocking: the commit `reference` points at on `remote` right now, asked of the remote
@@ -260,11 +275,28 @@ pub(in crate::git) fn remote_tip(
 
 /// A fetch without `--prune` keeps the remote-tracking ref of a branch deleted on the remote,
 /// so only the remote itself can say the branch is gone.
-fn deleted_on_remote(remote: &str, destination: &str) -> GitError {
+///
+/// The advice has to be something the Git panel allows. While the stale ref exists the panel
+/// still counts the branch as published, so it offers Push only for commits the ref lacks;
+/// Publish comes back once the ref is pruned, which Hive leaves to the user: a prune drops
+/// every stale ref of the remote, not only this one.
+fn deleted_on_remote(
+    host: &Host,
+    cwd: &Path,
+    remote: &str,
+    destination: &str,
+) -> Result<GitError, GitError> {
     let name = branches::short_name(destination);
-    GitError::Invalid(format!(
-        "{remote}/{name} was deleted on the remote. Push to publish {name} there again, or switch to another branch if it was merged."
-    ))
+    let advice = if status::read(host, cwd)?.ahead > 0 {
+        format!("Push sends {name} there again; switch to another branch if it was merged.")
+    } else {
+        format!(
+            "{name} has no commits of its own to push: switch to another branch if it was merged. To publish it again, run `git fetch --prune {remote}` in the terminal first."
+        )
+    };
+    Ok(GitError::Invalid(format!(
+        "{remote}/{name} was deleted on the remote. {advice}"
+    )))
 }
 
 /// Fetch `remote`, replay the local commits on top of the upstream, then push them.
@@ -281,7 +313,7 @@ pub(super) fn sync(
     branches::require_clean(host, cwd)?;
     // Replaying onto a stale ref and pushing would bring a merged and deleted branch back.
     if remote_tip(host, cwd, remote, &destination)?.is_none() {
-        return Err(deleted_on_remote(remote, &destination));
+        return Err(deleted_on_remote(host, cwd, remote, &destination)?);
     }
     fetch_remote(host, cwd, remote, stop)?;
     let upstream = upstream_commit(host, cwd)?;
@@ -381,7 +413,7 @@ pub fn force_push_preview(
     let (_, destination) = upstream_route(host, cwd, remote)?;
     let expected = upstream_commit(host, cwd)?;
     match remote_tip(host, cwd, remote, &destination)? {
-        None => return Err(deleted_on_remote(remote, &destination)),
+        None => return Err(deleted_on_remote(host, cwd, remote, &destination)?),
         Some(tip) if tip != expected => {
             return Err(GitError::Invalid(format!(
                 "{remote}/{} moved since the last fetch. Fetch, then review the force push again.",

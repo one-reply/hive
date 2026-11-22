@@ -102,7 +102,7 @@ pub(super) fn onto_branch(
     Ok(Some(Synced::Rebased {
         onto: base.name,
         changed: after.oid != before.oid,
-        needs_force_push: after.upstream.is_some() && after.behind > 0,
+        needs_force_push: after.tracked_upstream().is_some() && after.behind > 0,
     }))
 }
 

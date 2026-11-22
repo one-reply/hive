@@ -28,7 +28,9 @@ impl Git {
     pub(crate) fn push_action(&self) -> Option<Action> {
         let status = self.status.as_ref()?;
         status.branch.as_ref()?;
-        let publish = status.upstream.is_none();
+        // An upstream whose remote-tracking ref is gone has nothing to push to until the
+        // branch is published again; Git counts no commits ahead of it either.
+        let publish = status.tracked_upstream().is_none();
         let remote = if publish {
             self.remote.as_ref()?
         } else {
@@ -177,7 +179,38 @@ impl Git {
 #[cfg(test)]
 mod tests {
     use super::committed_message;
-    use hive_core::git::{GitError, changes::Action};
+    use crate::state::git::tests::source_control;
+    use gpui_kit as gpui;
+    use gpui_kit::TestAppContext;
+    use hive_core::git::{GitError, changes::Action, status::Status};
+
+    #[gpui::test]
+    fn a_push_publishes_a_branch_whose_upstream_is_missing_or_gone(cx: &mut TestAppContext) {
+        let (_, git) = source_control(cx);
+        git.update(cx, |git, _| {
+            git.remote = Some("origin".into());
+            git.upstream_remote = Some("origin".into());
+            let mut status = Status {
+                oid: Some("head".into()),
+                branch: Some("feature".into()),
+                upstream: Some("origin/feature".into()),
+                ..Status::default()
+            };
+            let mut publishes = |status: &Status| {
+                git.status = Some(status.clone());
+                match git.push_action() {
+                    Some(Action::Push { remote, publish }) if remote == "origin" => publish,
+                    other => panic!("unexpected push action: {other:?}"),
+                }
+            };
+            assert!(!publishes(&status));
+            // Deleted on the remote and pruned here: the configuration still names it.
+            status.upstream_gone = true;
+            assert!(publishes(&status));
+            status.upstream = None;
+            assert!(publishes(&status));
+        });
+    }
 
     fn failed() -> GitError {
         GitError::Invalid("the hook refused".into())

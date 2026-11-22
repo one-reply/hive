@@ -42,8 +42,10 @@ impl GitPanel {
             .as_ref()
             .map(|s| (s.ahead, s.behind))
             .unwrap_or_default();
-        let upstream = status.as_ref().and_then(|s| s.upstream.clone());
-        let has_upstream = upstream.is_some();
+        let has_upstream = status
+            .as_ref()
+            .is_some_and(|s| s.tracked_upstream().is_some());
+        let upstream = upstream_note(status.as_ref());
 
         let branch_row = h_flex()
             .gap_2()
@@ -84,7 +86,7 @@ impl GitPanel {
                     .text_color(muted)
                     .truncate()
                     .text_right()
-                    .child(upstream.clone().unwrap_or_else(|| "No upstream".into()))
+                    .child(upstream)
                     .into_any_element(),
             });
 
@@ -223,6 +225,16 @@ impl GitPanel {
     }
 }
 
+/// What the branch row says the branch tracks. An upstream that is gone from the remote is
+/// named with the reason Push, Pull and Sync give way to Publish.
+fn upstream_note(status: Option<&Status>) -> SharedString {
+    match status.and_then(|status| status.upstream.as_deref().map(|name| (status, name))) {
+        None => "No upstream".into(),
+        Some((status, name)) if status.upstream_gone => format!("{name} · not on remote").into(),
+        Some((_, name)) => name.to_owned().into(),
+    }
+}
+
 /// A remote action; while it runs, its icon spins and the button ignores clicks without
 /// greying out like the other, disabled ones.
 fn sync_button(
@@ -269,4 +281,24 @@ fn counter(icon: Lucide, count: usize) -> impl IntoElement {
             .child(Icon::new(icon).size_3())
             .child(count.to_string()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::upstream_note;
+    use hive_core::git::status::Status;
+
+    #[test]
+    fn the_branch_row_says_when_the_upstream_is_gone_from_the_remote() {
+        let mut status = Status::default();
+        assert_eq!(upstream_note(None), "No upstream");
+        assert_eq!(upstream_note(Some(&status)), "No upstream");
+        status.upstream = Some("origin/feature".into());
+        assert_eq!(upstream_note(Some(&status)), "origin/feature");
+        status.upstream_gone = true;
+        assert_eq!(
+            upstream_note(Some(&status)),
+            "origin/feature · not on remote"
+        );
+    }
 }

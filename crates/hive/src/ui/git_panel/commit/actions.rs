@@ -24,7 +24,7 @@ impl Mode {
         } else if !status.has_conflicts()
             && status.oid.is_some()
             && status.branch.is_some()
-            && (status.ahead > 0 || status.upstream.is_none())
+            && (status.ahead > 0 || status.tracked_upstream().is_none())
         {
             Self::Push
         } else {
@@ -281,6 +281,12 @@ mod tests {
         status.files[0].staged = None;
         status.ahead = 0;
         assert_eq!(Mode::for_status(Some(&status)), Mode::Stage);
+        // The upstream was deleted on the remote and pruned: Git counts nothing ahead, yet
+        // the local commits still have to get there.
+        status.ahead = 0;
+        status.upstream_gone = true;
+        assert_eq!(Mode::for_status(Some(&status)), Mode::Push);
+        status.upstream_gone = false;
         status.ahead = 1;
         status.branch = None;
         assert_eq!(Mode::for_status(Some(&status)), Mode::Stage);

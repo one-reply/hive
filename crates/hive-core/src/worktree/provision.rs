@@ -1,7 +1,7 @@
 //! Making a fresh worktree usable: Git checks out tracked files only, so the ignored files a
 //! project needs to build or run (`.env`, local config) are copied from the source checkout
 //! as `.worktreeinclude` names them, and the project's setup command installs the rest.
-use crate::command::{self, Cancellation};
+use crate::command::{self, Cancellation, End};
 use crate::git::{self, GitError};
 use crate::host::Host;
 use regex::Regex;
@@ -312,36 +312,36 @@ pub fn run_setup(
     if command.is_empty() {
         return Ok(());
     }
+    setup_within(command, checkout, stop, SETUP_TIMEOUT)
+}
+
+fn setup_within(
+    command: &str,
+    checkout: &Path,
+    stop: &Cancellation,
+    timeout: Duration,
+) -> Result<(), ProvisionError> {
     let failed = |outcome: String, output: String| ProvisionError::Setup {
         command: command.to_owned(),
         outcome,
         output,
     };
     let process = Host::Local.command("/bin/sh", &["-c", command], Some(checkout));
-    let result = command::run_with_log_tail(process, stop, SETUP_TIMEOUT, SETUP_LOG_TAIL).map_err(
-        |error| {
+    let log =
+        command::run_with_log_tail(process, stop, timeout, SETUP_LOG_TAIL).map_err(|error| {
             if stop.is_cancelled() {
                 ProvisionError::Stopped
             } else {
                 failed(error.to_string(), String::new())
             }
-        },
-    )?;
-    if result.code == Some(0) {
-        return Ok(());
-    }
-    let mut output = String::from_utf8_lossy(&result.stdout).into_owned();
-    if !result.stderr.is_empty() {
-        if !output.is_empty() && !output.ends_with('\n') {
-            output.push('\n');
-        }
-        output.push_str(&String::from_utf8_lossy(&result.stderr));
-    }
-    let outcome = match result.code {
-        Some(code) => format!("exited with {code}"),
-        None => "was terminated".to_owned(),
+        })?;
+    let outcome = match log.end {
+        End::Exited(Some(0)) => return Ok(()),
+        End::Exited(Some(code)) => format!("exited with {code}"),
+        End::Exited(None) => "was terminated".to_owned(),
+        End::TimedOut => "timed out".to_owned(),
     };
-    Err(failed(outcome, output))
+    Err(failed(outcome, log.text()))
 }
 
 #[cfg(test)]

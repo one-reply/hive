@@ -19,8 +19,8 @@ pub(crate) struct ForcePushRequest {
     pub target: Target,
     /// The remote the branch tracks.
     pub remote: String,
-    /// What the push would replace there, read off the foreground thread.
-    pub preview: Task<Result<ForcePushPreview, git::GitError>>,
+    /// What the push would replace there, once it is read off the foreground thread.
+    pub preview: async_channel::Receiver<Result<ForcePushPreview, git::GitError>>,
 }
 
 impl RemoteOperation {
@@ -43,8 +43,12 @@ impl Git {
     }
 
     /// Starts reading what a force push of the active worktree would replace on the remote
-    /// its branch tracks. `None` when the branch has no upstream on a remote.
-    pub(crate) fn preview_force_push(&self, cx: &App) -> Option<ForcePushRequest> {
+    /// its branch tracks; the worktree is busy meanwhile. `None` when the branch has no
+    /// upstream on a remote or the worktree is busy already.
+    pub(crate) fn preview_force_push(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<ForcePushRequest> {
         let target = self.target.clone()?;
         let Some(Action::Push {
             remote,
@@ -57,6 +61,7 @@ impl Git {
         let preview = cx
             .background_executor()
             .spawn(async move { git::changes::force_push_preview(&host, &path, &name) });
+        let preview = self.prepare(&target, preview, cx)?;
         Some(ForcePushRequest {
             target,
             remote,

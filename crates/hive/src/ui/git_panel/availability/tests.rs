@@ -31,7 +31,7 @@ fn facts<'a>(status: &'a Status, message: &'a str) -> Facts<'a> {
         status: Some(status),
         message,
         has_remote: true,
-        push: Some(if status.upstream.is_some() {
+        push: Some(if status.tracked_upstream().is_some() {
             PushTarget::Upstream
         } else {
             PushTarget::NewBranch
@@ -386,6 +386,55 @@ fn the_send_button_publishes_a_branch_without_an_upstream() {
     assert_eq!(push_entry(&facts(&status, "")), Entry::Push);
     status.upstream = None;
     assert_eq!(push_entry(&facts(&status, "")), Entry::Publish);
+}
+
+#[test]
+fn a_branch_whose_upstream_is_gone_is_published_again_not_pushed_pulled_or_synced() {
+    // Deleted on the remote and pruned here: Git still names the upstream but counts nothing.
+    let mut status = published();
+    status.upstream_gone = true;
+    for entry in [
+        Entry::Push,
+        Entry::Sync,
+        Entry::ForcePush,
+        Entry::CreatePullRequest,
+    ] {
+        assert_eq!(
+            blocker(entry, &facts(&status, "")),
+            Some(Blocker::NotPublished),
+            "{entry:?}"
+        );
+    }
+    assert_eq!(
+        blocker(Entry::Pull, &facts(&status, "")),
+        Some(Blocker::NoUpstream)
+    );
+    assert_eq!(blocker(Entry::Publish, &facts(&status, "")), None);
+    assert_eq!(
+        blocker(Entry::PushBeforePullRequest, &facts(&status, "")),
+        None
+    );
+    assert_eq!(push_entry(&facts(&status, "")), Entry::Publish);
+    // Before the worktree's push destination is known, the button still does not say Push.
+    let mut unresolved = facts(&status, "");
+    unresolved.push = None;
+    assert_eq!(push_entry(&unresolved), Entry::Publish);
+
+    status
+        .files
+        .push(file("file.rs", Some(Change::Modified), None));
+    assert_eq!(
+        commit_entry(&facts(&status, "message")),
+        Entry::CommitAndPush
+    );
+    assert_eq!(
+        blocker(Entry::CommitAndPush, &facts(&status, "message")),
+        None
+    );
+    assert_eq!(
+        blocker(Entry::CommitAndSync, &facts(&status, "message")),
+        Some(Blocker::NotPublished)
+    );
 }
 
 #[test]

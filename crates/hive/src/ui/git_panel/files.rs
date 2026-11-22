@@ -1,5 +1,6 @@
 //! Changed-file groups and their bulk actions.
 use super::*;
+use std::rc::Rc;
 
 /// Groups of the Changes section, in display order.
 const GROUPS: [(&str, DiffSource); 4] = [
@@ -209,7 +210,7 @@ impl GitPanel {
             )
             .into_any_element();
         }
-        let files = status.files.clone();
+        let files: Rc<[FileChange]> = status.files.clone().into();
         let filter = self.filter.read(cx).value().to_lowercase();
         let mut rows = Vec::new();
         let groups: Vec<Vec<usize>> = GROUPS
@@ -238,9 +239,15 @@ impl GitPanel {
             })
             .collect();
         if self.change_rows != rows {
-            self.changes_list.reset(rows.len());
+            scroll::replace_rows(
+                &self.changes_list,
+                &row_keys(&self.change_rows, &self.change_files),
+                &row_keys(&rows, &files),
+            );
             self.change_rows.clone_from(&rows);
         }
+        // The rows name files by position, so they are only ever read with this snapshot.
+        self.change_files = files.clone();
         let view = cx.entity().downgrade();
         let changes = list(self.changes_list.clone(), move |index, window, cx| {
             view.update(cx, |this, cx| {
@@ -267,6 +274,20 @@ impl GitPanel {
                 .into_any_element(),
         }
     }
+}
+
+/// What each row shows, whatever position its file has in the status: a group's header, or
+/// one path in a group. This is what tells a row that moved from one that was replaced.
+fn row_keys<'a>(
+    rows: &[(usize, Option<usize>)],
+    files: &'a [FileChange],
+) -> Vec<(usize, Option<&'a str>)> {
+    rows.iter()
+        .map(|&(group, file)| {
+            let path = file.and_then(|index| files.get(index));
+            (group, path.map(|file| file.path.as_str()))
+        })
+        .collect()
 }
 
 /// What the list says about changed files whose names Git returned in another encoding.

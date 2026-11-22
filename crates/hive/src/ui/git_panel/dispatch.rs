@@ -171,13 +171,16 @@ impl GitPanel {
     /// Reads what the remote branch would lose, then asks before replacing it.
     fn force_push(&self, window: &mut Window, cx: &mut Context<Self>) {
         let git = self.git.clone();
-        let Some(request) = git.read(cx).preview_force_push(cx) else {
+        let Some(request) = git.update(cx, |git, cx| git.preview_force_push(cx)) else {
             return;
         };
         let (target, remote, preview) = (request.target, request.remote, request.preview);
         window
             .spawn(cx, async move |cx| {
-                let preview = preview.await;
+                // The sender goes away only with source control itself.
+                let Ok(preview) = preview.recv().await else {
+                    return;
+                };
                 cx.update(|window, cx| match preview {
                     Ok(preview) => {
                         let confirmation = git_controls::Confirmation {
@@ -219,7 +222,7 @@ impl GitPanel {
         let published = state
             .status
             .as_ref()
-            .is_some_and(|status| status.upstream.is_some());
+            .is_some_and(|status| status.tracked_upstream().is_some());
         git_controls::confirm(
             self.git.clone(),
             Action::Rebase { onto: base.clone() },

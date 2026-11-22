@@ -17,6 +17,7 @@ use std::time::Duration;
 mod conflicts;
 mod generation;
 mod mutations;
+mod preparation;
 mod remote;
 mod review;
 mod verification;
@@ -121,6 +122,8 @@ pub(crate) struct Git {
     failures: HashMap<Target, String>,
     operations: HashMap<Target, Task<()>>,
     busy: std::collections::HashSet<Target>,
+    /// Worktrees a confirmation is being prepared for.
+    preparing: std::collections::HashSet<Target>,
     unverified: std::collections::HashSet<Target>,
     inspected: std::collections::HashSet<Target>,
     interrupted_actions: HashMap<Target, Option<Action>>,
@@ -195,6 +198,7 @@ impl Git {
             failures: HashMap::new(),
             operations: HashMap::new(),
             busy: Default::default(),
+            preparing: Default::default(),
             unverified: Default::default(),
             inspected: Default::default(),
             interrupted_actions: HashMap::new(),
@@ -341,7 +345,9 @@ impl Git {
         self.target.as_ref().is_some_and(|t| self.is_busy_at(t))
     }
     pub(crate) fn is_busy_at(&self, target: &Target) -> bool {
-        self.busy.contains(target) || self.unverified.contains(target)
+        self.busy.contains(target)
+            || self.unverified.contains(target)
+            || self.preparing.contains(target)
     }
     pub(crate) fn is_generating(&self) -> bool {
         self.target
@@ -618,7 +624,7 @@ mod tests {
     }
 
     /// `Git` over a project list whose store never touches the disk.
-    fn source_control(cx: &mut TestAppContext) -> (Entity<Projects>, Entity<Git>) {
+    pub(super) fn source_control(cx: &mut TestAppContext) -> (Entity<Projects>, Entity<Git>) {
         let store = cx.new(|cx| {
             Store::new(
                 Err(StateError::Io {

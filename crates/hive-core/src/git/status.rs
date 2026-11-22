@@ -63,6 +63,11 @@ pub struct Status {
     pub ahead: usize,
     /// Commits present only in the locally known upstream, when known.
     pub behind: usize,
+    /// The configured upstream has no remote-tracking ref: the branch was deleted on the
+    /// remote and pruned here, or never existed there, as after cloning an empty repository.
+    /// Only ever set together with `upstream`; `ahead` and `behind` are then unknown.
+    #[serde(default)]
+    pub upstream_gone: bool,
     /// All changed and untracked files whose names are UTF-8.
     pub files: Vec<FileChange>,
     /// Changed files whose names are not UTF-8, as a Linux host may hold. They are left out
@@ -75,6 +80,11 @@ impl Status {
     /// Whether there are no staged, unstaged or untracked changes, readable or not.
     pub fn is_clean(&self) -> bool {
         self.files.is_empty() && self.unreadable_paths == 0
+    }
+    /// The upstream the branch can be compared and synced with: the configured one, unless
+    /// its remote-tracking ref is gone. A branch without it has to be published first.
+    pub fn tracked_upstream(&self) -> Option<&str> {
+        self.upstream.as_deref().filter(|_| !self.upstream_gone)
     }
     /// Whether the index has unresolved conflicts.
     pub fn has_conflicts(&self) -> bool {
@@ -131,10 +141,11 @@ fn unknown() -> GitError {
 
 fn parse(raw: &[u8]) -> Result<Status, GitError> {
     let mut result = Status::default();
+    let mut compared = false;
     let mut records = raw.split(|b| *b == 0).filter(|r| !r.is_empty());
     while let Some(record) = records.next() {
         if let Some(header) = record.strip_prefix(b"# ") {
-            read_header(&mut result, &String::from_utf8_lossy(header))?;
+            compared |= read_header(&mut result, &String::from_utf8_lossy(header))?;
             continue;
         }
         let kind = record[0];
@@ -205,12 +216,16 @@ fn parse(raw: &[u8]) -> Result<Status, GitError> {
             unstaged_stats: None,
         });
     }
+    // Git names the configured upstream even when its remote-tracking ref does not exist,
+    // and then has nothing to count the commits against.
+    result.upstream_gone = result.upstream.is_some() && !compared;
     Ok(result)
 }
 
-/// One `# branch.*` header. A branch name that is not UTF-8 is shown lossily: it is only
-/// displayed, and a push of it is refused by Git rather than sent elsewhere.
-fn read_header(result: &mut Status, header: &str) -> Result<(), GitError> {
+/// One `# branch.*` header; `true` for the one that compares the branch with its upstream.
+/// A branch name that is not UTF-8 is shown lossily: it is only displayed, and a push of it
+/// is refused by Git rather than sent elsewhere.
+fn read_header(result: &mut Status, header: &str) -> Result<bool, GitError> {
     if let Some(v) = header.strip_prefix("branch.oid ") {
         result.oid = (v != "(initial)").then(|| v.into());
     }
@@ -232,8 +247,9 @@ fn read_header(result: &mut Status, header: &str) -> Result<(), GitError> {
             .strip_prefix('-')
             .and_then(|v| v.parse().ok())
             .ok_or_else(malformed)?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 fn malformed() -> GitError {
@@ -261,6 +277,44 @@ mod tests {
         assert!(!only_unreadable.is_clean());
         // Other bytes outside a path are still a malformed answer.
         assert!(parse(b"\xff broken\0").is_err());
+    }
+
+    #[test]
+    fn an_upstream_without_its_tracking_ref_is_reported_as_gone() {
+        // Captured from Git 2.54 after `git push origin --delete topic && git fetch --prune`
+        // on a branch with one unpushed commit: the upstream is named, `branch.ab` is absent.
+        let gone = parse(
+            b"# branch.oid 2ad67d24e51243ae72b3b196ee521ec913e978cc\0# branch.head topic\0\
+# branch.upstream origin/topic\0",
+        )
+        .expect("porcelain");
+        assert_eq!(gone.upstream.as_deref(), Some("origin/topic"));
+        assert!(gone.upstream_gone);
+        assert_eq!(gone.tracked_upstream(), None);
+        assert_eq!((gone.ahead, gone.behind), (0, 0));
+
+        // The same branch while the remote still had it.
+        let tracked = parse(
+            b"# branch.oid 2ad67d24e51243ae72b3b196ee521ec913e978cc\0# branch.head topic\0\
+# branch.upstream origin/topic\0# branch.ab +1 -0\0",
+        )
+        .expect("porcelain");
+        assert!(!tracked.upstream_gone);
+        assert_eq!(tracked.tracked_upstream(), Some("origin/topic"));
+        assert_eq!(tracked.ahead, 1);
+
+        let unpublished = parse(b"# branch.oid abc\0# branch.head topic\0").expect("porcelain");
+        assert!(!unpublished.upstream_gone);
+        assert_eq!(unpublished.tracked_upstream(), None);
+    }
+
+    #[test]
+    fn a_status_serialized_before_the_gone_upstream_was_known_still_loads() {
+        let old = r#"{"oid":"abc","branch":"main","upstream":"origin/main","ahead":1,"behind":2,"files":[]}"#;
+        let status: Status = serde_json::from_str(old).expect("previous shape");
+        assert!(!status.upstream_gone);
+        assert_eq!(status.tracked_upstream(), Some("origin/main"));
+        assert_eq!((status.ahead, status.behind), (1, 2));
     }
 
     #[test]

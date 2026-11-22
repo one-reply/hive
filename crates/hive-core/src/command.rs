@@ -21,6 +21,11 @@ const WAIT_SLICE: Duration = Duration::from_millis(25);
 /// First recheck of a child that closed its pipes but cannot be reaped yet; the wait doubles
 /// up to `WAIT_SLICE` for one that lingers.
 const EXIT_RECHECK: Duration = Duration::from_millis(1);
+/// How long output is still read after the process exits. Everything it wrote is already in
+/// the pipe; only another holder of the pipe keeps it open past that: a server the command left
+/// running, or on macOS a sibling spawned while the pipe was not yet close-on-exec. Neither
+/// may keep a finished command waiting for its deadline.
+const EXIT_GRACE: Duration = Duration::from_secs(1);
 
 /// Failure while supervising a command. Adapters add command, host and path context.
 #[derive(Debug, thiserror::Error)]
@@ -31,7 +36,7 @@ pub enum Error {
     /// The owner cancelled this command.
     #[error("Command cancelled")]
     Cancelled,
-    /// The deadline elapsed, including pipe draining.
+    /// The deadline elapsed while the process still ran.
     #[error("Command timed out")]
     TimedOut,
     /// A stream exceeded its memory budget.
@@ -48,6 +53,52 @@ pub struct Output {
     /// Raw standard error, bounded independently of stdout.
     pub stderr: Vec<u8>,
 }
+
+/// How a supervised command ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum End {
+    /// The process exited, without a code when a signal ended it.
+    Exited(Option<i32>),
+    /// The deadline passed while the process still ran; its process group was terminated.
+    TimedOut,
+}
+
+/// What a supervised command printed and how it ended. A command that ran out of time keeps
+/// its output too: the end of its log is the only clue to what it was stuck on.
+pub(crate) struct Log {
+    pub(crate) end: End,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+}
+
+impl Log {
+    /// The output of a command that finished; a timeout stays an error for callers that need
+    /// complete output.
+    fn into_output(self) -> Result<Output, Error> {
+        match self.end {
+            End::Exited(code) => Ok(Output {
+                code,
+                stdout: self.stdout,
+                stderr: self.stderr,
+            }),
+            End::TimedOut => Err(Error::TimedOut),
+        }
+    }
+
+    /// Standard output followed by standard error, as one text for people and agents.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn text(&self) -> String {
+        let mut text = String::from_utf8_lossy(&self.stdout).into_owned();
+        if !self.stderr.is_empty() {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&String::from_utf8_lossy(&self.stderr));
+        }
+        text
+    }
+}
+
 /// Thread-safe cancellation; a registered child is killed immediately, including at app quit.
 #[derive(Default)]
 pub struct Cancellation {
@@ -199,7 +250,9 @@ impl Pipes {
     }
 }
 
-/// Blocking: service stdin and both output pipes until EOF, cancellation or the deadline.
+/// Blocking: service stdin and both output pipes until the process exits and its output ends,
+/// or until cancellation or the deadline. Output still open after the exit is read for at most
+/// `EXIT_GRACE`, then whatever still holds the pipe is terminated with the process group.
 pub fn run(
     command: Command,
     input: &[u8],
@@ -229,16 +282,18 @@ pub fn run_with_progress(
         |output, bytes| Capture::Exact(limit).append(output, bytes),
         progress,
     )
+    .and_then(Log::into_output)
 }
 
-/// A test command can legitimately print megabytes. Retain its diagnostic tail without changing its exit status.
+/// A test command can legitimately print megabytes. Retain its diagnostic tail without
+/// changing its exit status, and keep that tail when the command runs out of time.
 #[cfg(feature = "desktop")]
 pub(crate) fn run_with_log_tail(
     command: Command,
     cancellation: &Cancellation,
     timeout: Duration,
     limit: usize,
-) -> Result<Output, Error> {
+) -> Result<Log, Error> {
     run_with_observed_log_tail(command, cancellation, timeout, limit, |_| {})
 }
 
@@ -251,7 +306,7 @@ pub(crate) fn run_with_observed_log_tail(
     timeout: Duration,
     limit: usize,
     mut observe: impl FnMut(&[u8]),
-) -> Result<Output, Error> {
+) -> Result<Log, Error> {
     supervise(
         command,
         &[],
@@ -288,6 +343,7 @@ pub(crate) fn stream_stdout(
         },
         |_, _| {},
     )
+    .and_then(Log::into_output)
 }
 
 /// Leaves a long-lived child nothing of Hive's but its standard streams.
@@ -358,7 +414,7 @@ fn supervise(
     capture: Capture,
     mut consume: impl FnMut(&mut Vec<u8>, &[u8]) -> Result<(), Error>,
     mut progress: impl FnMut(&[u8], &[u8]),
-) -> Result<Output, Error> {
+) -> Result<Log, Error> {
     let io_error = Error::Io;
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
@@ -393,13 +449,11 @@ fn supervise(
     let (mut output, mut errors, mut written) = (Vec::new(), Vec::new(), 0);
     let deadline = Instant::now() + timeout;
     let mut exit_recheck = EXIT_RECHECK;
+    // The exit code, and until when output is still awaited, once the process has exited.
+    let mut exit: Option<(Option<i32>, Instant)> = None;
     loop {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(Error::TimedOut);
         }
         let previous = (output.len(), errors.len());
         drain(&mut pipes.stdout, |chunk| consume(&mut output, chunk))?;
@@ -426,32 +480,61 @@ fn supervise(
                 pipes.stdin = None;
             }
         }
-        let exited = process::waitid(
-            WaitId::Pid(pid),
-            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
-        )
-        .map_err(|e| io_error(e.into()))?;
-        if let Some(status) = exited
-            && (status.exited() || status.killed() || status.dumped())
-            && pipes.output_closed()
-        {
-            running.exited = true;
+        if exit.is_none() {
+            let status = process::waitid(
+                WaitId::Pid(pid),
+                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+            )
+            .map_err(|e| io_error(e.into()))?;
+            if let Some(status) = status
+                && (status.exited() || status.killed() || status.dumped())
+            {
+                running.exited = true;
+                // Not bounded by the deadline: what the process wrote just before exiting is
+                // read on the next pass.
+                exit = Some((status.exit_status(), Instant::now() + EXIT_GRACE));
+            }
+        }
+        let now = Instant::now();
+        let end = match exit {
+            Some((code, until)) if pipes.output_closed() || now >= until => Some(End::Exited(code)),
+            None if now >= deadline => Some(End::TimedOut),
+            _ => None,
+        };
+        if let Some(end) = end {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            return Ok(Output {
-                code: status.exit_status(),
+            return Ok(Log {
+                end,
                 stdout: output,
                 stderr: errors,
             });
         }
-        if pipes.output_closed() {
-            // Nothing announces that a child became reapable, so look again shortly.
-            std::thread::sleep(exit_recheck.min(remaining));
-            exit_recheck = (exit_recheck * 2).min(WAIT_SLICE);
-        } else {
-            pipes.wait(WAIT_SLICE.min(remaining)).map_err(io_error)?;
-        }
+        let until = exit.map_or(deadline, |(_, until)| until);
+        wait_for_progress(
+            &pipes,
+            until.saturating_duration_since(now),
+            &mut exit_recheck,
+        )
+        .map_err(io_error)?;
+    }
+}
+
+/// Sleeps until a pipe can make progress, or briefly when both outputs are closed but the
+/// child cannot be reaped yet, never past `remaining`.
+fn wait_for_progress(
+    pipes: &Pipes,
+    remaining: Duration,
+    exit_recheck: &mut Duration,
+) -> io::Result<()> {
+    if pipes.output_closed() {
+        // Nothing announces that a child became reapable, so look again shortly.
+        std::thread::sleep((*exit_recheck).min(remaining));
+        *exit_recheck = (*exit_recheck * 2).min(WAIT_SLICE);
+        Ok(())
+    } else {
+        pipes.wait(WAIT_SLICE.min(remaining))
     }
 }
 
@@ -498,9 +581,31 @@ mod tests {
             3,
         )
         .unwrap();
-        assert_eq!(result.code, Some(19));
+        assert_eq!(result.end, End::Exited(Some(19)));
         assert_eq!(result.stdout, b"def");
         assert_eq!(result.stderr, b"456");
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_log_that_runs_out_of_time_keeps_what_the_command_printed() {
+        let control = Cancellation::default();
+        let log = run_with_log_tail(
+            Host::Local.command(
+                "/bin/sh",
+                &["-c", "printf started; printf waiting >&2; exec sleep 600"],
+                None,
+            ),
+            &control,
+            Duration::from_secs(3),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(log.end, End::TimedOut);
+        assert_eq!(log.stdout, b"started");
+        assert_eq!(log.stderr, b"waiting");
+        assert_eq!(log.text(), "started\nwaiting");
+        assert!(control.group.lock().unwrap().is_none());
     }
 
     #[cfg(feature = "desktop")]
@@ -619,11 +724,11 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_pipe_holders_cannot_outlive_the_deadline() {
+    fn a_command_still_running_at_the_deadline_times_out() {
         let control = Cancellation::default();
         let began = Instant::now();
         let result = run(
-            Host::Local.command("/bin/sh", &["-c", "sleep 30 & exit 0"], None),
+            Host::Local.command("/bin/sh", &["-c", "printf partial; exec sleep 30"], None),
             b"",
             &control,
             Duration::from_millis(50),
@@ -631,6 +736,25 @@ mod tests {
         );
         assert!(matches!(result, Err(Error::TimedOut)));
         assert!(began.elapsed() < Duration::from_secs(2));
+        assert!(control.group.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_process_left_holding_the_pipe_does_not_hold_a_finished_command() {
+        let control = Cancellation::default();
+        let began = Instant::now();
+        let output = run(
+            Host::Local.command("/bin/sh", &["-c", "printf done; sleep 30 & exit 4"], None),
+            b"",
+            &control,
+            Duration::from_secs(60),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(output.code, Some(4));
+        assert_eq!(output.stdout, b"done");
+        // The grace is one second; the deadline and the holder both last far longer.
+        assert!(began.elapsed() < Duration::from_secs(10));
         assert!(control.group.lock().unwrap().is_none());
     }
 

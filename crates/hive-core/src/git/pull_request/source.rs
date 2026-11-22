@@ -49,6 +49,8 @@ struct RemoteBranch {
 
 fn remote_branch(host: &Host, cwd: &Path) -> Result<RemoteBranch, GitError> {
     let head = status::read(host, cwd)?;
+    // An upstream whose remote-tracking ref is gone holds nothing to open a request from.
+    let published = head.tracked_upstream().is_some();
     let commit = head
         .oid
         .ok_or_else(|| GitError::Invalid("Create the first commit first.".into()))?;
@@ -57,7 +59,7 @@ fn remote_branch(host: &Host, cwd: &Path) -> Result<RemoteBranch, GitError> {
         .ok_or_else(|| GitError::Invalid("Check out a branch before opening a request.".into()))?;
     let unpublished =
         || GitError::Invalid("Publish this branch before opening its request.".into());
-    if head.upstream.is_none() {
+    if !published {
         return Err(unpublished());
     }
     // A branch that tracks a local one has nothing on a hosting service yet.

@@ -120,15 +120,111 @@ fn sync_refuses_a_branch_deleted_on_the_remote_instead_of_recreating_it() {
     // keeps the remote-tracking ref, so the last fetch still shows it.
     remote.git(&["update-ref", "-d", "refs/heads/feature"]);
     repo.git(&["fetch", "origin"]);
-    repo.write("feature", "two\n");
-    repo.commit();
-
+    // Nothing local to send: the panel offers neither Push nor Publish, so neither is advised.
     let error = repo.action(sync()).unwrap_err().to_string();
     assert!(
         error.contains("origin/feature was deleted on the remote"),
         "{error}"
     );
+    assert!(error.contains("git fetch --prune origin"), "{error}");
+    assert!(!error.contains("Push sends"), "{error}");
+
+    repo.write("feature", "two\n");
+    repo.commit();
+    let error = repo.action(sync()).unwrap_err().to_string();
+    assert!(
+        error.contains("origin/feature was deleted on the remote. Push sends feature there again"),
+        "{error}"
+    );
     assert!(remote.git(&["branch", "--list", "feature"]).is_empty());
+}
+
+#[test]
+fn a_branch_whose_upstream_was_pruned_is_unpublished_until_it_is_published_again() {
+    let (repo, remote) = published();
+    repo.git(&["switch", "-c", "feature"]);
+    repo.write("feature", "one\n");
+    repo.commit();
+    repo.git(&["push", "--set-upstream", "origin", "feature"]);
+    repo.write("feature", "two\n");
+    repo.commit();
+    // Deleted on the hosting service, and the stale remote-tracking ref pruned.
+    remote.git(&["update-ref", "-d", "refs/heads/feature"]);
+    repo.git(&["fetch", "--prune", "origin"]);
+
+    let read = || status::read(&Host::Local, &repo.0).unwrap();
+    let gone = read();
+    assert_eq!(gone.upstream.as_deref(), Some("origin/feature"));
+    assert!(gone.upstream_gone);
+    assert_eq!(gone.tracked_upstream(), None);
+
+    // Nothing to compare with or pull from: each refusal names the way out the panel offers.
+    let head = head(&repo);
+    let force_push = Action::ForcePush {
+        remote: "origin".into(),
+        expected: head.clone(),
+        head: head.clone(),
+    };
+    for action in [sync(), commit_and_sync(), Action::Pull, force_push] {
+        let error = repo.action(action.clone()).unwrap_err().to_string();
+        assert!(
+            error.contains("origin/feature does not exist on the remote")
+                && error.contains("Publish this branch"),
+            "{action:?}: {error}"
+        );
+    }
+    let preview = force_push_preview(&Host::Local, &repo.0, "origin").unwrap_err();
+    assert!(
+        preview.to_string().contains("Publish this branch"),
+        "{preview}"
+    );
+    assert_eq!(
+        repo.action(Action::Fetch("origin".into())).unwrap(),
+        Some(Synced::Fetched {
+            remote: "origin".into(),
+            incoming: None,
+        })
+    );
+    assert!(remote.git(&["branch", "--list", "feature"]).is_empty());
+
+    let publish = Action::Push {
+        remote: "origin".into(),
+        publish: true,
+    };
+    assert_eq!(
+        repo.action(publish).unwrap(),
+        Some(Synced::Published {
+            remote: "origin".into()
+        })
+    );
+    assert_eq!(head, remote.git(&["rev-parse", "feature"]));
+    let published = read();
+    assert_eq!(published.tracked_upstream(), Some("origin/feature"));
+    assert_eq!((published.ahead, published.behind), (0, 0));
+    assert_eq!(repo.action(sync()).unwrap(), synced(0, 0));
+}
+
+#[test]
+fn the_first_commit_of_a_cloned_empty_repository_is_published_not_pushed() {
+    // What `git clone` of an empty repository configures: an upstream nothing exists for.
+    let repo = Repo::new();
+    let remote = remote_for(&repo);
+    repo.git(&["config", "branch.main.remote", "origin"]);
+    repo.git(&["config", "branch.main.merge", "refs/heads/main"]);
+    repo.write("first", "first\n");
+    repo.commit();
+
+    let status = status::read(&Host::Local, &repo.0).unwrap();
+    assert_eq!(status.upstream.as_deref(), Some("origin/main"));
+    assert_eq!(status.tracked_upstream(), None);
+    let publish = Action::Push {
+        remote: "origin".into(),
+        publish: true,
+    };
+    repo.action(publish).unwrap();
+    assert_eq!(head(&repo), remote.git(&["rev-parse", "main"]));
+    let status = status::read(&Host::Local, &repo.0).unwrap();
+    assert_eq!(status.tracked_upstream(), Some("origin/main"));
 }
 
 #[test]

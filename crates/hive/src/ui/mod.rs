@@ -3,6 +3,7 @@
 pub(crate) mod agent_logo;
 pub mod app_menu;
 pub(crate) mod conflict_panel;
+pub(crate) mod destructive;
 pub(crate) mod diff_panel;
 pub(crate) mod editor_panel;
 pub(crate) mod excerpts;
