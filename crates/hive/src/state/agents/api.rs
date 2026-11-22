@@ -467,6 +467,9 @@ impl Agents {
         Ok((agent.status == AgentStatus::Working).then_some(found.id))
     }
 
+    /// `hive agent read`: the screen of a pane that runs an agent. A pane without one is the
+    /// user's own shell, and its scrollback (a printed `.env`, a token) is not for an agent
+    /// that was talked into asking for it.
     fn read_terminal(
         &self,
         target: &Address,
@@ -474,6 +477,7 @@ impl Agents {
         cx: &App,
     ) -> Result<Response, ApiError> {
         let found = self.resolve(target, cx)?;
+        self.agent(found.id).ok_or_else(|| no_agent(target))?;
         let lines = lines
             .unwrap_or(protocol::READ_LINES)
             .min(protocol::MAX_READ_LINES);
@@ -738,6 +742,61 @@ mod tests {
         Address, AgentKind, AgentStatus, ErrorCode, Pane, StartVerdict, Verdict, check_interrupt,
         check_start, settle, start_verdict,
     };
+    use gpui_kit as gpui;
+
+    #[gpui::test]
+    fn only_a_pane_that_runs_an_agent_can_be_read(cx: &mut gpui::TestAppContext) {
+        use super::{AgentSession, Agents, Host, Path, Response, TerminalSession};
+        use gpui_kit::AppContext as _;
+        use hive_core::terminal::{Terminal, TerminalSize};
+
+        let agents = cx.new(|cx| Agents::new(None, cx));
+        let mut pane = || {
+            let terminal =
+                Terminal::spawn(None, Some("/bin/cat"), TerminalSize::new(80, 24)).unwrap();
+            let session = cx.new(|_| TerminalSession::for_test(terminal));
+            agents.update(cx, |agents, cx| {
+                let terminal = session.read(cx).terminal().unwrap();
+                agents.watch(&session, &Host::Local, None, Path::new("/repo"), terminal);
+            });
+            session
+        };
+        // Both are open local panes; the poll saw an agent only in the second.
+        let (shell, agent) = (pane(), pane());
+        agents.update(cx, |agents, _| {
+            agents.by_worktree.insert(
+                (Host::Local, "/repo".into()),
+                vec![AgentSession {
+                    session: agent.entity_id(),
+                    kind: AgentKind::Codex,
+                    status: AgentStatus::Idle,
+                    reported: false,
+                    unread: false,
+                    title: None,
+                    name: None,
+                }],
+            );
+        });
+        agents.read_with(cx, |agents, cx| {
+            let target = |session: &gpui::Entity<TerminalSession>| {
+                Address::Terminal(session.entity_id().as_u64())
+            };
+            // The user's own shell may show secrets; it answers like `wait` and `interrupt`.
+            let refused = agents.read_terminal(&target(&shell), None, cx).unwrap_err();
+            assert_eq!(refused.code, ErrorCode::NoAgent);
+            assert_eq!(
+                refused.message,
+                agents
+                    .working_agent(&target(&shell), cx)
+                    .unwrap_err()
+                    .message
+            );
+            assert!(matches!(
+                agents.read_terminal(&target(&agent), Some(5), cx),
+                Ok(Response::Text { .. })
+            ));
+        });
+    }
 
     #[test]
     fn a_caller_cannot_ask_to_wait_past_the_protocol_ceiling() {
