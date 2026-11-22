@@ -605,6 +605,92 @@ fn a_step_failure_is_announced_once_until_it_changes(cx: &mut TestAppContext) {
     assert_eq!(seen.borrow().len(), 2);
 }
 
+/// Makes the fixture's planning attempt live in a pipeline pane the agents entity watches as
+/// one `kind` was launched in; returns what reports for that pane as the agent's hooks or
+/// OSC 7501 would.
+fn attach_agent(
+    pipelines: &Entity<Pipelines>,
+    kind: hive_core::agent::AgentKind,
+    cx: &mut TestAppContext,
+) -> impl Fn(hive_core::agent::AgentStatus, &mut TestAppContext) + use<> {
+    let (agents, id) = pipelines.update(cx, |p, cx| {
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        attach_session(p, ticket, cx);
+        let session = p.session(&ticket).unwrap();
+        session.update(cx, |session, _| {
+            let grant = hive_core::agent::api::ReportGrant::generate().unwrap();
+            session.report_grant = Some(grant);
+        });
+        p.agents.update(cx, |agents, cx| {
+            let terminal = session.read(cx).terminal().unwrap();
+            agents.watch(&session, &Host::Local, Some(kind), Path::new("/"), terminal);
+        });
+        (p.agents.clone(), session.entity_id())
+    });
+    move |status, cx| agents.update(cx, |agents, cx| agents.report_for_test(id, status, cx))
+}
+
+fn run_status(pipelines: &Entity<Pipelines>, cx: &mut TestAppContext) -> super::RunStatus {
+    pipelines.read_with(cx, |p, cx| p.status(p.run(42, cx).unwrap(), cx))
+}
+
+#[gpui::test]
+fn a_step_whose_agent_went_idle_after_working_without_a_report_waits_for_the_user(
+    cx: &mut TestAppContext,
+) {
+    use super::RunStatus;
+    use hive_core::agent::{AgentKind, AgentStatus};
+    let pipelines = recovering(cx);
+    let report = attach_agent(&pipelines, AgentKind::Codex, cx);
+    let redraws = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = redraws.clone();
+    let _observer =
+        cx.update(|cx| cx.observe(&pipelines, move |_, _| counter.set(counter.get() + 1)));
+
+    // Codex is idle until it takes its prompt: the step has only started.
+    report(AgentStatus::Idle, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+    report(AgentStatus::Working, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+    pipelines.read_with(cx, |p, cx| assert!(p.attention(cx).is_empty()));
+    let before = redraws.get();
+
+    // It ended the turn with a question in plain text instead of a report.
+    report(AgentStatus::Idle, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::NeedsYou);
+    pipelines.read_with(cx, |p, cx| {
+        let attention = p.attention(cx);
+        assert_eq!(attention.len(), 1);
+        assert!(attention[0].2.ends_with("Agent waits for a reply"));
+        // The request is announced by the agents; the slow-attempt notice stays out of it.
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        assert!(p.agent_waits(&ticket, cx));
+    });
+    assert!(redraws.get() > before, "views of the run are told");
+
+    // The user answered in the session; the next unreported turn asks again.
+    report(AgentStatus::Working, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+    report(AgentStatus::Idle, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::NeedsYou);
+}
+
+#[gpui::test]
+fn claude_code_going_idle_in_the_middle_of_a_turn_keeps_its_step_running(cx: &mut TestAppContext) {
+    use super::RunStatus;
+    use hive_core::agent::{AgentKind, AgentStatus};
+    let pipelines = recovering(cx);
+    let report = attach_agent(&pipelines, AgentKind::ClaudeCode, cx);
+    // `UserPromptSubmit`, then the `SessionStart` of a compaction.
+    report(AgentStatus::Working, cx);
+    report(AgentStatus::Idle, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+    pipelines.read_with(cx, |p, cx| assert!(p.attention(cx).is_empty()));
+    // Its own `done` is what ends a turn without a report.
+    report(AgentStatus::Done, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::NeedsYou);
+}
+
 #[gpui::test]
 fn an_attempt_past_its_time_budget_is_announced_once(cx: &mut TestAppContext) {
     use super::status::Waiting;

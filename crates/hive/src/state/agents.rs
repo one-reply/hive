@@ -85,6 +85,8 @@ struct Watched {
     program: ProgramStatus,
     /// The agent's own last report, from hooks or OSC 7501; it beats the output estimate.
     reported: Option<AgentStatus>,
+    /// The agent reported `working` since it appeared here; see [`recorded_status`].
+    worked: bool,
     /// The agent the last poll saw here. Another one, or none, means `reported` and `helper`
     /// described an agent that is gone.
     sighted: Option<AgentKind>,
@@ -227,6 +229,7 @@ impl Agents {
         self.watched.push(Watched {
             program: terminal.program_status(),
             reported: None,
+            worked: false,
             sighted: None,
             unread: false,
             helper: None,
@@ -314,6 +317,17 @@ impl Agents {
             .flat_map(|(path, sessions)| sessions.iter().map(move |session| (path, session)))
     }
 
+    /// The agent in terminal `id` reports `status`, as its hooks or OSC 7501 would.
+    #[cfg(test)]
+    pub(crate) fn report_for_test(
+        &mut self,
+        id: EntityId,
+        status: AgentStatus,
+        cx: &mut Context<Self>,
+    ) {
+        self.report_status(id, Some(status), cx);
+    }
+
     fn apply_reports(&mut self, reports: Vec<hooks::Report>, cx: &mut Context<Self>) {
         for report in reports {
             let Some(watched) = self
@@ -344,19 +358,27 @@ impl Agents {
 
     /// Applies a status the agent in terminal `id` reported itself; `None` withdraws it.
     fn report_status(&mut self, id: EntityId, status: Option<AgentStatus>, cx: &mut Context<Self>) {
-        if self.live_session(id, cx).is_none() {
+        let Some(session) = self.live_session(id, cx) else {
             return;
-        }
+        };
+        // The pane of a pipeline step, which owes Hive a stage report.
+        let step = session.read(cx).report_grant.is_some();
         let Some(watched) = self.watched.iter_mut().find(|watched| watched.id == id) else {
             return;
         };
-        if watched.reported != status {
-            cx.notify();
-        }
         let Some(status) = status else {
-            watched.reported = None;
+            if watched.reported.take().is_some() {
+                cx.notify();
+            }
+            watched.worked = false;
             return;
         };
+        let kind = watched.sighted.or(watched.probe.launched_agent);
+        let status = recorded_status(step, kind, watched.worked, status);
+        watched.worked |= status == AgentStatus::Working;
+        if watched.reported != Some(status) {
+            cx.notify();
+        }
         let previous = watched.reported;
         if update_status(&mut watched.reported, &mut watched.unread, status) {
             cx.emit(AgentsEvent::Attention(id, status));
@@ -424,6 +446,7 @@ impl Agents {
             let kind = seen.get(&watched.id).map(|(kind, _)| *kind);
             if watched.sighted.is_some() && watched.sighted != kind {
                 watched.reported = None;
+                watched.worked = false;
                 gone.extend(watched.helper.take());
             }
             watched.sighted = kind;
@@ -576,6 +599,31 @@ fn helper_event(previous: Option<AgentStatus>, status: AgentStatus) -> Option<He
     }
 }
 
+/// The status to record for what an agent reported about itself.
+///
+/// A pipeline step ends with a stage report, so its agent going `idle` once it has been
+/// `working` finished a response without one. Codex 0.167 was measured ending every turn this
+/// way, never with `done`. Recording that as [`AgentStatus::Done`] gives the step the request
+/// to answer, the attention mark and the notification a `done` gets; left as idle it would
+/// look busy until its time budget ran out.
+///
+/// The `idle` of an agent that has not worked yet is its start. Claude Code says `done`
+/// itself; its `idle` is a session start, which also follows `/clear` and a compaction in the
+/// middle of a turn. Outside a pipeline nothing is owed, and idle stays idle.
+fn recorded_status(
+    step: bool,
+    kind: Option<AgentKind>,
+    worked: bool,
+    status: AgentStatus,
+) -> AgentStatus {
+    let ended_turn = worked && status == AgentStatus::Idle && kind != Some(AgentKind::ClaudeCode);
+    if step && ended_turn {
+        AgentStatus::Done
+    } else {
+        status
+    }
+}
+
 /// Records `status` and returns whether it is news worth a notification.
 fn update_status(
     current: &mut Option<AgentStatus>,
@@ -594,8 +642,141 @@ fn update_status(
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentStatus, HelperEvent, helper_event, update_status};
+    use super::{
+        AgentKind, AgentStatus, AgentsEvent, HelperEvent, helper_event, recorded_status,
+        update_status,
+    };
     use gpui_kit as gpui;
+
+    #[test]
+    fn a_pipeline_steps_idle_after_work_is_recorded_as_a_finished_response() {
+        use AgentStatus::{Done, Failed, Idle, WaitingApproval, WaitingInput, Working};
+        let (codex, claude) = (Some(AgentKind::Codex), Some(AgentKind::ClaudeCode));
+        assert_eq!(recorded_status(true, codex, true, Idle), Done);
+        assert_eq!(recorded_status(true, None, true, Idle), Done);
+        // Codex is idle before it takes its prompt: the step has only started.
+        assert_eq!(recorded_status(true, codex, false, Idle), Idle);
+        // Claude Code goes idle on a session start, also in the middle of a turn.
+        assert_eq!(recorded_status(true, claude, true, Idle), Idle);
+        // An ordinary pane owes no report, so its idle agent is just idle.
+        assert_eq!(recorded_status(false, codex, true, Idle), Idle);
+
+        // Every other combination keeps what the agent said.
+        let kinds = [None, codex, Some(AgentKind::OpenCode), claude];
+        for status in [Working, Idle, WaitingInput, WaitingApproval, Done, Failed] {
+            for (step, worked) in [(false, false), (false, true), (true, false), (true, true)] {
+                for kind in kinds {
+                    let ended_turn = step && worked && status == Idle && kind != claude;
+                    assert_eq!(
+                        recorded_status(step, kind, worked, status),
+                        if ended_turn { Done } else { status },
+                        "step={step} {kind:?} worked={worked} {status:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A `/bin/cat` pane watched as one `kind` was launched in, with the statuses its agent is
+    /// recorded as and the attention it raised. The entity holds the pane weakly, so the
+    /// caller keeps it.
+    struct Pane {
+        agents: gpui::Entity<super::Agents>,
+        session: gpui::Entity<super::TerminalSession>,
+        attention: std::rc::Rc<std::cell::RefCell<Vec<AgentStatus>>>,
+        _subscription: gpui::Subscription,
+    }
+
+    impl Pane {
+        fn new(kind: AgentKind, step: bool, cx: &mut gpui::TestAppContext) -> Self {
+            use super::{Agents, Host, Path, Terminal, TerminalSession};
+            use gpui_kit::AppContext as _;
+            use hive_core::agent::api::ReportGrant;
+            use hive_core::terminal::TerminalSize;
+
+            let terminal =
+                Terminal::spawn(None, Some("/bin/cat"), TerminalSize::new(80, 24)).unwrap();
+            let session = cx.new(|_| {
+                let mut session = TerminalSession::for_test(terminal);
+                session.report_grant = step.then(|| ReportGrant::generate().unwrap());
+                session
+            });
+            let agents = cx.new(|cx| Agents::new(None, cx));
+            agents.update(cx, |agents, cx| {
+                let terminal = session.read(cx).terminal().unwrap();
+                agents.watch(&session, &Host::Local, Some(kind), Path::new("/"), terminal);
+            });
+            let attention = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let sink = attention.clone();
+            let subscription = cx.update(|cx| {
+                cx.subscribe(&agents, move |_, event: &AgentsEvent, _| {
+                    if let AgentsEvent::Attention(_, status) = event {
+                        sink.borrow_mut().push(*status);
+                    }
+                })
+            });
+            Self {
+                agents,
+                session,
+                attention,
+                _subscription: subscription,
+            }
+        }
+
+        /// Applies the agent's own report and returns the status it now has.
+        fn report(
+            &self,
+            status: Option<AgentStatus>,
+            cx: &mut gpui::TestAppContext,
+        ) -> Option<AgentStatus> {
+            let id = self.session.entity_id();
+            self.agents.update(cx, |agents, cx| {
+                agents.report_status(id, status, cx);
+                agents.recipient(id).status
+            })
+        }
+    }
+
+    #[gpui::test]
+    fn a_step_agent_that_goes_idle_after_working_needs_attention_once_per_turn(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use AgentStatus::{Done, Idle, WaitingApproval, Working};
+        let pane = Pane::new(AgentKind::Codex, true, cx);
+        // Each report with the status the agent then has.
+        for (report, recorded) in [
+            (Some(Idle), Some(Idle)),
+            (Some(Working), Some(Working)),
+            (Some(Idle), Some(Done)),
+            (Some(Idle), Some(Done)),
+            (Some(Working), Some(Working)),
+            (Some(WaitingApproval), Some(WaitingApproval)),
+            (Some(Idle), Some(Done)),
+            // A newer Codex says `done`, then goes idle once the user looked at it.
+            (Some(Done), Some(Done)),
+            (Some(Idle), Some(Done)),
+            // The program withdrew its status: whatever runs next starts over.
+            (None, None),
+            (Some(Idle), Some(Idle)),
+        ] {
+            assert_eq!(pane.report(report, cx), recorded, "after {report:?}");
+        }
+        assert_eq!(*pane.attention.borrow(), [Done, WaitingApproval, Done]);
+    }
+
+    #[gpui::test]
+    fn idle_after_work_stays_idle_outside_a_pipeline_and_for_claude_code(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use AgentStatus::{Idle, Working};
+        for (kind, step) in [(AgentKind::Codex, false), (AgentKind::ClaudeCode, true)] {
+            let pane = Pane::new(kind, step, cx);
+            for report in [Working, Idle, Working, Idle] {
+                assert_eq!(pane.report(Some(report), cx), Some(report), "{kind:?}");
+            }
+            assert!(pane.attention.borrow().is_empty(), "{kind:?}");
+        }
+    }
 
     #[gpui::test]
     fn background_request_changes_notify_observers_without_a_terminal_view(
