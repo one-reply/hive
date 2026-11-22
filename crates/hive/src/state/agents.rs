@@ -85,8 +85,10 @@ struct Watched {
     program: ProgramStatus,
     /// The agent's own last report, from hooks or OSC 7501; it beats the output estimate.
     reported: Option<AgentStatus>,
-    /// The agent reported `working` since it appeared here; see [`recorded_status`].
+    /// The agent reported `working` since it appeared here; see [`ended_turn`].
     worked: bool,
+    /// Since when the agent's own last report is `idle`.
+    idle_since: Option<Instant>,
     /// The agent the last poll saw here. Another one, or none, means `reported` and `helper`
     /// described an agent that is gone.
     sighted: Option<AgentKind>,
@@ -151,6 +153,7 @@ impl Agents {
                 if this
                     .update(cx, |this, cx| {
                         this.refresh_reports(cx);
+                        this.settle_turns(Instant::now(), cx);
                         this.apply(sightings, cx);
                         this.settle_calls(cx);
                     })
@@ -230,6 +233,7 @@ impl Agents {
             program: terminal.program_status(),
             reported: None,
             worked: false,
+            idle_since: None,
             sighted: None,
             unread: false,
             helper: None,
@@ -317,6 +321,42 @@ impl Agents {
             .flat_map(|(path, sessions)| sessions.iter().map(move |session| (path, session)))
     }
 
+    /// Ends the turn of each pipeline step whose agent went idle and stayed quiet; see
+    /// [`ended_turn`]. The agent never says so itself, so the poll does it for it, through the
+    /// same path as a reported `done`.
+    fn settle_turns(&mut self, now: Instant, cx: &mut Context<Self>) {
+        let ended: Vec<EntityId> = self
+            .watched
+            .iter()
+            .filter(|watched| {
+                let step = watched.session.upgrade().is_some_and(|session| {
+                    let session = session.read(cx);
+                    !session.exited && session.report_grant.is_some()
+                });
+                ended_turn(
+                    step,
+                    watched.sighted.or(watched.probe.launched_agent),
+                    watched.worked,
+                    watched.reported,
+                    watched
+                        .idle_since
+                        .map(|since| now.saturating_duration_since(since)),
+                    watched.probe.activity.is_streaming(now),
+                )
+            })
+            .map(|watched| watched.id)
+            .collect();
+        for id in ended {
+            self.report_status(id, Some(AgentStatus::Done), cx);
+        }
+    }
+
+    /// The poll looks at the panes once their agents have been quiet for the whole grace.
+    #[cfg(test)]
+    pub(crate) fn settle_quiet_turns_for_test(&mut self, cx: &mut Context<Self>) {
+        self.settle_turns(Instant::now() + TURN_END_GRACE, cx);
+    }
+
     /// The agent in terminal `id` reports `status`, as its hooks or OSC 7501 would.
     #[cfg(test)]
     pub(crate) fn report_for_test(
@@ -371,13 +411,15 @@ impl Agents {
                 cx.notify();
             }
             watched.worked = false;
+            watched.idle_since = None;
             return;
         };
         let kind = watched.sighted.or(watched.probe.launched_agent);
-        let status = recorded_status(step, kind, watched.worked, status);
+        let status = recorded_status(step, kind, watched.reported, status);
         watched.worked |= status == AgentStatus::Working;
         if watched.reported != Some(status) {
             cx.notify();
+            watched.idle_since = (status == AgentStatus::Idle).then(Instant::now);
         }
         let previous = watched.reported;
         if update_status(&mut watched.reported, &mut watched.unread, status) {
@@ -447,6 +489,7 @@ impl Agents {
             if watched.sighted.is_some() && watched.sighted != kind {
                 watched.reported = None;
                 watched.worked = false;
+                watched.idle_since = None;
                 gone.extend(watched.helper.take());
             }
             watched.sighted = kind;
@@ -599,25 +642,53 @@ fn helper_event(previous: Option<AgentStatus>, status: AgentStatus) -> Option<He
     }
 }
 
-/// The status to record for what an agent reported about itself.
+/// How long a pipeline step's agent stays `idle`, with a silent terminal, before its turn
+/// counts as over. An agent that goes idle in the middle of a turn reports `working` again or
+/// keeps printing well within it; the poll runs every [`POLL_INTERVAL`], so the request shows
+/// up to one tick later.
+const TURN_END_GRACE: Duration = Duration::from_secs(3);
+
+/// Whether an agent's kind ends its turns by going quiet instead of saying `done`. Claude
+/// Code says `done` itself; its `idle` is a session start, which also follows `/clear` and a
+/// compaction in the middle of a turn.
+fn rests_silently(kind: Option<AgentKind>) -> bool {
+    kind != Some(AgentKind::ClaudeCode)
+}
+
+/// Whether a pipeline step's agent ended its turn without saying so.
 ///
-/// A pipeline step ends with a stage report, so its agent going `idle` once it has been
-/// `working` finished a response without one. Codex 0.167 was measured ending every turn this
-/// way, never with `done`. Recording that as [`AgentStatus::Done`] gives the step the request
-/// to answer, the attention mark and the notification a `done` gets; left as idle it would
-/// look busy until its time budget ran out.
-///
-/// The `idle` of an agent that has not worked yet is its start. Claude Code says `done`
-/// itself; its `idle` is a session start, which also follows `/clear` and a compaction in the
-/// middle of a turn. Outside a pipeline nothing is owed, and idle stays idle.
-fn recorded_status(
+/// A step ends with a stage report, so an agent back at its prompt finished a response
+/// without one. Codex 0.167 was measured ending every turn with `idle`, never `done`; left as
+/// idle such a step looks busy until its time budget runs out. The turn counts as over once
+/// the agent has been `working` since it appeared (an earlier `idle` is its start) and has
+/// then stayed `idle` with a silent terminal for [`TURN_END_GRACE`]. Outside a pipeline
+/// nothing is owed, and idle stays idle.
+fn ended_turn(
     step: bool,
     kind: Option<AgentKind>,
     worked: bool,
+    reported: Option<AgentStatus>,
+    idle_for: Option<Duration>,
+    streaming: bool,
+) -> bool {
+    step && worked
+        && rests_silently(kind)
+        && reported == Some(AgentStatus::Idle)
+        && !streaming
+        && idle_for.is_some_and(|idle| idle >= TURN_END_GRACE)
+}
+
+/// The status to record for what an agent reported about itself. In a pipeline step a
+/// finished response stays finished when the agent then says `idle`: a newer Codex does so
+/// once the user has looked at its `done`, and one whose turn [`ended_turn`] repeats it.
+fn recorded_status(
+    step: bool,
+    kind: Option<AgentKind>,
+    previous: Option<AgentStatus>,
     status: AgentStatus,
 ) -> AgentStatus {
-    let ended_turn = worked && status == AgentStatus::Idle && kind != Some(AgentKind::ClaudeCode);
-    if step && ended_turn {
+    let finished = previous == Some(AgentStatus::Done) && status == AgentStatus::Idle;
+    if step && finished && rests_silently(kind) {
         AgentStatus::Done
     } else {
         status
@@ -643,34 +714,74 @@ fn update_status(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentKind, AgentStatus, AgentsEvent, HelperEvent, helper_event, recorded_status,
-        update_status,
+        AgentKind, AgentStatus, AgentsEvent, Duration, HelperEvent, Instant, TURN_END_GRACE,
+        ended_turn, helper_event, recorded_status, update_status,
     };
     use gpui_kit as gpui;
 
-    #[test]
-    fn a_pipeline_steps_idle_after_work_is_recorded_as_a_finished_response() {
-        use AgentStatus::{Done, Failed, Idle, WaitingApproval, WaitingInput, Working};
-        let (codex, claude) = (Some(AgentKind::Codex), Some(AgentKind::ClaudeCode));
-        assert_eq!(recorded_status(true, codex, true, Idle), Done);
-        assert_eq!(recorded_status(true, None, true, Idle), Done);
-        // Codex is idle before it takes its prompt: the step has only started.
-        assert_eq!(recorded_status(true, codex, false, Idle), Idle);
-        // Claude Code goes idle on a session start, also in the middle of a turn.
-        assert_eq!(recorded_status(true, claude, true, Idle), Idle);
-        // An ordinary pane owes no report, so its idle agent is just idle.
-        assert_eq!(recorded_status(false, codex, true, Idle), Idle);
+    const STATUSES: [AgentStatus; 6] = [
+        AgentStatus::Working,
+        AgentStatus::Idle,
+        AgentStatus::WaitingInput,
+        AgentStatus::WaitingApproval,
+        AgentStatus::Done,
+        AgentStatus::Failed,
+    ];
+    const KINDS: [Option<AgentKind>; 4] = [
+        None,
+        Some(AgentKind::Codex),
+        Some(AgentKind::OpenCode),
+        Some(AgentKind::ClaudeCode),
+    ];
 
-        // Every other combination keeps what the agent said.
-        let kinds = [None, codex, Some(AgentKind::OpenCode), claude];
-        for status in [Working, Idle, WaitingInput, WaitingApproval, Done, Failed] {
-            for (step, worked) in [(false, false), (false, true), (true, false), (true, true)] {
-                for kind in kinds {
-                    let ended_turn = step && worked && status == Idle && kind != claude;
+    #[test]
+    fn a_step_agent_ends_its_turn_by_staying_idle_and_silent_after_working() {
+        let codex = Some(AgentKind::Codex);
+        let idle = Some(AgentStatus::Idle);
+        let quiet = Some(TURN_END_GRACE);
+        assert!(ended_turn(true, codex, true, idle, quiet, false));
+        assert!(ended_turn(true, None, true, idle, quiet, false));
+
+        // Codex is idle before it takes its prompt: the step has only started.
+        assert!(!ended_turn(true, codex, false, idle, quiet, false));
+        // Idle a moment ago may be the middle of a turn; so may idle with output still coming.
+        let moment = Some(TURN_END_GRACE - Duration::from_millis(1));
+        assert!(!ended_turn(true, codex, true, idle, moment, false));
+        assert!(!ended_turn(true, codex, true, idle, quiet, true));
+        assert!(!ended_turn(true, codex, true, idle, None, false));
+        // Claude Code goes idle on a session start and says `done` itself.
+        let claude = Some(AgentKind::ClaudeCode);
+        assert!(!ended_turn(true, claude, true, idle, quiet, false));
+        // An ordinary pane owes no report.
+        assert!(!ended_turn(false, codex, true, idle, quiet, false));
+
+        // Nothing but a reported idle is rest, whatever else holds.
+        for reported in STATUSES.map(Some).into_iter().chain([None]) {
+            for kind in KINDS {
+                let rests = reported == idle && kind != claude;
+                assert_eq!(
+                    ended_turn(true, kind, true, reported, quiet, false),
+                    rests,
+                    "{kind:?} {reported:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_steps_finished_response_stays_finished_when_its_agent_says_idle() {
+        use AgentStatus::{Done, Idle};
+        let codex = Some(AgentKind::Codex);
+        assert_eq!(recorded_status(true, codex, Some(Done), Idle), Done);
+        // Without a finished response before it, idle is recorded as said.
+        for previous in STATUSES.map(Some).into_iter().chain([None]) {
+            for status in STATUSES {
+                for (step, kind) in [(true, codex), (false, codex), (true, KINDS[3])] {
+                    let kept = step && kind == codex && previous == Some(Done) && status == Idle;
                     assert_eq!(
-                        recorded_status(step, kind, worked, status),
-                        if ended_turn { Done } else { status },
-                        "step={step} {kind:?} worked={worked} {status:?}"
+                        recorded_status(step, kind, previous, status),
+                        if kept { Done } else { status },
+                        "step={step} {kind:?} {previous:?} -> {status:?}"
                     );
                 }
             }
@@ -735,33 +846,65 @@ mod tests {
                 agents.recipient(id).status
             })
         }
+
+        /// The poll's look at the pane `after` its last report; returns the agent's status.
+        fn poll(&self, after: Duration, cx: &mut gpui::TestAppContext) -> Option<AgentStatus> {
+            let id = self.session.entity_id();
+            self.agents.update(cx, |agents, cx| {
+                agents.settle_turns(Instant::now() + after, cx);
+                agents.recipient(id).status
+            })
+        }
     }
 
     #[gpui::test]
-    fn a_step_agent_that_goes_idle_after_working_needs_attention_once_per_turn(
+    fn a_step_agent_that_stays_idle_after_working_needs_attention_once_per_turn(
         cx: &mut gpui::TestAppContext,
     ) {
         use AgentStatus::{Done, Idle, WaitingApproval, Working};
         let pane = Pane::new(AgentKind::Codex, true, cx);
-        // Each report with the status the agent then has.
-        for (report, recorded) in [
-            (Some(Idle), Some(Idle)),
-            (Some(Working), Some(Working)),
-            (Some(Idle), Some(Done)),
-            (Some(Idle), Some(Done)),
-            (Some(Working), Some(Working)),
-            (Some(WaitingApproval), Some(WaitingApproval)),
-            (Some(Idle), Some(Done)),
-            // A newer Codex says `done`, then goes idle once the user looked at it.
-            (Some(Done), Some(Done)),
-            (Some(Idle), Some(Done)),
-            // The program withdrew its status: whatever runs next starts over.
-            (None, None),
-            (Some(Idle), Some(Idle)),
-        ] {
-            assert_eq!(pane.report(report, cx), recorded, "after {report:?}");
-        }
+        let (at_once, quiet) = (Duration::ZERO, TURN_END_GRACE);
+
+        // Codex is idle before it takes its prompt: however long, the step has only started.
+        assert_eq!(pane.report(Some(Idle), cx), Some(Idle));
+        assert_eq!(pane.poll(quiet, cx), Some(Idle));
+        assert_eq!(pane.report(Some(Working), cx), Some(Working));
+
+        // The turn ends once the agent has stayed idle and silent, not the moment it says so.
+        assert_eq!(pane.report(Some(Idle), cx), Some(Idle));
+        assert_eq!(pane.poll(at_once, cx), Some(Idle));
+        assert!(pane.attention.borrow().is_empty());
+        assert_eq!(pane.poll(quiet, cx), Some(Done));
+        assert_eq!(*pane.attention.borrow(), [Done]);
+        // Saying idle again, or the next poll, is the same finished response.
+        assert_eq!(pane.report(Some(Idle), cx), Some(Done));
+        assert_eq!(pane.poll(quiet, cx), Some(Done));
+        assert_eq!(*pane.attention.borrow(), [Done]);
+
+        // Idle in the middle of a turn: the agent works again before the grace is over.
+        assert_eq!(pane.report(Some(Working), cx), Some(Working));
+        assert_eq!(pane.report(Some(Idle), cx), Some(Idle));
+        assert_eq!(pane.report(Some(Working), cx), Some(Working));
+        assert_eq!(pane.poll(quiet, cx), Some(Working));
+        assert_eq!(*pane.attention.borrow(), [Done]);
+
+        // A dialog the user dismissed, then rest.
+        assert_eq!(
+            pane.report(Some(WaitingApproval), cx),
+            Some(WaitingApproval)
+        );
+        assert_eq!(pane.report(Some(Idle), cx), Some(Idle));
+        assert_eq!(pane.poll(quiet, cx), Some(Done));
+        // A newer Codex says `done`, then goes idle once the user looked at it.
+        assert_eq!(pane.report(Some(Done), cx), Some(Done));
+        assert_eq!(pane.report(Some(Idle), cx), Some(Done));
         assert_eq!(*pane.attention.borrow(), [Done, WaitingApproval, Done]);
+
+        // The program withdrew its status: whatever runs next starts over.
+        assert_eq!(pane.report(None, cx), None);
+        assert_eq!(pane.report(Some(Idle), cx), Some(Idle));
+        assert_eq!(pane.poll(quiet, cx), Some(Idle));
+        assert_eq!(pane.attention.borrow().len(), 3);
     }
 
     #[gpui::test]
@@ -774,6 +917,7 @@ mod tests {
             for report in [Working, Idle, Working, Idle] {
                 assert_eq!(pane.report(Some(report), cx), Some(report), "{kind:?}");
             }
+            assert_eq!(pane.poll(TURN_END_GRACE, cx), Some(Idle), "{kind:?}");
             assert!(pane.attention.borrow().is_empty(), "{kind:?}");
         }
     }

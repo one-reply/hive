@@ -727,29 +727,50 @@ fn a_step_failure_is_announced_once_until_it_changes(cx: &mut TestAppContext) {
     assert_eq!(seen.borrow().len(), 2);
 }
 
-/// Makes the fixture's planning attempt live in a pipeline pane the agents entity watches as
-/// one `kind` was launched in; returns what reports for that pane as the agent's hooks or
-/// OSC 7501 would.
-fn attach_agent(
-    pipelines: &Entity<Pipelines>,
-    kind: hive_core::agent::AgentKind,
-    cx: &mut TestAppContext,
-) -> impl Fn(hive_core::agent::AgentStatus, &mut TestAppContext) + use<> {
-    let (agents, id) = pipelines.update(cx, |p, cx| {
-        let ticket = p.run(42, cx).unwrap().pending()[0];
-        attach_session(p, ticket, cx);
-        let session = p.session(&ticket).unwrap();
-        session.update(cx, |session, _| {
-            let grant = hive_core::agent::api::ReportGrant::generate().unwrap();
-            session.report_grant = Some(grant);
+/// The agent of the fixture's planning attempt, as the agents entity sees it.
+struct StepAgent {
+    agents: Entity<crate::state::agents::Agents>,
+    pane: gpui::EntityId,
+}
+
+impl StepAgent {
+    /// Makes the attempt live in a pipeline pane watched as one `kind` was launched in.
+    fn attach(
+        pipelines: &Entity<Pipelines>,
+        kind: hive_core::agent::AgentKind,
+        cx: &mut TestAppContext,
+    ) -> Self {
+        pipelines.update(cx, |p, cx| {
+            let ticket = p.run(42, cx).unwrap().pending()[0];
+            attach_session(p, ticket, cx);
+            let session = p.session(&ticket).unwrap();
+            session.update(cx, |session, _| {
+                let grant = hive_core::agent::api::ReportGrant::generate().unwrap();
+                session.report_grant = Some(grant);
+            });
+            p.agents.update(cx, |agents, cx| {
+                let terminal = session.read(cx).terminal().unwrap();
+                agents.watch(&session, &Host::Local, Some(kind), Path::new("/"), terminal);
+            });
+            Self {
+                agents: p.agents.clone(),
+                pane: session.entity_id(),
+            }
+        })
+    }
+
+    /// The agent reports `status`, as its hooks or OSC 7501 would.
+    fn report(&self, status: hive_core::agent::AgentStatus, cx: &mut TestAppContext) {
+        self.agents.update(cx, |agents, cx| {
+            agents.report_for_test(self.pane, status, cx)
         });
-        p.agents.update(cx, |agents, cx| {
-            let terminal = session.read(cx).terminal().unwrap();
-            agents.watch(&session, &Host::Local, Some(kind), Path::new("/"), terminal);
-        });
-        (p.agents.clone(), session.entity_id())
-    });
-    move |status, cx| agents.update(cx, |agents, cx| agents.report_for_test(id, status, cx))
+    }
+
+    /// Time passes with the agent silent, and the poll looks again.
+    fn stay_quiet(&self, cx: &mut TestAppContext) {
+        self.agents
+            .update(cx, |agents, cx| agents.settle_quiet_turns_for_test(cx));
+    }
 }
 
 fn run_status(pipelines: &Entity<Pipelines>, cx: &mut TestAppContext) -> super::RunStatus {
@@ -763,22 +784,31 @@ fn a_step_whose_agent_went_idle_after_working_without_a_report_waits_for_the_use
     use super::RunStatus;
     use hive_core::agent::{AgentKind, AgentStatus};
     let pipelines = recovering(cx);
-    let report = attach_agent(&pipelines, AgentKind::Codex, cx);
+    let agent = StepAgent::attach(&pipelines, AgentKind::Codex, cx);
     let redraws = std::rc::Rc::new(std::cell::Cell::new(0));
     let counter = redraws.clone();
     let _observer =
         cx.update(|cx| cx.observe(&pipelines, move |_, _| counter.set(counter.get() + 1)));
 
-    // Codex is idle until it takes its prompt: the step has only started.
-    report(AgentStatus::Idle, cx);
+    // Codex is idle until it takes its prompt: the step has only started, however long.
+    agent.report(AgentStatus::Idle, cx);
+    agent.stay_quiet(cx);
     assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
-    report(AgentStatus::Working, cx);
+    agent.report(AgentStatus::Working, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+
+    // Idle in the middle of a turn: it works again before anyone is asked anything.
+    agent.report(AgentStatus::Idle, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+    agent.report(AgentStatus::Working, cx);
+    agent.stay_quiet(cx);
     assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
     pipelines.read_with(cx, |p, cx| assert!(p.attention(cx).is_empty()));
     let before = redraws.get();
 
     // It ended the turn with a question in plain text instead of a report.
-    report(AgentStatus::Idle, cx);
+    agent.report(AgentStatus::Idle, cx);
+    agent.stay_quiet(cx);
     assert_eq!(run_status(&pipelines, cx), RunStatus::NeedsYou);
     pipelines.read_with(cx, |p, cx| {
         let attention = p.attention(cx);
@@ -791,9 +821,10 @@ fn a_step_whose_agent_went_idle_after_working_without_a_report_waits_for_the_use
     assert!(redraws.get() > before, "views of the run are told");
 
     // The user answered in the session; the next unreported turn asks again.
-    report(AgentStatus::Working, cx);
+    agent.report(AgentStatus::Working, cx);
     assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
-    report(AgentStatus::Idle, cx);
+    agent.report(AgentStatus::Idle, cx);
+    agent.stay_quiet(cx);
     assert_eq!(run_status(&pipelines, cx), RunStatus::NeedsYou);
 }
 
@@ -802,14 +833,15 @@ fn claude_code_going_idle_in_the_middle_of_a_turn_keeps_its_step_running(cx: &mu
     use super::RunStatus;
     use hive_core::agent::{AgentKind, AgentStatus};
     let pipelines = recovering(cx);
-    let report = attach_agent(&pipelines, AgentKind::ClaudeCode, cx);
+    let agent = StepAgent::attach(&pipelines, AgentKind::ClaudeCode, cx);
     // `UserPromptSubmit`, then the `SessionStart` of a compaction.
-    report(AgentStatus::Working, cx);
-    report(AgentStatus::Idle, cx);
+    agent.report(AgentStatus::Working, cx);
+    agent.report(AgentStatus::Idle, cx);
+    agent.stay_quiet(cx);
     assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
     pipelines.read_with(cx, |p, cx| assert!(p.attention(cx).is_empty()));
     // Its own `done` is what ends a turn without a report.
-    report(AgentStatus::Done, cx);
+    agent.report(AgentStatus::Done, cx);
     assert_eq!(run_status(&pipelines, cx), RunStatus::NeedsYou);
 }
 
