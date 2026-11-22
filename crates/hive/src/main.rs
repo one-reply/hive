@@ -111,6 +111,12 @@ fn workspace_window(cx: &App) -> Option<WindowHandle<Root>> {
 }
 
 fn main() -> std::process::ExitCode {
+    // Before anything names the data folder: a debug build told to stay out of `~/.hive` with
+    // a path it cannot use must not start there, or anywhere else, instead.
+    if let Err(error) = hive_core::state::dev_data_dir() {
+        eprintln!("hive: {error}. Nothing was started and no data folder was touched.");
+        return std::process::ExitCode::from(2);
+    }
     let args: Vec<_> = std::env::args_os().collect();
     if let Some(code) = cli::run(&args, cli::Origin::detect(&args)) {
         return code;
@@ -146,6 +152,10 @@ fn main() -> std::process::ExitCode {
                     // Taken before reading, so a second Hive never saves over the first.
                     let access = hive_core::state::Access::acquire();
                     let loaded = hive_core::state::State::load();
+                    // After the read, so the copy a recovery reports is among those kept.
+                    if loaded.is_ok() {
+                        hive_core::state::tidy(&access);
+                    }
                     // Recovery must be available before any restored buffer becomes editable.
                     let recovery = state::store::load_drafts(&access);
                     // Restored panes start with the window; they need the sockets already.

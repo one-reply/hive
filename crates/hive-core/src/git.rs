@@ -20,6 +20,8 @@ mod rebase;
 pub mod review_notes;
 pub mod reviewed;
 pub mod status;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod verification;
 
 /// Keep persisted revision tokens compatible across digest library versions.
@@ -36,7 +38,7 @@ pub(crate) fn sha256_hex(digest: &sha2::digest::Output<sha2::Sha256>) -> String 
 /// A `git` invocation that could not run or exited non-zero.
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
-    /// The process could not be started (no `git`, no `ssh`, bad cwd).
+    /// The process could not be started (no `git`, no `ssh`, bad cwd), so nothing changed.
     #[error("failed to run `git {command}` on {host:?}: {source}")]
     Spawn {
         command: String,
@@ -234,7 +236,7 @@ fn environment(host: &Host, cwd: &Path, program: &str, args: &[&str]) -> std::pr
     command
 }
 
-/// A command that ran out of time or output, was stopped, or could not start.
+/// A command that could not start, ran out of time or output, or was stopped.
 fn unfinished(
     host: &Host,
     cwd: &Path,
@@ -243,7 +245,13 @@ fn unfinished(
     mutation: bool,
 ) -> GitError {
     match source {
-        command::Error::TooLarge(limit) if !mutation => GitError::TooLarge(limit),
+        // Nothing ran, so there is no outcome to doubt, whatever the command would have done.
+        command::Error::Spawn(source) => GitError::Spawn {
+            command: args.join(" "),
+            host: host.clone(),
+            source,
+        },
+        command::Error::TooLarge(limit) => GitError::TooLarge(limit),
         source => GitError::Interrupted {
             command: args.join(" "),
             host: host.clone(),
@@ -269,22 +277,34 @@ fn invoke(
     // A mutation carries its stop switch; a query has none and the shorter deadline.
     stop: Option<&Cancellation>,
 ) -> Result<Vec<u8>, GitError> {
-    let mutation = stop.is_some();
-    let unstoppable = Cancellation::default();
     let command = environment(host, cwd, "git", args);
-    let timeout = if mutation {
-        MUTATION_TIMEOUT
-    } else {
-        READ_TIMEOUT
+    let input = input.unwrap_or_default();
+    let output = match stop {
+        Some(stop) if stop.is_cancelled() => {
+            // Stopped between two commands of one action. What ran before has its own
+            // result; this one did not run, so it leaves nothing to verify.
+            return Err(GitError::Interrupted {
+                command: args.join(" "),
+                host: host.clone(),
+                cwd: cwd.to_owned(),
+                source: command::Error::Cancelled,
+                mutation: false,
+                guidance: "Stopped before this command started; it changed nothing.",
+            });
+        }
+        // A hook prints as much as it likes. Ending Git for that would stop it halfway through
+        // the change, so the command runs on and only the end of its output is kept.
+        Some(stop) => command::run_keeping_tail(command, input, stop, MUTATION_TIMEOUT, limit),
+        None => command::run(
+            command,
+            input,
+            &Cancellation::default(),
+            READ_TIMEOUT,
+            limit,
+        ),
     };
-    let output = command::run(
-        command,
-        input.unwrap_or_default(),
-        stop.unwrap_or(&unstoppable),
-        timeout,
-        limit,
-    )
-    .map_err(|source| unfinished(host, cwd, args, source, mutation))?;
+    let mutation = stop.is_some();
+    let output = output.map_err(|source| unfinished(host, cwd, args, source, mutation))?;
     finish(host, cwd, args, output, allow_exit_one, mutation)
 }
 

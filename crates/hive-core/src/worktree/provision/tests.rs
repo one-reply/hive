@@ -11,7 +11,7 @@ impl Scratch {
         let scratch = Self(root.canonicalize().unwrap());
         fs::create_dir(scratch.source()).unwrap();
         fs::create_dir(scratch.checkout()).unwrap();
-        git(&scratch.source(), &["init", "-q", "-b", "main"]);
+        crate::git::testing::init(&scratch.source());
         scratch
     }
 
@@ -41,21 +41,7 @@ impl Drop for Scratch {
 }
 
 fn git(path: &Path, args: &[&str]) {
-    let output = Host::Local
-        .command("git", args, Some(path))
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_AUTHOR_NAME", "Test")
-        .env("GIT_COMMITTER_NAME", "Test")
-        .env("GIT_AUTHOR_EMAIL", "test@example.test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.test")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    crate::git::testing::run(path, args);
 }
 
 #[test]

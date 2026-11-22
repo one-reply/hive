@@ -196,16 +196,9 @@ fn inaccessible_parent_and_partial_delete_keep_surviving_data() {
 fn batched_ignore_rules_preserve_spaces_and_unicode() {
     let f = Fixture::new();
     let git = |args: &[&str]| {
-        assert!(
-            Host::Local
-                .command("git", args, Some(&f.0))
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
+        crate::git::testing::run(&f.0, args);
     };
-    git(&["init", "-q"]);
+    crate::git::testing::init(&f.0);
     fs::write(f.0.join(".gitignore"), "ignored/\n*.cache\n").unwrap();
     fs::create_dir(f.0.join("ignored")).unwrap();
     fs::write(f.0.join("ignored/з пробілом.rs"), "x").unwrap();

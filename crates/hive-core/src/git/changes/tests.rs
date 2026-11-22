@@ -1,7 +1,7 @@
 use super::*;
 use crate::git::{
     diff::{self, DiffSource},
-    history, run,
+    history, run, testing,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,6 +15,7 @@ mod discard;
 mod force_push;
 mod line_stats;
 mod rebase;
+mod stop;
 mod sync;
 
 struct Repo(PathBuf);
@@ -27,15 +28,11 @@ impl Repo {
         ));
         std::fs::create_dir_all(&path).unwrap();
         let repo = Self(path.canonicalize().unwrap());
-        repo.git(&["init", "-b", "main"]);
-        repo.git(&["config", "user.name", "Hive Test"]);
-        repo.git(&["config", "user.email", "hive@example.invalid"]);
-        repo.git(&["config", "commit.gpgsign", "false"]);
-        repo.git(&["config", "core.hooksPath", "/dev/null"]);
+        testing::init(&repo.0);
         repo
     }
     fn git(&self, args: &[&str]) -> String {
-        run(&Host::Local, &self.0, args).unwrap()
+        testing::run(&self.0, args)
     }
     fn write(&self, path: &str, value: &str) {
         std::fs::write(self.0.join(path), value).unwrap();
@@ -50,36 +47,13 @@ impl Repo {
     /// Commits with a fixed committer date, so branch ordering is deterministic.
     fn commit_at(&self, date: &str) {
         self.git(&["add", "-A"]);
-        let status = std::process::Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "fixture"])
+        let status = testing::git(&self.0, &["commit", "--allow-empty", "-m", "fixture"])
             .env("GIT_COMMITTER_DATE", date)
             .env("GIT_AUTHOR_DATE", date)
-            .current_dir(&self.0)
             .status()
             .unwrap();
         assert!(status.success());
     }
-}
-
-#[test]
-fn a_stopped_commit_is_an_interrupted_mutation_and_quick_mutations_ignore_the_stop() {
-    let repo = Repo::new();
-    repo.write("a.txt", "one\n");
-    let stop = Cancellation::default();
-    stop.cancel();
-    let stage = Action::Stage(vec!["a.txt".into()]);
-    assert!(execute(&Host::Local, &repo.0, &stage, &stop).is_ok());
-    let error = execute(
-        &Host::Local,
-        &repo.0,
-        &Action::Commit("add a".into()),
-        &stop,
-    )
-    .unwrap_err();
-    assert!(error.outcome_unknown(), "{error}");
-    assert!(error.to_string().contains("Command cancelled"), "{error}");
-    // Nothing ran: the file is still staged and no commit exists.
-    assert!(repo.git(&["status", "--porcelain"]).starts_with("A  a.txt"));
 }
 
 #[test]
@@ -166,10 +140,9 @@ fn names_and_messages_that_are_not_utf8_never_fail_status_history_or_branches() 
     let mut cacheinfo = OsString::from(format!("100644,{blob},"));
     cacheinfo.push(OsStr::from_bytes(b"caf\xe9.txt"));
     let git = |args: &[&OsStr], env: &[(&str, &OsStr)]| {
-        let output = std::process::Command::new("git")
+        let output = testing::git(&repo.0, &[])
             .args(args)
             .envs(env.iter().copied())
-            .current_dir(&repo.0)
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
@@ -279,18 +252,7 @@ fn colleague(remote: &Repo) -> Repo {
 
 /// Makes the hook `name` of `repo` fail with a recognizable message.
 fn reject_hook(repo: &Repo, name: &str) {
-    let hooks = repo.0.join(".git/hooks");
-    std::fs::create_dir_all(&hooks).unwrap();
-    let hook = hooks.join(name);
-    std::fs::write(&hook, "#!/bin/sh\necho rejected-by-fixture >&2\nexit 1\n").unwrap();
-    assert!(
-        Host::Local
-            .command("chmod", &["+x", hook.to_str().unwrap()], None)
-            .status()
-            .unwrap()
-            .success()
-    );
-    repo.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+    testing::hook(&repo.0, name, "echo rejected-by-fixture >&2\nexit 1\n");
 }
 
 #[test]
@@ -741,8 +703,27 @@ fn every_action_that_runs_hooks_or_asks_a_remote_can_be_stopped() {
     for action in slow {
         assert!(action.is_stoppable(), "{action:?}");
     }
+    // A checkout runs `post-checkout` and long-running filters such as LFS.
+    let checkouts = [
+        Action::Switch("main".into()),
+        Action::CreateBranch {
+            name: "feature".into(),
+            base: "main".into(),
+            track: false,
+        },
+        Action::AbortOperation,
+    ];
+    for action in checkouts {
+        assert!(action.is_stoppable(), "{action:?}");
+    }
     assert!(!Action::Stage(vec![]).is_stoppable());
-    assert!(!Action::AbortOperation.is_stoppable());
+    assert!(
+        !Action::DeleteBranch {
+            name: "feature".into(),
+            force: false
+        }
+        .is_stoppable()
+    );
 }
 
 #[test]

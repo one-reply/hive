@@ -13,8 +13,7 @@ impl Scratch {
     fn lane(&self, name: &str) -> Lane {
         let path = self.0.join(name);
         fs::create_dir(&path).unwrap();
-        git(&path, &["init", "-q", "-b", "main"]);
-        git(&path, &["config", "core.hooksPath", "/dev/null"]);
+        crate::git::testing::init(&path);
         fs::write(path.join("contract"), "original\n").unwrap();
         git(&path, &["add", "contract"]);
         git(&path, &["commit", "-qm", "base"]);
@@ -34,21 +33,7 @@ impl Drop for Scratch {
     }
 }
 fn git(path: &Path, args: &[&str]) {
-    let output = Host::Local
-        .command("git", args, Some(path))
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_AUTHOR_NAME", "Test")
-        .env("GIT_COMMITTER_NAME", "Test")
-        .env("GIT_AUTHOR_EMAIL", "test@example.test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.test")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    crate::git::testing::run(path, args);
 }
 #[test]
 fn multi_repo_checks_and_acceptance_use_task_worktrees_and_report_new_files() {

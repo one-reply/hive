@@ -113,17 +113,15 @@ fn remote_terminal_uses_remote_cwd_and_never_local_current_dir() {
 
 #[test]
 fn local_command_runs_in_the_login_environment() {
-    let login = environment::parse(
-        b"__HIVE_ENVIRONMENT_BEGIN__HIVE_LOGIN_SHELL_TEST=1\0__HIVE_ENVIRONMENT_END__",
-    )
-    .expect("markers are present");
-    environment::install(login);
+    // The environment the Git tests install is the one login environment of this process;
+    // a second one here would win or lose by the order the tests happen to run in.
+    crate::git::testing::isolate();
     let cmd = Host::Local.command("git", &["status"], None);
     let value = cmd
         .get_envs()
-        .find(|(key, _)| *key == "HIVE_LOGIN_SHELL_TEST")
+        .find(|(key, _)| *key == "GIT_CONFIG_GLOBAL")
         .and_then(|(_, value)| value);
-    assert_eq!(value, Some(std::ffi::OsStr::new("1")));
+    assert_eq!(value, Some(std::ffi::OsStr::new("/dev/null")));
 }
 
 /// `name` in `dir`, executable or not.

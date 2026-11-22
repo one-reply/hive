@@ -1,5 +1,6 @@
 //! Branch discovery and conservative checkout operations.
 use super::{GitError, READ_LIMIT, bytes, conflicts, run, status};
+use crate::command::Cancellation;
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -94,7 +95,14 @@ pub fn resolve(host: &Host, cwd: &Path, reference: &str) -> Result<String, GitEr
     )
 }
 
-/// Preferred review base; no implicit fetch is performed.
+/// The branch work is compared with and new work starts from unless the user picks another:
+/// the remote's default branch (`origin/HEAD`) when the branch it names exists, else the
+/// first of `origin/main`, `origin/master`, `main` and `master` that does. Always a full ref,
+/// so a tag of the same name cannot stand in. `None` when the repository has none of them.
+///
+/// The one rule for the review base and for a new worktree's start. No fetch is performed.
+/// Only a missing `origin/HEAD` moves on to the fallbacks: a Git that could not answer is an
+/// error, so nothing is silently based on the wrong commit.
 pub fn default_base(
     host: &Host,
     cwd: &Path,
@@ -156,19 +164,22 @@ pub fn require_clean(host: &Host, cwd: &Path) -> Result<(), GitError> {
 }
 
 /// Switch an existing local branch. Git enforces worktree occupancy again at execution.
-pub fn switch(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {
+/// `stop` ends the checkout, which runs `post-checkout` and content filters.
+pub fn switch(host: &Host, cwd: &Path, name: &str, stop: &Cancellation) -> Result<(), GitError> {
     validate_name(host, cwd, name)?;
     require_clean(host, cwd)?;
-    super::run_mutation(host, cwd, &["switch", "--no-guess", name]).map(drop)
+    super::run_stoppable(host, cwd, &["switch", "--no-guess", name], stop).map(drop)
 }
 
-/// Create and switch to a branch, optionally tracking a selected remote ref.
+/// Create and switch to a branch, optionally tracking a selected remote ref. `stop` ends the
+/// checkout, as for [`switch`].
 pub fn create(
     host: &Host,
     cwd: &Path,
     name: &str,
     base: &str,
     track: bool,
+    stop: &Cancellation,
 ) -> Result<(), GitError> {
     validate_name(host, cwd, name)?;
     let oid = resolve(host, cwd, base)?;
@@ -182,11 +193,12 @@ pub fn create(
         ));
     }
     require_clean(host, cwd)?;
-    if track {
-        super::run_mutation(host, cwd, &["switch", "--track", "-c", name, base]).map(drop)
+    let args = if track {
+        ["switch", "--track", "-c", name, base]
     } else {
-        super::run_mutation(host, cwd, &["switch", "--no-track", "-c", name, &oid]).map(drop)
-    }
+        ["switch", "--no-track", "-c", name, &oid]
+    };
+    super::run_stoppable(host, cwd, &args, stop).map(drop)
 }
 
 /// Whether every commit of the local branch `name` is reachable from HEAD, as `git branch -d`
@@ -314,22 +326,19 @@ mod tests {
     #[test]
     fn well_known_branches_are_found_beside_tags_of_the_same_name() {
         use super::{default_base, list};
-        use crate::{git::run, host::Host};
+        use crate::{git::testing, host::Host};
 
         let path = std::env::temp_dir().join(format!("hive-branches-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).unwrap();
+        testing::init(&path);
         for args in [
-            &["init", "-b", "develop"][..],
-            &["config", "user.name", "Hive Test"],
-            &["config", "user.email", "hive@example.invalid"],
-            &["config", "commit.gpgsign", "false"],
-            &["commit", "--allow-empty", "-m", "fixture"],
+            &["commit", "--allow-empty", "-m", "fixture"][..],
+            &["branch", "-m", "develop"],
             &["branch", "main"],
             &["tag", "develop"],
             &["tag", "main"],
         ] {
-            run(&Host::Local, &path, args).unwrap();
+            testing::run(&path, args);
         }
         let branches = list(&Host::Local, &path).unwrap();
         let names: Vec<_> = branches.iter().map(|b| b.name.as_str()).collect();

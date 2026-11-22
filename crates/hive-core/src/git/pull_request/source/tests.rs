@@ -16,20 +16,12 @@ impl Repo {
         ));
         std::fs::create_dir_all(&path).unwrap();
         let repo = Self(path.canonicalize().unwrap());
-        for args in [
-            &["init", "-b", "main"][..],
-            &["config", "user.name", "Hive Test"],
-            &["config", "user.email", "hive@example.invalid"],
-            &["config", "commit.gpgsign", "false"],
-            &["config", "core.hooksPath", "/dev/null"],
-        ] {
-            repo.git(args);
-        }
+        git::testing::init(&repo.0);
         repo
     }
 
     fn git(&self, args: &[&str]) -> String {
-        git::run(&Host::Local, &self.0, args).unwrap()
+        git::testing::run(&self.0, args)
     }
 
     fn commit(&self, path: &str, content: &str) {

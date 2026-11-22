@@ -17,8 +17,10 @@ pub fn inspect(host: &Host, cwd: &Path, action: Option<&Action>) -> Result<Strin
     };
     let staged = status.files.iter().filter(|f| f.staged.is_some()).count();
     let unstaged = status.files.iter().filter(|f| f.unstaged.is_some()).count();
+    // An interrupted switch or new branch is settled by which branch is checked out now.
+    let branch = status.branch.as_deref().unwrap_or("none (detached HEAD)");
     let mut report = format!(
-        "Current HEAD: {head}\nIndex: {staged} staged files; working tree: {unstaged} changed files."
+        "Branch: {branch}\nCurrent HEAD: {head}\nIndex: {staged} staged files; working tree: {unstaged} changed files."
     );
     let pushed = match action {
         Some(

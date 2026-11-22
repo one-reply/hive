@@ -33,6 +33,17 @@ pub struct Environment {
 }
 
 impl Environment {
+    /// An environment of exactly these variables, for a test that needs one without a shell.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn of<'a>(vars: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        Self {
+            vars: vars
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        }
+    }
+
     /// Every `KEY=VALUE` pair, ready for [`Command::envs`].
     pub fn iter(&self) -> impl Iterator<Item = (&OsStr, &OsStr)> {
         self.vars

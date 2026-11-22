@@ -19,8 +19,6 @@ const SECURITY_ITEM_NOT_FOUND: i32 = 44;
 const CLAUDE_LOGIN: &str = "claude login";
 const CODEX_LOGIN: &str = "codex login";
 const CURSOR_LOGIN: &str = "cursor-agent login";
-/// `agy` signs in on its first interactive run; it has no separate login command.
-const ANTIGRAVITY_LOGIN: &str = "agy";
 
 #[derive(thiserror::Error, Clone, Debug, PartialEq, Eq)]
 pub enum CredentialError {
@@ -149,60 +147,6 @@ fn cursor_session_from(
     })
 }
 
-/// Blocking: the Google access token Antigravity saved at sign-in. `agy` keeps it through
-/// `go-keyring` (Keychain service `gemini`, account `antigravity`), or in
-/// `~/.gemini/antigravity-cli/antigravity-oauth-token` when it cannot use the keyring.
-/// Only a running Antigravity renews it, so an expired one asks for a run of `agy`.
-pub fn antigravity_access_token() -> Result<String, CredentialError> {
-    let raw = match keychain_item("gemini", Some("antigravity"))? {
-        Some(raw) => raw,
-        None => {
-            std::fs::read_to_string(home()?.join(".gemini/antigravity-cli/antigravity-oauth-token"))
-                .map_err(|_| CredentialError::NotLoggedIn(ANTIGRAVITY_LOGIN))?
-        }
-    };
-    antigravity_token_from(&raw, SystemTime::now())
-}
-
-/// `go-keyring` stores either the JSON itself or `go-keyring-base64:` and its base64;
-/// the token sits at the top level or under `token`, in snake or camel case.
-fn antigravity_token_from(raw: &str, now: SystemTime) -> Result<String, CredentialError> {
-    let raw = raw.trim();
-    let json = match raw.strip_prefix("go-keyring-base64:") {
-        Some(encoded) => {
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(encoded.trim())
-                .map_err(|e| CredentialError::Malformed(e.to_string()))?;
-            String::from_utf8(bytes).map_err(|e| CredentialError::Malformed(e.to_string()))?
-        }
-        None => raw.to_owned(),
-    };
-    let root: Value =
-        serde_json::from_str(&json).map_err(|e| CredentialError::Malformed(e.to_string()))?;
-    let token = match &root["token"] {
-        nested @ Value::Object(_) => nested,
-        _ => &root,
-    };
-    let access_token = ["access_token", "accessToken"]
-        .iter()
-        .filter_map(|key| token[key].as_str())
-        .find(|value| !value.trim().is_empty())
-        .ok_or(CredentialError::NotLoggedIn(ANTIGRAVITY_LOGIN))?;
-    let expiry = ["expiry", "expires_at", "expiresAt"]
-        .iter()
-        .find_map(|key| token[key].as_str())
-        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok());
-    if expiry.is_some_and(|expiry| expiry.timestamp() < unix_seconds(now)) {
-        return Err(CredentialError::Expired(ANTIGRAVITY_LOGIN));
-    }
-    Ok(access_token.trim().to_owned())
-}
-
-fn unix_seconds(time: SystemTime) -> i64 {
-    time.duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs() as i64)
-}
-
 /// Blocking: the password of a generic Keychain item, `None` when there is no such item or
 /// no `security` tool on this platform. A refused or stalled lookup is reported, not hidden.
 fn keychain_item(service: &str, account: Option<&str>) -> Result<Option<String>, CredentialError> {
@@ -220,7 +164,9 @@ fn keychain_item(service: &str, account: Option<&str>) -> Result<Option<String>,
         KEYCHAIN_OUTPUT_LIMIT,
     ) {
         Ok(output) => keychain_password(output),
-        Err(command::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(command::Error::Spawn(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(None)
+        }
         Err(error) => {
             tracing::warn!(service, %error, "keychain lookup failed");
             Err(CredentialError::Unavailable(error.to_string()))
@@ -337,38 +283,6 @@ mod tests {
                 Err(CredentialError::Malformed(_))
             ));
         }
-    }
-
-    #[test]
-    fn antigravity_token_reads_every_saved_shape() {
-        let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let nested =
-            r#"{"email":"me","token":{"access_token":"at-1","expiry":"2030-01-02T03:04:05Z"}}"#;
-        assert_eq!(antigravity_token_from(nested, now).unwrap(), "at-1");
-        assert_eq!(
-            antigravity_token_from(r#"{"accessToken":" at-2 "}"#, now).unwrap(),
-            "at-2"
-        );
-        let wrapped = format!(
-            "go-keyring-base64:{}",
-            base64::engine::general_purpose::STANDARD.encode(r#"{"access_token":"at-3"}"#)
-        );
-        assert_eq!(antigravity_token_from(&wrapped, now).unwrap(), "at-3");
-        assert_eq!(
-            antigravity_token_from(
-                r#"{"access_token":"at","expiry":"2020-01-01T00:00:00Z"}"#,
-                now
-            ),
-            Err(CredentialError::Expired(ANTIGRAVITY_LOGIN))
-        );
-        assert_eq!(
-            antigravity_token_from(r#"{"token":{"refresh_token":"rt"}}"#, now),
-            Err(CredentialError::NotLoggedIn(ANTIGRAVITY_LOGIN))
-        );
-        assert!(matches!(
-            antigravity_token_from("go-keyring-base64:!!", now),
-            Err(CredentialError::Malformed(_))
-        ));
     }
 
     #[test]

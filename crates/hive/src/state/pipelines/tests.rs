@@ -1108,20 +1108,12 @@ impl TempRepository {
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         let repository = Self(path.canonicalize().unwrap());
-        for args in [
-            &["init", "-b", "main"][..],
-            &["config", "user.name", "Hive Test"],
-            &["config", "user.email", "hive@example.invalid"],
-            &["config", "commit.gpgsign", "false"],
-            &["config", "core.hooksPath", "/dev/null"],
-        ] {
-            repository.git(args);
-        }
+        hive_core::git::testing::init(&repository.0);
         repository
     }
 
     fn git(&self, args: &[&str]) {
-        hive_core::git::run(&Host::Local, &self.0, args).unwrap();
+        hive_core::git::testing::run(&self.0, args);
     }
 
     fn commit(&self, file: &str) {

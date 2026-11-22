@@ -227,7 +227,6 @@ mod tests {
     use hive_core::files::{FileError, Snapshot};
     use hive_core::{host::Host, projects::Target, state::StateError};
     use std::path::{Path, PathBuf};
-    use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -248,7 +247,7 @@ mod tests {
             ));
             std::fs::create_dir_all(&path).unwrap();
             let fixture = Self(path.canonicalize().unwrap());
-            fixture.git(&["init", "-q", "-b", "main", "--template="]);
+            hive_core::git::testing::init(&fixture.0);
             fixture.commit(base);
             fixture.git(&["checkout", "-q", "-b", "feature"]);
             fixture.commit(theirs);
@@ -258,21 +257,7 @@ mod tests {
             fixture
         }
         fn run(&self, args: &[&str]) -> std::process::Output {
-            Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=Hive Test",
-                    "-c",
-                    "user.email=hive@example.invalid",
-                    "-c",
-                    "commit.gpgsign=false",
-                    "-c",
-                    "core.autocrlf=false",
-                ])
-                .args(args)
-                .current_dir(&self.0)
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_NOSYSTEM", "1")
+            hive_core::git::testing::git(&self.0, args)
                 .output()
                 .unwrap()
         }

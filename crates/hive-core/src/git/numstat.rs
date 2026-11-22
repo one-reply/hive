@@ -325,14 +325,8 @@ mod tests {
     #[test]
     fn local_settings_enable_the_batch_path_and_parse_git_size_units() {
         let root = std::env::temp_dir().join(format!("hive-numstat-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        super::super::run(&Host::Local, &root, &["init", "-q"]).unwrap();
-        super::super::run(
-            &Host::Local,
-            &root,
-            &["config", "core.bigFileThreshold", "512m"],
-        )
-        .unwrap();
+        crate::git::testing::init(&root);
+        crate::git::testing::run(&root, &["config", "core.bigFileThreshold", "512m"]);
         std::fs::write(root.join("new.txt"), "one\nlast").unwrap();
         let status = super::super::status::read(&Host::Local, &root).unwrap();
         let (attributes, threshold) = untracked_settings(&Host::Local, &root, &status).unwrap();

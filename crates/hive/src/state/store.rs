@@ -9,6 +9,8 @@ use std::time::Instant;
 
 mod recovery;
 mod startup;
+#[cfg(test)]
+mod tests;
 mod writer;
 use startup::{Opened, open};
 use writer::Writer;
@@ -314,12 +316,22 @@ impl Store {
         access: Access,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::start(open(loaded, access), State::save, cx)
+    }
+
+    /// `save` writes a snapshot to disk; a test passes its own to stay out of the data folder.
+    fn start(
+        opened: Opened,
+        save: impl Fn(&State) -> Result<(), StateError> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let Opened {
             state,
             notice,
             access,
             keeps_drafts,
-        } = open(loaded, access);
+            rewrite,
+        } = opened;
         let drafts = keeps_drafts.then(recovery_directory);
         let (recovery, recovery_errors) =
             recovery::RecoveryWriter::new(cx.background_executor(), drafts);
@@ -342,7 +354,10 @@ impl Store {
                 _errors: None,
             };
         };
-        let (writer, errors) = Writer::new(cx.background_executor());
+        let (writer, errors) = Writer::with_save(cx.background_executor(), save);
+        if rewrite {
+            writer.submit(state.clone());
+        }
         let errors = cx.spawn(async move |this, cx| {
             while let Ok(error) = errors.recv().await {
                 if this.update(cx, |_, cx| cx.emit(SaveError(error))).is_err() {

@@ -1,5 +1,5 @@
 //! Unmerged paths and the operation that left them: whole-file resolution, abort and continue.
-use super::{GitError, READ_TIMEOUT, changes, run, run_mutation, run_stoppable, status};
+use super::{GitError, READ_TIMEOUT, changes, run, run_stoppable, status};
 use crate::command::{self, Cancellation};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
@@ -236,9 +236,9 @@ pub(super) fn resolve_with(
 }
 
 /// Abandon the unfinished operation and restore the state it started from.
-pub(super) fn abort(host: &Host, cwd: &Path) -> Result<(), GitError> {
+pub(super) fn abort(host: &Host, cwd: &Path, stop: &Cancellation) -> Result<(), GitError> {
     let operation = require_operation(host, cwd)?;
-    run_mutation(host, cwd, &[operation.command(), "--abort"]).map(drop)
+    run_stoppable(host, cwd, &[operation.command(), "--abort"], stop).map(drop)
 }
 
 /// Conclude the unfinished operation, or advance it to its next stop.

@@ -156,7 +156,10 @@ fn verification_of_an_interrupted_push_still_reports_when_the_remote_cannot_be_r
     };
 
     let report = crate::git::verification::inspect(&Host::Local, &repo.0, Some(&action)).unwrap();
-    assert!(report.contains("Current HEAD:"), "{report}");
+    assert!(
+        report.starts_with("Branch: main\nCurrent HEAD:"),
+        "{report}"
+    );
     assert!(
         report.contains("Remote origin: could not be read"),
         "{report}"

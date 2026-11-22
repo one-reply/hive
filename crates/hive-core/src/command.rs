@@ -30,7 +30,10 @@ const EXIT_GRACE: Duration = Duration::from_secs(1);
 /// Failure while supervising a command. Adapters add command, host and path context.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Process or pipe IO failed.
+    /// The process could not be started, so nothing of the command ran.
+    #[error("{0}")]
+    Spawn(#[source] io::Error),
+    /// Pipe or process IO failed after the process started.
     #[error("{0}")]
     Io(#[from] io::Error),
     /// The owner cancelled this command.
@@ -161,7 +164,6 @@ fn nonblocking(fd: &impl AsFd) -> io::Result<()> {
 #[derive(Clone, Copy)]
 enum Capture {
     Exact(usize),
-    #[cfg(feature = "desktop")]
     LogTail(usize),
 }
 
@@ -171,7 +173,6 @@ impl Capture {
             Self::Exact(limit) if output.len().saturating_add(bytes.len()) > limit => {
                 Err(Error::TooLarge(limit))
             }
-            #[cfg(feature = "desktop")]
             Self::LogTail(limit) if output.len().saturating_add(bytes.len()) > limit => {
                 let start = output
                     .len()
@@ -281,6 +282,28 @@ pub fn run_with_progress(
         Capture::Exact(limit),
         |output, bytes| Capture::Exact(limit).append(output, bytes),
         progress,
+    )
+    .and_then(Log::into_output)
+}
+
+/// Like [`run`] for a command that is run for what it changes: past `limit` each stream keeps
+/// only its end, and the command goes on. Ending it for printing too much, as [`run`] does,
+/// would stop it halfway through the change.
+pub(crate) fn run_keeping_tail(
+    command: Command,
+    input: &[u8],
+    cancellation: &Cancellation,
+    timeout: Duration,
+    limit: usize,
+) -> Result<Output, Error> {
+    supervise(
+        command,
+        input,
+        cancellation,
+        timeout,
+        Capture::LogTail(limit),
+        |output, bytes| Capture::LogTail(limit).append(output, bytes),
+        |_, _| {},
     )
     .and_then(Log::into_output)
 }
@@ -424,7 +447,7 @@ fn supervise(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = command.spawn().map_err(io_error)?;
+    let child = command.spawn().map_err(Error::Spawn)?;
     let pid = Pid::from_child(&child);
     {
         let mut group = cancellation.group.lock().unwrap_or_else(|e| e.into_inner());

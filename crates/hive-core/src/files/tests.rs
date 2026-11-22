@@ -190,17 +190,9 @@ fn exact_limit_empty_save_readonly_and_mixed_line_endings() {
 fn git_index_excludes_ignored_but_tree_keeps_them() {
     let f = Fixture::new();
     let git = |args: &[&str]| {
-        let output = Host::Local
-            .command("git", args, Some(&f.0))
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        crate::git::testing::run(&f.0, args);
     };
-    git(&["init", "-q"]);
+    crate::git::testing::init(&f.0);
     fs::write(f.0.join(".gitignore"), "ignored\n").unwrap();
     fs::write(f.0.join("ignored"), "ignored").unwrap();
     fs::write(f.0.join("tracked"), "tracked").unwrap();

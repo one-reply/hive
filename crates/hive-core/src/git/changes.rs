@@ -74,12 +74,16 @@ pub enum Action {
 
 impl Action {
     /// Whether [`execute`] can end this action early: it runs hooks or talks to a remote, so
-    /// it may take minutes. The rest are local and finish at once.
+    /// it may take minutes. A checkout counts: it runs `post-checkout` and content filters
+    /// such as LFS, which download. The rest are local and finish at once.
     pub fn is_stoppable(&self) -> bool {
         matches!(
             self,
             Action::Commit(_)
                 | Action::CommitAndPush { .. }
+                | Action::Switch(_)
+                | Action::CreateBranch { .. }
+                | Action::AbortOperation
                 | Action::Fetch(_)
                 | Action::Pull
                 | Action::Push { .. }
@@ -232,9 +236,10 @@ pub(super) fn paths(
 /// Remote operations and a finished rebase report what they changed; local mutations and a
 /// replay that stopped on a conflict return `None`.
 ///
-/// `stop` ends the commands that run hooks or talk to a remote (commit, fetch, pull, push,
-/// sync, rebase and continuing an operation); the error then says the outcome is unknown. The
-/// quick local mutations ignore it.
+/// `stop` ends the commands that run hooks or talk to a remote (commit, checkout, fetch, pull,
+/// push, sync, rebase, and aborting or continuing an operation). A command ended midway
+/// reports an unknown outcome; one the stop reached before it started reports that it changed
+/// nothing. The quick local mutations ignore the stop.
 pub fn execute(
     host: &Host,
     cwd: &Path,
@@ -296,13 +301,13 @@ pub fn execute(
                 },
             )
         }
-        Action::Switch(name) => branches::switch(host, cwd, name),
+        Action::Switch(name) => branches::switch(host, cwd, name, stop),
         Action::DeleteBranch { name, force } => branches::delete(host, cwd, name, *force),
         Action::CreateBranch { name, base, track } => {
-            branches::create(host, cwd, name, base, *track)
+            branches::create(host, cwd, name, base, *track, stop)
         }
         Action::ResolveWith { path, side } => conflicts::resolve_with(host, cwd, path, *side),
-        Action::AbortOperation => conflicts::abort(host, cwd),
+        Action::AbortOperation => conflicts::abort(host, cwd, stop),
         Action::ContinueOperation => conflicts::continue_operation(host, cwd, stop),
     };
     local.map(|()| None)

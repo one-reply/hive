@@ -11,6 +11,9 @@ pub(super) struct Opened {
     pub(super) access: Option<Access>,
     /// Whether this session keeps editor drafts in the data folder; see [`keeps_drafts`].
     pub(super) keeps_drafts: bool,
+    /// Whether to save `state` at once: parts of the file were unreadable, and until it is
+    /// rewritten every launch finds the same damage and reports it again.
+    pub(super) rewrite: bool,
 }
 
 /// Whether a session with this access keeps editor drafts in the data folder. In a folder
@@ -35,6 +38,7 @@ pub(super) fn open(loaded: Result<LoadedState, StateError>, access: Access) -> O
                 )),
                 access: None,
                 keeps_drafts,
+                rewrite: false,
             };
         }
     };
@@ -52,6 +56,7 @@ pub(super) fn open(loaded: Result<LoadedState, StateError>, access: Access) -> O
             notice: recovery,
             access: None,
             keeps_drafts,
+            rewrite: false,
         };
     }
     if !access.can_write() {
@@ -60,10 +65,13 @@ pub(super) fn open(loaded: Result<LoadedState, StateError>, access: Access) -> O
             notice: Some(join(recovery, HELD_NOTICE)),
             access: None,
             keeps_drafts,
+            rewrite: false,
         };
     }
     Opened {
         state: loaded.state,
+        // The copy the notice names holds what the rewrite drops.
+        rewrite: recovery.is_some(),
         notice: recovery,
         access: Some(access),
         keeps_drafts,
@@ -174,6 +182,30 @@ mod tests {
     }
 
     #[test]
+    fn a_file_with_unreadable_parts_is_rewritten_at_once_by_the_session_that_may_save() {
+        let damaged = || {
+            [
+                RecoveryCause::Corrupt,
+                RecoveryCause::Partial(vec!["settings".into()]),
+            ]
+        };
+        for cause in damaged() {
+            let opened = open(loaded(Some(cause)), Access::Unguarded);
+            assert!(opened.rewrite && opened.access.is_some());
+        }
+        // Nothing to repair, or not this session's file to write.
+        assert!(!open(loaded(None), Access::Unguarded).rewrite);
+        for cause in damaged() {
+            assert!(!open(loaded(Some(cause)), Access::Held).rewrite);
+        }
+        let newer = open(
+            loaded(Some(RecoveryCause::Newer { version: 7 })),
+            Access::Unguarded,
+        );
+        assert!(!newer.rewrite);
+    }
+
+    #[test]
     fn a_failed_load_is_never_saved() {
         let opened = open(
             Err(StateError::Io {
@@ -183,7 +215,7 @@ mod tests {
             }),
             Access::Unguarded,
         );
-        assert!(opened.access.is_none());
+        assert!(opened.access.is_none() && !opened.rewrite);
         assert!(opened.notice.unwrap().contains("Saving is disabled"));
     }
 }

@@ -1,4 +1,5 @@
-use super::{ProjectRef, State, hive_dir};
+use super::retention::{Backup, TEMPORARY_EXTENSION, TEMPORARY_PREFIX, preserve};
+use super::{ProjectRef, State, hive_dir, lenient};
 use crate::{host::Host, settings::Settings};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
@@ -88,24 +89,7 @@ struct Envelope<'a> {
     unknown: &'a Map<String, Value>,
 }
 
-/// `state.json` as read: each section parsed on its own, so one bad section cannot reset
-/// the others. Any JSON object parses into this.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Sections {
-    version: u32,
-    settings: Option<Value>,
-    projects: Option<Value>,
-    workspace: Option<Value>,
-    pipelines: Option<Value>,
-    last_seen_release: Option<Value>,
-    reviewed: Option<Value>,
-    /// Sections a newer Hive added without a version bump; carried back unchanged.
-    #[serde(flatten)]
-    unknown: Map<String, Value>,
-}
-
-fn io_error(operation: &'static str, path: &Path, source: io::Error) -> StateError {
+pub(super) fn io_error(operation: &'static str, path: &Path, source: io::Error) -> StateError {
     StateError::Io {
         operation,
         path: path.to_owned(),
@@ -126,40 +110,36 @@ impl State {
         let Some(bytes) = read_optional(&path)? else {
             return Self::migrate(dir);
         };
-        let sections: Sections = match serde_json::from_slice(&bytes) {
-            Ok(sections) => sections,
-            Err(error) => {
-                let backup = preserve(dir, &bytes, "state.corrupt")?;
-                tracing::warn!(?path, ?backup, %error, "preserved corrupt state; using defaults");
-                return Ok(LoadedState {
-                    state: Self::default(),
-                    recovery: Some(Recovery {
-                        backup,
-                        cause: RecoveryCause::Corrupt,
-                    }),
-                });
-            }
+        // Each section is parsed on its own, so one bad section cannot reset the others. Only a
+        // JSON object is a state file: a struct would also read from an array, by position.
+        let Ok(Value::Object(mut file)) = serde_json::from_slice(&bytes) else {
+            let backup = preserve(dir, &bytes, Backup::Corrupt)?;
+            tracing::warn!(?path, ?backup, "preserved corrupt state; using defaults");
+            return Ok(LoadedState {
+                state: Self::default(),
+                recovery: Some(Recovery {
+                    backup,
+                    cause: RecoveryCause::Corrupt,
+                }),
+            });
         };
         let mut lost = Vec::new();
+        // `null` is how some tools write "nothing here"; it is an absent section, not a bad one.
+        let mut take = |name: &str| file.remove(name).filter(|value| !value.is_null());
+        let version = version(take("version"), &mut lost);
         let state = State {
-            settings: section("settings", sections.settings, &mut lost),
-            projects: projects(sections.projects, &mut lost),
-            workspace: section("workspace", sections.workspace, &mut lost),
-            pipelines: pipelines(sections.pipelines, &mut lost),
-            last_seen_release: section("last_seen_release", sections.last_seen_release, &mut lost),
-            reviewed: reviewed(sections.reviewed, &mut lost),
-            unknown_sections: sections.unknown,
+            settings: lenient::fields("settings", take("settings"), &mut lost),
+            projects: projects(take("projects"), &mut lost),
+            workspace: lenient::fields("workspace", take("workspace"), &mut lost),
+            pipelines: pipelines(take("pipelines"), &mut lost),
+            last_seen_release: section("last_seen_release", take("last_seen_release"), &mut lost),
+            reviewed: reviewed(take("reviewed"), &mut lost),
+            // What is left is what a newer Hive added without a version bump.
+            unknown_sections: file,
         };
-        let cause = if sections.version > SCHEMA_VERSION {
-            tracing::warn!(
-                ?path,
-                version = sections.version,
-                ?lost,
-                "state written by a newer Hive"
-            );
-            Some(RecoveryCause::Newer {
-                version: sections.version,
-            })
+        let cause = if version > SCHEMA_VERSION {
+            tracing::warn!(?path, version, ?lost, "state written by a newer Hive");
+            Some(RecoveryCause::Newer { version })
         } else if lost.is_empty() {
             None
         } else {
@@ -168,7 +148,7 @@ impl State {
         };
         let recovery = match cause {
             Some(cause) => Some(Recovery {
-                backup: preserve(dir, &bytes, "state.original")?,
+                backup: preserve(dir, &bytes, Backup::Original)?,
                 cause,
             }),
             None => None,
@@ -227,7 +207,7 @@ impl State {
         })?;
         let dir = path.parent().expect("state path has a parent");
         fs::create_dir_all(dir).map_err(|e| io_error("create directory", dir, e))?;
-        let (temporary, mut file) = unique_file(dir, ".state", "tmp")?;
+        let (temporary, mut file) = unique_file(dir, TEMPORARY_PREFIX, TEMPORARY_EXTENSION)?;
         let result = (|| {
             match fs::metadata(path) {
                 Ok(metadata) => file
@@ -373,7 +353,28 @@ fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::L
     library
 }
 
-/// A top-level section, or its default when absent or unreadable.
+/// The file's schema version; absent means it predates versions. A number written as text is
+/// read as the number: a hand edit must not cost the whole file. Anything else is reported and
+/// the file is read as this version's own, which is what an unversioned file gets.
+fn version(value: Option<Value>, lost: &mut Vec<String>) -> u32 {
+    let version = match &value {
+        None => Some(0),
+        Some(Value::Number(number)) => number.as_u64(),
+        Some(Value::String(text)) => text.trim().parse().ok(),
+        Some(_) => None,
+    };
+    match version {
+        // A version past `u32` is still a newer one.
+        Some(version) => u32::try_from(version).unwrap_or(u32::MAX),
+        None => {
+            tracing::warn!(?value, "unreadable state version");
+            lost.push("version".to_owned());
+            0
+        }
+    }
+}
+
+/// A top-level value that is not a group of fields, or its default when absent or unreadable.
 fn section<T: Default + DeserializeOwned>(
     name: &str,
     value: Option<Value>,
@@ -420,21 +421,11 @@ fn reviewed(value: Option<Value>, lost: &mut Vec<String>) -> Vec<crate::git::rev
     let Some(value) = value else {
         return Vec::new();
     };
-    super::lenient::elements(value).unwrap_or_else(|error: serde_json::Error| {
+    lenient::elements(value).unwrap_or_else(|error: serde_json::Error| {
         tracing::warn!(section = "reviewed", %error, "unreadable state section reset to defaults");
         lost.push("reviewed".to_owned());
         Vec::new()
     })
-}
-
-/// Writes an exact copy of the file as found, durably, before anything replaces it.
-fn preserve(dir: &Path, bytes: &[u8], prefix: &str) -> Result<PathBuf, StateError> {
-    let (backup, mut file) = unique_file(dir, prefix, "json")?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|e| io_error("back up state to", &backup, e))?;
-    sync_directory(dir)?;
-    Ok(backup)
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, StateError> {
@@ -445,7 +436,11 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, StateError> {
     }
 }
 
-fn unique_file(dir: &Path, prefix: &str, extension: &str) -> Result<(PathBuf, File), StateError> {
+pub(super) fn unique_file(
+    dir: &Path,
+    prefix: &str,
+    extension: &str,
+) -> Result<(PathBuf, File), StateError> {
     loop {
         let sequence = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
         let path = dir.join(format!(
@@ -465,11 +460,14 @@ fn unique_file(dir: &Path, prefix: &str, extension: &str) -> Result<(PathBuf, Fi
     }
 }
 
-fn sync_directory(dir: &Path) -> Result<(), StateError> {
+pub(super) fn sync_directory(dir: &Path) -> Result<(), StateError> {
     File::open(dir)
         .and_then(|f| f.sync_all())
         .map_err(|e| io_error("sync directory", dir, e))
 }
+
+#[cfg(test)]
+mod compatibility_tests;
 
 #[cfg(test)]
 mod tests {
@@ -869,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn one_unreadable_project_or_section_is_reset_reported_and_backed_up() {
+    fn one_unreadable_project_or_field_is_reset_reported_and_backed_up() {
         let fixture = Fixture::new();
         let original = br#"{"settings":{"sidebar_width":"wide"},
             "projects":[{"path":"/a"},{"path":"/b","host":{"kind":"teleport"}},{"path":"/c"}],
@@ -891,9 +889,182 @@ mod tests {
         let recovery = loaded.recovery.unwrap();
         assert_eq!(
             recovery.cause,
-            RecoveryCause::Partial(vec!["settings".into(), "project /b".into()])
+            RecoveryCause::Partial(vec!["settings.sidebar_width".into(), "project /b".into()])
         );
         assert_eq!(fs::read(&recovery.backup).unwrap(), original);
+    }
+
+    #[test]
+    fn one_unreadable_setting_resets_only_itself() {
+        use crate::settings::ThemeChoice;
+        let fixture = Fixture::new();
+        let original = br#"{"version":6,"settings":{"sidebar_width":"wide","theme":"dark",
+            "git_panel_open":false,"terminal_font_size":15.0,
+            "files":{"language_tools":false,"show_hidden":false,"font_size":"big"},
+            "commit_message":{"prompt":7},
+            "keybindings":{"workspace::NewTerminal":"cmd-shift-t","workspace::Broken":7}},
+            "workspace":{"selection":"gone","projects":[{"project":"/a"}]},
+            "projects":[{"path":"/a"}]}"#;
+        fs::write(fixture.0.join("state.json"), original).unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+
+        let settings = &loaded.state.settings;
+        assert_eq!(settings.theme, ThemeChoice::Dark);
+        assert!(!settings.git_panel_open);
+        assert_eq!(settings.terminal_font_size(), 15.);
+        assert!(!settings.files.language_tools, "an opt-out is not undone");
+        assert!(!settings.files.show_hidden);
+        assert_eq!(
+            settings.keybinding("workspace::NewTerminal"),
+            Some("cmd-shift-t")
+        );
+        let defaults = Settings::default();
+        assert_eq!(settings.sidebar_width(), defaults.sidebar_width());
+        assert_eq!(settings.files.font_size(), defaults.files.font_size());
+        assert_eq!(settings.commit_message, defaults.commit_message);
+        assert_eq!(settings.keybinding("workspace::Broken"), None);
+        assert_eq!(loaded.state.workspace.projects.len(), 1);
+        assert!(loaded.state.workspace.selection.is_none());
+
+        let recovery = loaded.recovery.unwrap();
+        assert_eq!(
+            recovery.cause,
+            RecoveryCause::Partial(
+                [
+                    "settings.commit_message.prompt",
+                    "settings.files.font_size",
+                    "settings.keybindings.workspace::Broken",
+                    "settings.sidebar_width",
+                    "workspace.selection",
+                ]
+                .map(String::from)
+                .to_vec()
+            )
+        );
+        assert_eq!(fs::read(&recovery.backup).unwrap(), original);
+    }
+
+    #[test]
+    fn a_section_that_is_not_an_object_is_reset_whole() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.0.join("state.json"),
+            br#"{"settings":7,"workspace":[],"projects":[{"path":"/a"}]}"#,
+        )
+        .unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert_eq!(loaded.state.projects.len(), 1);
+        assert_eq!(
+            loaded.recovery.unwrap().cause,
+            RecoveryCause::Partial(vec!["settings".into(), "workspace".into()])
+        );
+    }
+
+    #[test]
+    fn a_version_written_as_text_still_loads_every_section() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("state.json");
+        fs::write(
+            &path,
+            br#"{"version":"6","settings":{"sidebar_width":300},"projects":[{"path":"/a"},{"path":"/b"}]}"#,
+        )
+        .unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert!(loaded.recovery.is_none());
+        assert_eq!(loaded.state.projects.len(), 2);
+        assert_eq!(loaded.state.settings.sidebar_width(), 300.);
+
+        // Text does not hide a newer format from the guard against saving over it.
+        fs::write(&path, br#"{"version":" 99 ","projects":[{"path":"/a"}]}"#).unwrap();
+        let newer = State::load_from(&fixture.0).unwrap();
+        assert_eq!(
+            newer.recovery.unwrap().cause,
+            RecoveryCause::Newer { version: 99 }
+        );
+        fs::write(&path, br#"{"version":99999999999}"#).unwrap();
+        assert!(matches!(
+            State::load_from(&fixture.0)
+                .unwrap()
+                .recovery
+                .unwrap()
+                .cause,
+            RecoveryCause::Newer { .. }
+        ));
+    }
+
+    #[test]
+    fn an_unreadable_version_is_reported_and_costs_nothing_else() {
+        for version in [r#""six""#, "true", "-1", "6.5", "[6]", "{}"] {
+            let fixture = Fixture::new();
+            let original = format!(r#"{{"version":{version},"projects":[{{"path":"/a"}}]}}"#);
+            fs::write(fixture.0.join("state.json"), &original).unwrap();
+            let loaded = State::load_from(&fixture.0).unwrap();
+            assert_eq!(loaded.state.projects.len(), 1, "{version}");
+            let recovery = loaded.recovery.unwrap();
+            assert_eq!(
+                recovery.cause,
+                RecoveryCause::Partial(vec!["version".into()]),
+                "{version}"
+            );
+            assert_eq!(fs::read(&recovery.backup).unwrap(), original.as_bytes());
+        }
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_json_object_is_corrupt_and_preserved() {
+        for original in [
+            "[]",
+            r#"[6,{"sidebar_width":300},[{"path":"/a"}]]"#,
+            r#""state""#,
+            "42",
+            "true",
+            "null",
+        ] {
+            let fixture = Fixture::new();
+            fs::write(fixture.0.join("state.json"), original).unwrap();
+            let loaded = State::load_from(&fixture.0).unwrap();
+            assert!(loaded.state.projects.is_empty(), "{original}");
+            let recovery = loaded
+                .recovery
+                .unwrap_or_else(|| panic!("{original} loaded as a state file"));
+            assert_eq!(recovery.cause, RecoveryCause::Corrupt, "{original}");
+            assert_eq!(fs::read(&recovery.backup).unwrap(), original.as_bytes());
+        }
+    }
+
+    #[test]
+    fn a_section_written_as_null_is_absent_not_damaged() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.0.join("state.json"),
+            br#"{"version":null,"settings":null,"projects":null,"workspace":null,"pipelines":null,"last_seen_release":null,"reviewed":null}"#,
+        )
+        .unwrap();
+        let loaded = State::load_from(&fixture.0).unwrap();
+        assert!(loaded.recovery.is_none());
+        assert_eq!(loaded.state.pipelines, crate::pipeline::Library::default());
+    }
+
+    #[test]
+    fn a_repeated_launch_reuses_the_backup_it_already_made() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("state.json");
+        // A newer file is never rewritten, so every launch of this build finds it as it was.
+        fs::write(&path, br#"{"version":99,"projects":[{"path":"/a"}]}"#).unwrap();
+        let first = State::load_from(&fixture.0).unwrap().recovery.unwrap();
+        let second = State::load_from(&fixture.0).unwrap().recovery.unwrap();
+        assert_eq!(second.backup, first.backup);
+        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 2);
+
+        // Different bytes are a different original and get their own copy.
+        fs::write(&path, br#"{"version":99,"projects":[{"path":"/b"}]}"#).unwrap();
+        let third = State::load_from(&fixture.0).unwrap().recovery.unwrap();
+        assert_ne!(third.backup, first.backup);
+        assert_eq!(
+            fs::read(&first.backup).unwrap(),
+            br#"{"version":99,"projects":[{"path":"/a"}]}"#
+        );
+        assert_eq!(fs::read(&third.backup).unwrap(), fs::read(&path).unwrap());
     }
 
     #[test]

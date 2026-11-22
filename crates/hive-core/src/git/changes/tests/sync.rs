@@ -437,12 +437,72 @@ fn a_rejected_push_after_the_replay_keeps_the_rebased_commits_for_a_retry() {
 }
 
 #[test]
-fn a_stopped_sync_is_an_interrupted_mutation() {
-    let (repo, _remote) = published();
+fn a_git_that_cannot_answer_is_not_a_missing_upstream_or_an_unrewritten_branch() {
+    // Outside any repository every command fails, as each does when an SSH connection drops.
+    let nowhere = std::env::temp_dir().join(format!("hive-git-nowhere-{}", std::process::id()));
+    std::fs::create_dir_all(&nowhere).unwrap();
+    let status = status::Status {
+        branch: Some("main".into()),
+        upstream: Some("origin/main".into()),
+        ..status::Status::default()
+    };
+    let upstream = remote::upstream_commit(&Host::Local, &nowhere);
+    let rewritten = remote::refuse_rewritten(&Host::Local, &nowhere, &status, "0123abcd");
+    // Before the assertions, so a failure leaves nothing behind.
+    std::fs::remove_dir_all(&nowhere).unwrap();
+    assert!(
+        matches!(
+            upstream,
+            Err(GitError::Failed {
+                code: Some(128),
+                ..
+            })
+        ),
+        "{upstream:?}"
+    );
+    // Reading it as "never rewritten" would let the sync replay rewritten commits as new ones.
+    assert!(
+        matches!(
+            rewritten,
+            Err(GitError::Failed {
+                code: Some(128),
+                ..
+            })
+        ),
+        "{rewritten:?}"
+    );
+}
+
+#[test]
+fn a_missing_upstream_is_named_and_a_branch_without_a_reflog_is_replayed() {
+    let repo = Repo::new();
+    repo.write("a", "one\n");
+    repo.commit();
+    // Git's own answer for a ref that is not there: a silent exit 1.
+    let error = remote::upstream_commit(&Host::Local, &repo.0).unwrap_err();
+    assert!(
+        matches!(&error, GitError::Invalid(text) if text.contains("no longer exists")),
+        "{error:?}"
+    );
+    // An expired or disabled reflog lists nothing, which proves nothing either way.
+    std::fs::remove_file(repo.0.join(".git/logs/refs/heads/main")).unwrap();
+    let status = status::read(&Host::Local, &repo.0).unwrap();
+    remote::refuse_rewritten(&Host::Local, &repo.0, &status, &head(&repo)).unwrap();
+}
+
+#[test]
+fn a_sync_stopped_before_its_fetch_started_changed_nothing() {
+    let (repo, remote) = published();
+    repo.write("ours", "ours\n");
+    repo.commit();
+    let published = remote.git(&["rev-parse", "main"]);
     let stop = Cancellation::default();
     stop.cancel();
     let error = execute(&Host::Local, &repo.0, &sync(), &stop).unwrap_err();
-    assert!(error.outcome_unknown(), "{error}");
+    // The fetch was the first command that could change anything, and it never ran.
+    assert!(!error.outcome_unknown(), "{error}");
+    assert!(error.to_string().contains("changed nothing"), "{error}");
+    assert_eq!(remote.git(&["rev-parse", "main"]), published);
 }
 
 #[test]

@@ -170,7 +170,8 @@ fn iso_date(seconds: &str, zone: &str) -> Option<String> {
         ("-", digits) => (-1, digits),
         _ => return None,
     };
-    if digits.len() != 4 {
+    // ASCII digits are one byte each, so the slices below fall on character boundaries.
+    if digits.len() != 4 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
     let hours: i32 = digits[..2].parse().ok()?;
@@ -270,6 +271,24 @@ mod tests {
         assert_eq!(iso_date("1790838000", "+03"), None);
     }
 
+    #[test]
+    fn a_zone_that_is_not_four_ascii_digits_leaves_the_date_empty_instead_of_panicking() {
+        // Four bytes after the sign, but not four characters: `\xff` arrives as U+FFFD.
+        let raw = b"b4eb94f00ec0aaa2554e0307c2d8f85833458738 1 1 1\nauthor-time 1790838000\nauthor-tz +1\xff\n\tline\n";
+        assert_eq!(commit(&parse(raw).unwrap(), 0).date, "");
+        for zone in [
+            "+1\u{fffd}",
+            "+1é2",
+            "-é12",
+            "+12é",
+            "+ 123",
+            "++123",
+            "+١٢",
+        ] {
+            assert_eq!(iso_date("1790838000", zone), None, "{zone:?}");
+        }
+    }
+
     /// A throwaway repository with one committed file, removed on drop.
     struct Repo(std::path::PathBuf);
 
@@ -281,22 +300,12 @@ mod tests {
                 std::process::id(),
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
-            std::fs::create_dir_all(&path).unwrap();
             let repo = Self(path);
-            for args in [
-                &["init", "-q"][..],
-                &["config", "user.name", "Hive Test"],
-                &["config", "user.email", "hive@example.invalid"],
-                &["config", "commit.gpgsign", "false"],
-                &["config", "core.hooksPath", "/dev/null"],
-                // Store the bytes as written, whatever the developer's global setting.
-                &["config", "core.autocrlf", "false"],
-            ] {
-                run(&Host::Local, &repo.0, args).unwrap();
-            }
+            // Isolated from the developer's settings, so the bytes are stored as written.
+            crate::git::testing::init(&repo.0);
             std::fs::write(repo.0.join(name), raw).unwrap();
-            run(&Host::Local, &repo.0, &["add", "--", name]).unwrap();
-            run(&Host::Local, &repo.0, &["commit", "-q", "-m", "fixture"]).unwrap();
+            crate::git::testing::run(&repo.0, &["add", "--", name]);
+            crate::git::testing::run(&repo.0, &["commit", "-q", "-m", "fixture"]);
             repo
         }
     }

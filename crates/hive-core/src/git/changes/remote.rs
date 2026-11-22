@@ -343,14 +343,16 @@ pub(super) fn sync(
 }
 
 /// The commit the branch's upstream points at, as last fetched.
-fn upstream_commit(host: &Host, cwd: &Path) -> Result<String, GitError> {
+pub(super) fn upstream_commit(host: &Host, cwd: &Path) -> Result<String, GitError> {
     match run(
         host,
         cwd,
         &["rev-parse", "--verify", "--quiet", "@{upstream}^{commit}"],
     ) {
         Ok(oid) => Ok(oid),
-        Err(GitError::Failed { .. }) => Err(GitError::Invalid(
+        // `--quiet` answers a ref that is not there with a silent exit 1. Any other failure,
+        // a dropped SSH connection among them, is Git not answering, not the ref missing.
+        Err(GitError::Failed { code: Some(1), .. }) => Err(GitError::Invalid(
             "The upstream branch no longer exists on the remote. Publish this branch again.".into(),
         )),
         Err(error) => Err(error),
@@ -360,7 +362,7 @@ fn upstream_commit(host: &Host, cwd: &Path) -> Result<String, GitError> {
 /// A branch whose reflog holds the upstream's commit once pointed at it and has since been
 /// rebased, amended or reset. Replaying it on that commit would bring back, as new commits,
 /// whatever the rewrite moved; only a force push reconciles the two.
-fn refuse_rewritten(
+pub(super) fn refuse_rewritten(
     host: &Host,
     cwd: &Path,
     status: &status::Status,
@@ -370,12 +372,10 @@ fn refuse_rewritten(
         return Ok(());
     };
     let reference = format!("refs/heads/{branch}");
-    // An expired or disabled reflog proves nothing, and the replay goes ahead.
-    let visited = match run(host, cwd, &["rev-list", "-g", &reference, "--"]) {
-        Ok(visited) => visited,
-        Err(GitError::Failed { .. }) => return Ok(()),
-        Err(error) => return Err(error),
-    };
+    // An expired or disabled reflog lists nothing: that proves nothing, and the replay goes
+    // ahead. A Git that fails to answer is another matter, and stops the sync: taking the
+    // failure for "never rewritten" would lift this guard whenever the connection drops.
+    let visited = run(host, cwd, &["rev-list", "-g", &reference, "--"])?;
     if !visited.lines().any(|oid| oid == upstream) {
         return Ok(());
     }

@@ -200,21 +200,7 @@ mod tests {
     fn unchanged_patch_skips_display_but_status_does_not_hide_content_changes() {
         let fixture =
             Fixture(std::env::temp_dir().join(format!("hive-diff-display-{}", std::process::id())));
-        fs::create_dir(&fixture.0).unwrap();
-        assert!(
-            Host::Local
-                .command(
-                    "git",
-                    &["init", "-q", "-b", "main", "--template="],
-                    Some(&fixture.0)
-                )
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
+        hive_core::git::testing::init(&fixture.0);
         let read = || {
             diff::read(
                 &Host::Local,
@@ -258,16 +244,9 @@ mod tests {
         let fixture = Fixture(
             std::env::temp_dir().join(format!("hive-diff-conflict-{}", std::process::id())),
         );
-        fs::create_dir(&fixture.0).unwrap();
+        hive_core::git::testing::init(&fixture.0);
         let git = |args: &[&str]| {
-            Host::Local
-                .command("git", args, Some(&fixture.0))
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_AUTHOR_NAME", "Hive Test")
-                .env("GIT_AUTHOR_EMAIL", "hive@example.invalid")
-                .env("GIT_COMMITTER_NAME", "Hive Test")
-                .env("GIT_COMMITTER_EMAIL", "hive@example.invalid")
+            hive_core::git::testing::git(&fixture.0, args)
                 .output()
                 .unwrap()
                 .status
@@ -278,7 +257,6 @@ mod tests {
             assert!(git(&["add", "-A"]));
             assert!(git(&["commit", "-q", "-m", "fixture"]));
         };
-        assert!(git(&["init", "-q", "-b", "main", "--template="]));
         commit("base\n");
         assert!(git(&["checkout", "-q", "-b", "feature"]));
         commit("feature\n");

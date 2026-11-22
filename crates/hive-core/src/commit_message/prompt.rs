@@ -26,16 +26,23 @@ fn fill<'a>(
             (PATCH, patch),
         ]
     };
+    // Measured only: a template that is nothing but the patch is empty at this point.
     let without_patch = expand(template, &values(""))?;
     // Substituted values are never rescanned, so the template alone decides how often it is used.
     let uses = template.matches(PATCH).count();
-    if uses == 0 {
-        return Ok(without_patch);
-    }
-    let patch = patch_within(PROMPT_LIMIT.saturating_sub(without_patch.len()) / uses);
-    expand(template, &values(&patch))
+    let prompt = match PROMPT_LIMIT
+        .saturating_sub(without_patch.len())
+        .checked_div(uses)
+    {
+        // The template never mentions the patch.
+        None => without_patch,
+        Some(budget) => expand(template, &values(&patch_within(budget)))?,
+    };
+    validate_prompt(&prompt)?;
+    Ok(prompt)
 }
 
+/// Substitutes `values` into `template`, refusing only a result past the size limit.
 fn expand(template: &str, values: &[(&str, &str)]) -> Result<String, Error> {
     let mut output = String::new();
     let mut rest = template;
@@ -52,7 +59,7 @@ fn expand(template: &str, values: &[(&str, &str)]) -> Result<String, Error> {
         validate_prompt_size(&output)?;
     }
     output.push_str(rest);
-    validate_prompt(&output)?;
+    validate_prompt_size(&output)?;
     Ok(output)
 }
 
@@ -126,10 +133,29 @@ mod tests {
         assert_eq!(prompt, "main a");
     }
     #[test]
+    fn a_template_of_only_the_patch_variable_is_the_patch() {
+        let mut offered = None;
+        let prompt = fill("{stagedPatch}", "main", "a", |budget| {
+            offered = Some(budget);
+            "diff --git a/a b/a".into()
+        })
+        .unwrap();
+        assert_eq!(offered, Some(PROMPT_LIMIT));
+        assert_eq!(prompt, "diff --git a/a b/a");
+    }
+    #[test]
     fn patch_larger_than_its_budget_is_rejected_instead_of_truncated() {
-        let result = fill("{stagedPatch}", "main", "", |budget| {
+        let error = fill("{branch}: {stagedPatch}", "main", "", |budget| {
             "x".repeat(budget + 1).into()
-        });
-        assert!(matches!(result, Err(Error::Invalid(_))));
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("exceeds 256 KiB"), "{error}");
+    }
+    #[test]
+    fn a_prompt_that_expands_to_nothing_is_rejected() {
+        for (template, patch) in [("{stagedFiles}", ""), ("{stagedPatch}", " \n")] {
+            let error = fill(template, "main", "", |_| patch.into()).unwrap_err();
+            assert_eq!(error.to_string(), "Enter a prompt template.", "{template}");
+        }
     }
 }
