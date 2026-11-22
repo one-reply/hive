@@ -197,7 +197,9 @@ impl Workspace {
             .occlude()
             .bg(cx.theme().background)
             .pt(header_inset)
-            .child(slot.view.clone());
+            // Cached like the side panels: a frame another view asks for (a terminal, the
+            // spinner of a working agent) reuses the panel instead of rebuilding it.
+            .child(cached(&slot.view));
         Some((
             open && t >= 1.,
             self.window_drag_band(

@@ -26,12 +26,12 @@ pub(super) fn run_detail(
 }
 
 pub(super) fn run_row(
-    ix: usize,
     row: RunRow,
     window: &mut Window,
     cx: &mut Context<PipelinePanel>,
 ) -> AnyElement {
-    let hover = Hover::with_duration(("recent-run", ix), WIDE_HOVER_DURATION, window, cx);
+    // Keyed by the run, not by its place: the list draws only the rows in view.
+    let hover = Hover::with_duration(("recent-run", row.id), WIDE_HOVER_DURATION, window, cx);
     let color = status_color(row.status, cx);
     let focus = cx.theme().ring;
     let id = row.id;
@@ -41,7 +41,7 @@ pub(super) fn run_row(
     let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
         run_menu(menu, &panel, id, finished, &task)
     };
-    let more = Button::new(("recent-run-menu", ix))
+    let more = Button::new(("recent-run-menu", id))
         .cursor_pointer()
         .ghost()
         .xsmall()
@@ -50,7 +50,7 @@ pub(super) fn run_row(
         .tooltip("Run actions")
         .dropdown_menu(menu.clone());
     let row_element = h_flex()
-        .id(("recent-run", ix))
+        .id(("recent-run", id))
         .role(Role::Button)
         .aria_label(label)
         .tab_index(0)

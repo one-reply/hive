@@ -35,6 +35,12 @@ pub(super) struct PipelinePanel {
     screen: Screen,
     draft: Option<Entity<launch::LaunchForm>>,
     selected_template: Option<String>,
+    /// Scroll position and measured rows of the library page.
+    history: ListState,
+    /// What `history` lists, to tell rows that moved from rows that were replaced.
+    entries: Rc<[library::Entry]>,
+    /// The pending repaint that words the ages of the listed runs anew.
+    age_tick: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -43,9 +49,15 @@ impl PipelinePanel {
         let app = AppState::get(cx);
         let store = app.store.clone();
         let pipelines = app.pipelines.clone();
+        let agents = app.agents.clone();
+        // The panel is drawn from a cache, so it repaints only when it is told to. It and
+        // the screens inside it show nothing from another entity that is not observed here
+        // or by the screen itself.
         let subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe(&pipelines, |_, _, cx| cx.notify()),
+            // A run's status follows what its agent last reported.
+            cx.observe(&agents, |_, _, cx| cx.notify()),
         ];
         Self {
             project,
@@ -53,8 +65,14 @@ impl PipelinePanel {
             screen: Screen::Library,
             draft: None,
             selected_template: None,
+            history: Self::history_list(),
+            entries: Rc::from([]),
+            age_tick: None,
             _subscriptions: subscriptions,
         }
+    }
+    fn history_list() -> ListState {
+        ListState::new(0, ListAlignment::Top, library::HISTORY_OVERDRAW)
     }
     /// Back to the library once the screen in view is done with: saved or discarded.
     fn home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -182,11 +200,12 @@ impl Render for PipelinePanel {
             Screen::Library => "Library",
         };
         let content = match &self.screen {
-            Screen::Library => self.library(window, cx),
-            Screen::Editor(view) => view.clone().into_any_element(),
-            Screen::Launch(view) => view.clone().into_any_element(),
-            Screen::Run(view) => view.clone().into_any_element(),
+            Screen::Library => None,
+            Screen::Editor(view) => Some(view.clone().into_any_element()),
+            Screen::Launch(view) => Some(view.clone().into_any_element()),
+            Screen::Run(view) => Some(view.clone().into_any_element()),
         };
+        let content = content.unwrap_or_else(|| self.library(cx));
         let home_hover = Hover::new("pipeline-home", window, cx);
         let bar = h_flex()
             .h(TAB_BAR_HEIGHT)
