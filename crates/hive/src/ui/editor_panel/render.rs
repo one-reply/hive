@@ -282,7 +282,9 @@ impl Render for EditorPanel {
                 Button::new("file-conflict")
                     .cursor_pointer()
                     .label("File changed on disk · Resolve conflict")
-                    .on_click(cx.listener(|this, _, window, cx| this.resolve_conflict(window, cx)))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        actions::resolve_conflict(&this.document, window, cx)
+                    }))
                     .smooth_hover(ButtonLook::Outline, &conflict_hover, cx),
             );
         }

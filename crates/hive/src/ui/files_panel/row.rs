@@ -118,45 +118,62 @@ pub(super) fn render(
                 background.blend(foreground.opacity(0.06))
             },
         );
+    let local = target.as_ref().is_some_and(|target| target.host.is_local());
     if folder && !entry.is_disabled() {
         let drop_target = target.clone();
         let drop_destination = path.clone();
-        let (drop_panel, hover_panel, destination) = (panel.clone(), panel.clone(), path.clone());
-        let hover_destination = path.clone();
+        let (drop_panel, paste_panel) = (panel.clone(), panel.clone());
+        let (destination, paste_destination) = (path.clone(), path.clone());
+        let (hover_panel, hover_target, hover_destination) =
+            (panel.clone(), target.clone(), path.clone());
+        let (finder_panel, finder_destination) = (panel.clone(), path.clone());
         content = content
             .can_drop(move |value, _, _| {
-                value
-                    .downcast_ref::<moving::DraggedFiles>()
-                    .is_some_and(|drag| drag.can_move_to(drop_target.as_ref(), &drop_destination))
+                pasting::accepts_drop(value, drop_target.as_ref(), &drop_destination)
             })
-            .drag_over::<moving::DraggedFiles>(|style, _, _, cx| {
-                style
-                    .bg(cx.theme().drop_target)
-                    .border_1()
-                    .border_color(cx.theme().drag_border)
+            .drag_over::<moving::DraggedFiles>(drop_style)
+            .when(local, |row| row.drag_over::<ExternalPaths>(drop_style))
+            .on_drag_move(move |event: &DragMoveEvent<moving::DraggedFiles>, _, cx| {
+                let inside = event.bounds.contains(&event.event.position);
+                let expand = event
+                    .drag(cx)
+                    .can_move_to(hover_target.as_ref(), &hover_destination);
+                hover_panel.update(cx, |p, cx| {
+                    p.folder_drag_move(hover_destination.clone(), inside, expand, cx)
+                });
             })
-            .on_drag_move(
-                move |event: &DragMoveEvent<moving::DraggedFiles>, window, cx| {
-                    if event.bounds.contains(&event.event.position) {
-                        let drag = event.drag(cx).clone();
-                        hover_panel.update(cx, |p, cx| {
-                            p.drag_expand(hover_destination.clone(), &drag, window, cx)
-                        });
-                    } else {
-                        hover_panel.update(cx, |p, _| {
-                            if p.drag_hover
-                                .as_ref()
-                                .is_some_and(|(path, _)| *path == hover_destination)
-                            {
-                                p.drag_hover = None;
-                                p._drag_expand = None;
-                            }
-                        });
-                    }
-                },
-            )
+            .on_drag_move(move |event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                let inside = event.bounds.contains(&event.event.position);
+                finder_panel.update(cx, |p, cx| {
+                    p.folder_drag_move(finder_destination.clone(), inside, local, cx)
+                });
+            })
             .on_drop(move |drag: &moving::DraggedFiles, window, cx| {
                 drop_panel.update(cx, |p, cx| p.drop_file(drag, &destination, window, cx));
+            })
+            .on_drop(move |paths: &ExternalPaths, window, cx| {
+                paste_panel.update(cx, |p, cx| {
+                    p.paste(
+                        paste_destination.clone(),
+                        paths.paths().to_vec(),
+                        window,
+                        cx,
+                    )
+                });
+            });
+    } else if !entry.is_disabled() {
+        // Finder files dropped on a file go into its folder, the folder under the pointer.
+        let finder_target = target.clone();
+        let (paste_panel, destination) = (panel.clone(), pasting::folder_for(&path, false));
+        content = content
+            .can_drop(move |value, _, _| {
+                pasting::accepts_finder_drop(value, finder_target.as_ref())
+            })
+            .when(local, |row| row.drag_over::<ExternalPaths>(drop_style))
+            .on_drop(move |paths: &ExternalPaths, window, cx| {
+                paste_panel.update(cx, |p, cx| {
+                    p.paste(destination.clone(), paths.paths().to_vec(), window, cx)
+                });
             });
     }
     let mut preview_width = None;
@@ -361,4 +378,12 @@ fn badge(status: &Decoration, folder: bool, scale: f32, cx: &App) -> AnyElement 
                 .child(code(status.unstaged)),
         )
         .into_any_element()
+}
+
+/// The highlight of a row that accepts the drag over it.
+fn drop_style<T>(style: StyleRefinement, _: &T, _: &mut Window, cx: &mut App) -> StyleRefinement {
+    style
+        .bg(cx.theme().drop_target)
+        .border_1()
+        .border_color(cx.theme().drag_border)
 }

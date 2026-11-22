@@ -1,50 +1,22 @@
-use super::{Files, SearchMode, content_search, search};
+use super::{Files, SearchMode};
 use gpui::{AppContext as _, Entity, TestAppContext};
 use gpui_kit as gpui;
-use hive_core::{files::Entry, settings::FilesSettings};
+use hive_core::files::Entry;
 use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
 };
 
 fn navigator(cx: &mut TestAppContext) -> Entity<Files> {
-    cx.new(|_| Files {
-        target: None,
-        error: None,
-        visible: false,
-        window_active: true,
-        entries: BTreeMap::from([(
-            PathBuf::new(),
-            vec![Entry {
-                path: "lib.rs".into(),
-                directory: false,
-                unsupported: false,
-            }],
-        )]),
-        expanded: HashSet::new(),
-        nodes: Vec::new(),
-        tree_generation: 0,
-        loading: false,
-        busy: false,
-        settings: FilesSettings::default(),
-        decorations: BTreeMap::new(),
-        ignored: HashSet::new(),
-        dirty: HashSet::new(),
-        missing: HashSet::new(),
-        active: None,
-        recent: Vec::new(),
-        destination_for: None,
-        pending_reveal: None,
-        pending_refresh: false,
-        search: search::Search::default(),
-        search_mode: SearchMode::Names,
-        content: content_search::ContentSearch::default(),
-        generation: 0,
-        _operation: None,
-        _read: None,
-        _poll: None,
-        _subscriptions: Vec::new(),
-    })
+    let listing = BTreeMap::from([(
+        PathBuf::new(),
+        vec![Entry {
+            path: "lib.rs".into(),
+            directory: false,
+            unsupported: false,
+        }],
+    )]);
+    cx.new(|cx| Files::listed_for_test(listing, HashSet::new(), cx))
 }
 
 #[gpui::test]

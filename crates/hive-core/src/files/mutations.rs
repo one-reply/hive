@@ -17,6 +17,9 @@ const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::CLOEXEC);
 const MAX_DEPTH: usize = 256;
 
+mod paste;
+pub use paste::{paste_entries, paste_name};
+
 /// Turn one user-entered name into a relative entry path, without permitting traversal.
 pub fn entry_path(parent: &Path, name: &str) -> Result<PathBuf, FileError> {
     if name.is_empty()

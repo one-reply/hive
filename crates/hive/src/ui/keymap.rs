@@ -15,7 +15,7 @@ use crate::terminal::view::{Copy, Paste};
 use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
 use crate::ui::editor_panel::{CloseFile, GoToSymbol, OpenFileSearch, SaveFile, SearchInFiles};
 use crate::ui::files_panel::{
-    CancelFileEdit, DeleteSelectedFile, OpenSelectedFile, RenameSelectedFile,
+    CancelFileEdit, DeleteSelectedFile, OpenSelectedFile, PasteFiles, RenameSelectedFile,
 };
 use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
@@ -117,7 +117,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 38] = [
+pub(crate) static SHORTCUTS: [Shortcut; 39] = [
     Shortcut {
         label: "Find references",
         default: "shift-f12",
@@ -384,6 +384,13 @@ pub(crate) static SHORTCUTS: [Shortcut; 38] = [
         action: || Box::new(DeleteSelectedFile),
     },
     Shortcut {
+        label: "Paste files copied in Finder",
+        default: "cmd-v",
+        category: Category::Files,
+        context: FILES_TREE_CONTEXT,
+        action: || Box::new(PasteFiles),
+    },
+    Shortcut {
         label: "Cancel file name edit",
         default: "escape",
         category: Category::Files,
@@ -567,7 +574,7 @@ mod tests {
     const MAC: OperatingSystem = OperatingSystem::Mac;
 
     #[test]
-    fn file_mutations_never_match_editor_terminal_or_inline_input() {
+    fn file_tree_shortcuts_never_match_editor_terminal_or_inputs() {
         use gpui_kit::{KeyBindingContextPredicate, KeyContext};
         let contexts = |names: &[&str]| {
             names
@@ -575,10 +582,17 @@ mod tests {
                 .map(|name| KeyContext::parse(name).unwrap())
                 .collect::<Vec<_>>()
         };
-        for shortcut in SHORTCUTS
+        let tree_shortcuts = [
+            "Rename file",
+            "Delete file permanently",
+            "Paste files copied in Finder",
+        ];
+        let matched: Vec<_> = SHORTCUTS
             .iter()
-            .filter(|s| s.label == "Rename file" || s.label == "Delete file permanently")
-        {
+            .filter(|s| tree_shortcuts.contains(&s.label))
+            .collect();
+        assert_eq!(matched.len(), tree_shortcuts.len());
+        for shortcut in matched {
             let predicate = KeyBindingContextPredicate::parse(shortcut.context).unwrap();
             assert!(predicate.eval(&contexts(&["Workspace", "FilesPanel", "Tree"])));
             for scope in [
@@ -586,6 +600,8 @@ mod tests {
                 &["Workspace", "TerminalPanel", "Terminal"][..],
                 &["Workspace", "FilesPanel", "FileNameEdit", "Input"][..],
                 &["Workspace", "FilesPanel", "Tree", "FileNameEdit", "Input"][..],
+                // ⌘V in Find file must paste text, not files.
+                &["Workspace", "FilesPanel", "FileSearch", "Input"][..],
             ] {
                 assert!(
                     predicate.depth_of(&contexts(scope)).is_none(),

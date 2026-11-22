@@ -45,16 +45,31 @@ impl FilesPanel {
             .update(cx, |files, cx| files.perform(operation, window, cx));
     }
 
-    pub(super) fn drag_expand(
+    /// A drag moved over (`inside`) or off the folder row `path`. Holding it there opens the
+    /// folder when `expand` says the drag may drop into its children.
+    pub(super) fn folder_drag_move(
         &mut self,
         path: PathBuf,
-        drag: &DraggedFiles,
-        _: &mut Window,
+        inside: bool,
+        expand: bool,
         cx: &mut Context<Self>,
     ) {
-        if !drag.can_move_to(self.files.read(cx).target(), &path) {
-            return;
+        if inside {
+            if expand {
+                self.hover_expand(path, cx);
+            }
+        } else if self
+            .drag_hover
+            .as_ref()
+            .is_some_and(|(hovered, _)| *hovered == path)
+        {
+            self.drag_hover = None;
+            self._drag_expand = None;
         }
+    }
+
+    /// Expands a folder held under a drag for `EXPAND_DELAY`, so a drop can reach its children.
+    fn hover_expand(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if self
             .drag_hover
             .as_ref()
@@ -78,9 +93,9 @@ impl FilesPanel {
         }));
     }
 
-    pub(super) fn drag_scroll(
+    pub(super) fn drag_scroll<T: 'static>(
         &mut self,
-        event: &DragMoveEvent<DraggedFiles>,
+        event: &DragMoveEvent<T>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

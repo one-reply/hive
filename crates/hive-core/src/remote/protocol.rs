@@ -198,6 +198,7 @@ impl From<FileError> for Failure {
                 path,
             ),
             FileError::Unsupported { path, .. }
+            | FileError::PartialPaste { path, .. }
             | FileError::Listing { path, .. }
             | FileError::Recovery { path, .. } => (FailureKind::Other, path),
         };

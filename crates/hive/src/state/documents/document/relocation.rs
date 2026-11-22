@@ -78,8 +78,11 @@ impl Document {
         cx.notify();
     }
 
+    /// Announces `event` through the registry that opened this document.
     pub(super) fn emit(&self, event: DocumentEvent, cx: &mut Context<Self>) {
-        let documents = crate::app::AppState::get(cx).documents.clone();
+        let Some(documents) = self.registry.upgrade() else {
+            return;
+        };
         cx.defer(move |cx| documents.update(cx, |documents, cx| documents.emit(event, cx)));
     }
 }

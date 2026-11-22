@@ -52,7 +52,29 @@ impl Changes {
     }
 }
 
+/// Why writing this document as it stands cannot succeed. Whoever must not lose the buffer,
+/// such as a close guard, says so instead of trying a save that is bound to fail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SaveBlocker {
+    /// The file changed on disk under unsaved edits; only an explicit overwrite replaces it.
+    Conflict,
+    /// The last write, or the read that checks the disk, failed with this message.
+    Failed(String),
+}
+
+fn save_blocker(conflict: bool, error: Option<&DocumentError>) -> Option<SaveBlocker> {
+    if conflict {
+        return Some(SaveBlocker::Conflict);
+    }
+    error.map(|error| SaveBlocker::Failed(error.message().to_owned()))
+}
+
 impl Document {
+    /// What stands in the way of a plain save right now, if anything is known to.
+    pub(crate) fn save_blocker(&self) -> Option<SaveBlocker> {
+        save_blocker(self.conflict.is_some(), self.error.as_ref())
+    }
+
     pub fn changes(&self, cx: &App) -> Task<Result<Changes, String>> {
         let (target, path) = (
             self.target.clone(),
@@ -240,8 +262,11 @@ fn disk_update(base: Option<&Snapshot>, dirty_text: Option<&str>, disk: &Snapsho
 }
 
 #[cfg(test)]
+mod save_tests;
+
+#[cfg(test)]
 mod tests {
-    use super::{Changes, DiskUpdate, Snapshot, disk_update};
+    use super::{Changes, DiskUpdate, DocumentError, SaveBlocker, Snapshot, disk_update};
     use hive_core::git::conflicts::Conflict;
     use hive_core::git::diff::DiffSource;
     use hive_core::git::status::{Change, FileChange};
@@ -295,6 +320,29 @@ mod tests {
         assert_eq!(
             (request.target, request.path.as_str()),
             (target, "src/a.rs")
+        );
+    }
+
+    #[test]
+    fn a_conflict_or_a_failed_write_blocks_a_plain_save_and_says_why() {
+        use super::save_blocker;
+        assert_eq!(save_blocker(false, None), None);
+        let denied = DocumentError::Save("Cannot write a.rs: Permission denied".into());
+        assert_eq!(
+            save_blocker(false, Some(&denied)),
+            Some(SaveBlocker::Failed(
+                "Cannot write a.rs: Permission denied".into()
+            ))
+        );
+        let unreadable = DocumentError::Read("Cannot read a.rs: No such file".into());
+        assert_eq!(
+            save_blocker(false, Some(&unreadable)),
+            Some(SaveBlocker::Failed("Cannot read a.rs: No such file".into()))
+        );
+        // The conflict is what the user has to settle, whatever else went wrong.
+        assert_eq!(
+            save_blocker(true, Some(&denied)),
+            Some(SaveBlocker::Conflict)
         );
     }
 

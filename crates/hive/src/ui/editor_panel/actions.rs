@@ -6,73 +6,73 @@ use gpui_kit::component::{WindowExt as _, dialog::DialogButtonProps, notificatio
 const DIALOG_WIDTH: Pixels = px(900.);
 const CONFLICT_HEIGHT: Pixels = px(400.);
 
-impl EditorPanel {
-    pub(super) fn resolve_conflict(&self, window: &mut Window, cx: &mut App) {
-        let document = self.document.read(cx);
-        let Some(disk) = document.conflict.clone() else {
-            return;
-        };
-        let text = document.text(cx);
-        let mine = cx.new(|cx| EditorState::new(window, cx).default_value(text));
-        let theirs = cx.new(|cx| EditorState::new(window, cx).default_value(disk.text()));
-        let document = self.document.clone();
-        window.open_alert_dialog(cx, move |dialog, window, cx| {
-            let (reload, overwrite) = (document.clone(), document.clone());
-            let expected = disk.clone();
-            let [reload_hover, overwrite_hover] =
-                ["conflict-reload", "conflict-overwrite"].map(|id| Hover::new(id, window, cx));
-            dialog
-                .title("Resolve external changes")
-                .w(DIALOG_WIDTH)
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .h(CONFLICT_HEIGHT)
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .child("Your buffer")
-                                .child(Editor::new(&mine).readonly(true).size_full()),
-                        )
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .child("Disk version")
-                                .child(Editor::new(&theirs).readonly(true).size_full()),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new("conflict-reload")
-                                .cursor_pointer()
-                                .label("Reload from disk")
-                                .on_click(move |_, window, cx| {
-                                    reload.update(cx, |d, cx| d.reload(window, cx));
-                                    window.close_dialog(cx);
-                                })
-                                .smooth_hover(ButtonLook::Outline, &reload_hover, cx),
-                        )
-                        .child(
-                            Button::new("conflict-overwrite")
-                                .cursor_pointer()
-                                .label("Overwrite")
-                                .on_click(move |_, window, cx| {
-                                    overwrite.update(cx, |d, cx| {
-                                        d.save(Some(expected.clone()), window, cx);
-                                    });
-                                    window.close_dialog(cx);
-                                })
-                                .smooth_hover(ButtonLook::Outline, &overwrite_hover, cx),
-                        ),
-                )
-                .button_props(DialogButtonProps::default().ok_text("Keep editing"))
-        });
-    }
+/// Shows the buffer beside the version on disk it conflicts with, to keep one of them.
+pub(super) fn resolve_conflict(document: &Entity<Document>, window: &mut Window, cx: &mut App) {
+    let Some(disk) = document.read(cx).conflict.clone() else {
+        return;
+    };
+    let text = document.read(cx).text(cx);
+    let mine = cx.new(|cx| EditorState::new(window, cx).default_value(text));
+    let theirs = cx.new(|cx| EditorState::new(window, cx).default_value(disk.text()));
+    let document = document.clone();
+    window.open_alert_dialog(cx, move |dialog, window, cx| {
+        let (reload, overwrite) = (document.clone(), document.clone());
+        let expected = disk.clone();
+        let [reload_hover, overwrite_hover] =
+            ["conflict-reload", "conflict-overwrite"].map(|id| Hover::new(id, window, cx));
+        dialog
+            .title("Resolve external changes")
+            .w(DIALOG_WIDTH)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .h(CONFLICT_HEIGHT)
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child("Your buffer")
+                            .child(Editor::new(&mine).readonly(true).size_full()),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child("Disk version")
+                            .child(Editor::new(&theirs).readonly(true).size_full()),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("conflict-reload")
+                            .cursor_pointer()
+                            .label("Reload from disk")
+                            .on_click(move |_, window, cx| {
+                                reload.update(cx, |d, cx| d.reload(window, cx));
+                                window.close_dialog(cx);
+                            })
+                            .smooth_hover(ButtonLook::Outline, &reload_hover, cx),
+                    )
+                    .child(
+                        Button::new("conflict-overwrite")
+                            .cursor_pointer()
+                            .label("Overwrite")
+                            .on_click(move |_, window, cx| {
+                                overwrite.update(cx, |d, cx| {
+                                    d.save(Some(expected.clone()), window, cx);
+                                });
+                                window.close_dialog(cx);
+                            })
+                            .smooth_hover(ButtonLook::Outline, &overwrite_hover, cx),
+                    ),
+            )
+            .button_props(DialogButtonProps::default().ok_text("Keep editing"))
+    });
+}
 
+impl EditorPanel {
     pub(super) fn show_changes(&self, choose: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.document.read(cx).dirty {
             window.push_notification(

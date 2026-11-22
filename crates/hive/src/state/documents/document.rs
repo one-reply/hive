@@ -15,7 +15,7 @@ mod navigation;
 mod relocation;
 pub(crate) use blame::LineBlame;
 pub(crate) use image::{Content, PreviewState, SvgMode};
-pub(crate) use io::Changes;
+pub(crate) use io::{Changes, SaveBlocker};
 pub(crate) use navigation::{STICKY_BORDER_WIDTH, sticky_row_limit};
 
 #[derive(Clone, PartialEq, Eq)]
@@ -95,6 +95,27 @@ impl Document {
         document._poll = Task::ready(());
         document._subscriptions.clear();
         document.loading = false;
+        document
+    }
+
+    /// A document already read as `base` and then edited to `text`, without its poll or
+    /// its listeners: tests drive its saves and reads themselves.
+    #[cfg(test)]
+    pub(super) fn edited_for_test(
+        request: OpenFile,
+        base: Snapshot,
+        text: &str,
+        store: Entity<Store>,
+        registry: WeakEntity<Documents>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut document = Self::isolated_for_test(request, store, registry, window, cx);
+        document.base = Some(base);
+        document
+            .editor
+            .update(cx, |editor, cx| editor.set_value(text, window, cx));
+        document.update_dirty(cx);
         document
     }
 

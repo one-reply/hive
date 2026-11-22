@@ -25,7 +25,10 @@ mod editing;
 mod icons;
 mod motion;
 mod moving;
+mod pasting;
 mod row;
+#[cfg(test)]
+mod rows_tests;
 mod search;
 mod selection;
 mod tree;
@@ -38,6 +41,7 @@ actions!(
         OpenSelectedFile,
         RenameSelectedFile,
         DeleteSelectedFile,
+        PasteFiles,
         CancelFileEdit,
         FocusFileResults
     ]
@@ -53,18 +57,22 @@ pub(crate) struct FilesPanel {
     tree: Entity<TreeState>,
     synced_generation: Option<u64>,
     selection: selection::Selection,
+    /// The tree's cursor row when the selection was last brought in line with it.
+    synced_cursor: Option<SharedString>,
     search_input: Entity<gpui_kit::component::input::InputState>,
     content: content::Results,
     filtered_tree: bool,
     edit: Option<Edit>,
     manual_refresh: bool,
     operation_error: Option<String>,
-    _interaction: Option<Task<()>>,
     drag_hover: Option<(PathBuf, Instant)>,
     drag_scroll: Option<bool>,
     _drag_scroll: Option<Task<()>>,
     _drag_expand: Option<Task<()>>,
     motion: motion::TreeMotion,
+    /// How often every row was read to rebuild the selection, for tests of when that happens.
+    #[cfg(test)]
+    row_scans: usize,
     _subscriptions: Vec<Subscription>,
 }
 impl FilesPanel {
@@ -78,12 +86,7 @@ impl FilesPanel {
         motion.observe(tree.read(cx), true);
         let subscriptions = vec![
             search_subscription,
-            cx.observe(&tree, |this, tree, cx| {
-                this.motion.observe(tree.read(cx), cx.reduce_motion());
-                if this.sync_selection(tree.read(cx), cx) {
-                    cx.notify();
-                }
-            }),
+            cx.observe(&tree, |this, _, cx| this.tree_notified(cx)),
             cx.subscribe(&tree, |this, _, event, cx| {
                 let (path, expanded) = match event {
                     TreeEvent::Expanded(path) => (tree::path(path.as_ref()), true),
@@ -91,6 +94,8 @@ impl FilesPanel {
                 };
                 this.files
                     .update(cx, |files, cx| files.set_expanded(path, expanded, cx));
+                // The tree has already rebuilt its rows around the folder.
+                this.rows_changed(!cx.reduce_motion(), cx);
             }),
             cx.observe_in(&files, window, |this, files, window, cx| {
                 this.sync_search_input(window, cx);
@@ -143,18 +148,20 @@ impl FilesPanel {
             tree,
             synced_generation: None,
             selection: selection::Selection::default(),
+            synced_cursor: None,
             search_input,
             content: content::Results::new(cx),
             filtered_tree: false,
             edit: None,
             manual_refresh: false,
             operation_error: None,
-            _interaction: None,
             drag_hover: None,
             drag_scroll: None,
             _drag_scroll: None,
             _drag_expand: None,
             motion,
+            #[cfg(test)]
+            row_scans: 0,
             _subscriptions: subscriptions,
         };
         this.sync_tree(cx);
@@ -193,15 +200,35 @@ impl FilesPanel {
             };
             tree::reveal(tree, &path, cx)
         });
-        if suppress_motion {
-            self.motion.observe(self.tree.read(cx), true);
-        }
-        let tree = self.tree.clone();
-        if self.sync_selection(tree.read(cx), cx) {
-            cx.notify();
-        }
+        self.rows_changed(!suppress_motion && !cx.reduce_motion(), cx);
         if revealed {
             self.files.update(cx, |files, _| files.revealed());
+        }
+    }
+
+    /// The tree shows other rows than before: a listing arrived, or a folder opened or
+    /// closed. Starts the accordion motion when `animate` and drops selected files that are
+    /// no longer shown. Reads every row, so it runs only where rows change.
+    fn rows_changed(&mut self, animate: bool, cx: &mut Context<Self>) {
+        let tree = self.tree.clone();
+        let tree = tree.read(cx);
+        self.motion.observe(tree, !animate);
+        if self.sync_selection(tree, cx) {
+            cx.notify();
+        }
+    }
+
+    /// The tree notifies for every frame of a row's hover, chevron or accordion animation,
+    /// since the rows are drawn inside it. Of all that only a cursor it moved itself, with
+    /// the arrow keys or a click, concerns the panel: rows change through `rows_changed`.
+    fn tree_notified(&mut self, cx: &mut Context<Self>) {
+        let tree = self.tree.clone();
+        let tree = tree.read(cx);
+        if tree.selected_item().map(|item| &item.id) == self.synced_cursor.as_ref() {
+            return;
+        }
+        if self.sync_selection(tree, cx) {
+            cx.notify();
         }
     }
 
@@ -268,6 +295,7 @@ impl Render for FilesPanel {
         let panel = cx.entity();
         let menu_panel = panel.clone();
         let root_drop = panel.clone();
+        let root_paste = panel.clone();
         let root_target = target.clone();
         let refresh_hover = Hover::new("files-refresh", window, cx);
         let mut body = v_flex()
@@ -294,6 +322,11 @@ impl Render for FilesPanel {
             .on_action(cx.listener(|this, _: &DeleteSelectedFile, window, cx| {
                 this.delete_selected(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &PasteFiles, window, cx| {
+                    this.paste_into_selected(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &CancelFileEdit, window, cx| {
                 if !this.files.read(cx).busy {
                     this.edit = None;
@@ -319,18 +352,24 @@ impl Render for FilesPanel {
                                 Tooltip::new(full_path.clone()).build(window, cx)
                             })
                             .can_drop(move |value, _, _| {
-                                value
-                                    .downcast_ref::<moving::DraggedFiles>()
-                                    .is_some_and(|drag| {
-                                        drag.can_move_to(root_target.as_ref(), Path::new(""))
-                                    })
+                                pasting::accepts_drop(value, root_target.as_ref(), Path::new(""))
                             })
                             .drag_over::<moving::DraggedFiles>(|style, _, _, cx| {
                                 style.bg(cx.theme().drop_target)
                             })
+                            .when(local, |label| {
+                                label.drag_over::<ExternalPaths>(|style, _, _, cx| {
+                                    style.bg(cx.theme().drop_target)
+                                })
+                            })
                             .on_drop(move |drag: &moving::DraggedFiles, window, cx| {
                                 root_drop.update(cx, |p, cx| {
                                     p.drop_file(drag, Path::new(""), window, cx)
+                                })
+                            })
+                            .on_drop(move |paths: &ExternalPaths, window, cx| {
+                                root_paste.update(cx, |p, cx| {
+                                    p.paste(PathBuf::new(), paths.paths().to_vec(), window, cx)
                                 })
                             })
                             .child(title),
@@ -361,6 +400,7 @@ impl Render for FilesPanel {
                             .dropdown_menu(move |menu, _, cx| {
                                 let create = menu_panel.clone();
                                 let folder = menu_panel.clone();
+                                let paste = menu_panel.clone();
                                 let collapse = menu_panel.clone();
                                 let reveal = menu_panel.clone();
                                 let active = active.clone();
@@ -386,6 +426,20 @@ impl Render for FilesPanel {
                                         .on_click(move |_, window, cx| {
                                             folder.update(cx, |p, cx| {
                                                 p.new_entry(true, None, window, cx)
+                                            })
+                                        }),
+                                )
+                                .item(
+                                    PopupMenuItem::new(pasting::menu_label(local))
+                                        .disabled(
+                                            !available
+                                                || busy
+                                                || !local
+                                                || pasting::copied_paths(cx).is_empty(),
+                                        )
+                                        .on_click(move |_, window, cx| {
+                                            paste.update(cx, |p, cx| {
+                                                p.paste_clipboard(PathBuf::new(), window, cx)
                                             })
                                         }),
                                 )
@@ -523,6 +577,8 @@ impl Render for FilesPanel {
         }
         let context_panel = panel.clone();
         let drag_panel = panel.clone();
+        let finder_drag_panel = panel.clone();
+        let (area_paste_panel, area_target) = (panel.clone(), target.clone());
         body.child(
             div()
                 .id("files-tree-area")
@@ -534,6 +590,18 @@ impl Render for FilesPanel {
                         drag_panel.update(cx, |p, cx| p.drag_scroll(event, window, cx))
                     },
                 )
+                .on_drag_move(move |event: &DragMoveEvent<ExternalPaths>, window, cx| {
+                    finder_drag_panel.update(cx, |p, cx| p.drag_scroll(event, window, cx))
+                })
+                // Below the last row the worktree root is the folder under the pointer.
+                .can_drop(move |value, _, _| {
+                    pasting::accepts_finder_drop(value, area_target.as_ref())
+                })
+                .on_drop(move |paths: &ExternalPaths, window, cx| {
+                    area_paste_panel.update(cx, |p, cx| {
+                        p.paste(PathBuf::new(), paths.paths().to_vec(), window, cx)
+                    })
+                })
                 .child(
                     Tree::new(&tree, move |ix, entry, selected, window, cx| {
                         row::render(ix, entry, selected, &panel, &settings, window, cx)

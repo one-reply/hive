@@ -3,6 +3,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::{AlertDialog, DialogFooter};
 use gpui_kit::component::{Disableable as _, WindowExt as _};
 use gpui_kit::*;
+use std::rc::Rc;
 
 /// Gives `alert` Cancel and a red `ok_text` button that runs `on_confirm`, and nothing else
 /// that does. `on_confirm` says whether the dialog closes, as `AlertDialog::on_ok` does.
@@ -39,15 +40,76 @@ pub(crate) fn unavailable(
     )
 }
 
-fn with_buttons(alert: AlertDialog, confirm: Button) -> AlertDialog {
+/// A question with a safe answer besides the destructive one, such as Save and Discard for
+/// unsaved changes. Enter and the `safe.0` button run `safe.1`; the red `destructive.0`
+/// button runs `destructive.1` and, as in every confirmation here, only when it is pressed
+/// itself. Both say whether the dialog closes. `on_cancel` runs when the question is
+/// dismissed with Cancel or Escape, for a caller that owes someone the answer "no".
+pub(crate) fn choice(
+    alert: AlertDialog,
+    safe: (
+        impl Into<SharedString>,
+        impl Fn(&mut Window, &mut App) -> bool + 'static,
+    ),
+    destructive: (
+        impl Into<SharedString>,
+        impl Fn(&mut Window, &mut App) -> bool + 'static,
+    ),
+    on_cancel: impl Fn(&mut Window, &mut App) + 'static,
+) -> AlertDialog {
+    let (safe_text, on_safe) = (safe.0.into(), Rc::new(safe.1));
+    let (destructive_text, on_destructive) = destructive;
+    let on_cancel = Rc::new(on_cancel);
+    let cancelled_by_button = on_cancel.clone();
     let cancel = Button::new("destructive-cancel")
         .cursor_pointer()
         .label("Cancel")
-        .on_click(|_, window, cx| window.close_dialog(cx));
+        .on_click(move |_, window, cx| {
+            cancelled_by_button(window, cx);
+            window.close_dialog(cx);
+        });
+    let by_button = on_safe.clone();
+    let safe_button = Button::new("destructive-safe")
+        .cursor_pointer()
+        .primary()
+        .label(safe_text)
+        .on_click(move |_, window, cx| {
+            if by_button(window, cx) {
+                window.close_dialog(cx);
+            }
+        });
+    let destructive_button = confirm_button(destructive_text).on_click(move |_, window, cx| {
+        if on_destructive(window, cx) {
+            window.close_dialog(cx);
+        }
+    });
+    alert
+        .on_ok(move |_, window, cx| on_safe(window, cx))
+        // Escape, which the library closes the dialog for once this returns true.
+        .on_cancel(move |_, window, cx| {
+            on_cancel(window, cx);
+            true
+        })
+        .footer(
+            DialogFooter::new()
+                .child(cancel)
+                .child(destructive_button)
+                .child(safe_button),
+        )
+}
+
+fn with_buttons(alert: AlertDialog, confirm: Button) -> AlertDialog {
     alert
         // What Enter triggers: it must neither run the action nor dismiss the question.
         .on_ok(|_, _, _| false)
-        .footer(DialogFooter::new().child(cancel).child(confirm))
+        .footer(DialogFooter::new().child(cancel_button()).child(confirm))
+}
+
+fn cancel_button() -> Button {
+    Button::new("destructive-cancel")
+        .cursor_pointer()
+        .label("Cancel")
+        .on_click(|_, window, cx| window.close_dialog(cx))
 }
 
 fn confirm_button(ok_text: impl Into<SharedString>) -> Button {
@@ -57,10 +119,10 @@ fn confirm_button(ok_text: impl Into<SharedString>) -> Button {
         .label(ok_text)
 }
 
+/// A window with a dialog layer and the keys a person would press, for tests of the
+/// confirmations built here.
 #[cfg(test)]
-mod tests {
-    use super::confirmation;
-    use gpui_kit as gpui;
+pub(crate) mod testing {
     use gpui_kit::base::Root;
     use gpui_kit::component::WindowExt as _;
     use gpui_kit::component::dialog::AlertDialog;
@@ -69,8 +131,6 @@ mod tests {
         App, Context, KeyDownEvent, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext,
         Window, div,
     };
-    use std::cell::Cell;
-    use std::rc::Rc;
 
     struct Host;
     impl Render for Host {
@@ -79,11 +139,8 @@ mod tests {
         }
     }
 
-    /// A window that shows the alert `build` describes, drawn and ready for input.
-    fn open(
-        cx: &mut TestAppContext,
-        build: impl Fn(AlertDialog, &mut Window, &mut App) -> AlertDialog + 'static,
-    ) -> &mut VisualTestContext {
+    /// An empty window that can show dialogs.
+    pub(crate) fn window(cx: &mut TestAppContext) -> &mut VisualTestContext {
         cx.update(|cx| {
             gpui_kit::init(cx);
             cx.set_reduce_motion(true);
@@ -92,20 +149,42 @@ mod tests {
             let view = cx.new(|_| Host);
             Root::new(view, window, cx)
         });
-        cx.update(|window, cx| window.open_alert_dialog(cx, build));
+        cx
+    }
+
+    /// Lets a dialog opened just now mount and paint, so it takes the keys that follow.
+    pub(crate) fn settle(cx: &mut VisualTestContext) {
         cx.run_until_parked();
         // The first frame mounts the dialog layer, the second paints the dialog in it.
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// A window that shows the alert `build` describes, drawn and ready for input.
+    pub(crate) fn open(
+        cx: &mut TestAppContext,
+        build: impl Fn(AlertDialog, &mut Window, &mut App) -> AlertDialog + 'static,
+    ) -> &mut VisualTestContext {
+        let cx = window(cx);
+        show(cx, build);
         cx
     }
 
-    fn is_open(cx: &mut VisualTestContext) -> bool {
+    /// Shows the alert `build` describes in a window that is already there.
+    pub(crate) fn show(
+        cx: &mut VisualTestContext,
+        build: impl Fn(AlertDialog, &mut Window, &mut App) -> AlertDialog + 'static,
+    ) {
+        cx.update(|window, cx| window.open_alert_dialog(cx, build));
+        settle(cx);
+    }
+
+    pub(crate) fn is_open(cx: &mut VisualTestContext) -> bool {
         cx.update(|window, cx| window.has_active_dialog(cx))
     }
 
     /// A key pressed and released, which is what activates a focused button.
-    fn press(key: &'static str, cx: &mut VisualTestContext) {
+    pub(crate) fn press(key: &'static str, cx: &mut VisualTestContext) {
         let keystroke = Keystroke::parse(key).expect("a key name");
         cx.simulate_event(KeyDownEvent {
             keystroke: keystroke.clone(),
@@ -115,6 +194,46 @@ mod tests {
         cx.simulate_event(KeyUpEvent { keystroke });
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::{is_open, open, press, show};
+    use super::{choice, confirmation};
+    use gpui_kit as gpui;
+    use gpui_kit::component::dialog::AlertDialog;
+    use gpui_kit::{App, TestAppContext, Window};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// How often Save, Discard and a dismissal were chosen.
+    type Answers = [Rc<Cell<u32>>; 3];
+
+    /// "Save changes?", where Save keeps the dialog open and Discard closes it.
+    fn unsaved_changes(
+        answers: &Answers,
+    ) -> impl Fn(AlertDialog, &mut Window, &mut App) -> AlertDialog + 'static {
+        let answers = answers.clone();
+        move |alert, _, _| {
+            let [saved, discarded, cancelled] = answers.clone();
+            choice(
+                alert.confirm().title("Save changes?"),
+                ("Save", move |_: &mut Window, _: &mut App| {
+                    saved.set(saved.get() + 1);
+                    false
+                }),
+                ("Discard", move |_: &mut Window, _: &mut App| {
+                    discarded.set(discarded.get() + 1);
+                    true
+                }),
+                move |_, _| cancelled.set(cancelled.get() + 1),
+            )
+        }
+    }
+
+    fn counts(answers: &Answers) -> [u32; 3] {
+        [answers[0].get(), answers[1].get(), answers[2].get()]
     }
 
     #[gpui::test]
@@ -180,6 +299,45 @@ mod tests {
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
         assert_eq!(confirmed.get(), 0);
+        assert!(!is_open(cx));
+    }
+
+    #[gpui::test]
+    fn enter_takes_the_safe_answer_and_only_its_own_button_the_destructive_one(
+        cx: &mut TestAppContext,
+    ) {
+        let answers = Answers::default();
+        let cx = open(cx, unsaved_changes(&answers));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(counts(&answers), [1, 0, 0]);
+        assert!(is_open(cx), "the safe answer said to keep the dialog");
+
+        // Tab reaches Cancel, then the red button; Enter there is still the safe answer.
+        cx.simulate_keystrokes("tab tab");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        press("enter", cx);
+        assert_eq!(counts(&answers), [2, 0, 0]);
+        press("space", cx);
+        assert_eq!(counts(&answers), [2, 1, 0], "an answer is not a dismissal");
+        assert!(!is_open(cx));
+    }
+
+    #[gpui::test]
+    fn escape_and_cancel_tell_the_caller_the_question_was_dismissed(cx: &mut TestAppContext) {
+        let answers = Answers::default();
+        let cx = open(cx, unsaved_changes(&answers));
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(counts(&answers), [0, 0, 1]);
+        assert!(!is_open(cx));
+
+        show(cx, unsaved_changes(&answers));
+        // Tab reaches Cancel first; Space presses it.
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        press("space", cx);
+        assert_eq!(counts(&answers), [0, 0, 2]);
         assert!(!is_open(cx));
     }
 }
