@@ -340,7 +340,14 @@ impl Pipelines {
         change: impl FnOnce(&mut Run) -> Result<(), String>,
     ) -> Result<(), String> {
         self.ensure_reports_saved(id)?;
+        let before = self.run(id, cx)?.phase();
         let saved = self.apply_change(id, cx, change)?;
+        // A decision that moves the run on replaces the step that failed. Its error would
+        // otherwise hold the new step back until a retry of work nobody asks for any more.
+        // An edit within the phase leaves the failure: a retry still repeats that step.
+        if self.run(id, cx)?.phase() != before {
+            self.clear_error(id);
+        }
         self.schedule(id, saved, cx);
         Ok(())
     }

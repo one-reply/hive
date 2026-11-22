@@ -261,6 +261,50 @@ fn invalid_decision_does_not_partially_edit_the_run(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_decision_that_moves_the_run_replaces_the_failed_step_it_leaves(cx: &mut TestAppContext) {
+    use hive_core::pipeline::CriterionDecision;
+    const STALE: &str = "The acceptance check could not read the worktree.";
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        p.store.update(cx, |s, cx| {
+            let run = &mut s.state.pipelines.runs[0];
+            let reviewed = reviewed(run, Phase::Acceptance, &"a".repeat(40));
+            let mut saved = serde_json::to_value(reviewed).unwrap();
+            saved["lanes"][0]["criteria"] = "Sign-in works".into();
+            *run = serde_json::from_value(saved).unwrap();
+            s.set_test_writer(cx, |_| Ok(()));
+        });
+        p.fail(42, STALE.into(), cx);
+
+        // A note on a criterion leaves the run at the gate whose check failed.
+        let observed = CriterionDecision::Manual("Signed in by hand".into());
+        p.edit(42, cx, |run| {
+            Ok(run.decide_criterion(0, "Sign-in works", "reviewed", observed)?)
+        })
+        .unwrap();
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Acceptance);
+        assert_eq!(p.error(42), Some(STALE));
+
+        p.edit(42, cx, |run| {
+            Ok(run.request_changes("Handle the expired session")?)
+        })
+        .unwrap();
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Development);
+        assert_eq!(p.error(42), None);
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, _| {
+        // The development step ran instead of waiting for a retry: it got as far as the
+        // fixture's checkout, which Git never made.
+        let failure = p
+            .error(42)
+            .expect("the fixture has no checkout to develop in");
+        assert_ne!(failure, STALE);
+    });
+}
+
+#[gpui::test]
 fn only_the_reviewed_revision_can_be_accepted(cx: &mut TestAppContext) {
     let pipelines = recovering(cx);
     pipelines.update(cx, |p, cx| {
