@@ -149,7 +149,7 @@ impl Pipelines {
             .map(|run| {
                 let error = "Hive restarted during a check. Retry to run the command again.";
                 let runtime = runtime::RunRuntime {
-                    error: Some(error.into()),
+                    error: Some(runtime::Failure::Step(error.into())),
                     ..Default::default()
                 };
                 (run.id(), runtime)
@@ -189,8 +189,8 @@ impl Pipelines {
     }
 
     pub(crate) fn error(&self, id: u64) -> Option<&str> {
-        if let Some(message) = self.runtime(id).and_then(|r| r.error.as_deref()) {
-            return Some(message);
+        if let Some(failure) = self.runtime(id).and_then(|r| r.error.as_ref()) {
+            return Some(failure.message());
         }
         if let Some((_, message)) = self
             .session_errors
@@ -342,10 +342,8 @@ impl Pipelines {
         self.ensure_reports_saved(id)?;
         let before = self.run(id, cx)?.phase();
         let saved = self.apply_change(id, cx, change)?;
-        // A decision that moves the run on replaces the step that failed. Its error would
-        // otherwise hold the new step back until a retry of work nobody asks for any more.
-        // An edit within the phase leaves the failure: a retry still repeats that step.
-        if self.run(id, cx)?.phase() != before {
+        let run = self.run(id, cx)?;
+        if execution::replaces_failure(before, run.phase(), execution::has_work(run)) {
             self.clear_error(id);
         }
         self.schedule(id, saved, cx);

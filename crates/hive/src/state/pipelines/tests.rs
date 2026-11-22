@@ -305,6 +305,40 @@ fn a_decision_that_moves_the_run_replaces_the_failed_step_it_leaves(cx: &mut Tes
 }
 
 #[gpui::test]
+fn an_edit_that_leaves_work_in_the_same_phase_replaces_the_failed_step_too(
+    cx: &mut TestAppContext,
+) {
+    const STALE: &str = "Preparing Web: the checkout is busy.";
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        p.store.update(cx, |s, cx| {
+            let run = &mut s.state.pipelines.runs[0];
+            let mut developing = reviewed(run, Phase::Acceptance, &"a".repeat(40));
+            developing
+                .request_changes("Handle the expired session")
+                .unwrap();
+            *run = developing;
+            s.set_test_writer(cx, |_| Ok(()));
+        });
+        p.fail(42, STALE.into(), cx);
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        // No decision does this today; the rule must not depend on that.
+        p.edit(42, cx, |run| Ok(run.restart_attempt(&ticket).map(drop)?))
+            .unwrap();
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Development);
+        assert_eq!(p.error(42), None);
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, _| {
+        let failure = p
+            .error(42)
+            .expect("the fixture has no checkout to develop in");
+        assert_ne!(failure, STALE);
+    });
+}
+
+#[gpui::test]
 fn only_the_reviewed_revision_can_be_accepted(cx: &mut TestAppContext) {
     let pipelines = recovering(cx);
     pipelines.update(cx, |p, cx| {
@@ -334,12 +368,100 @@ fn only_the_reviewed_revision_can_be_accepted(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_checkpoint_that_could_not_be_saved_is_forgotten_once_a_later_one_is(cx: &mut TestAppContext) {
+    use hive_core::pipeline::CriterionDecision;
+    fn note(p: &mut Pipelines, criterion: &str, cx: &mut gpui::Context<Pipelines>) {
+        let observed = CriterionDecision::Manual("Checked by hand".into());
+        p.edit(42, cx, |run| {
+            Ok(run.decide_criterion(0, criterion, "reviewed", observed)?)
+        })
+        .unwrap();
+    }
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        p.store.update(cx, |s, _| {
+            let run = &mut s.state.pipelines.runs[0];
+            let reviewed = reviewed(run, Phase::Acceptance, &"a".repeat(40));
+            let mut saved = serde_json::to_value(reviewed).unwrap();
+            saved["lanes"][0]["criteria"] = "Sign-in works\nSign-out works".into();
+            *run = serde_json::from_value(saved).unwrap();
+        });
+        // The fixture cannot save yet.
+        note(p, "Sign-in works", cx);
+    });
+    cx.run_until_parked();
+    pipelines.update(cx, |p, cx| {
+        assert!(p.error(42).unwrap().contains("checkpoint"));
+        p.store
+            .update(cx, |s, cx| s.set_test_writer(cx, |_| Ok(())));
+        // The next edit stays at the gate and schedules nothing, but its save holds both.
+        note(p, "Sign-out works", cx);
+    });
+    cx.run_until_parked();
+    pipelines.update(cx, |p, cx| {
+        assert_eq!(p.error(42), None);
+
+        // Any other failure is not about saving and outlives a save.
+        p.fail(42, "The checkout is busy.".into(), cx);
+        note(p, "Sign-in works", cx);
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, _| {
+        assert_eq!(p.error(42), Some("The checkout is busy."))
+    });
+}
+
+#[gpui::test]
+fn retry_repeats_the_acceptance_check_only_when_that_check_is_what_failed(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    let tree = "a".repeat(40);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        p.store.update(cx, |s, _| {
+            let run = &mut s.state.pipelines.runs[0];
+            let decision = reviewed(run, Phase::Decision(1), &tree);
+            let mut saved = serde_json::to_value(decision).unwrap();
+            saved["findings"] = serde_json::json!([{"lane": 0, "description": "Left open"}]);
+            *run = serde_json::from_value(saved).unwrap();
+        });
+        // The user's own decision reaches the gate; the fixture cannot save it.
+        p.edit(42, cx, |run| {
+            Ok(run.dismiss_finding(0, "Tracked separately")?)
+        })
+        .unwrap();
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Acceptance);
+    });
+    cx.run_until_parked();
+    pipelines.update(cx, |p, cx| {
+        assert!(p.error(42).unwrap().contains("checkpoint"));
+        p.retry(42, cx).unwrap();
+        assert!(!p.accepting(42), "saving again is not accepting");
+    });
+    cx.run_until_parked();
+    pipelines.update(cx, |p, cx| {
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Acceptance);
+        assert!(p.error(42).unwrap().contains("checkpoint"));
+
+        // The check Accept started could not read the worktree: Retry asks it again.
+        let runtime = p.runtime_mut(42);
+        runtime.generation = 7;
+        runtime.accept_job = Some(7);
+        p.finish_acceptance(42, 7, Err("fatal: not a git repository".into()), cx);
+        assert_eq!(p.error(42), Some("fatal: not a git repository"));
+        p.retry(42, cx).unwrap();
+        assert!(p.accepting(42));
+        assert_eq!(p.error(42), None);
+    });
+}
+
+#[gpui::test]
 fn cancelling_drops_everything_held_for_the_run(cx: &mut TestAppContext) {
     let pipelines = recovering(cx);
     pipelines.update(cx, |p, cx| {
         let worker = std::sync::Arc::new(hive_core::command::Cancellation::default());
         let runtime = p.runtime_mut(42);
-        runtime.error = Some("Checkout failed".into());
+        runtime.error = Some(super::runtime::Failure::Step("Checkout failed".into()));
         runtime.worker = Some(worker.clone());
         runtime.review = Some(Err("unreadable".into()));
         runtime.review_job = Some(7);
@@ -727,7 +849,7 @@ fn only_a_finished_run_can_be_deleted_and_nothing_is_kept_for_it(cx: &mut TestAp
         assert!(error.contains("Stop the run"), "{error}");
         assert!(p.run(42, cx).is_ok());
         p.cancel(42, cx).unwrap();
-        p.runtime_mut(42).error = Some("A stale error".into());
+        p.runtime_mut(42).error = Some(super::runtime::Failure::Step("A stale error".into()));
         p.delete_run(42, cx).unwrap();
         assert!(p.run(42, cx).is_err());
         assert!(p.runtime(42).is_none());

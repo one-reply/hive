@@ -2,6 +2,21 @@
 use super::*;
 use hive_core::agent::launch::{Launch, validate_pipeline_profile};
 use hive_core::pipeline::CommandResult;
+use runtime::Failure;
+
+/// Whether the run has a step for Hive to start: an agent's attempt or a command of its own.
+pub(super) fn has_work(run: &Run) -> bool {
+    !run.pending().is_empty() || run.has_command_work()
+}
+
+/// Whether a decision replaces the failure recorded for its run. A run's error holds its
+/// scheduled step back, so a decision that leaves work to do, or moves the run to another
+/// phase, would be saved and then wait for a retry of a step nobody asks for any more. Only
+/// an edit that stays in the phase and schedules nothing (a note on a criterion, one of
+/// several findings dismissed) keeps the failure: a retry still repeats that step.
+pub(super) fn replaces_failure(before: Phase, after: Phase, has_work: bool) -> bool {
+    before != after || has_work
+}
 
 enum Work {
     Prepared(Vec<usize>, PathBuf),
@@ -30,18 +45,16 @@ impl Pipelines {
                 }
                 p.settle_reports(id, result.clone(), cx);
                 if let Err(error) = result {
-                    p.fail(
-                        id,
-                        format!("Pipeline checkpoint could not be saved: {error}"),
-                        cx,
-                    );
+                    let reason = format!("Pipeline checkpoint could not be saved: {error}");
+                    p.stop_for(id, Failure::Checkpoint(reason), cx);
                     return;
                 }
+                p.forget_unsaved_checkpoint(id, cx);
                 if !p.current(id, generation) {
                     return;
                 }
                 let Ok(run) = p.run(id, cx) else { return };
-                if run.pending().is_empty() && !run.has_command_work() {
+                if !has_work(run) {
                     return;
                 }
                 if !p.registered(run.owner(), cx)
@@ -194,10 +207,16 @@ impl Pipelines {
     }
 
     pub(super) fn fail(&mut self, id: u64, reason: String, cx: &mut Context<Self>) {
+        self.stop_for(id, Failure::Step(reason), cx);
+    }
+
+    /// Records why the run waits for the user and says so once per distinct failure.
+    pub(super) fn stop_for(&mut self, id: u64, failure: Failure, cx: &mut Context<Self>) {
         let runtime = self.runtime_mut(id);
-        if runtime.error.as_ref() != Some(&reason) {
+        if runtime.error.as_ref() != Some(&failure) {
+            let reason = failure.message().to_owned();
             tracing::warn!(run=id,%reason,"pipeline needs attention");
-            runtime.error = Some(reason.clone());
+            runtime.error = Some(failure);
             cx.emit(RunWaits {
                 run: id,
                 reason: Waiting::Failed(reason),
@@ -216,7 +235,10 @@ impl Pipelines {
             self.schedule(id, saved, cx);
             return Ok(());
         }
-        if self.run(id, cx)?.phase() == Phase::Acceptance {
+        if matches!(
+            self.runtime(id).and_then(|runtime| runtime.error.as_ref()),
+            Some(Failure::Acceptance(_))
+        ) {
             return self.accept(id, cx);
         }
         let mut run = self.run(id, cx)?.clone();
@@ -287,5 +309,28 @@ impl Pipelines {
         let saved = self.store.read(cx).pipeline_checkpoint();
         self.schedule(ticket.run, saved, cx);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not a glob import: `gpui_kit::*` brings in GPUI's `test` attribute, which shadows `#[test]`.
+    use super::replaces_failure;
+    use hive_core::pipeline::Phase;
+
+    #[test]
+    fn only_an_edit_that_stays_in_its_phase_and_schedules_nothing_keeps_the_failure() {
+        let gate = Phase::Acceptance;
+        assert!(!replaces_failure(gate, gate, false));
+        assert!(replaces_failure(gate, Phase::Development, true));
+        // Another gate: the failed step is behind the run although nothing starts.
+        assert!(replaces_failure(Phase::Decision(0), gate, false));
+        // Work in the same phase must never wait behind the old error.
+        assert!(replaces_failure(
+            Phase::Development,
+            Phase::Development,
+            true
+        ));
+        assert!(replaces_failure(Phase::Review(0), Phase::Review(1), true));
     }
 }
