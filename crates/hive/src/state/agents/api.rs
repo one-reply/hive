@@ -467,9 +467,9 @@ impl Agents {
         Ok((agent.status == AgentStatus::Working).then_some(found.id))
     }
 
-    /// `hive agent read`: the screen of a pane that runs an agent. A pane without one is the
-    /// user's own shell, and its scrollback (a printed `.env`, a token) is not for an agent
-    /// that was talked into asking for it.
+    /// `hive agent read`: the screen of a pane that runs an agent, or that an agent left in a
+    /// pane opened for it. Any other pane is the user's own shell, and its scrollback (a
+    /// printed `.env`, a token) is not for an agent that was talked into asking for it.
     fn read_terminal(
         &self,
         target: &Address,
@@ -477,7 +477,9 @@ impl Agents {
         cx: &App,
     ) -> Result<Response, ApiError> {
         let found = self.resolve(target, cx)?;
-        self.agent(found.id).ok_or_else(|| no_agent(target))?;
+        if self.agent(found.id).is_none() && !self.opened_for_helper(&found, cx) {
+            return Err(no_agent(target));
+        }
         let lines = lines
             .unwrap_or(protocol::READ_LINES)
             .min(protocol::MAX_READ_LINES);
@@ -490,6 +492,18 @@ impl Agents {
                 ApiError::new(ErrorCode::NotReady, format!("{target} has not started yet"))
             })?;
         Ok(Response::Text { text })
+    }
+
+    /// Whether `hive agent start` opened the pane in this run of the app: it carries a name
+    /// and Hive launched its agent. It began empty, so it shows what the helper printed, which
+    /// its parent wants to see once the helper has exited. A name alone is not enough: a pane
+    /// restored after a restart keeps it, but is a plain shell again.
+    fn opened_for_helper(&self, found: &Found, cx: &App) -> bool {
+        found.session.read(cx).name.is_some()
+            && self
+                .watched
+                .iter()
+                .any(|watched| watched.id == found.id && watched.probe.launched_agent.is_some())
     }
 
     fn agent_response(&self, target: &Address, cx: &App) -> Result<Response, ApiError> {
@@ -751,18 +765,28 @@ mod tests {
         use hive_core::terminal::{Terminal, TerminalSize};
 
         let agents = cx.new(|cx| Agents::new(None, cx));
-        let mut pane = || {
+        // A watched pane and the agent Hive launched in it, if any.
+        let mut pane = |launched: Option<AgentKind>| {
             let terminal =
                 Terminal::spawn(None, Some("/bin/cat"), TerminalSize::new(80, 24)).unwrap();
             let session = cx.new(|_| TerminalSession::for_test(terminal));
             agents.update(cx, |agents, cx| {
                 let terminal = session.read(cx).terminal().unwrap();
-                agents.watch(&session, &Host::Local, None, Path::new("/repo"), terminal);
+                agents.watch(
+                    &session,
+                    &Host::Local,
+                    launched,
+                    Path::new("/repo"),
+                    terminal,
+                );
             });
             session
         };
-        // Both are open local panes; the poll saw an agent only in the second.
-        let (shell, agent) = (pane(), pane());
+        // All are open local panes; the poll sees an agent only in `agent`.
+        let (shell, agent) = (pane(None), pane(None));
+        let (helper, restored) = (pane(Some(AgentKind::Codex)), pane(None));
+        // The user's shell, where Hive launched an agent in place and the agent has exited.
+        let reused = pane(Some(AgentKind::Codex));
         agents.update(cx, |agents, _| {
             agents.by_worktree.insert(
                 (Host::Local, "/repo".into()),
@@ -795,6 +819,36 @@ mod tests {
                 agents.read_terminal(&target(&agent), Some(5), cx),
                 Ok(Response::Text { .. })
             ));
+        });
+
+        // A pane `hive agent start` opened keeps its name when its agent exits, and what the
+        // agent left on screen is why its parent wants to read it.
+        helper.update(cx, |session, cx| {
+            session.set_name(Some("reviewer".into()), cx)
+        });
+        // After a restart the same name is on a plain shell Hive launched no agent in.
+        restored.update(cx, |session, cx| {
+            session.set_name(Some("planner".into()), cx)
+        });
+        agents.read_with(cx, |agents, cx| {
+            let plain = agents.read_terminal(&Address::Name("planner".into()), None, cx);
+            assert_eq!(plain.unwrap_err().code, ErrorCode::NoAgent);
+            let own = Address::Terminal(reused.entity_id().as_u64());
+            let own = agents.read_terminal(&own, None, cx);
+            assert_eq!(own.unwrap_err().code, ErrorCode::NoAgent);
+            assert!(agents.agent(helper.entity_id()).is_none());
+            for address in [
+                Address::Name("reviewer".into()),
+                Address::Terminal(helper.entity_id().as_u64()),
+            ] {
+                assert!(matches!(
+                    agents.read_terminal(&address, None, cx),
+                    Ok(Response::Text { .. })
+                ));
+            }
+            // Its other requests still need a running agent.
+            let gone = agents.working_agent(&Address::Name("reviewer".into()), cx);
+            assert_eq!(gone.unwrap_err().code, ErrorCode::NoAgent);
         });
     }
 
