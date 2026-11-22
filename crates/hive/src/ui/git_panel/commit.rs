@@ -50,6 +50,9 @@ impl GitPanel {
     ) -> impl IntoElement {
         let staged = status.map(staged_count).unwrap_or(0);
         let generating = self.git.read(cx).is_generating();
+        // A confirmation is about to take the focus: nothing typed here meanwhile may end
+        // up answering it.
+        let preparing = self.git.read(cx).is_preparing();
         let conflicts = status.is_some_and(Status::has_conflicts);
         let generate_hover = Hover::new("generate-commit-message", window, cx)
             .enabled(!busy && !conflicts && staged > 0);
@@ -67,7 +70,7 @@ impl GitPanel {
                         Textarea::new(&self.message)
                             .pr(MESSAGE_TRAILING_ROOM)
                             .when_some(self.message_size.height(), |area, height| area.h(height))
-                            .disabled(generating),
+                            .disabled(generating || preparing),
                         &self.message,
                         cx,
                     ))
@@ -82,7 +85,9 @@ impl GitPanel {
                                 .loading(generating)
                                 .accessibility_label("Generate commit message with AI")
                                 .disabled(busy || conflicts || staged == 0)
-                                .tooltip(if conflicts {
+                                .tooltip(if generating {
+                                    "Generating · Stop is next to the commit button"
+                                } else if conflicts {
                                     "Resolve conflicts first"
                                 } else if staged == 0 {
                                     "Stage changes to enable AI generation"

@@ -52,9 +52,16 @@ impl GitPanel {
         let hint = request_hint(&branch, push.as_ref());
         let prefill = self.pull_requests.read(cx).prefill(&target, base, cx);
         let (git, requests) = (self.git.clone(), self.pull_requests.clone());
+        // The worktree shows busy until the dialog is there to be seen.
+        let Some(prefill) = git.update(cx, |git, cx| git.prepare(&target, prefill, cx)) else {
+            return;
+        };
         window
             .spawn(cx, async move |cx| {
-                let draft = prefill.await;
+                // The sender goes away only with source control itself.
+                let Ok(draft) = prefill.recv().await else {
+                    return;
+                };
                 cx.update(|window, cx| {
                     pull_request_dialog::open(hint, &draft, window, cx, move |draft, _, cx| {
                         requests.update(cx, |requests, cx| {

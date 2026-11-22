@@ -3,7 +3,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{WindowExt as _, v_flex};
 
@@ -64,10 +63,8 @@ impl TerminalPanel {
             let (panel, closing, store) = (panel.clone(), closing.clone(), store.clone());
             let checkbox_state = dont_ask.clone();
             let ok_state = dont_ask.clone();
-            alert
-                .confirm()
-                .title(title.clone())
-                .description(
+            crate::ui::destructive::confirmation(
+                alert.confirm().title(title.clone()).description(
                     v_flex()
                         .gap_3()
                         .child(body.clone())
@@ -81,14 +78,13 @@ impl TerminalPanel {
                                     window.refresh();
                                 }),
                         ),
-                )
-                .ok_text(if statuses.len() == 1 {
+                ),
+                if statuses.len() == 1 {
                     "Stop Agent"
                 } else {
                     "Stop Agents"
-                })
-                .ok_variant(ButtonVariant::Danger)
-                .on_ok(move |_, window, cx| {
+                },
+                move |window, cx| {
                     if ok_state.get() {
                         store.update(cx, |store, cx| {
                             store.set_confirm_close_running_agent(false, cx)
@@ -98,7 +94,8 @@ impl TerminalPanel {
                         panel.update(cx, |panel, cx| panel.finish_close(&closing, window, cx));
                     }
                     true
-                })
+                },
+            )
         });
     }
 

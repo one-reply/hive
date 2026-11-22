@@ -259,6 +259,8 @@ impl BranchPicker {
                             .xsmall()
                             .icon(Lucide::Trash)
                             .tooltip("Delete branch")
+                            // The merge check behind a click takes a while on a slow host.
+                            .loading(self.git.read(cx).is_preparing_at(&self.target))
                             .disabled(busy)
                             .on_click(move |_, window, cx| {
                                 // The row behind would otherwise switch to this branch.

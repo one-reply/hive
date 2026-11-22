@@ -325,11 +325,22 @@ impl Git {
         self.target.as_ref().is_some_and(|t| self.busy.contains(t))
     }
 
-    /// Whether the mutation running on the active worktree is one the user can stop.
+    /// Whether what runs on the active worktree is something the user can stop: a mutation
+    /// that may take minutes, or the generation of a commit message.
     pub(crate) fn can_stop(&self) -> bool {
         self.target
             .as_ref()
-            .is_some_and(|t| self.stops.contains_key(t))
+            .is_some_and(|t| self.stops.contains_key(t) || self.generations.contains_key(t))
+    }
+
+    /// Ends what runs on the active worktree, whichever of the two it is.
+    pub(crate) fn stop(&mut self, cx: &mut Context<Self>) {
+        match self.target.clone() {
+            Some(target) if self.generations.contains_key(&target) => {
+                self.stop_generation(&target, cx)
+            }
+            _ => self.stop_mutation(),
+        }
     }
 
     /// Ends the mutation running on the active worktree. Git is killed mid-command, so it
@@ -606,7 +617,7 @@ mod tests {
     use hive_core::{git::status::Status, host::Host, projects::Target, state::StateError};
 
     /// An empty repository in its own temporary directory, ready for commits.
-    fn repository(name: &str) -> std::path::PathBuf {
+    pub(super) fn repository(name: &str) -> std::path::PathBuf {
         let repo = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&repo);
         std::fs::create_dir_all(&repo).unwrap();

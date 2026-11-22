@@ -94,6 +94,29 @@ impl Mode {
     }
 }
 
+/// What the Stop button says it ends.
+struct StopFace {
+    label: &'static str,
+    tooltip: &'static str,
+}
+
+impl StopFace {
+    /// A stopped generation leaves nothing to check; a stopped Git command does.
+    fn of(generating: bool) -> Self {
+        if generating {
+            Self {
+                label: "Stop generating the commit message",
+                tooltip: "Stop generating · your message stays as it is",
+            }
+        } else {
+            Self {
+                label: "Stop the running Git operation",
+                tooltip: "Stop · Git is ended mid-command; verify the result afterwards",
+            }
+        }
+    }
+}
+
 /// The icon, words and look of the main half of the split button.
 struct Face {
     icon: Lucide,
@@ -146,7 +169,10 @@ impl GitPanel {
         let entry = self.with_facts(cx, |facts| mode.entry(facts));
         let blocker = self.blocker(entry, cx);
         let face = mode.face(entry);
-        let loading = self.git.read(cx).is_running();
+        let loading = {
+            let git = self.git.read(cx);
+            git.is_running() || git.is_preparing()
+        };
         let active = mode == Mode::for_status(status) && !busy;
         let hover = Hover::new(mode.id(), window, cx).enabled(active && blocker.is_none());
         let main = Button::new(mode.id())
@@ -183,14 +209,17 @@ impl GitPanel {
         let mut row = h_flex().w_full().gap_2().items_center().child(split);
         if self.git.read(cx).can_stop() {
             let hover = Hover::new("stop-git-operation", window, cx);
+            let stop = StopFace::of(self.git.read(cx).is_generating());
             row = row.child(
                 Button::new("stop-git-operation")
                     .cursor_pointer()
                     .small()
                     .icon(Lucide::Square)
-                    .accessibility_label("Stop the running Git operation")
-                    .tooltip("Stop · Git is ended mid-command; verify the result afterwards")
-                    .on_click(cx.listener(|this, _, _, cx| this.git.read(cx).stop_mutation()))
+                    .accessibility_label(stop.label)
+                    .tooltip(stop.tooltip)
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.git.update(cx, |git, cx| git.stop(cx))),
+                    )
                     .smooth_hover(ButtonLook::Outline, &hover, cx),
             );
         }
@@ -260,6 +289,16 @@ mod tests {
             unstaged_stats: None,
             conflict: None,
         }
+    }
+
+    #[test]
+    fn the_stop_button_says_what_it_ends_and_what_is_left_to_check() {
+        let generation = super::StopFace::of(true);
+        assert!(generation.label.contains("generating the commit message"));
+        assert!(generation.tooltip.contains("your message stays"));
+        // Only a Git command killed mid-way leaves a result to verify.
+        assert!(!generation.tooltip.contains("verify"));
+        assert!(super::StopFace::of(false).tooltip.contains("verify"));
     }
 
     #[test]

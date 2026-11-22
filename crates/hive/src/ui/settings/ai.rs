@@ -1,7 +1,7 @@
 //! API key forms. Credential IO and validation belong to AiProviders / hive-core.
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariant};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex,
@@ -216,15 +216,14 @@ fn confirm_reset(
 ) {
     window.open_alert_dialog(cx, move |alert, _, _| {
         let providers = providers.clone();
-        alert.confirm()
+        let alert = alert
+            .confirm()
             .title(format!("Reset {} API key?", provider.name()))
-            .description("Remove this key from Hive's Keychain storage. This does not revoke it with the provider.")
-            .ok_text("Reset Key")
-            .ok_variant(ButtonVariant::Danger)
-            .on_ok(move |_, _, cx| {
-                providers.update(cx, |providers, cx| providers.delete(provider, cx));
-                true
-            })
+            .description("Remove this key from Hive's Keychain storage. This does not revoke it with the provider.");
+        crate::ui::destructive::confirmation(alert, "Reset Key", move |_, cx| {
+            providers.update(cx, |providers, cx| providers.delete(provider, cx));
+            true
+        })
     });
 }
 

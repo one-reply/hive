@@ -3,7 +3,7 @@ use super::*;
 use crate::state::pipelines::RunStatus;
 use crate::ui::hover::{SmoothHoverBg as _, WIDE_HOVER_DURATION};
 use gpui_kit::component::{
-    button::{ButtonVariant, ButtonVariants as _},
+    button::ButtonVariants as _,
     menu::{ContextMenuExt as _, PopupMenu},
 };
 
@@ -283,15 +283,12 @@ fn confirm_delete(template: &Template, window: &mut Window, cx: &mut App) {
     let template = template.clone();
     window.open_alert_dialog(cx, move |alert, _, _| {
         let template = template.clone();
-        alert
+        crate::ui::destructive::confirmation(alert
             .confirm()
             .title(format!("Delete “{}”?", template.name))
             .description(
                 "This removes the template from all projects. Existing runs keep their workflow.",
-            )
-            .ok_text("Delete")
-            .ok_variant(ButtonVariant::Danger)
-            .on_ok(move |_, window, cx| {
+            ), "Delete", move |window, cx| {
                 let pipelines = AppState::get(cx).pipelines.clone();
                 if let Err(error) = pipelines.update(cx, |p, cx| p.delete_template(&template, cx)) {
                     window.push_notification(Notification::error(error), cx);

@@ -132,21 +132,19 @@ fn run_menu(
 fn confirm_delete_run(id: u64, task: &str, window: &mut Window, cx: &mut App) {
     let title = format!("Delete “{}”?", run::task_title(task));
     window.open_alert_dialog(cx, move |alert, _, _| {
-        alert
+        let alert = alert
             .confirm()
             .title(title.clone())
             .description(
                 "This removes the run and its reports from Hive. Its worktrees, branches and changes stay on disk.",
-            )
-            .ok_text("Delete")
-            .ok_variant(ButtonVariant::Danger)
-            .on_ok(move |_, window, cx| {
-                let pipelines = AppState::get(cx).pipelines.clone();
-                if let Err(error) = pipelines.update(cx, |p, cx| p.delete_run(id, cx)) {
-                    window.push_notification(Notification::error(error), cx);
-                }
-                true
-            })
+            );
+        crate::ui::destructive::confirmation(alert, "Delete", move |window, cx| {
+            let pipelines = AppState::get(cx).pipelines.clone();
+            if let Err(error) = pipelines.update(cx, |p, cx| p.delete_run(id, cx)) {
+                window.push_notification(Notification::error(error), cx);
+            }
+            true
+        })
     });
 }
 
