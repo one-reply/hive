@@ -198,6 +198,12 @@ mod tests {
         let start = Instant::now();
         let (mut input, reader) = pipe(start);
         drop(reader);
-        assert!(input.push(b"frame".to_vec(), start).is_err());
+        // The pipe is closed only once nothing holds its read end, and a process another test
+        // starts at this moment inherits it until it exits. A frame larger than the pipe
+        // stays queued meanwhile, so the error is waited for instead of missed.
+        let result = input
+            .push(vec![0; LARGE], start)
+            .and_then(|()| input.flush_until(Instant::now() + Duration::from_secs(30)));
+        assert!(matches!(result, Err(Error::Protocol(_))), "{result:?}");
     }
 }
