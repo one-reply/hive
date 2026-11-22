@@ -10,6 +10,7 @@ use gpui_kit::component::dock::{BasePanelView, DockEvent, Panel};
 use super::center_dock::CenterDock;
 use super::*;
 use crate::state::git::{ConflictRequest, DiffRequest};
+use crate::terminal::panel::Reveal;
 
 mod agent_draft;
 mod files;
@@ -113,6 +114,15 @@ impl ProjectCenter {
             .filter_map(|panel| panel.read(cx).cwd(cx))
     }
 
+    /// The agents running in this project's terminal tabs, one line each, for the question a
+    /// closing window asks.
+    pub(super) fn running_agents(&self, cx: &App) -> Vec<SharedString> {
+        self.terminals
+            .iter()
+            .flat_map(|panel| panel.read(cx).running_agents(cx))
+            .collect()
+    }
+
     /// Activates and focuses the terminal tab whose shell runs in `cwd`, or opens one. Tells
     /// whether a tab is now showing: `false` when no tab existed and the PTY could not be spawned.
     pub(super) fn show_terminal(&mut self, cwd: &Path, window: &mut Window, cx: &mut App) -> bool {
@@ -178,6 +188,7 @@ impl ProjectCenter {
             &self.host,
             Some(cwd),
             launch,
+            Reveal::Requested,
             self.dock.downgrade(),
             window,
             cx,

@@ -49,9 +49,7 @@ pub fn init(cx: &mut App) {
         if let Some(handle) = cx.active_window() {
             cx.defer(move |cx| {
                 let _ = handle.update(cx, |_, window, cx| {
-                    crate::ui::editor_panel::close::all(window, cx, |window, _| {
-                        window.remove_window()
-                    })
+                    crate::ui::workspace::exit_guard::close_window(window, cx)
                 });
             });
         }

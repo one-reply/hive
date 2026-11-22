@@ -1,4 +1,7 @@
 //! Terminal presentation and keyboard/scroll dispatch to its session entity.
+//!
+//! Keys with a terminal sequence are written from `key_down`; text comes back from the
+//! system's text input through `composition` (see [`super::input`]).
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +25,7 @@ use super::keys;
 use super::mouse::GridGeometry;
 use crate::ui::keymap;
 
+mod composition;
 mod cursor;
 mod draft;
 mod link;
@@ -55,6 +59,8 @@ pub struct TerminalView {
     selection_scroll: gpui_kit::base::AutoScroll,
     selection_scroll_remainder: f32,
     link_hover: link::LinkHover,
+    /// Text the input method is composing; see `composition`.
+    marked_text: Option<String>,
     _subscriptions: Vec<Subscription>,
     _session_subscriptions: Vec<Subscription>,
 }
@@ -134,6 +140,9 @@ impl TerminalView {
             cx.on_blur(&focus_handle, window, |this, _, cx| {
                 this.restart_cursor_blink(cx);
                 this.stop_selection();
+                // The input method works on the focused field only; what it left here
+                // unfinished would stay drawn at the cursor forever.
+                this.marked_text = None;
                 this.session
                     .update(cx, |session, _| session.set_focused(false));
                 cx.notify();
@@ -162,6 +171,7 @@ impl TerminalView {
             selection_scroll: gpui_kit::base::AutoScroll::default(),
             selection_scroll_remainder: 0.,
             link_hover: link::LinkHover::default(),
+            marked_text: None,
             _subscriptions: subscriptions,
         }
     }
@@ -226,12 +236,15 @@ impl TerminalView {
         self.session.update(cx, |session, cx| session.copy(cx));
     }
 
+    /// Writes the keys that have a terminal sequence. A key left unhandled here goes on to
+    /// the system's text input, which is how text is typed.
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let option_as_meta = option_as_meta(cx);
         let handled = self.session.update(cx, |session, cx| {
             let Some(terminal) = session.terminal().filter(|_| !session.exited) else {
                 return false;
             };
-            if let Some(bytes) = keys::to_bytes(&event.keystroke, terminal.mode()) {
+            if let Some(bytes) = keys::to_bytes(&event.keystroke, terminal.mode(), option_as_meta) {
                 session.write_input(bytes, cx);
                 return true;
             }
@@ -392,6 +405,14 @@ fn shorten_title(title: &str, max_chars: usize) -> String {
 }
 
 actions!(terminal, [Copy, Paste]);
+
+/// Whether Option is Meta in terminals. Read on every key, so the switch in Settings takes
+/// effect in open terminals; a view outside the application (a test window) has no settings
+/// and composes, as macOS does.
+fn option_as_meta(cx: &App) -> bool {
+    cx.try_global::<crate::app::AppState>()
+        .is_some_and(|app| app.store.read(cx).state.settings.option_as_meta)
+}
 
 /// A resumed conversation leaves its shell behind: when the CLI rejects the id or the user
 /// quits, the tab stays with the reason on screen instead of vanishing.

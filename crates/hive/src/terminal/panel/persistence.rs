@@ -75,6 +75,8 @@ impl TerminalPanel {
                 group: None,
                 alone: false,
                 split_sizes: sizes,
+                // The workspace focuses the tab it saved as focused; the rest stay put.
+                reveal: Reveal::Unprompted,
             };
             for view in views {
                 panel.watch_pane(&view, window, cx);

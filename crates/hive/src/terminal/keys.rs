@@ -3,9 +3,17 @@
 use gpui_kit::{Keystroke, Modifiers};
 use hive_core::terminal::TermMode;
 
-/// Bytes to write for `keystroke`, or `None` when the key is not the terminal's business
-/// (e.g. `cmd-…` shortcuts the app handles).
-pub fn to_bytes(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
+/// Bytes to write for `keystroke`, or `None` when the key is not sent from here: `cmd-…`
+/// shortcuts belong to the app, and text belongs to the system's text input.
+///
+/// Text is every printable key, alone, with Shift, or with an Option that composes. Left
+/// alone, it reaches the input method — which is what turns a dead key and a letter into
+/// one accented character, and kana into kanji — and comes back to the terminal's input
+/// handler as finished text. Writing the key's own character here would send the bare accent.
+///
+/// `option_as_meta` makes Option a modifier instead: the key itself goes out after ESC, as
+/// xterm's `metaSendsEscape` does, and nothing is composed.
+pub fn to_bytes(keystroke: &Keystroke, mode: TermMode, option_as_meta: bool) -> Option<Vec<u8>> {
     let mods = keystroke.modifiers;
     if mods.platform {
         return None;
@@ -84,22 +92,31 @@ pub fn to_bytes(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
         });
     }
 
-    // Plain text (possibly with alt → ESC prefix, as xterm's `metaSendsEscape`).
-    let text = keystroke
-        .key_char
-        .as_deref()
-        .or(if key.chars().count() == 1 {
-            Some(key)
-        } else {
-            None
-        })?;
-    let text = if key == "space" { " " } else { text };
-    let mut bytes = Vec::with_capacity(text.len() + 1);
-    if mods.alt && keystroke.key_char.is_none() {
-        bytes.push(0x1b);
+    if option_as_meta && mods.alt {
+        return meta_key(key, mods.shift).map(|key| {
+            let mut bytes = vec![0x1b];
+            bytes.extend_from_slice(key.as_bytes());
+            bytes
+        });
     }
-    bytes.extend_from_slice(text.as_bytes());
-    Some(bytes)
+    None
+}
+
+/// What Meta sends after ESC for `key`: the key as the layout has it without Option, in
+/// upper case with Shift. Named keys other than Space have their own sequences above.
+fn meta_key(key: &str, shift: bool) -> Option<String> {
+    if key == "space" {
+        return Some(" ".to_owned());
+    }
+    let mut chars = key.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    Some(if shift {
+        c.to_uppercase().collect()
+    } else {
+        c.to_string()
+    })
 }
 
 /// xterm modifier parameter: 1 + shift(1) + alt(2) + ctrl(4).
@@ -150,29 +167,146 @@ mod tests {
         }
     }
 
+    /// The bytes for a key with Option composing characters, as macOS does by default.
+    fn bytes(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
+        to_bytes(keystroke, mode, false)
+    }
+
     #[test]
-    fn plain_and_control() {
+    fn control_keys_and_named_keys_are_sent_and_app_shortcuts_are_not() {
         assert_eq!(
-            to_bytes(&ks("a", Some("a"), |_| {}), TermMode::default()),
-            Some(b"a".to_vec())
-        );
-        assert_eq!(
-            to_bytes(&ks("c", None, |m| m.control = true), TermMode::default()),
+            bytes(&ks("c", None, |m| m.control = true), TermMode::default()),
             Some(vec![3])
         );
         assert_eq!(
-            to_bytes(&ks("enter", None, |_| {}), TermMode::default()),
+            bytes(&ks("enter", Some("\n"), |_| {}), TermMode::default()),
             Some(b"\r".to_vec())
         );
         assert_eq!(
-            to_bytes(&ks("s", None, |m| m.platform = true), TermMode::default()),
+            bytes(&ks("s", None, |m| m.platform = true), TermMode::default()),
             None
         );
     }
 
     #[test]
+    fn a_printable_key_without_modifiers_is_left_to_the_text_input() {
+        // As macOS reports them: `key_char` is the character the key types.
+        for (key, key_char) in [
+            ("a", "a"),
+            ("space", " "),
+            ("1", "1"),
+            ("/", "/"),
+            // A Ukrainian layout: the key is named by its Latin position.
+            ("a", "ф"),
+            // A dead key of a German layout: its own character is the bare accent.
+            ("´", "´"),
+        ] {
+            for option_as_meta in [false, true] {
+                assert_eq!(
+                    to_bytes(
+                        &ks(key, Some(key_char), |_| {}),
+                        TermMode::default(),
+                        option_as_meta
+                    ),
+                    None,
+                    "{key:?} typing {key_char:?} must reach the input method"
+                );
+            }
+        }
+        // Shift picks another character; it is still text.
+        assert_eq!(
+            bytes(&ks("a", Some("A"), |m| m.shift = true), TermMode::default()),
+            None
+        );
+        assert_eq!(
+            bytes(&ks("!", Some("!"), |_| {}), TermMode::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn option_composes_characters_unless_it_is_meta() {
+        // Option+E on a US layout is the dead key for an acute accent; Option+3 on a British
+        // one types "#"; Option+B is the Meta-b a shell uses to move back a word.
+        let dead_key = ks("e", Some("´"), |m| m.alt = true);
+        let hash = ks("3", Some("#"), |m| m.alt = true);
+        let word_back = ks("b", Some("∫"), |m| m.alt = true);
+        for key in [&dead_key, &hash, &word_back] {
+            assert_eq!(
+                to_bytes(key, TermMode::default(), false),
+                None,
+                "with Option composing, {} is text",
+                key.key
+            );
+        }
+        assert_eq!(
+            to_bytes(&dead_key, TermMode::default(), true),
+            Some(b"\x1be".to_vec())
+        );
+        assert_eq!(
+            to_bytes(&hash, TermMode::default(), true),
+            Some(b"\x1b3".to_vec())
+        );
+        assert_eq!(
+            to_bytes(&word_back, TermMode::default(), true),
+            Some(b"\x1bb".to_vec())
+        );
+    }
+
+    #[test]
+    fn meta_sends_the_key_itself_with_shift_and_for_space() {
+        let shifted = ks("f", Some("Ï"), |m| {
+            m.alt = true;
+            m.shift = true;
+        });
+        assert_eq!(
+            to_bytes(&shifted, TermMode::default(), true),
+            Some(b"\x1bF".to_vec())
+        );
+        // macOS folds Shift into a key that is not a letter.
+        let punctuation = ks("<", Some("¯"), |m| m.alt = true);
+        assert_eq!(
+            to_bytes(&punctuation, TermMode::default(), true),
+            Some(b"\x1b<".to_vec())
+        );
+        let space = ks("space", Some(" "), |m| m.alt = true);
+        assert_eq!(
+            to_bytes(&space, TermMode::default(), true),
+            Some(b"\x1b ".to_vec())
+        );
+        assert_eq!(to_bytes(&space, TermMode::default(), false), None);
+    }
+
+    #[test]
+    fn option_with_a_named_key_keeps_its_sequence_whatever_the_setting() {
+        for option_as_meta in [false, true] {
+            let send = |key: &str| {
+                to_bytes(
+                    &ks(key, None, |m| m.alt = true),
+                    TermMode::default(),
+                    option_as_meta,
+                )
+            };
+            assert_eq!(send("enter"), Some(b"\x1b\r".to_vec()));
+            assert_eq!(send("backspace"), Some(vec![0x1b, 0x7f]));
+            assert_eq!(send("left"), Some(b"\x1b[1;3D".to_vec()));
+            assert_eq!(
+                to_bytes(
+                    &ks("c", None, |m| {
+                        m.alt = true;
+                        m.control = true;
+                    }),
+                    TermMode::default(),
+                    option_as_meta,
+                ),
+                Some(vec![0x1b, 3])
+            );
+        }
+    }
+
+    #[test]
     fn tui_shortcuts_preserve_their_terminal_sequences() {
-        for (key, bytes) in [
+        for (key, expected) in [
             ("tab", b"\t".as_slice()),
             ("shift-tab", b"\x1b[Z".as_slice()),
             ("ctrl-p", b"\x10".as_slice()),
@@ -180,22 +314,22 @@ mod tests {
             ("ctrl-t", b"\x14".as_slice()),
         ] {
             let key = Keystroke::parse(key).expect("valid shortcut");
-            assert_eq!(to_bytes(&key, TermMode::ALT_SCREEN).as_deref(), Some(bytes));
+            assert_eq!(bytes(&key, TermMode::ALT_SCREEN).as_deref(), Some(expected));
         }
     }
 
     #[test]
     fn arrows_follow_cursor_mode() {
         assert_eq!(
-            to_bytes(&ks("up", None, |_| {}), TermMode::default()),
+            bytes(&ks("up", None, |_| {}), TermMode::default()),
             Some(b"\x1b[A".to_vec())
         );
         assert_eq!(
-            to_bytes(&ks("up", None, |_| {}), TermMode::APP_CURSOR),
+            bytes(&ks("up", None, |_| {}), TermMode::APP_CURSOR),
             Some(b"\x1bOA".to_vec())
         );
         assert_eq!(
-            to_bytes(&ks("left", None, |m| m.alt = true), TermMode::default()),
+            bytes(&ks("left", None, |m| m.alt = true), TermMode::default()),
             Some(b"\x1b[1;3D".to_vec())
         );
     }

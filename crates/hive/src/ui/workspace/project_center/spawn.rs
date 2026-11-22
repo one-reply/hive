@@ -6,11 +6,9 @@ use crate::state::terminal_session::TerminalSession;
 use hive_core::agent::launch::Launch;
 
 impl ProjectCenter {
-    /// `shown` tells whether this center is on screen; only then may a new tab take focus.
     pub(in crate::ui::workspace) fn spawn_agent(
         &mut self,
         request: &SpawnRequest,
-        shown: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<TerminalSession> {
@@ -48,6 +46,10 @@ impl ProjectCenter {
                     &self.host,
                     Some(&request.worktree),
                     Some(launch),
+                    // Nobody at the keyboard asked for this tab. It takes the keyboard only
+                    // from the tab it covers, and never from a hidden project or from a field
+                    // the user is typing in elsewhere.
+                    Reveal::Unprompted,
                     self.dock.downgrade(),
                     window,
                     cx,
@@ -56,10 +58,6 @@ impl ProjectCenter {
                 self.add(panel_handle(panel.clone()), window, cx);
                 self.terminals.push(panel);
                 self.sync_alone(cx);
-                // A tab in a hidden project must not hold the keyboard out of sight.
-                if !shown {
-                    restore_focus(focused, window, cx);
-                }
                 session
             }
         };

@@ -89,6 +89,8 @@ impl TerminalView {
         });
         self._session_subscriptions = Self::subscribe_session(&session, window, cx);
         self.session = session;
+        // A composition begun for the program that left is not text for the one replacing it.
+        self.marked_text = None;
         self.restart_cursor_blink(cx);
         self.stop_selection();
         self.scroll_remainder = 0.;

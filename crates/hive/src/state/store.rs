@@ -285,6 +285,11 @@ impl Store {
         self.commit(cx);
     }
 
+    pub(crate) fn set_option_as_meta(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.state.settings.option_as_meta = enabled;
+        self.commit(cx);
+    }
+
     pub(crate) fn set_agent_notifications(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.state.settings.agent_notifications = enabled;
         self.commit(cx);

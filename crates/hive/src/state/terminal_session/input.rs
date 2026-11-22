@@ -104,7 +104,11 @@ impl TerminalSession {
                 }
             };
             terminal.scroll_to_bottom();
+            #[cfg(test)]
+            let sent = bytes.clone();
             terminal.write(bytes);
+            #[cfg(test)]
+            self.written.extend(sent);
         }
     }
 

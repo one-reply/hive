@@ -37,6 +37,7 @@ use switcher::attention::Attention;
 
 mod center;
 mod center_dock;
+pub(crate) mod exit_guard;
 mod files;
 mod git;
 pub(crate) mod history;
@@ -143,10 +144,10 @@ fn run_notice_key(run: u64) -> (&'static str, u64) {
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.on_window_should_close(cx, |window, cx| {
-            if AppState::get(cx).documents.read(cx).dirty(cx).is_empty() {
+            if exit_guard::closes_at_once(window, cx) {
                 return true;
             }
-            crate::ui::editor_panel::close::all(window, cx, |window, _| window.remove_window());
+            exit_guard::close_window(window, cx);
             false
         });
         let app = AppState::get(cx);
@@ -254,10 +255,9 @@ impl Workspace {
                     let project = this.project_of(&request.host, &request.worktree, cx);
                     let session = match project {
                         Some(project) => {
-                            let shown = this.shown.as_ref() == Some(&project);
                             let session = this
                                 .center(&project, window, cx)
-                                .spawn_agent(request, shown, window, cx);
+                                .spawn_agent(request, window, cx);
                             this.sync_active_worktrees(cx);
                             this.save_center(&project, window, cx);
                             cx.notify();

@@ -820,7 +820,8 @@ mod tests {
             .collect();
         for shortcut in &SHORTCUTS {
             let keystroke = keystroke(shortcut.default);
-            if crate::terminal::keys::to_bytes(&keystroke, TermMode::default()).is_none() {
+            // Option as Meta sends the most keys to the shell, so it is the case to hold.
+            if crate::terminal::keys::to_bytes(&keystroke, TermMode::default(), true).is_none() {
                 continue;
             }
             let (bindings, pending) = keymap.bindings_for_input(&[keystroke], &terminal);
