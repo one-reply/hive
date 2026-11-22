@@ -81,8 +81,8 @@ impl LaunchForm {
             .iter()
             .find(|binding| binding.state(cx) == Some(LaneState::Failed));
         match failed.map(|binding| (binding, binding.base(cx))) {
-            Some((binding, Preview::Failed(error))) => {
-                read_failure(&self.repository_name(binding, cx), error).into()
+            Some((binding, Preview::Failed(failure))) => {
+                read_failure(&self.repository_name(binding, cx), failure).into()
             }
             _ => blocker.message().into(),
         }

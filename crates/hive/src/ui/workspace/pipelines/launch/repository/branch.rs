@@ -47,7 +47,7 @@ impl From<Preview<'_>> for Listing {
     fn from(read: Preview<'_>) -> Self {
         match read {
             Preview::Reading => Self::Reading,
-            Preview::Failed(error) => Self::Failed(error.to_owned()),
+            Preview::Failed(failure) => Self::Failed(failure.summary.clone()),
             Preview::Ready(preview) => Self::Branches(preview.branches.clone()),
         }
     }
@@ -343,6 +343,7 @@ fn menu_row(
 #[cfg(test)]
 mod tests {
     use super::{Branch, Create, Listing, Preview, WorkBranch, choices, enter_choice};
+    use crate::state::pipelines::Failure;
 
     fn local(name: &str, worktree: Option<&str>) -> Branch {
         Branch {
@@ -369,8 +370,9 @@ mod tests {
     #[test]
     fn a_failed_read_is_listed_as_its_error_and_not_as_a_read_in_progress() {
         assert_eq!(Listing::from(Preview::Reading), Listing::Reading);
+        let failure = Failure::plain("fatal: not a git repository");
         assert_eq!(
-            Listing::from(Preview::Failed("fatal: not a git repository")),
+            Listing::from(Preview::Failed(&failure)),
             Listing::Failed("fatal: not a git repository".into())
         );
         let preview = hive_core::pipeline::workspace::BasePreview {

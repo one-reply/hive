@@ -28,7 +28,7 @@ mod templates;
 mod watch;
 
 pub(crate) use delivery::Delivery;
-pub(crate) use previews::{Preview, PreviewKey};
+pub(crate) use previews::{Failure, Preview, PreviewKey};
 pub(crate) use status::{RunStatus, Waiting};
 pub(crate) use workspace::ReviewRepo;
 

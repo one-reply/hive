@@ -192,7 +192,6 @@ impl PipelinePanel {
 
 impl Render for PipelinePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let _measure = crate::ui::workspace::measure80::panel(); // MEASURE-80
         let title = match &self.screen {
             Screen::Editor(_) => "Template editor",
             Screen::Launch(_) => "New run",

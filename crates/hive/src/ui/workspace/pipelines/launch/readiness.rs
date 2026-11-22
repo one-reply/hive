@@ -1,5 +1,5 @@
 //! What keeps a run from starting, named so the user knows what to do next.
-use crate::state::pipelines::Preview;
+use crate::state::pipelines::{Failure, Preview};
 use hive_core::git::branches::Branch;
 use hive_core::pipeline::draft::WorkBranch;
 
@@ -74,10 +74,11 @@ pub(super) fn lane_state(
     }
 }
 
-/// The blocking reason for a repository whose read failed: its name and the first line of
-/// what Git answered.
-pub(super) fn read_failure(repository: &str, error: &str) -> String {
-    let cause = error
+/// The blocking reason for a repository whose read failed: its name and what Git answered
+/// in one line. The repository's card shows the whole error.
+pub(super) fn read_failure(repository: &str, failure: &Failure) -> String {
+    let cause = failure
+        .summary
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
@@ -149,8 +150,8 @@ pub(super) fn blocker(
 #[cfg(test)]
 mod tests {
     use super::{
-        Blocker, Branch, BranchProblem, LaneState, Preview, WorkBranch, blocker, branch_problem,
-        lane_state, read_failure,
+        Blocker, Branch, BranchProblem, Failure, LaneState, Preview, WorkBranch, blocker,
+        branch_problem, lane_state, read_failure,
     };
     use hive_core::pipeline::workspace::BasePreview;
 
@@ -175,7 +176,8 @@ mod tests {
 
     #[test]
     fn a_failed_read_is_named_even_before_a_branch_is_chosen() {
-        let failed = Preview::Failed("fatal: bad revision");
+        let failure = Failure::plain("fatal: bad revision");
+        let failed = Preview::Failed(&failure);
         assert_eq!(
             lane_state(false, &WorkBranch::Unchosen, failed, false),
             LaneState::Failed
@@ -256,16 +258,18 @@ mod tests {
     }
 
     #[test]
-    fn a_read_failure_names_the_repository_and_the_first_line_git_printed() {
+    fn a_read_failure_names_the_repository_and_what_git_answered_in_one_line() {
+        let failure = Failure {
+            summary: "fatal: bad revision 'nope'".into(),
+            detail: "`git rev-parse nope` failed on Local in /api: fatal: bad revision 'nope'"
+                .into(),
+        };
         assert_eq!(
-            read_failure(
-                "api",
-                "\n  fatal: bad revision 'nope'\nhint: check the name\n"
-            ),
+            read_failure("api", &failure),
             "api can’t be read: fatal: bad revision 'nope'"
         );
         assert_eq!(
-            read_failure("api", " \n"),
+            read_failure("api", &Failure::plain(" \n")),
             "api can’t be read: the read failed without a message"
         );
     }

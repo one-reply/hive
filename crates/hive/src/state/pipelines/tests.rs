@@ -927,10 +927,12 @@ fn a_base_that_cannot_be_read_fails_with_gits_answer_and_can_be_read_again(
     });
     cx.run_until_parked();
     pipelines.update(cx, |p, cx| {
-        let Preview::Failed(error) = p.preview(&key) else {
+        let Preview::Failed(failure) = p.preview(&key) else {
             panic!("an unborn branch was read: {:?}", p.preview(&key));
         };
-        assert!(!error.is_empty());
+        // Git's own line, without the command and the folder that the detail adds.
+        assert!(failure.summary.starts_with("fatal:"), "{failure:?}");
+        assert!(failure.detail.contains("rev-parse"), "{failure:?}");
         assert!(!p.is_reading_preview(&key));
         // The retry shows as a read in progress, not as the old failure.
         p.refresh_preview(key.clone(), cx);
@@ -959,10 +961,11 @@ fn a_repository_removed_from_hive_fails_its_read_instead_of_staying_unread(
     };
     pipelines.update(cx, |p, cx| {
         p.refresh_preview(key.clone(), cx);
-        let Preview::Failed(error) = p.preview(&key) else {
+        let Preview::Failed(failure) = p.preview(&key) else {
             panic!("the removed project is still being read");
         };
-        assert!(error.contains("no longer a project in Hive"), "{error}");
+        let said = &failure.summary;
+        assert!(said.contains("no longer a project in Hive"), "{said}");
         assert!(!p.is_reading_preview(&key));
     });
 }

@@ -118,7 +118,7 @@ impl LaunchForm {
         }
         let data = b.ready(cx).cloned();
         let message = match b.base(cx) {
-            Preview::Failed(error) => Some(Notice::Failed(error.to_owned())),
+            Preview::Failed(failure) => Some(Notice::Failed(failure.detail.clone())),
             Preview::Reading => Some(Notice::Reading),
             Preview::Ready(preview) => branch_problem(&b.branch, &preview.branches)
                 .map(Notice::Branch)

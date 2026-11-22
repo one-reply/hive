@@ -68,7 +68,8 @@ fn a_cached_panel_is_reused_for_a_neighbours_frame_and_rebuilt_for_its_own_scree
             neighbour: cx.new(|_| Leaf(neighbour_builds)),
         }
     });
-    let (panel, neighbour) = root.read_with(cx, |root, _| (root.panel.clone(), root.neighbour.clone()));
+    let (panel, neighbour) =
+        root.read_with(cx, |root, _| (root.panel.clone(), root.neighbour.clone()));
     let screen = panel.read_with(cx, |panel, _| panel.screen.clone());
     let built = || builds.clone().map(|count| count.get());
     draw(cx);
@@ -76,16 +77,20 @@ fn a_cached_panel_is_reused_for_a_neighbours_frame_and_rebuilt_for_its_own_scree
     assert!(panel_first >= 1 && screen_first >= 1);
 
     // A frame the neighbour asks for: a terminal printing, the spinner of a working agent.
+    // The neighbour is not cached, so it is built for every frame the window draws.
     neighbour.update(cx, |_, cx| cx.notify());
     draw(cx);
-    assert_eq!(built(), [panel_first, screen_first, neighbour_first + 1]);
+    let [panel_builds, screen_builds, neighbour_builds] = built();
+    assert_eq!([panel_builds, screen_builds], [panel_first, screen_first]);
+    assert!(neighbour_builds > neighbour_first);
 
     // A frame a screen inside the panel asks for: its clock, its spinner, its progress.
     screen.update(cx, |_, cx| cx.notify());
     draw(cx);
-    assert_eq!(built(), [panel_first + 1, screen_first + 1, neighbour_first + 2]);
+    assert_eq!(built()[..2], [panel_first + 1, screen_first + 1]);
 
+    // The panel itself, which takes the screen inside it along.
     panel.update(cx, |_, cx| cx.notify());
     draw(cx);
-    assert_eq!(built()[0], panel_first + 2);
+    assert_eq!(built()[..2], [panel_first + 2, screen_first + 2]);
 }
