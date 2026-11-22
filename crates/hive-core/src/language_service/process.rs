@@ -1,20 +1,15 @@
-use super::{Error, Family, Message, wire};
+use super::{Error, Family, Message, input::Input, wire};
 use crate::host::{Host, preamble};
 use rustix::{
-    event::{PollFd, PollFlags, Timespec, poll},
     fs::{OFlags, fcntl_getfl, fcntl_setfl},
     process::{Pid, Signal, kill_process_group},
 };
 use std::{
-    io::{BufReader, Read, Write},
+    io::{BufReader, Read},
     os::unix::process::CommandExt,
     path::Path,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, SyncSender, sync_channel},
-    },
+    process::{Child, ChildStdout, Command, Stdio},
+    sync::mpsc::{Receiver, SyncSender, sync_channel},
     time::{Duration, Instant},
 };
 
@@ -24,8 +19,7 @@ const STDERR_HEAD: usize = 1024;
 
 pub(super) struct Process {
     child: Child,
-    input: ChildStdin,
-    stopped: Arc<AtomicBool>,
+    input: Input,
     stderr_head: Receiver<Vec<u8>>,
 }
 
@@ -36,16 +30,8 @@ impl Process {
         family: Family,
         generation: u8,
         sender: SyncSender<Message>,
-        stopped: Arc<AtomicBool>,
     ) -> Result<Self, Error> {
-        Self::spawn(
-            command(host, root, family),
-            host,
-            root,
-            generation,
-            sender,
-            stopped,
-        )
+        Self::spawn(command(host, root, family), host, root, generation, sender)
     }
 
     fn spawn(
@@ -54,7 +40,6 @@ impl Process {
         root: &Path,
         generation: u8,
         sender: SyncSender<Message>,
-        stopped: Arc<AtomicBool>,
     ) -> Result<Self, Error> {
         let fail = |error: std::io::Error| Error::Session {
             host: host.clone(),
@@ -75,17 +60,15 @@ impl Process {
             return Err(Error::Unavailable("server has no stdin"));
         };
         let (head_sender, stderr_head) = sync_channel(1);
+        let nonblocking = fcntl_getfl(&input)
+            .and_then(|flags| fcntl_setfl(&input, flags | OFlags::NONBLOCK))
+            .map_err(|e| fail(e.into()));
         let mut process = Self {
             child,
-            input,
-            stopped,
+            input: Input::new(input, Instant::now()),
             stderr_head,
         };
-        fcntl_setfl(
-            &process.input,
-            fcntl_getfl(&process.input).map_err(|e| fail(e.into()))? | OFlags::NONBLOCK,
-        )
-        .map_err(|e| fail(e.into()))?;
+        nonblocking?;
         let output = process
             .child
             .stdout
@@ -144,50 +127,34 @@ impl Process {
         (!text.is_empty()).then_some(text)
     }
 
+    /// Queues `message` behind earlier input; never waits for the server to read.
     pub(super) fn write(&mut self, message: &impl serde::Serialize) -> Result<(), Error> {
-        self.write_with_deadline(message, Duration::from_secs(5), true)
+        self.input.push(wire::encode(message)?, Instant::now())
     }
 
+    /// Writes `message` after all earlier input, giving the server a short time to read it.
     pub(super) fn closing(&mut self, message: &impl serde::Serialize) -> Result<(), Error> {
-        self.write_with_deadline(message, Duration::from_millis(100), false)
+        self.input.push(wire::encode(message)?, Instant::now())?;
+        self.input
+            .flush_until(Instant::now() + Duration::from_millis(100))
     }
 
-    fn write_with_deadline(
-        &mut self,
-        message: &impl serde::Serialize,
-        timeout: Duration,
-        cancellable: bool,
-    ) -> Result<(), Error> {
-        let bytes = wire::encode(message)?;
-        let deadline = Instant::now() + timeout;
-        let mut remaining = bytes.as_slice();
-        while !remaining.is_empty() {
-            if cancellable && self.stopped.load(Ordering::Acquire) {
-                return Err(Error::Cancelled);
-            }
-            if Instant::now() >= deadline {
-                return Err(Error::TimedOut);
-            }
-            match self.input.write(remaining) {
-                Ok(0) => return Err(Error::Unavailable("server closed stdin")),
-                Ok(count) => remaining = &remaining[count..],
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    let timeout = Timespec::try_from(Duration::from_millis(25))
-                        .map_err(|e| Error::Protocol(e.to_string()))?;
-                    // A signal only ends this wait early; the loop checks the deadline again.
-                    match poll(
-                        &mut [PollFd::new(&self.input, PollFlags::OUT)],
-                        Some(&timeout),
-                    ) {
-                        Ok(_) | Err(rustix::io::Errno::INTR) => {}
-                        Err(error) => return Err(Error::Protocol(error.to_string())),
-                    }
-                }
-                Err(e) => return Err(Error::Protocol(e.to_string())),
-            }
-        }
-        Ok(())
+    /// Writes queued input the pipe takes now.
+    pub(super) fn flush(&mut self) -> Result<(), Error> {
+        self.input.flush(Instant::now())
+    }
+
+    pub(super) fn has_pending_input(&self) -> bool {
+        self.input.is_pending()
+    }
+
+    pub(super) fn heard_from_server(&mut self) {
+        self.input.heard_from_server(Instant::now());
+    }
+
+    /// Fails when queued input has waited too long on a server that has also gone silent.
+    pub(super) fn check_stalled(&self) -> Result<(), Error> {
+        self.input.check_stalled(Instant::now())
     }
 }
 
@@ -287,7 +254,6 @@ mod tests {
             root,
             0,
             sender,
-            Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
         let message = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -331,15 +297,7 @@ mod tests {
             ),
         ]);
         let (sender, _frames) = mpsc::sync_channel(4);
-        let process = Process::spawn(
-            command,
-            &Host::Local,
-            Path::new("/"),
-            0,
-            sender,
-            Arc::new(AtomicBool::new(false)),
-        )
-        .unwrap();
+        let process = Process::spawn(command, &Host::Local, Path::new("/"), 0, sender).unwrap();
         // The head arrives when the shell has exited and its stderr is closed.
         let head = process.stderr_head.recv().unwrap();
         assert_eq!(String::from_utf8_lossy(&head), "");

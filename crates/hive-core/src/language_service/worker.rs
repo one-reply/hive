@@ -23,6 +23,9 @@ use std::{
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 15 });
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 const DIAGNOSTIC_MESSAGE_CHARS: usize = 2048;
+/// How soon input the pipe could not take is offered again. The queue gives no readiness
+/// signal, and a server that was busy writing reads again once its output is drained.
+const INPUT_RETRY: Duration = Duration::from_millis(25);
 type Pending = BTreeMap<i64, (Instant, async_channel::Sender<Result<Value, Error>>)>;
 
 pub(super) fn run(
@@ -39,32 +42,25 @@ pub(super) fn run(
         if stopped.load(Ordering::Acquire) {
             break;
         }
-        let result = Process::start(
-            &host,
-            &root,
-            family,
-            generation,
-            sender.clone(),
-            stopped.clone(),
-        )
-        .map_err(|error| (error, None))
-        .and_then(|mut process| {
-            serve(
-                &mut process,
-                &root,
-                &physical,
-                generation,
-                &receiver,
-                &events,
-                &stopped,
-            )
-            .map_err(|error| {
-                let output = (!matches!(error, Error::Cancelled))
-                    .then(|| process.startup_output())
-                    .flatten();
-                (error, output)
-            })
-        });
+        let result = Process::start(&host, &root, family, generation, sender.clone())
+            .map_err(|error| (error, None))
+            .and_then(|mut process| {
+                serve(
+                    &mut process,
+                    &root,
+                    &physical,
+                    generation,
+                    &receiver,
+                    &events,
+                    &stopped,
+                )
+                .map_err(|error| {
+                    let output = (!matches!(error, Error::Cancelled))
+                        .then(|| process.startup_output())
+                        .flatten();
+                    (error, output)
+                })
+            });
         match result {
             Ok(()) | Err((Error::Cancelled, _)) => break,
             Err((error, output)) => {
@@ -118,6 +114,8 @@ fn serve(
         if stopped.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
         }
+        // Input the pipe could not take earlier goes out before anything new.
+        process.flush()?;
         let now = Instant::now();
         let abandoned: Vec<_> = pending
             .iter()
@@ -131,7 +129,8 @@ fn serve(
             return Err(Error::TimedOut);
         }
         // A slow answer is not a dead server: restarting one that is still loading a large
-        // project only makes it start over. Exit, a closed pipe or a stuck write end a session.
+        // project only makes it start over. Exit, a closed pipe or input the server stops
+        // taking end a session.
         for id in expired(&pending, now) {
             if let Some((_, reply)) = pending.remove(&id) {
                 let _ = reply.try_send(Err(Error::TimedOut));
@@ -144,9 +143,19 @@ fn serve(
             .min()
             .unwrap_or(Duration::from_secs(1))
             .min(Duration::from_secs(1));
+        let wait = if process.has_pending_input() {
+            wait.min(INPUT_RETRY)
+        } else {
+            wait
+        };
         let message = match receiver.recv_timeout(wait) {
             Ok(message) => message,
-            Err(RecvTimeoutError::Timeout) => continue,
+            // Judged only after a wait with no message: output the server wrote while this
+            // worker was busy elsewhere is still queued and counts as hearing from it.
+            Err(RecvTimeoutError::Timeout) => {
+                process.check_stalled()?;
+                continue;
+            }
             Err(RecvTimeoutError::Disconnected) => return shutdown(process, receiver, generation),
         };
         match message {
@@ -183,73 +192,82 @@ fn serve(
                 }
             }
             Message::Incoming(from, _) if from != generation => {}
-            Message::Incoming(_, incoming) => match incoming?.ok_or(Error::Unavailable(
-                "server closed stdout; check that the language server is installed",
-            ))? {
-                Incoming::Response(Id::Number(0), result) if !ready => {
-                    let initialized: InitializeResult = serde_json::from_value(result?)
-                        .map_err(|e| Error::Protocol(e.to_string()))?;
-                    if initialized
-                        .capabilities
-                        .position_encoding
-                        .as_ref()
-                        .is_some_and(|encoding| *encoding != PositionEncodingKind::UTF16)
-                    {
-                        return Err(Error::Protocol(
-                            "Server selected unsupported position encoding".into(),
-                        ));
-                    }
-                    process.write(&json!({"jsonrpc":"2.0","method":"initialized","params":{}}))?;
-                    ready = true;
-                    super::events::send(
-                        events,
-                        Event::Ready(Box::new(initialized.capabilities)),
-                        stopped,
-                    )?;
-                }
-                Incoming::Response(Id::Number(id), result) => {
-                    if let Some((_, reply)) = pending.remove(&id) {
-                        let _ = reply.try_send(result.map(|mut value| {
-                            super::paths::inbound(&mut value, physical, root);
-                            value
-                        }));
-                    }
-                }
-                Incoming::Response(_, _) => {}
-                Incoming::Call {
-                    id: Some(id),
-                    method,
-                    params,
-                } => server_request(process, id, &method, params, &uri)?,
-                Incoming::Call {
-                    id: None,
-                    method,
-                    mut params,
-                } if method == "textDocument/publishDiagnostics" => {
-                    super::paths::inbound(&mut params, physical, root);
-                    match serde_json::from_value::<PublishDiagnosticsParams>(params) {
-                        Ok(mut diagnostics) => {
-                            // Parse Markdown once on this worker, never while applying it in UI.
-                            for diagnostic in &mut diagnostics.diagnostics {
-                                if stopped.load(Ordering::Acquire) {
-                                    return Err(Error::Cancelled);
-                                }
-                                let message: String = diagnostic
-                                    .message
-                                    .chars()
-                                    .take(DIAGNOSTIC_MESSAGE_CHARS)
-                                    .collect();
-                                diagnostic.message =
-                                    super::markdown::restrict_links(&message).into_owned();
-                            }
-                            super::events::send(events, Event::Diagnostics(diagnostics), stopped)?
+            Message::Incoming(_, incoming) => {
+                let incoming = incoming?.ok_or(Error::Unavailable(
+                    "server closed stdout; check that the language server is installed",
+                ))?;
+                process.heard_from_server();
+                match incoming {
+                    Incoming::Response(Id::Number(0), result) if !ready => {
+                        let initialized: InitializeResult = serde_json::from_value(result?)
+                            .map_err(|e| Error::Protocol(e.to_string()))?;
+                        if initialized
+                            .capabilities
+                            .position_encoding
+                            .as_ref()
+                            .is_some_and(|encoding| *encoding != PositionEncodingKind::UTF16)
+                        {
+                            return Err(Error::Protocol(
+                                "Server selected unsupported position encoding".into(),
+                            ));
                         }
-                        // One publication the client cannot type is not a dead server.
-                        Err(error) => tracing::debug!(%error, "skipped unreadable diagnostics"),
+                        process
+                            .write(&json!({"jsonrpc":"2.0","method":"initialized","params":{}}))?;
+                        ready = true;
+                        super::events::send(
+                            events,
+                            Event::Ready(Box::new(initialized.capabilities)),
+                            stopped,
+                        )?;
                     }
+                    Incoming::Response(Id::Number(id), result) => {
+                        if let Some((_, reply)) = pending.remove(&id) {
+                            let _ = reply.try_send(result.map(|mut value| {
+                                super::paths::inbound(&mut value, physical, root);
+                                value
+                            }));
+                        }
+                    }
+                    Incoming::Response(_, _) => {}
+                    Incoming::Call {
+                        id: Some(id),
+                        method,
+                        params,
+                    } => server_request(process, id, &method, params, &uri)?,
+                    Incoming::Call {
+                        id: None,
+                        method,
+                        mut params,
+                    } if method == "textDocument/publishDiagnostics" => {
+                        super::paths::inbound(&mut params, physical, root);
+                        match serde_json::from_value::<PublishDiagnosticsParams>(params) {
+                            Ok(mut diagnostics) => {
+                                // Parse Markdown once on this worker, never while applying it in UI.
+                                for diagnostic in &mut diagnostics.diagnostics {
+                                    if stopped.load(Ordering::Acquire) {
+                                        return Err(Error::Cancelled);
+                                    }
+                                    let message: String = diagnostic
+                                        .message
+                                        .chars()
+                                        .take(DIAGNOSTIC_MESSAGE_CHARS)
+                                        .collect();
+                                    diagnostic.message =
+                                        super::markdown::restrict_links(&message).into_owned();
+                                }
+                                super::events::send(
+                                    events,
+                                    Event::Diagnostics(diagnostics),
+                                    stopped,
+                                )?
+                            }
+                            // One publication the client cannot type is not a dead server.
+                            Err(error) => tracing::debug!(%error, "skipped unreadable diagnostics"),
+                        }
+                    }
+                    Incoming::Call { .. } => {}
                 }
-                Incoming::Call { .. } => {}
-            },
+            }
         }
     })();
     let result = if matches!(result, Err(Error::Cancelled)) {

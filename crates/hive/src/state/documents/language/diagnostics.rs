@@ -4,11 +4,24 @@ use gpui_kit::component::input::RopeExt as _;
 /// Lines one diagnostic may span and still be compared across document versions.
 const CARRIED_LINES: u32 = 200;
 
-/// One server publication and, when it was computed for the synced buffer, that buffer.
+/// One server publication and the buffer it describes, when that is known.
 pub(crate) struct Publication {
     params: PublishDiagnosticsParams,
-    /// The document as the server saw it for `params.version`.
+    /// The document as the server saw it: the buffer synced for `params.version`. A server
+    /// that sends no version (typescript-language-server) proves nothing about freshness, so
+    /// its publication describes the buffer synced last before it arrived, or the one opened
+    /// after it.
     diagnosed: Option<Rope>,
+}
+
+impl Publication {
+    /// The document opened after an unversioned publication: the server's view of the file
+    /// is now the opened buffer, and edits are measured from it.
+    pub(super) fn opened(&mut self, text: &Rope) {
+        if self.params.version.is_none() && self.diagnosed.is_none() {
+            self.diagnosed = Some(text.clone());
+        }
+    }
 }
 
 impl LanguageSession {
@@ -16,7 +29,11 @@ impl LanguageSession {
         let diagnosed = self
             .documents
             .get(&params.uri)
-            .filter(|synced| params.version == Some(synced.version))
+            .filter(|synced| {
+                params
+                    .version
+                    .is_none_or(|version| version == synced.version)
+            })
             .map(|synced| synced.text.clone());
         self.diagnostics_limited |= retain_bounded(&mut self.diagnostics, params, diagnosed);
     }
@@ -35,18 +52,23 @@ fn visible(synced: &Synced, text: &Rope, publication: &Publication) -> Vec<lsp_t
         return Vec::new();
     }
     let diagnostics = &publication.params.diagnostics;
-    match (publication.params.version, &publication.diagnosed) {
-        (None, _) => diagnostics.clone(),
-        (Some(version), _) if version == synced.version => diagnostics.clone(),
-        // rust-analyzer does not republish a set that an edit left identical, so an older
-        // publication still holds wherever the edit neither changed nor moved the lines.
-        (Some(_), Some(diagnosed)) => diagnostics
-            .iter()
-            .filter(|diagnostic| same_lines(diagnosed, text, diagnostic.range))
-            .cloned()
-            .collect(),
-        (Some(_), None) => Vec::new(),
+    if publication.params.version == Some(synced.version) {
+        return diagnostics.clone();
     }
+    let Some(diagnosed) = &publication.diagnosed else {
+        return Vec::new();
+    };
+    if diagnosed == text {
+        return diagnostics.clone();
+    }
+    // An older publication still describes the lines an edit neither changed nor moved:
+    // rust-analyzer does not republish a set the edit left identical, and a server without
+    // versions has not published for the edited buffer yet.
+    diagnostics
+        .iter()
+        .filter(|diagnostic| same_lines(diagnosed, text, diagnostic.range))
+        .cloned()
+        .collect()
 }
 
 fn same_lines(diagnosed: &Rope, text: &Rope, range: lsp_types::Range) -> bool {
@@ -206,7 +228,12 @@ mod tests {
             visible(&synced, &text, &publication(Some(3), None)).len(),
             2
         );
-        assert_eq!(visible(&synced, &text, &publication(None, None)).len(), 2);
+        assert_eq!(
+            visible(&synced, &text, &publication(None, Some(&text))).len(),
+            2
+        );
+        // An unversioned publication with no known buffer is not laid onto this one.
+        assert!(visible(&synced, &text, &publication(None, None)).is_empty());
         assert!(visible(&synced, &text, &publication(Some(2), None)).is_empty());
         assert!(visible(&synced, &text, &publication(Some(4), None)).is_empty());
         assert!(
@@ -221,25 +248,57 @@ mod tests {
     #[test]
     fn an_older_publication_holds_where_an_edit_left_the_lines_in_place() {
         let diagnosed = Rope::from("first\nsecond\nthird\n");
-        let shown = |text: &str| {
-            let text = Rope::from(text);
-            let synced = Synced {
-                text: text.clone(),
-                version: 2,
+        // Versioned as rust-analyzer publishes, unversioned as typescript-language-server does.
+        for version in [Some(1), None] {
+            let shown = |text: &str| {
+                let text = Rope::from(text);
+                let synced = Synced {
+                    text: text.clone(),
+                    version: 2,
+                };
+                visible(&synced, &text, &publication(version, Some(&diagnosed)))
+                    .iter()
+                    .map(|diagnostic| diagnostic.range.start.line)
+                    .collect::<Vec<_>>()
             };
-            visible(&synced, &text, &publication(Some(1), Some(&diagnosed)))
-                .iter()
-                .map(|diagnostic| diagnostic.range.start.line)
-                .collect::<Vec<_>>()
+            // The server stays silent, or has not answered yet, after an edit below both.
+            assert_eq!(shown("first\nsecond\nthird\n// tail\n"), [0, 2]);
+            // An edit on a diagnosed line, or one that moves it, hides only that diagnostic.
+            assert_eq!(shown("first\nsecond\nthirds\n"), [0]);
+            assert_eq!(shown("first\ninserted\nsecond\nthird\n"), [0]);
+            assert!(shown("inserted\nfirst\nsecond\nthird\n").is_empty());
+            // A line that no longer exists has nothing to mark.
+            assert_eq!(shown("first"), [0]);
+        }
+    }
+    #[test]
+    fn an_unchanged_buffer_keeps_a_diagnostic_longer_than_lines_are_compared() {
+        let text = Rope::from("line\n".repeat(300));
+        let synced = Synced {
+            text: text.clone(),
+            version: 2,
         };
-        // rust-analyzer stays silent after an edit below both diagnostics.
-        assert_eq!(shown("first\nsecond\nthird\n// tail\n"), [0, 2]);
-        // An edit on a diagnosed line, or one that moves it, hides only that diagnostic.
-        assert_eq!(shown("first\nsecond\nthirds\n"), [0]);
-        assert_eq!(shown("first\ninserted\nsecond\nthird\n"), [0]);
-        assert!(shown("inserted\nfirst\nsecond\nthird\n").is_empty());
-        // A line that no longer exists has nothing to mark.
-        assert_eq!(shown("first"), [0]);
+        let long = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(299, 0)),
+            ..Diagnostic::default()
+        };
+        let mut unversioned = publication(None, Some(&text));
+        unversioned.params.diagnostics = vec![long];
+        assert_eq!(visible(&synced, &text, &unversioned).len(), 1);
+    }
+    #[test]
+    fn only_an_unversioned_publication_without_a_buffer_takes_the_opened_one() {
+        let opened = Rope::from("opened");
+        let earlier = Rope::from("earlier");
+        let mut unknown = publication(None, None);
+        unknown.opened(&opened);
+        assert_eq!(unknown.diagnosed, Some(opened.clone()));
+        let mut known = publication(None, Some(&earlier));
+        known.opened(&opened);
+        assert_eq!(known.diagnosed, Some(earlier));
+        let mut versioned = publication(Some(1), None);
+        versioned.opened(&opened);
+        assert_eq!(versioned.diagnosed, None);
     }
     #[test]
     fn editor_diagnostics_are_sorted_by_position_whatever_the_server_order() {

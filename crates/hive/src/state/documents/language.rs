@@ -244,6 +244,9 @@ impl LanguageSession {
                             text: text.to_string(),
                         },
                     })?;
+                if let Some(publication) = self.diagnostics.get_mut(uri.as_str()) {
+                    publication.opened(text);
+                }
                 self.documents.insert(
                     uri,
                     Synced {
