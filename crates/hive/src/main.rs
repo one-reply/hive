@@ -140,9 +140,11 @@ fn main() -> std::process::ExitCode {
         gpui_kit::init(cx);
         load_login_environment(cx);
         cx.spawn(async move |cx| {
-            let (loaded, recovery, endpoint) = cx
+            let (loaded, access, recovery, endpoint) = cx
                 .background_executor()
                 .spawn(async {
+                    // Taken before reading, so a second Hive never saves over the first.
+                    let access = hive_core::state::Access::acquire();
                     let loaded = hive_core::state::State::load();
                     // Recovery must be available before any restored buffer becomes editable.
                     let recovery = hive_core::files::recovery::load(
@@ -150,11 +152,11 @@ fn main() -> std::process::ExitCode {
                     );
                     // Restored panes start with the window; they need the sockets already.
                     let endpoint = state::agents::Endpoint::bind();
-                    (loaded, recovery, endpoint)
+                    (loaded, access, recovery, endpoint)
                 })
                 .await;
             cx.update(|cx| {
-                AppState::init(loaded, recovery, endpoint, cx);
+                AppState::init(loaded, access, recovery, endpoint, cx);
                 ui::app_menu::init(cx);
                 ui::theme::init(cx);
                 ui::syntax::init();

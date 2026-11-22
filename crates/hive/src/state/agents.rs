@@ -108,6 +108,8 @@ struct Probe {
     worktree: PathBuf,
     shell_pid: u32,
     activity: Activity,
+    /// The last poll's conversation lookup, reused while it is fresh.
+    discovery: Option<conversation::Discovery>,
 }
 
 /// A terminal's agent as seen by the poll, before titles are attached on the UI thread.
@@ -119,6 +121,8 @@ struct Sighting {
     status: AgentStatus,
     /// The conversation the agent runs, once its CLI has recorded one.
     conversation: Option<ResumeSession>,
+    /// The lookup behind `conversation`, kept for the next poll.
+    discovery: Option<conversation::Discovery>,
 }
 
 impl EventEmitter<AgentsEvent> for Agents {}
@@ -234,6 +238,7 @@ impl Agents {
                 worktree: worktree.to_path_buf(),
                 shell_pid: terminal.shell_pid(),
                 activity: terminal.activity(),
+                discovery: None,
             },
         });
     }
@@ -442,6 +447,12 @@ impl Agents {
                 return;
             }
         };
+        for watched in &mut self.watched {
+            watched.probe.discovery = sightings
+                .iter()
+                .find(|sighting| sighting.id == watched.id)
+                .and_then(|sighting| sighting.discovery.clone());
+        }
         let seen: HashMap<EntityId, (AgentKind, Option<ResumeSession>)> = sightings
             .iter()
             .map(|sighting| (sighting.id, (sighting.kind, sighting.conversation.clone())))
@@ -501,11 +512,22 @@ fn look(probes: &[(EntityId, Probe)]) -> Result<Vec<Sighting>, String> {
             } else {
                 probe.launched_agent?
             };
-            let conversation = if probe.host.is_local() {
-                conversation::discover(kind, &table.as_ref()?.foreground_pids(probe.shell_pid))
+            let discovery = if probe.host.is_local() {
+                let table = table.as_ref()?;
+                let job = table.foreground_job(probe.shell_pid)?;
+                Some(conversation::Discovery::refresh(
+                    probe.discovery.as_ref(),
+                    kind,
+                    job,
+                    now,
+                    || conversation::discover(kind, &table.foreground_pids(probe.shell_pid)),
+                ))
             } else {
                 None
             };
+            let conversation = discovery
+                .as_ref()
+                .and_then(|discovery| discovery.found().cloned());
             Some(Sighting {
                 host: probe.host.clone(),
                 id: *id,
@@ -517,6 +539,7 @@ fn look(probes: &[(EntityId, Probe)]) -> Result<Vec<Sighting>, String> {
                     AgentStatus::Idle
                 },
                 conversation,
+                discovery,
             })
         })
         .collect();

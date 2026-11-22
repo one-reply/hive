@@ -120,6 +120,28 @@ pub fn path() -> Option<OsString> {
         .or_else(|| std::env::var_os("PATH"))
 }
 
+/// The file `execvp` would run for a bare `program` with this `PATH`, found ahead of time.
+/// A command whose variables include `PATH` makes std fork and exec the whole app so the child
+/// can search it; with a path std uses `posix_spawn`, about twice as fast. `None` leaves the
+/// search to `execvp`: a name with a slash, no match, or an entry relative to the child's
+/// directory before any match.
+pub(crate) fn resolve(program: &str, path: &OsStr) -> Option<std::path::PathBuf> {
+    if program.is_empty() || program.contains('/') {
+        return None;
+    }
+    for directory in std::env::split_paths(path) {
+        if !directory.is_absolute() {
+            return None;
+        }
+        let candidate = directory.join(program);
+        let is_file = std::fs::metadata(&candidate).is_ok_and(|metadata| metadata.is_file());
+        if is_file && rustix::fs::access(&candidate, rustix::fs::Access::EXEC_OK).is_ok() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Blocking: start `shell` as an interactive login shell and parse the environment it prints.
 pub fn capture(shell: &Path) -> Result<Environment, CaptureError> {
     // `command env` bypasses aliases and functions; `-0` keeps multi-line values intact.

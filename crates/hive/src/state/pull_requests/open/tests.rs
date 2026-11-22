@@ -15,6 +15,7 @@ fn states(cx: &mut TestAppContext) -> (Entity<Git>, Entity<PullRequests>) {
                 path: "/unused".into(),
                 source: std::io::Error::other("persistence disabled for test"),
             }),
+            hive_core::state::Access::Held,
             cx,
         )
     });

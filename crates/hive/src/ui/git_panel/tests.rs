@@ -25,6 +25,7 @@ fn open<'a>(
                 path: "/unused".into(),
                 source: std::io::Error::other("persistence disabled for test"),
             }),
+            hive_core::state::Access::Held,
             cx,
         )
     });

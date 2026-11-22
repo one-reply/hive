@@ -8,9 +8,11 @@ use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod access;
 pub(crate) mod lenient;
 mod persistence;
 mod sidebar;
+pub use access::{Access, Lock};
 pub use sidebar::ProjectExpansion;
 pub mod workspace;
 pub use persistence::{LoadedState, Recovery, RecoveryCause, SCHEMA_VERSION, StateError};
@@ -96,6 +98,10 @@ pub struct State {
     /// Exact acknowledged diff revisions; never stores source text.
     #[serde(deserialize_with = "lenient::elements")]
     pub reviewed: Vec<crate::git::reviewed::Revision>,
+    /// Top-level sections a newer Hive wrote without bumping [`SCHEMA_VERSION`]. Saving writes
+    /// them back as they were read, so running this version does not erase them.
+    #[serde(skip)]
+    unknown_sections: serde_json::Map<String, serde_json::Value>,
 }
 
 impl State {
@@ -237,6 +243,7 @@ mod tests {
                 worktree: None,
                 focused: 0,
                 layout: None,
+                unavailable: Vec::new(),
             });
         }
         state.workspace.selection = Some(Selection {

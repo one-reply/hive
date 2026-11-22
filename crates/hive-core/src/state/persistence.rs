@@ -1,7 +1,7 @@
 use super::{ProjectRef, State, hive_dir};
 use crate::{host::Host, settings::Settings};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -69,19 +69,23 @@ pub enum RecoveryCause {
     Corrupt,
     /// These parts failed to parse and were reset or dropped; everything else was kept.
     Partial(Vec<String>),
-    /// Written by a newer Hive; data this version does not understand survives only in the backup.
+    /// Written by a newer Hive. Saving would rewrite it in this version's schema and lose what
+    /// this version does not understand, so the application must not save it.
     Newer {
         /// The file's [`SCHEMA_VERSION`].
         version: u32,
     },
 }
 
-/// `state.json` as written: the version beside the top-level sections of [`State`].
+/// `state.json` as written: the version beside the top-level sections of [`State`], then the
+/// sections this version does not know, as they were read.
 #[derive(Serialize)]
 struct Envelope<'a> {
     version: u32,
     #[serde(flatten)]
     state: &'a State,
+    #[serde(flatten)]
+    unknown: &'a Map<String, Value>,
 }
 
 /// `state.json` as read: each section parsed on its own, so one bad section cannot reset
@@ -96,6 +100,9 @@ struct Sections {
     pipelines: Option<Value>,
     last_seen_release: Option<Value>,
     reviewed: Option<Value>,
+    /// Sections a newer Hive added without a version bump; carried back unchanged.
+    #[serde(flatten)]
+    unknown: Map<String, Value>,
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> StateError {
@@ -141,6 +148,7 @@ impl State {
             pipelines: pipelines(sections.pipelines, &mut lost),
             last_seen_release: section("last_seen_release", sections.last_seen_release, &mut lost),
             reviewed: reviewed(sections.reviewed, &mut lost),
+            unknown_sections: sections.unknown,
         };
         let cause = if sections.version > SCHEMA_VERSION {
             tracing::warn!(
@@ -211,6 +219,7 @@ impl State {
         let envelope = Envelope {
             version: SCHEMA_VERSION,
             state: self,
+            unknown: &self.unknown_sections,
         };
         let bytes = serde_json::to_vec_pretty(&envelope).map_err(|source| StateError::Json {
             path: path.to_owned(),
@@ -897,6 +906,36 @@ mod tests {
         let recovery = loaded.recovery.unwrap();
         assert_eq!(recovery.cause, RecoveryCause::Newer { version: 99 });
         assert_eq!(fs::read(&recovery.backup).unwrap(), original);
+    }
+
+    #[test]
+    fn sections_a_newer_hive_added_without_a_version_bump_survive_a_save() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("state.json");
+        let future = serde_json::json!({"boards": [{"id": 1, "cards": ["a", "b"]}], "flag": true});
+        let file = serde_json::json!({
+            "version": SCHEMA_VERSION,
+            "projects": [{"path": "/a"}],
+            "future_section": future,
+            "future_marker": "kept",
+        });
+        fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        let mut loaded = State::load_from(&fixture.0).unwrap();
+        assert!(loaded.recovery.is_none());
+        loaded
+            .state
+            .projects
+            .push(ProjectRef::new("/b".into(), Host::Local));
+        loaded.state.save_to(&path).unwrap();
+
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["future_section"], future);
+        assert_eq!(saved["future_marker"], "kept");
+        assert_eq!(saved["version"], SCHEMA_VERSION);
+        assert_eq!(saved["projects"].as_array().unwrap().len(), 2);
+        let reloaded = State::load_from(&fixture.0).unwrap();
+        assert!(reloaded.recovery.is_none());
+        assert_eq!(reloaded.state.projects.len(), 2);
     }
 
     #[test]

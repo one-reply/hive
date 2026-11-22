@@ -167,8 +167,14 @@ impl Workspace {
 
         if let Some(notice) = &store.read(cx).notice {
             let notice = notice.clone();
+            // It may say that nothing this session does is saved: it stays until dismissed.
             window.defer(cx, move |window, cx| {
-                window.push_notification(Notification::error(notice).title("State recovery"), cx);
+                window.push_notification(
+                    Notification::error(notice)
+                        .title("State recovery")
+                        .autohide(false),
+                    cx,
+                );
             });
         }
         let pipeline_runs = AppState::get(cx).pipelines.clone();

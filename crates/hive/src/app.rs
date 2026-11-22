@@ -9,7 +9,7 @@ use crate::state::git::Git;
 use crate::state::terminals::Terminals;
 use crate::state::updates::Updates;
 use crate::state::{projects::Projects, store::Store, usage::Usage};
-use hive_core::state::{LoadedState, StateError};
+use hive_core::state::{Access, LoadedState, StateError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -37,11 +37,12 @@ impl Global for AppState {}
 impl AppState {
     pub fn init(
         loaded: Result<LoadedState, StateError>,
+        access: Access,
         recovery: (Vec<hive_core::files::recovery::Record>, Vec<String>),
         endpoint: Option<crate::state::agents::Endpoint>,
         cx: &mut App,
     ) {
-        let store = cx.new(|cx| Store::new(loaded, cx));
+        let store = cx.new(|cx| Store::new(loaded, access, cx));
         let projects = cx.new(|cx| Projects::new(&store, cx));
         let usage = cx.new(Usage::new);
         let ai_providers = cx.new(AiProviders::new);

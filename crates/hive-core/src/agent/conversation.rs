@@ -5,8 +5,11 @@
 //! thread to a rollout that names its directory and client, and Antigravity keeps the latest
 //! conversation of each workspace in one cache file.
 mod codex;
+mod discovery;
 pub mod history;
 mod process;
+
+pub use discovery::Discovery;
 
 use super::{AgentKind, launch::ResumeSession};
 use serde::Deserialize;

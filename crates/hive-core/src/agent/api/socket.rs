@@ -14,6 +14,9 @@ const MAX_REQUEST: usize = 64 * 1024;
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 /// A client that connects but never finishes its line must not pin a thread.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// A failing `accept` (no descriptors left: `EMFILE`) fails again at once; waiting this long
+/// keeps the loop from spinning a core while the app recovers.
+const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 /// Calls served at once. Each holds a thread until the app answers, so a process that opens
 /// connections in a loop must not exhaust them; the panes of one window make a handful.
 const MAX_CALLS: usize = 64;
@@ -110,15 +113,31 @@ fn read_outcome(stream: &UnixStream) -> io::Result<Outcome> {
 // ponytail: the accept thread ends only with the process; it notices a dropped receiver at
 // the next connection. Add a shutdown handshake if Hive ever rebinds the socket at runtime.
 fn accept(listener: &UnixListener, calls: &async_channel::Sender<Incoming>) {
+    serve_connections(listener.incoming(), calls, std::thread::sleep);
+}
+
+/// The accept loop over `incoming`; `pause` waits after a failed accept.
+fn serve_connections(
+    incoming: impl Iterator<Item = io::Result<UnixStream>>,
+    calls: &async_channel::Sender<Incoming>,
+    mut pause: impl FnMut(Duration),
+) {
     let live = Arc::new(AtomicUsize::new(0));
-    for stream in listener.incoming() {
+    let mut failures = AcceptFailures::default();
+    for stream in incoming {
         if calls.is_closed() {
             return;
         }
         let stream = match stream {
-            Ok(stream) => stream,
+            Ok(stream) => {
+                failures.recovered();
+                stream
+            }
             Err(error) => {
-                tracing::warn!(%error, "agent API connection failed");
+                if failures.is_new(&error) {
+                    tracing::warn!(%error, "agent API connection failed; retrying");
+                }
+                pause(ACCEPT_RETRY);
                 continue;
             }
         };
@@ -138,6 +157,28 @@ fn accept(listener: &UnixListener, calls: &async_channel::Sender<Incoming>) {
         if let Err(error) = spawned {
             tracing::warn!(%error, "could not serve an agent API call");
         }
+    }
+}
+
+/// The failure the accept loop last logged, so a failure that repeats on every attempt is
+/// logged once rather than once per retry.
+#[derive(Default)]
+struct AcceptFailures {
+    last: Option<(Option<i32>, io::ErrorKind)>,
+}
+
+impl AcceptFailures {
+    /// Whether `error` differs from the failure logged last.
+    fn is_new(&mut self, error: &io::Error) -> bool {
+        let failure = Some((error.raw_os_error(), error.kind()));
+        let new = self.last != failure;
+        self.last = failure;
+        new
+    }
+
+    /// A connection was accepted: the next failure is news again.
+    fn recovered(&mut self) {
+        self.last = None;
     }
 }
 
@@ -221,6 +262,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
         directory.join("a")
+    }
+
+    fn too_many_open_files() -> io::Error {
+        io::Error::from_raw_os_error(libc::EMFILE)
+    }
+
+    #[test]
+    fn a_failing_accept_waits_before_retrying_instead_of_spinning() {
+        let (calls, _receiver) = async_channel::unbounded();
+        let mut pauses = Vec::new();
+        let incoming = (0..1000).map(|_| Err(too_many_open_files()));
+        serve_connections(incoming, &calls, |pause| pauses.push(pause));
+        assert_eq!(pauses.len(), 1000);
+        assert!(pauses.iter().all(|pause| *pause == ACCEPT_RETRY));
+    }
+
+    #[test]
+    fn a_repeating_accept_failure_is_logged_once_until_a_connection_succeeds() {
+        let mut failures = AcceptFailures::default();
+        assert!(failures.is_new(&too_many_open_files()));
+        assert!(!failures.is_new(&too_many_open_files()));
+        assert!(!failures.is_new(&too_many_open_files()));
+        assert!(failures.is_new(&io::Error::from_raw_os_error(libc::ENFILE)));
+        assert!(failures.is_new(&too_many_open_files()));
+        failures.recovered();
+        assert!(failures.is_new(&too_many_open_files()));
     }
 
     #[test]
