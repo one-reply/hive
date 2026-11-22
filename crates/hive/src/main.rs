@@ -112,7 +112,7 @@ fn workspace_window(cx: &App) -> Option<WindowHandle<Root>> {
 
 fn main() -> std::process::ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
-    if let Some(code) = cli::run(&args) {
+    if let Some(code) = cli::run(&args, cli::Origin::detect(&args)) {
         return code;
     }
     init_logging();
