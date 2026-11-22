@@ -13,6 +13,23 @@ mod writer;
 use startup::{Opened, open};
 use writer::Writer;
 
+/// Where the Hive that holds the data folder keeps its editor drafts.
+fn recovery_directory() -> PathBuf {
+    hive_core::state::hive_dir().join("editor-recovery")
+}
+
+/// Blocking: the editor drafts this session restores, with the records that could not be
+/// read. A folder another Hive holds gives none: those drafts are that Hive's.
+pub(crate) fn load_drafts(
+    access: &Access,
+) -> (Vec<hive_core::files::recovery::Record>, Vec<String>) {
+    if startup::keeps_drafts(access) {
+        hive_core::files::recovery::load(&recovery_directory())
+    } else {
+        Default::default()
+    }
+}
+
 /// Persisted state. Every mutation saves to disk and notifies observers.
 pub struct Store {
     pub state: State,
@@ -292,7 +309,15 @@ impl Store {
         access: Access,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (recovery, recovery_errors) = recovery::RecoveryWriter::new(cx.background_executor());
+        let Opened {
+            state,
+            notice,
+            access,
+            keeps_drafts,
+        } = open(loaded, access);
+        let drafts = keeps_drafts.then(recovery_directory);
+        let (recovery, recovery_errors) =
+            recovery::RecoveryWriter::new(cx.background_executor(), drafts);
         let recovery_errors = cx.spawn(async move |this, cx| {
             while let Ok(error) = recovery_errors.recv().await {
                 if this.update(cx, |_, cx| cx.emit(SaveError(error))).is_err() {
@@ -300,11 +325,6 @@ impl Store {
                 }
             }
         });
-        let Opened {
-            state,
-            notice,
-            access,
-        } = open(loaded, access);
         let Some(access) = access else {
             return Self {
                 state,

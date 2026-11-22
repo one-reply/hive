@@ -147,9 +147,7 @@ fn main() -> std::process::ExitCode {
                     let access = hive_core::state::Access::acquire();
                     let loaded = hive_core::state::State::load();
                     // Recovery must be available before any restored buffer becomes editable.
-                    let recovery = hive_core::files::recovery::load(
-                        &hive_core::state::hive_dir().join("editor-recovery"),
-                    );
+                    let recovery = state::store::load_drafts(&access);
                     // Restored panes start with the window; they need the sockets already.
                     let endpoint = state::agents::Endpoint::bind();
                     (loaded, access, recovery, endpoint)

@@ -9,11 +9,21 @@ pub(super) struct Opened {
     pub(super) notice: Option<String>,
     /// Kept while this session saves; `None` leaves `state.json` untouched for the session.
     pub(super) access: Option<Access>,
+    /// Whether this session keeps editor drafts in the data folder; see [`keeps_drafts`].
+    pub(super) keeps_drafts: bool,
+}
+
+/// Whether a session with this access keeps editor drafts in the data folder. In a folder
+/// another Hive holds the drafts are that Hive's: a second copy that adopted them would show
+/// someone else's unsaved edits, and one that wrote there would replace or remove them.
+pub(super) fn keeps_drafts(access: &Access) -> bool {
+    access.can_write()
 }
 
 /// A failed load, a file from a newer Hive and a folder another Hive holds all leave the file
 /// as it is: saving would replace data this session cannot see or understand.
 pub(super) fn open(loaded: Result<LoadedState, StateError>, access: Access) -> Opened {
+    let keeps_drafts = keeps_drafts(&access);
     let loaded = match loaded {
         Ok(loaded) => loaded,
         Err(error) => {
@@ -24,6 +34,7 @@ pub(super) fn open(loaded: Result<LoadedState, StateError>, access: Access) -> O
                     "{error}. Saving is disabled to protect the original state. Restart Hive after fixing the file."
                 )),
                 access: None,
+                keeps_drafts,
             };
         }
     };
@@ -40,6 +51,7 @@ pub(super) fn open(loaded: Result<LoadedState, StateError>, access: Access) -> O
             state: loaded.state,
             notice: recovery,
             access: None,
+            keeps_drafts,
         };
     }
     if !access.can_write() {
@@ -47,16 +59,18 @@ pub(super) fn open(loaded: Result<LoadedState, StateError>, access: Access) -> O
             state: loaded.state,
             notice: Some(join(recovery, HELD_NOTICE)),
             access: None,
+            keeps_drafts,
         };
     }
     Opened {
         state: loaded.state,
         notice: recovery,
         access: Some(access),
+        keeps_drafts,
     }
 }
 
-const HELD_NOTICE: &str = "Another Hive is already running with this data folder. Changes made in this window are not saved, so they cannot overwrite its state. Quit this copy and keep using the other one.";
+const HELD_NOTICE: &str = "Another Hive is already running with this data folder. Changes made in this window are not saved, so they cannot overwrite its state, and unsaved edits are not kept for recovery. Quit this copy and keep using the other one.";
 
 fn join(first: Option<String>, second: &str) -> String {
     match first {
@@ -126,6 +140,26 @@ mod tests {
         let notice = partial.notice.unwrap();
         assert!(notice.starts_with("Part of the saved state"), "{notice}");
         assert!(notice.ends_with(HELD_NOTICE), "{notice}");
+    }
+
+    #[test]
+    fn editor_drafts_belong_to_the_hive_that_holds_the_folder() {
+        let unreadable = || {
+            Err(StateError::Io {
+                operation: "read",
+                path: "/state.json".into(),
+                source: std::io::Error::other("denied"),
+            })
+        };
+        let newer = || loaded(Some(RecoveryCause::Newer { version: 7 }));
+        // Another Hive's drafts are neither adopted nor replaced, whatever else is wrong.
+        assert!(!open(loaded(None), Access::Held).keeps_drafts);
+        assert!(!open(unreadable(), Access::Held).keeps_drafts);
+        assert!(!open(newer(), Access::Held).keeps_drafts);
+        // A state file this session will not save still leaves the drafts its own.
+        assert!(open(loaded(None), Access::Unguarded).keeps_drafts);
+        assert!(open(unreadable(), Access::Unguarded).keeps_drafts);
+        assert!(open(newer(), Access::Unguarded).keeps_drafts);
     }
 
     #[test]
