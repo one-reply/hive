@@ -308,7 +308,7 @@ pub use review::{ReviewFile, ReviewRepo, patch, review, review_round};
 mod regression;
 pub use regression::{RegressionResult, run_regression};
 mod publication;
-pub use publication::{PublishedBranch, publication};
+pub use publication::publication;
 mod snapshot;
 pub(super) use snapshot::is_object_name;
 pub use snapshot::{release_trees, reviewed_trees};

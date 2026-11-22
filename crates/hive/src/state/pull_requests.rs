@@ -3,8 +3,9 @@ use super::git::Git;
 use super::projects::Projects;
 use gpui_kit::*;
 use hive_core::{
-    git::pull_request::{self, Provider, Snapshot},
+    git::pull_request::{self, Draft, Provider, Snapshot},
     host::Host,
+    projects::Head,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -16,6 +17,18 @@ use std::{
 const RECHECK: Duration = Duration::from_secs(60);
 /// The longest pause between reads of a worktree whose reads keep failing.
 const FAILURE_RECHECK_CAP: Duration = Duration::from_secs(30 * 60);
+
+mod open;
+pub(crate) use open::PullRequestEvent;
+
+/// A worktree, as this entity keys what it knows about its request.
+type Key = (Host, PathBuf);
+
+/// How a checked-out branch is remembered next to its card, so a card read for another
+/// branch of the same worktree is not shown.
+fn head_key(head: &Head) -> String {
+    format!("{head:?}")
+}
 
 /// The last read of one worktree's PR.
 struct Attempt {
@@ -64,10 +77,16 @@ pub(crate) enum Status {
 }
 
 pub(crate) struct PullRequests {
-    cards: HashMap<(Host, PathBuf), (String, Status)>,
+    cards: HashMap<Key, (String, Status)>,
     _poll: Task<()>,
     refresh_generations: HashMap<Provider, u64>,
-    retry: HashSet<(Host, PathBuf)>,
+    retry: HashSet<Key>,
+    /// Worktrees whose request is being opened right now.
+    opening: HashSet<Key>,
+    /// What the user wrote for a request that has not been opened yet.
+    drafts: HashMap<Key, Draft>,
+    /// The work behind `opening`; a worktree's entry is replaced by its next request.
+    requests: HashMap<Key, Task<()>>,
 }
 impl PullRequests {
     /// Polls only while the main window is active, like `Git`: nobody sees the cards
@@ -97,9 +116,9 @@ impl PullRequests {
                         .items
                         .iter()
                         .flat_map(|p| {
-                            p.worktrees.iter().map(move |w| {
-                                (p.host.clone(), w.path.clone(), format!("{:?}", w.head))
-                            })
+                            p.worktrees
+                                .iter()
+                                .map(move |w| (p.host.clone(), w.path.clone(), head_key(&w.head)))
                         })
                         .collect::<Vec<_>>()
                 });
@@ -189,6 +208,9 @@ impl PullRequests {
             _poll: poll,
             refresh_generations: HashMap::new(),
             retry: HashSet::new(),
+            opening: HashSet::new(),
+            drafts: HashMap::new(),
+            requests: HashMap::new(),
         }
     }
     pub(crate) fn refresh(&mut self, provider: Provider, _: &mut Context<Self>) {
@@ -201,10 +223,13 @@ impl PullRequests {
                     .map(|_| key.clone())
             }));
     }
-    pub(crate) fn status(&self, host: &Host, path: &Path, head: &str) -> Option<&Status> {
+    /// The last read of the request for what `path` has checked out, unless it was read for
+    /// another branch.
+    pub(crate) fn status(&self, host: &Host, path: &Path, head: &Head) -> Option<&Status> {
+        let head = head_key(head);
         self.cards
             .get(&(host.clone(), path.to_owned()))
-            .filter(|(h, _)| h == head)
+            .filter(|(h, _)| *h == head)
             .map(|(_, status)| status)
     }
 }
@@ -265,6 +290,9 @@ mod tests {
             _poll: gpui_kit::Task::ready(()),
             refresh_generations: Default::default(),
             retry: Default::default(),
+            opening: Default::default(),
+            drafts: Default::default(),
+            requests: Default::default(),
         });
         state.update(cx, |state, cx| {
             state.refresh(Provider::GitHub, cx);

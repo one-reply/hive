@@ -1,7 +1,7 @@
 use super::*;
 use crate::git::{
     diff::{self, DiffSource},
-    history,
+    history, run,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,7 +12,10 @@ mod commit_and_push;
 mod commit_messages;
 mod conflicts;
 mod discard;
+mod force_push;
 mod line_stats;
+mod rebase;
+mod sync;
 
 struct Repo(PathBuf);
 impl Repo {
@@ -130,6 +133,50 @@ impl Drop for Repo {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// A bare repository added to `repo` as `origin`.
+fn remote_for(repo: &Repo) -> Repo {
+    let remote = Repo::new();
+    remote.git(&["config", "core.bare", "true"]);
+    repo.git(&["remote", "add", "origin", remote.0.to_str().unwrap()]);
+    remote
+}
+
+/// A repository whose `main` holds one commit and is published to the returned bare remote.
+fn published() -> (Repo, Repo) {
+    let repo = Repo::new();
+    let remote = remote_for(&repo);
+    repo.write("base", "base\n");
+    repo.commit();
+    repo.git(&["push", "--set-upstream", "origin", "main"]);
+    (repo, remote)
+}
+
+/// Another checkout of `remote`'s `main`, for the commits somebody else pushes.
+fn colleague(remote: &Repo) -> Repo {
+    let other = Repo::new();
+    other.git(&["remote", "add", "origin", remote.0.to_str().unwrap()]);
+    other.git(&["fetch", "origin"]);
+    other.git(&["reset", "--hard", "origin/main"]);
+    other.git(&["branch", "--set-upstream-to=origin/main"]);
+    other
+}
+
+/// Makes the hook `name` of `repo` fail with a recognizable message.
+fn reject_hook(repo: &Repo, name: &str) {
+    let hooks = repo.0.join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join(name);
+    std::fs::write(&hook, "#!/bin/sh\necho rejected-by-fixture >&2\nexit 1\n").unwrap();
+    assert!(
+        Host::Local
+            .command("chmod", &["+x", hook.to_str().unwrap()], None)
+            .status()
+            .unwrap()
+            .success()
+    );
+    repo.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
 }
 
 #[test]
@@ -556,6 +603,34 @@ fn clean_checkout_still_rejects_unfinished_rebase_and_large_preview() {
 }
 
 #[test]
+fn every_action_that_runs_hooks_or_asks_a_remote_can_be_stopped() {
+    let origin = || "origin".to_string();
+    let slow = [
+        Action::Sync { remote: origin() },
+        Action::CommitAndSync {
+            message: "message".into(),
+            remote: origin(),
+        },
+        Action::ForcePush {
+            remote: origin(),
+            expected: "0123abcd".into(),
+        },
+        Action::Rebase {
+            onto: "refs/remotes/origin/main".into(),
+        },
+        Action::Push {
+            remote: origin(),
+            publish: false,
+        },
+    ];
+    for action in slow {
+        assert!(action.is_stoppable(), "{action:?}");
+    }
+    assert!(!Action::Stage(vec![]).is_stoppable());
+    assert!(!Action::AbortOperation.is_stoppable());
+}
+
+#[test]
 fn synced_summaries_read_naturally() {
     let origin = || "origin".to_string();
     let cases = [
@@ -599,6 +674,66 @@ fn synced_summaries_read_naturally() {
         (
             Synced::Published { remote: origin() },
             "Published to origin",
+        ),
+        (
+            Synced::PulledAndPushed {
+                remote: origin(),
+                pulled: 0,
+                pushed: 0,
+            },
+            "Already in sync with origin",
+        ),
+        (
+            Synced::PulledAndPushed {
+                remote: origin(),
+                pulled: 2,
+                pushed: 0,
+            },
+            "Pulled 2 commits",
+        ),
+        (
+            Synced::PulledAndPushed {
+                remote: origin(),
+                pulled: 0,
+                pushed: 1,
+            },
+            "Pushed 1 commit to origin",
+        ),
+        (
+            Synced::PulledAndPushed {
+                remote: origin(),
+                pulled: 1,
+                pushed: 3,
+            },
+            "Pulled 1 commit, pushed 3 to origin",
+        ),
+        (
+            Synced::ForcePushed { remote: origin() },
+            "Force-pushed to origin",
+        ),
+        (
+            Synced::Rebased {
+                onto: "origin/develop".into(),
+                changed: false,
+                needs_force_push: false,
+            },
+            "Already up to date with origin/develop",
+        ),
+        (
+            Synced::Rebased {
+                onto: "origin/develop".into(),
+                changed: true,
+                needs_force_push: false,
+            },
+            "Rebased onto origin/develop",
+        ),
+        (
+            Synced::Rebased {
+                onto: "origin/develop".into(),
+                changed: true,
+                needs_force_push: true,
+            },
+            "Rebased onto origin/develop · Force Push to update the remote",
         ),
     ];
     for (synced, text) in cases {

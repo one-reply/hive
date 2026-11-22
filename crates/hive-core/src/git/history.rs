@@ -59,6 +59,17 @@ pub fn read(host: &Host, cwd: &Path, head: &str, skip: usize) -> Result<Vec<Comm
         .collect()
 }
 
+/// Blocking: how many commits `revisions` select, as `git rev-list --count` reads them.
+pub(super) fn count(host: &Host, cwd: &Path, revisions: &[&str]) -> Result<usize, GitError> {
+    let mut args = vec!["rev-list", "--count"];
+    args.extend_from_slice(revisions);
+    args.push("--");
+    let raw = run(host, cwd, &args)?;
+    raw.trim()
+        .parse()
+        .map_err(|_| GitError::Invalid(format!("Unexpected `git rev-list --count` output: {raw}")))
+}
+
 pub(super) fn commit_args(host: &Host, cwd: &Path, commit: &str) -> Result<Vec<String>, GitError> {
     let oid = branches::resolve(host, cwd, commit)?;
     Ok(vec![

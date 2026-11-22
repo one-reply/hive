@@ -19,11 +19,10 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let head = format!("{:?}", worktree.head);
         let status = AppState::get(cx)
             .pull_requests
             .read(cx)
-            .status(&project.host, &worktree.path, &head)
+            .status(&project.host, &worktree.path, &worktree.head)
             .cloned();
         let hover = Hover::new(
             SharedString::from(format!("pr:{}", worktree.path.display())),
