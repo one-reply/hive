@@ -3,7 +3,7 @@
 use hive_core::agent::AgentKind;
 use hive_core::agent::api::{self, Address, ApiError, Call, ErrorCode, Outcome, Request, Response};
 use hive_core::agent::launch::AGENTS;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
@@ -16,6 +16,15 @@ const QUICK_TIMEOUT: Duration = Duration::from_secs(10);
 
 const USAGE: &str = "\
 Usage:
+  hive                  Start the Hive app
+  hive --help           Show this help
+  hive --version        Print the version
+  hive --skill          Explain how agents use `hive agent`
+  hive agent <command>  Reach the agents in Hive's terminals; `hive agent --help` lists the commands
+  hive mcp --socket <absolute-path> --terminal <id>";
+
+const AGENT_USAGE: &str = "\
+Usage:
   hive agent list
   hive agent report <ticket-json> <result-json>
   hive agent start <name> --kind <claude|codex|opencode|agy> [--prompt <task>] [--tab]
@@ -25,15 +34,59 @@ Usage:
   hive agent interrupt <target>
 Every command accepts --timeout <seconds>. `hive --skill` explains how agents use them.";
 
+/// What the arguments after the program name ask the binary to do.
+#[derive(Debug, PartialEq)]
+enum Mode<'a> {
+    /// Open the window.
+    App,
+    Help,
+    Version,
+    Skill,
+    Hook(&'a [OsString]),
+    Mcp(&'a [OsString]),
+    Agent(&'a [OsString]),
+    /// A word no mode answers to.
+    Unknown(&'a OsStr),
+}
+
+/// The app starts only when nothing asks for anything else. The `hive` launcher is first on
+/// every pane's `PATH`, so a guess such as `hive --help` or `hive status` must never open a
+/// second Hive on the same data folder and hold the caller's shell until that window closes.
+///
+/// macOS itself starts the app without arguments: Finder, the Dock, `open -a` and the relaunch
+/// after an update all go through LaunchServices. `-psn_…` is the process serial number its
+/// older versions appended.
+fn mode(args: &[OsString]) -> Mode<'_> {
+    let Some((first, rest)) = args.get(1..).and_then(<[OsString]>::split_first) else {
+        return Mode::App;
+    };
+    match first.to_str() {
+        Some(serial) if serial.starts_with("-psn_") => Mode::App,
+        Some("--help" | "-h" | "help") => Mode::Help,
+        Some("--version" | "-V") => Mode::Version,
+        Some("--skill") => Mode::Skill,
+        Some("--agent-hook") => Mode::Hook(rest),
+        Some("mcp") => Mode::Mcp(rest),
+        Some("agent") => Mode::Agent(rest),
+        _ => Mode::Unknown(first),
+    }
+}
+
 /// Runs a window-less mode named by `args`, or returns `None` to start the app.
 pub(crate) fn run(args: &[OsString]) -> Option<ExitCode> {
-    match args.get(1)?.to_str()? {
-        "--agent-hook" => Some(forward_hook(&args[2..])),
-        "--skill" => Some(print(api::SKILL.trim_end())),
-        "mcp" => Some(crate::mcp::run(&args[2..])),
-        "agent" => Some(agent(&args[2..])),
-        _ => None,
-    }
+    Some(match mode(args) {
+        Mode::App => return None,
+        Mode::Help => print(USAGE),
+        Mode::Version => print(concat!("hive ", env!("CARGO_PKG_VERSION"))),
+        Mode::Skill => print(api::SKILL.trim_end()),
+        Mode::Hook(args) => forward_hook(args),
+        Mode::Mcp(args) => crate::mcp::run(args),
+        Mode::Agent(args) => agent(args),
+        Mode::Unknown(word) => {
+            eprintln!("hive: unknown argument {word:?}\n\n{USAGE}");
+            ExitCode::from(2)
+        }
+    })
 }
 
 fn forward_hook(args: &[OsString]) -> ExitCode {
@@ -57,7 +110,7 @@ fn agent(args: &[OsString]) -> ExitCode {
         .map(|arg| arg.to_str().map(str::to_owned))
         .collect();
     let invocation = match args.as_deref().map(parse) {
-        Some(Ok(Parsed::Help)) => return print(USAGE),
+        Some(Ok(Parsed::Help)) => return print(AGENT_USAGE),
         Some(Ok(Parsed::Call(invocation))) => invocation,
         Some(Err(problem)) => return usage_error(&problem),
         None => return usage_error("arguments must be UTF-8"),
@@ -132,7 +185,7 @@ fn failure(error: &ApiError) -> ExitCode {
 }
 
 fn usage_error(problem: &str) -> ExitCode {
-    eprintln!("hive agent: {problem}\n\n{USAGE}");
+    eprintln!("hive agent: {problem}\n\n{AGENT_USAGE}");
     ExitCode::from(2)
 }
 
@@ -480,10 +533,64 @@ mod tests {
         assert!(parse(&["interrupt".into(), "reviewer".into(), "--wait".into()]).is_err());
     }
 
+    fn line(words: &[&str]) -> Vec<OsString> {
+        words.iter().map(OsString::from).collect()
+    }
+
     #[test]
-    fn only_window_less_modes_are_claimed() {
-        let args = |words: &[&str]| words.iter().map(OsString::from).collect::<Vec<_>>();
-        assert!(run(&args(&["hive"])).is_none());
-        assert!(run(&args(&["hive", "-psn_0_123"])).is_none());
+    fn the_app_starts_only_without_arguments_or_with_a_process_serial_number() {
+        assert_eq!(mode(&line(&["hive"])), Mode::App);
+        assert_eq!(mode(&line(&["hive", "-psn_0_123"])), Mode::App);
+        // A caller may exec the binary without even a program name.
+        assert_eq!(mode(&[]), Mode::App);
+        assert!(run(&line(&["hive"])).is_none());
+        assert!(run(&line(&["hive", "-psn_0_123"])).is_none());
+    }
+
+    #[test]
+    fn help_and_version_are_answered_without_a_window() {
+        for flag in ["--help", "-h", "help"] {
+            assert_eq!(mode(&line(&["hive", flag])), Mode::Help, "{flag}");
+        }
+        for flag in ["--version", "-V"] {
+            assert_eq!(mode(&line(&["hive", flag])), Mode::Version, "{flag}");
+        }
+        assert_eq!(mode(&line(&["hive", "--help", "agent"])), Mode::Help);
+    }
+
+    #[test]
+    fn a_window_less_mode_gets_the_words_after_its_name() {
+        let agent = line(&["hive", "agent", "send", "lead", "hi"]);
+        assert_eq!(mode(&agent), Mode::Agent(&agent[2..]));
+        assert_eq!(mode(&line(&["hive", "agent"])), Mode::Agent(&[]));
+        let mcp = line(&["hive", "mcp", "--socket", "/tmp/hh/a", "--terminal", "7"]);
+        assert_eq!(mode(&mcp), Mode::Mcp(&mcp[2..]));
+        let hook = line(&["hive", "--agent-hook", "/tmp/hh/e", "7"]);
+        assert_eq!(mode(&hook), Mode::Hook(&hook[2..]));
+        assert_eq!(mode(&line(&["hive", "--skill"])), Mode::Skill);
+    }
+
+    #[test]
+    fn an_unknown_argument_is_a_usage_error_and_never_starts_the_app() {
+        for word in [
+            "status",
+            "--verbose",
+            "--helpful",
+            "Agent",
+            "-psn",
+            "",
+            "-NSDocumentRevisionsDebugMode",
+        ] {
+            let args = line(&["hive", word]);
+            assert_eq!(mode(&args), Mode::Unknown(OsStr::new(word)), "{word:?}");
+        }
+        use std::os::unix::ffi::OsStringExt as _;
+        let not_utf8 = [OsString::from("hive"), OsString::from_vec(vec![0xff, 0xfe])];
+        assert_eq!(mode(&not_utf8), Mode::Unknown(&not_utf8[1]));
+        assert_eq!(
+            run(&line(&["hive", "status"])),
+            Some(ExitCode::from(2)),
+            "a usage error, as for `hive agent`"
+        );
     }
 }
