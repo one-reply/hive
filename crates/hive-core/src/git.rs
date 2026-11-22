@@ -16,6 +16,7 @@ pub mod history;
 pub mod hosting;
 mod numstat;
 pub mod pull_request;
+mod rebase;
 pub mod review_notes;
 pub mod reviewed;
 pub mod status;
@@ -83,6 +84,14 @@ pub enum GitError {
         #[source]
         source: Box<GitError>,
     },
+    /// The commit succeeded locally, but the sync that followed did not finish.
+    #[error(
+        "Commit created locally, but the sync did not finish. Use Sync to retry once the cause is resolved.\n{source}"
+    )]
+    SyncAfterCommit {
+        #[source]
+        source: Box<GitError>,
+    },
 }
 
 impl GitError {
@@ -96,7 +105,9 @@ impl GitError {
     pub fn outcome_unknown(&self) -> bool {
         match self {
             Self::Interrupted { mutation, .. } => *mutation,
-            Self::PushAfterCommit { source } => source.outcome_unknown(),
+            Self::PushAfterCommit { source } | Self::SyncAfterCommit { source } => {
+                source.outcome_unknown()
+            }
             _ => false,
         }
     }
@@ -109,7 +120,9 @@ impl GitError {
             | GitError::TooLarge(_)
             | GitError::Interrupted { .. } => "",
             GitError::Failed { stderr, .. } => stderr,
-            GitError::PushAfterCommit { source } => source.stderr(),
+            GitError::PushAfterCommit { source } | GitError::SyncAfterCommit { source } => {
+                source.stderr()
+            }
         }
     }
 }

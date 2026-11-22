@@ -13,6 +13,7 @@ pub(crate) mod hover;
 pub(crate) mod key_hint;
 pub mod keymap;
 pub(crate) mod project_badge;
+mod pull_request_dialog;
 pub(crate) mod release_notes;
 pub mod settings;
 pub mod sidebar;

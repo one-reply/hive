@@ -128,10 +128,10 @@ fn first_existing<'a>(branches: &'a [Branch], references: &[&str]) -> Option<&'a
         .find_map(|reference| branches.iter().find(|b| b.reference == *reference))
 }
 
-/// Refuse checkout and pull while changes or an unfinished operation exist.
+/// Refuse checkout, pull and rebase while changes or an unfinished operation exist.
 pub fn require_clean(host: &Host, cwd: &Path) -> Result<(), GitError> {
     if !status::read(host, cwd)?.is_clean() {
-        return Err(GitError::Invalid("Commit your staged, unstaged and untracked changes before switching branches or pulling.".into()));
+        return Err(GitError::Invalid("Commit your staged, unstaged and untracked changes before switching branches, pulling or rebasing.".into()));
     }
     if conflicts::operation(host, cwd)?.is_some() || conflicts::has_sequence(host, cwd)? {
         return Err(GitError::Invalid(

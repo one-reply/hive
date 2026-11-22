@@ -2,12 +2,13 @@
 use super::{
     GitError,
     changes::{self, Action},
-    run, status,
+    conflicts, run, status,
 };
 use crate::host::Host;
 use std::path::Path;
 
-/// Blocking: inspect HEAD, index and (for push) the actual remote ref, without fetching.
+/// Blocking: inspect HEAD, index, an unfinished operation and (for a push) the actual remote
+/// ref, without fetching.
 pub fn inspect(host: &Host, cwd: &Path, action: Option<&Action>) -> Result<String, GitError> {
     let status = status::read(host, cwd)?;
     let head = match &status.oid {
@@ -19,14 +20,28 @@ pub fn inspect(host: &Host, cwd: &Path, action: Option<&Action>) -> Result<Strin
     let mut report = format!(
         "Current HEAD: {head}\nIndex: {staged} staged files; working tree: {unstaged} changed files."
     );
-    if let Some(
-        Action::Push { remote, publish }
-        | Action::CommitAndPush {
-            remote, publish, ..
-        },
-    ) = action
-    {
-        let reference = changes::push_destination(host, cwd, remote, *publish)?;
+    let pushed = match action {
+        Some(
+            Action::Push { remote, publish }
+            | Action::CommitAndPush {
+                remote, publish, ..
+            },
+        ) => Some((remote, *publish)),
+        Some(
+            Action::Sync { remote }
+            | Action::CommitAndSync { remote, .. }
+            | Action::ForcePush { remote, .. },
+        ) => Some((remote, false)),
+        _ => None,
+    };
+    if let Some(operation) = conflicts::operation(host, cwd)? {
+        // HEAD is detached mid-replay, so the branch's remote ref says nothing yet.
+        report.push_str(&format!(
+            "\nA {} is unfinished: continue or abort it from the Git panel.",
+            operation.command()
+        ));
+    } else if let Some((remote, publish)) = pushed {
+        let reference = changes::push_destination(host, cwd, remote, publish)?;
         let output = run(
             host,
             cwd,

@@ -1,8 +1,8 @@
 use super::GitPanel;
-use crate::state::{git::Git, projects::Projects, store::Store};
+use crate::state::{git::Git, projects::Projects, pull_requests::PullRequests, store::Store};
 use gpui_kit as gpui;
 use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext};
-use hive_core::{host::Host, projects::Target, state::StateError};
+use hive_core::{git::changes::Action, host::Host, projects::Target, state::StateError};
 
 fn worktree(path: &str) -> Target {
     Target {
@@ -29,13 +29,14 @@ fn open<'a>(
         )
     });
     let projects = cx.new(|cx| Projects::new(&store, cx));
-    let git = cx.new(|cx| Git::new(projects, cx));
+    let git = cx.new(|cx| Git::new(projects.clone(), cx));
+    let requests = cx.new(|cx| PullRequests::new(projects, git.clone(), cx));
     // Opening the window lets the empty project list settle before a worktree is shown.
     let cx = cx.add_empty_window();
     git.update(cx, |git, _| git.target = shown.cloned());
     let panel = cx.update(|window, cx| {
         let git = git.clone();
-        cx.new(|cx| GitPanel::over(git, store, window, cx))
+        cx.new(|cx| GitPanel::over(git, store, requests, window, cx))
     });
     (git, panel, cx)
 }
@@ -99,4 +100,50 @@ fn an_update_of_the_shown_worktree_keeps_the_filter(cx: &mut TestAppContext) {
     assert_eq!(git.read_with(cx, |git, _| git.target.clone()), Some(shown));
     assert_eq!(filter(&panel, cx), "lib");
     assert_eq!(folded(&panel, cx), ["Staged"]);
+}
+
+fn toggle_menu(panel: &Entity<GitPanel>, cx: &mut VisualTestContext) {
+    panel.update_in(cx, |panel, window, cx| {
+        panel.toggle_actions_menu(window, cx)
+    });
+}
+
+fn menu_is_open(panel: &Entity<GitPanel>, cx: &mut VisualTestContext) -> bool {
+    panel.read_with(cx, |panel, _| panel.actions_menu.is_open())
+}
+
+#[gpui::test]
+fn the_actions_menu_closes_when_another_worktree_is_shown(cx: &mut TestAppContext) {
+    let (first, second) = (worktree("/unused/project"), worktree("/unused/worktree"));
+    let (git, panel, cx) = open(Some(&first), cx);
+
+    toggle_menu(&panel, cx);
+    assert!(menu_is_open(&panel, cx));
+    toggle_menu(&panel, cx);
+    assert!(!menu_is_open(&panel, cx));
+
+    toggle_menu(&panel, cx);
+    // An update of the same worktree leaves the menu the user is reading.
+    git.update(cx, |_, cx| cx.notify());
+    assert!(menu_is_open(&panel, cx));
+
+    show(&git, &second, cx);
+    assert!(!menu_is_open(&panel, cx));
+}
+
+#[gpui::test]
+fn the_actions_menu_closes_when_a_mutation_starts(cx: &mut TestAppContext) {
+    let shown = worktree("/unused/project");
+    let (git, panel, cx) = open(Some(&shown), cx);
+    toggle_menu(&panel, cx);
+    assert!(menu_is_open(&panel, cx));
+
+    // Staging nothing runs no process; the worktree is busy until the task is polled.
+    git.update(cx, |git, cx| git.perform(Action::Stage(vec![]), cx));
+    assert!(git.read_with(cx, |git, _| git.is_busy()));
+    assert!(!menu_is_open(&panel, cx));
+
+    // A busy worktree offers no menu to open.
+    toggle_menu(&panel, cx);
+    assert!(!menu_is_open(&panel, cx));
 }

@@ -1,6 +1,29 @@
 //! Serializes user mutations per worktree and preserves drafts on failure.
 use super::*;
 
+/// The message of the commit `action` created, which its draft no longer has to hold: also
+/// when the push or sync that followed the commit failed, since the commit itself stays.
+fn committed_message<'a>(
+    action: Option<&'a Action>,
+    result: &Result<(), git::GitError>,
+) -> Option<&'a str> {
+    use git::GitError::{PushAfterCommit, SyncAfterCommit};
+    match action? {
+        Action::Commit(message) if result.is_ok() => Some(message),
+        Action::CommitAndPush { message, .. }
+            if result.is_ok() || matches!(result, Err(PushAfterCommit { .. })) =>
+        {
+            Some(message)
+        }
+        Action::CommitAndSync { message, .. }
+            if result.is_ok() || matches!(result, Err(SyncAfterCommit { .. })) =>
+        {
+            Some(message)
+        }
+        _ => None,
+    }
+}
+
 impl Git {
     pub(crate) fn push_action(&self) -> Option<Action> {
         let status = self.status.as_ref()?;
@@ -28,6 +51,24 @@ impl Git {
         self.mutate(target, Some(action), None, cx);
     }
 
+    /// Runs `action` like [`Git::perform_at`] for a caller that continues once it is done:
+    /// the receiver gets whether it succeeded. A failure is reported to the user as usual.
+    ///
+    /// `None` when nothing was started, because the worktree is busy or awaits verification.
+    pub(crate) fn perform_awaited(
+        &mut self,
+        target: Target,
+        action: Action,
+        cx: &mut Context<Self>,
+    ) -> Option<async_channel::Receiver<bool>> {
+        if !self.mutate(target.clone(), Some(action), None, cx) {
+            return None;
+        }
+        let (done, outcome) = async_channel::bounded(1);
+        self.outcomes.insert(target, done);
+        Some(outcome)
+    }
+
     pub fn apply_hunk(
         &mut self,
         request: DiffRequest,
@@ -43,15 +84,17 @@ impl Git {
         );
     }
 
+    /// Starts the mutation unless the worktree is busy or awaits verification; says whether
+    /// it started.
     fn mutate(
         &mut self,
         target: Target,
         action: Option<Action>,
         hunk: Option<(DiffRequest, std::sync::Arc<FileDiff>, usize)>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if self.unverified.contains(&target) || !self.busy.insert(target.clone()) {
-            return;
+            return false;
         }
         if self.target.as_ref() == Some(&target) {
             self._refresh = None;
@@ -98,17 +141,12 @@ impl Git {
                     Ok(synced) => (Ok(()), synced),
                     Err(error) => (Err(error), None),
                 };
+                if let Some(done) = this.outcomes.remove(&target) {
+                    // The waiting side may have gone away; then nobody needs the answer.
+                    let _ = done.try_send(result.is_ok());
+                }
                 this.finish_remote_operation(&target, synced, cx);
-                let message = match &action {
-                    Some(Action::Commit(message)) if result.is_ok() => Some(message),
-                    Some(Action::CommitAndPush { message, .. })
-                        if result.is_ok()
-                            || matches!(&result, Err(git::GitError::PushAfterCommit { .. })) =>
-                    {
-                        Some(message)
-                    }
-                    _ => None,
-                };
+                let message = committed_message(action.as_ref(), &result);
                 if let Some(message) = message
                     && this.draft(&target) == message
                 {
@@ -132,5 +170,53 @@ impl Git {
             });
         });
         self.operations.insert(key, task);
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::committed_message;
+    use hive_core::git::{GitError, changes::Action};
+
+    fn failed() -> GitError {
+        GitError::Invalid("the hook refused".into())
+    }
+
+    #[test]
+    fn a_draft_is_spent_once_its_commit_exists_whatever_followed_it() {
+        let commit = Action::Commit("message".into());
+        let push = Action::CommitAndPush {
+            message: "message".into(),
+            remote: "origin".into(),
+            publish: false,
+        };
+        let sync = Action::CommitAndSync {
+            message: "message".into(),
+            remote: "origin".into(),
+        };
+        for action in [&commit, &push, &sync] {
+            assert_eq!(committed_message(Some(action), &Ok(())), Some("message"));
+            // The commit itself failed: the text is still the user's draft.
+            assert_eq!(committed_message(Some(action), &Err(failed())), None);
+        }
+        let after_commit = |wrap: fn(Box<GitError>) -> GitError| Err(wrap(Box::new(failed())));
+        let pushed = after_commit(|source| GitError::PushAfterCommit { source });
+        let synced = after_commit(|source| GitError::SyncAfterCommit { source });
+        assert_eq!(committed_message(Some(&push), &pushed), Some("message"));
+        assert_eq!(committed_message(Some(&sync), &synced), Some("message"));
+        // Each wrapper belongs to its own action.
+        assert_eq!(committed_message(Some(&push), &synced), None);
+        assert_eq!(committed_message(Some(&commit), &pushed), None);
+    }
+
+    #[test]
+    fn mutations_that_commit_nothing_leave_the_draft() {
+        let sync = Action::Sync {
+            remote: "origin".into(),
+        };
+        for action in [Some(&sync), Some(&Action::Pull), None] {
+            assert_eq!(committed_message(action, &Ok(())), None);
+        }
     }
 }

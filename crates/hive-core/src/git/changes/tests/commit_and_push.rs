@@ -1,33 +1,11 @@
 use super::*;
 
-fn remote_for(repo: &Repo) -> Repo {
-    let remote = Repo::new();
-    remote.git(&["config", "core.bare", "true"]);
-    repo.git(&["remote", "add", "origin", remote.0.to_str().unwrap()]);
-    remote
-}
-
 fn commit_and_push(publish: bool) -> Action {
     Action::CommitAndPush {
         message: "feat: commit staged content".into(),
         remote: "origin".into(),
         publish,
     }
-}
-
-fn reject_hook(repo: &Repo, name: &str) {
-    let hooks = repo.0.join(".git/hooks");
-    std::fs::create_dir_all(&hooks).unwrap();
-    let hook = hooks.join(name);
-    std::fs::write(&hook, "#!/bin/sh\necho rejected-by-fixture >&2\nexit 1\n").unwrap();
-    assert!(
-        Host::Local
-            .command("chmod", &["+x", hook.to_str().unwrap()], None)
-            .status()
-            .unwrap()
-            .success()
-    );
-    repo.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
 }
 
 #[test]

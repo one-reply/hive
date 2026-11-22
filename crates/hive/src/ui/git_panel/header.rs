@@ -7,42 +7,6 @@ use std::time::Duration;
 const SYNCED_FADE_IN: Duration = Duration::from_millis(200);
 
 impl GitPanel {
-    pub(super) fn push(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.git.read(cx);
-        if state.is_busy() {
-            return;
-        }
-        let Some(Action::Push { remote, publish }) = state.push_action() else {
-            return;
-        };
-        let Some(branch) = state
-            .status
-            .as_ref()
-            .and_then(|status| status.branch.as_ref())
-        else {
-            return;
-        };
-        let description =
-            format!("{branch} will be pushed to {remote} and start tracking {remote}/{branch}.");
-        let action = Action::Push { remote, publish };
-        if publish {
-            git_controls::confirm(
-                self.git.clone(),
-                action,
-                git_controls::Confirmation {
-                    title: "Publish Branch",
-                    description,
-                    ok_text: "Publish",
-                    danger: false,
-                },
-                window,
-                cx,
-            );
-        } else {
-            self.git.update(cx, |git, cx| git.perform(action, cx));
-        }
-    }
-
     /// The branch picker with sync counters, then remote actions and refresh.
     pub(super) fn header(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.git.read(cx);
@@ -52,7 +16,9 @@ impl GitPanel {
         // A remote operation spins its own button, so the refresh icon stays still meanwhile.
         let spinning = state.loading || (state.is_running() && operation.is_none());
         let synced: Option<SharedString> = state.synced().map(|s| s.to_string().into());
-        let has_remote = state.remote.is_some();
+        let push_entry = self.with_facts(cx, availability::push_entry);
+        let [fetch_blocker, pull_blocker, push_blocker] =
+            [Entry::Fetch, Entry::Pull, push_entry].map(|entry| self.blocker(entry, cx));
         let [
             refresh_hover,
             branch_hover,
@@ -64,7 +30,6 @@ impl GitPanel {
         let state = self.git.read(cx);
         let remotes = state.remotes.clone();
         let remote = state.remote.clone();
-        let push_available = state.push_action().is_some();
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let detached = status.as_ref().is_some_and(|s| s.branch.is_none());
@@ -123,8 +88,7 @@ impl GitPanel {
                     .into_any_element(),
             });
 
-        let nothing_to_push = has_upstream && ahead == 0;
-        let push_disabled = busy || !push_available || nothing_to_push;
+        let push_disabled = busy || push_blocker.is_some();
         let fetching = operation == Some(RemoteOperation::Fetch);
         let pulling = operation == Some(RemoteOperation::Pull);
         let pushing = matches!(
@@ -150,18 +114,12 @@ impl GitPanel {
                     "Fetch from remote",
                     fetching,
                 )
-                .disabled((busy && !fetching) || remote.is_none())
-                .when(remote.is_none(), |b| b.tooltip("No remote configured"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    let remote = this.git.read(cx).remote.clone();
-                    if let Some(remote) = remote {
-                        this.git
-                            .update(cx, |g, cx| g.perform(Action::Fetch(remote), cx));
-                    }
-                }))
+                .disabled((busy && !fetching) || fetch_blocker.is_some())
+                .when_some(fetch_blocker, |b, blocker| b.tooltip(blocker.explanation()))
+                .on_click(cx.listener(|this, _, window, cx| this.perform(Entry::Fetch, window, cx)))
                 .smooth_hover(
                     ButtonLook::Outline,
-                    &fetch_hover.enabled(!busy && has_remote),
+                    &fetch_hover.enabled(!busy && fetch_blocker.is_none()),
                     cx,
                 ),
             )
@@ -173,14 +131,12 @@ impl GitPanel {
                     "Pull fast-forward only",
                     pulling,
                 )
-                .disabled((busy && !pulling) || !has_upstream)
-                .when(!has_upstream, |b| b.tooltip("No upstream to pull from"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.git.update(cx, |g, cx| g.perform(Action::Pull, cx))
-                }))
+                .disabled((busy && !pulling) || pull_blocker.is_some())
+                .when_some(pull_blocker, |b, blocker| b.tooltip(blocker.explanation()))
+                .on_click(cx.listener(|this, _, window, cx| this.perform(Entry::Pull, window, cx)))
                 .smooth_hover(
                     ButtonLook::Outline,
-                    &pull_hover.enabled(!busy && has_upstream),
+                    &pull_hover.enabled(!busy && pull_blocker.is_none()),
                     cx,
                 ),
             )
@@ -197,16 +153,12 @@ impl GitPanel {
                     pushing,
                 )
                 .disabled(push_disabled && !pushing)
-                .when(!busy && push_disabled && status.is_some(), |b| {
-                    b.tooltip(if detached {
-                        "Create a branch before pushing detached HEAD"
-                    } else if nothing_to_push {
-                        "Nothing to push"
-                    } else {
-                        "No remote configured"
-                    })
+                .when_some(push_blocker.filter(|_| !busy), |b, blocker| {
+                    b.tooltip(blocker.explanation())
                 })
-                .on_click(cx.listener(|this, _, window, cx| this.push(window, cx)))
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.perform(push_entry, window, cx)),
+                )
                 .smooth_hover(
                     ButtonLook::Outline,
                     &push_hover.enabled(!push_disabled),

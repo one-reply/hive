@@ -1,7 +1,6 @@
-//! Explicit index, commit and remote operations. No force, implicit staging or automatic stash.
-use super::{
-    GitError, READ_LIMIT, branches, bytes_mutation, conflicts, diff, run, run_stoppable, status,
-};
+//! Explicit index, commit, remote and rebase operations. No implicit staging or automatic
+//! stash; the one force push is bound to the remote commit the user confirmed.
+use super::{GitError, READ_LIMIT, branches, bytes_mutation, conflicts, diff, rebase, status};
 use crate::command::Cancellation;
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
@@ -9,7 +8,10 @@ use std::fmt;
 use std::path::Path;
 
 mod discard;
+mod remote;
 pub use discard::Discard;
+pub use remote::{ForcePushPreview, force_push_preview, remotes, upstream_remote};
+pub(super) use remote::{fetch_remote, push_destination};
 
 /// A user-requested Git mutation, scoped by the caller to one host and worktree.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,6 +47,17 @@ pub enum Action {
     Pull,
     /// Push to the configured upstream or explicitly publish to a remote.
     Push { remote: String, publish: bool },
+    /// Fetch the upstream's remote, replay the local commits on top of the upstream, then
+    /// push them; a conflict leaves the rebase unfinished and nothing pushed.
+    Sync { remote: String },
+    /// Commit the index, then sync; a failure after the commit leaves it intact.
+    CommitAndSync { message: String, remote: String },
+    /// Replace the remote branch of the same name, unless it has moved off `expected`, the
+    /// commit whose loss the caller must have confirmed.
+    ForcePush { remote: String, expected: String },
+    /// Replay the current branch on top of the branch `onto` names by its full ref, fetching
+    /// its remote first; the caller must have confirmed rewriting the branch.
+    Rebase { onto: String },
     /// Resolve one unmerged path with a whole side, replacing the working file; the caller
     /// must have confirmed the loss of its content.
     ResolveWith { path: String, side: conflicts::Side },
@@ -65,12 +78,16 @@ impl Action {
                 | Action::Fetch(_)
                 | Action::Pull
                 | Action::Push { .. }
+                | Action::Sync { .. }
+                | Action::CommitAndSync { .. }
+                | Action::ForcePush { .. }
+                | Action::Rebase { .. }
                 | Action::ContinueOperation
         )
     }
 }
 
-/// What a fetch, pull or push changed, for a short confirmation once it finishes.
+/// What a remote operation or a rebase changed, for a short confirmation once it finishes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Synced {
     /// Fetched `remote`; `incoming` counts upstream commits not yet in HEAD, known only
@@ -85,6 +102,22 @@ pub enum Synced {
     Pushed { remote: String, commits: usize },
     /// Created the branch on `remote` and started tracking it.
     Published { remote: String },
+    /// Synced with the upstream on `remote`: `pulled` commits came in and the local ones
+    /// were replayed on top of them, then `pushed` commits went out.
+    PulledAndPushed {
+        remote: String,
+        pulled: usize,
+        pushed: usize,
+    },
+    /// Replaced the branch on `remote` with the local one.
+    ForcePushed { remote: String },
+    /// Replayed the branch on top of `onto`; unchanged when it already contained it.
+    Rebased {
+        onto: String,
+        changed: bool,
+        /// The upstream still holds the commits as they were before the replay.
+        needs_force_push: bool,
+    },
 }
 
 impl fmt::Display for Synced {
@@ -110,6 +143,42 @@ impl fmt::Display for Synced {
                 commits: count,
             } => write!(f, "Pushed {} to {remote}", commits(*count)),
             Self::Published { remote } => write!(f, "Published to {remote}"),
+            Self::PulledAndPushed {
+                remote,
+                pulled: 0,
+                pushed: 0,
+            } => write!(f, "Already in sync with {remote}"),
+            Self::PulledAndPushed {
+                pulled, pushed: 0, ..
+            } => write!(f, "Pulled {}", commits(*pulled)),
+            Self::PulledAndPushed {
+                remote,
+                pulled: 0,
+                pushed,
+            } => write!(f, "Pushed {} to {remote}", commits(*pushed)),
+            Self::PulledAndPushed {
+                remote,
+                pulled,
+                pushed,
+            } => write!(
+                f,
+                "Pulled {}, pushed {pushed} to {remote}",
+                commits(*pulled)
+            ),
+            Self::ForcePushed { remote } => write!(f, "Force-pushed to {remote}"),
+            Self::Rebased {
+                onto,
+                changed: false,
+                ..
+            } => write!(f, "Already up to date with {onto}"),
+            Self::Rebased {
+                onto,
+                needs_force_push: false,
+                ..
+            } => write!(f, "Rebased onto {onto}"),
+            Self::Rebased { onto, .. } => {
+                write!(f, "Rebased onto {onto} · Force Push to update the remote")
+            }
         }
     }
 }
@@ -119,35 +188,6 @@ fn commits(count: usize) -> String {
         1 => "1 commit".into(),
         count => format!("{count} commits"),
     }
-}
-
-/// Configured remote names, never URLs containing credentials.
-pub fn remotes(host: &Host, cwd: &Path) -> Result<Vec<String>, GitError> {
-    Ok(run(host, cwd, &["remote"])?
-        .lines()
-        .map(String::from)
-        .collect())
-}
-
-/// The remote configured for this branch, if it is a network remote.
-pub fn upstream_remote(host: &Host, cwd: &Path, branch: &str) -> Result<Option<String>, GitError> {
-    let value = run(
-        host,
-        cwd,
-        &["config", "--get", &format!("branch.{branch}.remote")],
-    );
-    match value {
-        Ok(value) => Ok((value != ".").then_some(value)),
-        Err(GitError::Failed { code: Some(1), .. }) => Ok(None),
-        Err(err) => Err(err),
-    }
-}
-
-fn remote_exists(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {
-    if name.starts_with('-') || !remotes(host, cwd)?.iter().any(|r| r == name) {
-        return Err(GitError::Invalid("Select a configured remote.".into()));
-    }
-    Ok(())
 }
 
 pub(super) fn paths(
@@ -184,11 +224,12 @@ pub(super) fn paths(
 
 /// Execute one mutation synchronously. Call only on a background executor.
 ///
-/// Fetch, pull and push report what they changed; local mutations return `None`.
+/// Remote operations and a finished rebase report what they changed; local mutations and a
+/// replay that stopped on a conflict return `None`.
 ///
-/// `stop` ends the commands that run hooks or talk to a remote (commit, fetch, pull, push and
-/// continuing an operation); the error then says the outcome is unknown. The quick local
-/// mutations ignore it.
+/// `stop` ends the commands that run hooks or talk to a remote (commit, fetch, pull, push,
+/// sync, rebase and continuing an operation); the error then says the outcome is unknown. The
+/// quick local mutations ignore it.
 pub fn execute(
     host: &Host,
     cwd: &Path,
@@ -196,11 +237,27 @@ pub fn execute(
     stop: &Cancellation,
 ) -> Result<Option<Synced>, GitError> {
     let local = match action {
-        Action::Fetch(remote) => return fetch(host, cwd, remote, stop).map(Some),
-        Action::Pull => return pull(host, cwd, stop).map(Some),
+        Action::Fetch(remote) => return remote::fetch(host, cwd, remote, stop).map(Some),
+        Action::Pull => return remote::pull(host, cwd, stop).map(Some),
         Action::Push { remote, publish } => {
-            return push_branch(host, cwd, remote, *publish, stop).map(Some);
+            return remote::push_branch(host, cwd, remote, *publish, stop).map(Some);
         }
+        Action::Sync { remote } => return remote::sync(host, cwd, remote, stop),
+        Action::CommitAndSync { message, remote } => {
+            // Reject what the sync would refuse before creating a local commit.
+            remote::upstream_destination(host, cwd, remote)?;
+            require_fully_staged(host, cwd)?;
+            commit(host, cwd, message, stop)?;
+            return remote::sync(host, cwd, remote, stop).map_err(|source| {
+                GitError::SyncAfterCommit {
+                    source: Box::new(source),
+                }
+            });
+        }
+        Action::ForcePush { remote, expected } => {
+            return remote::force_push(host, cwd, remote, expected, stop).map(Some);
+        }
+        Action::Rebase { onto } => return rebase::onto_branch(host, cwd, onto, stop),
         Action::Stage(selected) => paths(host, cwd, &["add", "-A"], selected),
         Action::Unstage(selected) => {
             if status::read(host, cwd)?.oid.is_some() {
@@ -224,7 +281,7 @@ pub fn execute(
             // Reject an unavailable destination before creating a local commit.
             let destination = push_destination(host, cwd, remote, *publish)?;
             commit(host, cwd, message, stop)?;
-            push(host, cwd, remote, *publish, &destination, stop).map_err(|source| {
+            remote::push(host, cwd, remote, *publish, &destination, stop).map_err(|source| {
                 GitError::PushAfterCommit {
                     source: Box::new(source),
                 }
@@ -240,84 +297,6 @@ pub fn execute(
         Action::ContinueOperation => conflicts::continue_operation(host, cwd, stop),
     };
     local.map(|()| None)
-}
-
-fn fetch(host: &Host, cwd: &Path, remote: &str, stop: &Cancellation) -> Result<Synced, GitError> {
-    remote_exists(host, cwd, remote)?;
-    run_stoppable(
-        host,
-        cwd,
-        &["-c", "credential.interactive=false", "fetch", remote],
-        stop,
-    )?;
-    let status = status::read(host, cwd)?;
-    let tracks_remote = match (&status.branch, &status.upstream) {
-        (Some(branch), Some(_)) => upstream_remote(host, cwd, branch)?.as_deref() == Some(remote),
-        _ => false,
-    };
-    Ok(Synced::Fetched {
-        remote: remote.into(),
-        incoming: tracks_remote.then_some(status.behind),
-    })
-}
-
-fn pull(host: &Host, cwd: &Path, stop: &Cancellation) -> Result<Synced, GitError> {
-    branches::require_clean(host, cwd)?;
-    let before = status::read(host, cwd)?;
-    if before.upstream.is_none() {
-        return Err(GitError::Invalid(
-            "Publish this branch or configure an upstream before pulling.".into(),
-        ));
-    }
-    run_stoppable(
-        host,
-        cwd,
-        &[
-            "-c",
-            "credential.interactive=false",
-            "pull",
-            "--no-rebase",
-            "--ff-only",
-        ],
-        stop,
-    )?;
-    // Fast-forward only, so the new commits are exactly those between the old and new HEAD.
-    let range = match before.oid {
-        Some(oid) => format!("{oid}..HEAD"),
-        None => "HEAD".into(),
-    };
-    Ok(Synced::Pulled {
-        commits: count_commits(host, cwd, &range)?,
-    })
-}
-
-fn push_branch(
-    host: &Host,
-    cwd: &Path,
-    remote: &str,
-    publish: bool,
-    stop: &Cancellation,
-) -> Result<Synced, GitError> {
-    let destination = push_destination(host, cwd, remote, publish)?;
-    let ahead = status::read(host, cwd)?.ahead;
-    push(host, cwd, remote, publish, &destination, stop)?;
-    Ok(if publish {
-        Synced::Published {
-            remote: remote.into(),
-        }
-    } else {
-        Synced::Pushed {
-            remote: remote.into(),
-            commits: ahead,
-        }
-    })
-}
-
-fn count_commits(host: &Host, cwd: &Path, range: &str) -> Result<usize, GitError> {
-    let raw = run(host, cwd, &["rev-list", "--count", range, "--"])?;
-    raw.trim()
-        .parse()
-        .map_err(|_| GitError::Invalid(format!("Unexpected `git rev-list --count` output: {raw}")))
 }
 
 fn commit(host: &Host, cwd: &Path, message: &str, stop: &Cancellation) -> Result<(), GitError> {
@@ -341,46 +320,15 @@ fn commit(host: &Host, cwd: &Path, message: &str, stop: &Cancellation) -> Result
     .map(drop)
 }
 
-pub(super) fn push_destination(
-    host: &Host,
-    cwd: &Path,
-    remote: &str,
-    publish: bool,
-) -> Result<String, GitError> {
-    remote_exists(host, cwd, remote)?;
-    let branch = status::read(host, cwd)?
-        .branch
-        .ok_or_else(|| GitError::Invalid("Create a branch before pushing detached HEAD.".into()))?;
-    if publish {
-        return Ok(format!("refs/heads/{branch}"));
-    }
-    if upstream_remote(host, cwd, &branch)?.as_deref() != Some(remote) {
+/// A sync rebases, which needs a clean worktree: everything changed has to be in the commit.
+fn require_fully_staged(host: &Host, cwd: &Path) -> Result<(), GitError> {
+    let status = status::read(host, cwd)?;
+    if status.files.iter().any(|file| file.unstaged.is_some()) {
         return Err(GitError::Invalid(
-            "Push must use this branch's configured upstream remote.".into(),
+            "Stage or discard the remaining changes first: syncing needs a clean worktree after the commit.".into(),
         ));
     }
-    run(
-        host,
-        cwd,
-        &["config", "--get", &format!("branch.{branch}.merge")],
-    )
-}
-
-fn push(
-    host: &Host,
-    cwd: &Path,
-    remote: &str,
-    publish: bool,
-    destination: &str,
-    stop: &Cancellation,
-) -> Result<(), GitError> {
-    let refspec = format!("HEAD:{destination}");
-    let mut args = vec!["-c", "credential.interactive=false", "push"];
-    if publish {
-        args.push("--set-upstream");
-    }
-    args.extend([remote, &refspec]);
-    run_stoppable(host, cwd, &args, stop).map(drop)
+    Ok(())
 }
 
 #[cfg(test)]
