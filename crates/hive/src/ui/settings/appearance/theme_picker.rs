@@ -72,14 +72,13 @@ fn swatch(
     name: &'static str,
     selected: bool,
     palette: TerminalPalette,
-    select: impl Fn(&mut App) + Clone + 'static,
+    select: impl Fn(&mut App) + 'static,
     window: &mut Window,
     cx: &mut App,
 ) -> Stateful<Div> {
     let hover = Hover::new(name, window, cx);
     let theme = cx.theme();
     let (fg, accent) = (theme.foreground, theme.blue);
-    let keyboard_select = select.clone();
     v_flex()
         .id(name)
         .role(Role::Button)
@@ -137,16 +136,51 @@ fn swatch(
                     el.child(Icon::new(IconName::Check).size_3p5().text_color(accent))
                 })),
         )
+        // Enter and Space on the focused card arrive as this click too.
         .on_click(move |_, _, cx| select(cx))
-        .on_key_down(move |event, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                keyboard_select(cx);
-            }
-        })
         .hover_bg(
             &hover,
             fg.opacity(if selected { SELECTED_OPACITY } else { 0. }),
             fg.opacity(HOVER_OPACITY),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{catalog, swatch};
+    use crate::ui::destructive::testing::press;
+    use gpui_kit as gpui;
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Context, TestAppContext, Window, div, point, px};
+    use hive_core::settings::DarkTheme;
+    use std::{cell::Cell, rc::Rc};
+
+    struct Harness {
+        chosen: Rc<Cell<u32>>,
+    }
+    impl Render for Harness {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let chosen = self.chosen.clone();
+            let palette = catalog::dark(DarkTheme::ALL[0]).terminal();
+            let choose = move |_: &mut gpui::App| chosen.set(chosen.get() + 1);
+            div().child(swatch("Sample", false, palette, choose, window, cx))
+        }
+    }
+
+    #[gpui::test]
+    fn a_focused_swatch_is_chosen_once_per_press_of_enter_or_space(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let chosen = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|_, _| Harness {
+            chosen: chosen.clone(),
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        // The click focuses the card, as Tab would.
+        cx.simulate_click(point(px(20.), px(20.)), Default::default());
+        assert_eq!(chosen.get(), 1);
+        for (key, total) in [("enter", 2), ("space", 3)] {
+            press(key, cx);
+            assert_eq!(chosen.get(), total, "after {key}");
+        }
+    }
 }

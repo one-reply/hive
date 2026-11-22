@@ -12,6 +12,7 @@ mod git_controls;
 pub(crate) mod git_panel;
 pub(crate) mod hover;
 pub(crate) mod key_hint;
+pub(crate) mod list_scroll;
 pub mod keymap;
 pub(crate) mod project_badge;
 mod pull_request_dialog;

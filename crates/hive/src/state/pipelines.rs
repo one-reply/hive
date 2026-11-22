@@ -16,6 +16,7 @@ use hive_core::pipeline::{Lane, Phase, Report, Run, Template, Ticket, now_ms, wo
 mod delivery;
 mod execution;
 mod models;
+mod previews;
 mod prompts;
 mod reports;
 mod review;
@@ -27,6 +28,7 @@ mod templates;
 mod watch;
 
 pub(crate) use delivery::Delivery;
+pub(crate) use previews::{Preview, PreviewKey};
 pub(crate) use status::{RunStatus, Waiting};
 pub(crate) use workspace::ReviewRepo;
 
@@ -76,9 +78,7 @@ pub(crate) struct Pipelines {
     next_job: u64,
     agents: Entity<super::agents::Agents>,
     _agent_status: Vec<Subscription>,
-    previewing: HashSet<(PathBuf, PathBuf, String)>,
-    pub(crate) previews:
-        HashMap<(PathBuf, PathBuf, String), Result<workspace::BasePreview, String>>,
+    previews: previews::Previews,
     stopped: bool,
 }
 
@@ -168,8 +168,7 @@ impl Pipelines {
             next_job: 0,
             agents: agents.clone(),
             _agent_status: agent_status,
-            previews: HashMap::new(),
-            previewing: HashSet::new(),
+            previews: Default::default(),
             stopped: false,
         }
     }
@@ -234,32 +233,6 @@ impl Pipelines {
             .any(|p| p.host.is_local() && p.path == project)
     }
 
-    pub(crate) fn preview(
-        &mut self,
-        project: PathBuf,
-        checkout: PathBuf,
-        base: String,
-        cx: &mut Context<Self>,
-    ) {
-        let key = (project.clone(), checkout.clone(), base.clone());
-        if !self.registered(&project, cx) || !self.previewing.insert(key.clone()) {
-            return;
-        }
-        self.previews.remove(&key);
-        let work = cx
-            .background_executor()
-            .spawn(async move { workspace::preview(&checkout, &base).map_err(|e| e.to_string()) });
-        cx.spawn(async move |this, cx| {
-            let result = work.await;
-            let _ = this.update(cx, |p, cx| {
-                p.previewing.remove(&key);
-                p.previews.insert(key, result);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     pub(crate) fn start(
         &mut self,
         owner: PathBuf,
@@ -301,13 +274,7 @@ impl Pipelines {
             }
             let preview = self
                 .previews
-                .iter()
-                .find_map(|((project, _, _), preview)| {
-                    preview
-                        .as_ref()
-                        .ok()
-                        .filter(|p| project == &lane.project && p.commit == lane.base)
-                })
+                .resolved(&lane.project, &lane.base)
                 .ok_or_else(|| {
                     format!(
                         "Preview the base revision for {} before starting.",

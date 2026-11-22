@@ -111,9 +111,12 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Shows run `id` in its project's panel, on the live session of `attempt` when one is
+    /// named.
     pub(in crate::ui::workspace) fn show_pipeline_run(
         &mut self,
         id: u64,
+        attempt: Option<hive_core::pipeline::Ticket>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -154,7 +157,7 @@ impl Workspace {
         let slot = self.pipeline_slot(owner, cx);
         slot.show(&cwd, window, cx);
         slot.view
-            .update(cx, |view, cx| view.show_run(id, window, cx));
+            .update(cx, |view, cx| view.show_run(id, attempt, window, cx));
         cx.notify();
     }
 

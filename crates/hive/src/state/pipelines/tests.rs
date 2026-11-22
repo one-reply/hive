@@ -1,4 +1,4 @@
-use super::{Pipelines, Store, check_branches};
+use super::{Pipelines, Preview, PreviewKey, Store, check_branches};
 use gpui_kit as gpui;
 use gpui_kit::{AppContext as _, Entity, TestAppContext};
 use hive_core::state::ProjectRef;
@@ -813,4 +813,156 @@ fn lanes_in_one_repository_share_its_branch_and_other_repositories_may_differ() 
             .contains("same branch")
     );
     assert!(check_branches([(web, &lanes[0]), (api, &lanes[1])]).is_ok());
+}
+
+/// A Git repository in its own temporary directory, removed with the test.
+struct TempRepository(PathBuf);
+
+impl TempRepository {
+    fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("hive-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        let repository = Self(path.canonicalize().unwrap());
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.name", "Hive Test"],
+            &["config", "user.email", "hive@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.hooksPath", "/dev/null"],
+        ] {
+            repository.git(args);
+        }
+        repository
+    }
+
+    fn git(&self, args: &[&str]) {
+        hive_core::git::run(&Host::Local, &self.0, args).unwrap();
+    }
+
+    fn commit(&self, file: &str) {
+        std::fs::write(self.0.join(file), file).unwrap();
+        self.git(&["add", "--", file]);
+        self.git(&["commit", "-m", file]);
+    }
+
+    fn key(&self, reference: &str) -> PreviewKey {
+        PreviewKey {
+            project: self.0.clone(),
+            checkout: self.0.clone(),
+            reference: reference.into(),
+        }
+    }
+}
+
+impl Drop for TempRepository {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The commit and the local-changes flag of a base that has been read.
+fn read_base(pipelines: &Pipelines, key: &PreviewKey) -> (String, bool) {
+    match pipelines.preview(key) {
+        Preview::Ready(preview) => (preview.commit.clone(), preview.dirty),
+        other => panic!("the base is not read: {other:?}"),
+    }
+}
+
+#[gpui::test]
+fn reading_a_base_again_sees_where_its_branch_moved_and_what_changed_locally(
+    cx: &mut TestAppContext,
+) {
+    let repository = TempRepository::new("pipeline-base-moved");
+    repository.commit("first.txt");
+    let key = repository.key("refs/heads/main");
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.store.update(cx, |s, _| {
+            let project = ProjectRef::new(repository.0.clone(), Host::Local);
+            s.state.projects.push(project);
+        });
+        p.refresh_preview(key.clone(), cx);
+        assert!(matches!(p.preview(&key), Preview::Reading));
+    });
+    cx.run_until_parked();
+    let (first, dirty) = pipelines.read_with(cx, |p, _| read_base(p, &key));
+    assert!(!dirty);
+
+    // What a terminal does while the form stays open.
+    repository.commit("second.txt");
+    std::fs::write(repository.0.join("untracked.txt"), "local").unwrap();
+    pipelines.update(cx, |p, cx| {
+        p.refresh_preview(key.clone(), cx);
+        // The earlier answer stays on screen until the new one arrives.
+        assert!(p.is_reading_preview(&key));
+        assert_eq!(read_base(p, &key), (first.clone(), false));
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, _| {
+        let (second, dirty) = read_base(p, &key);
+        assert_ne!(second, first);
+        assert!(dirty);
+        assert!(!p.is_reading_preview(&key));
+        // A run starts only from the commit read last.
+        assert!(p.previews.resolved(&repository.0, &second).is_some());
+        assert!(p.previews.resolved(&repository.0, &first).is_none());
+    });
+}
+
+#[gpui::test]
+fn a_base_that_cannot_be_read_fails_with_gits_answer_and_can_be_read_again(
+    cx: &mut TestAppContext,
+) {
+    let repository = TempRepository::new("pipeline-base-unreadable");
+    // No commit yet, so `main` resolves to nothing.
+    let key = repository.key("refs/heads/main");
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.store.update(cx, |s, _| {
+            let project = ProjectRef::new(repository.0.clone(), Host::Local);
+            s.state.projects.push(project);
+        });
+        p.refresh_preview(key.clone(), cx);
+    });
+    cx.run_until_parked();
+    pipelines.update(cx, |p, cx| {
+        let Preview::Failed(error) = p.preview(&key) else {
+            panic!("an unborn branch was read: {:?}", p.preview(&key));
+        };
+        assert!(!error.is_empty());
+        assert!(!p.is_reading_preview(&key));
+        // The retry shows as a read in progress, not as the old failure.
+        p.refresh_preview(key.clone(), cx);
+        assert!(matches!(p.preview(&key), Preview::Reading));
+    });
+    repository.commit("first.txt");
+    cx.run_until_parked();
+    // The retry was started before the commit existed; whichever it saw, one more read is
+    // conclusive.
+    pipelines.update(cx, |p, cx| p.refresh_preview(key.clone(), cx));
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, _| {
+        assert!(matches!(p.preview(&key), Preview::Ready(_)));
+    });
+}
+
+#[gpui::test]
+fn a_repository_removed_from_hive_fails_its_read_instead_of_staying_unread(
+    cx: &mut TestAppContext,
+) {
+    let pipelines = recovering(cx);
+    let key = PreviewKey {
+        project: "/removed-from-hive".into(),
+        checkout: "/removed-from-hive".into(),
+        reference: "HEAD".into(),
+    };
+    pipelines.update(cx, |p, cx| {
+        p.refresh_preview(key.clone(), cx);
+        let Preview::Failed(error) = p.preview(&key) else {
+            panic!("the removed project is still being read");
+        };
+        assert!(error.contains("no longer a project in Hive"), "{error}");
+        assert!(!p.is_reading_preview(&key));
+    });
 }

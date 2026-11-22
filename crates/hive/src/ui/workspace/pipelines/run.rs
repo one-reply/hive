@@ -30,6 +30,7 @@ use sessions::LiveSession;
 mod stage;
 mod summary;
 mod timeline;
+mod unsaved;
 use stage::{Stage, StageIcon as _, StageStatus};
 
 use gpui_kit::component::{
@@ -242,6 +243,7 @@ impl RunView {
 }
 impl Render for RunView {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _measure = crate::ui::workspace::measure80::run_view(); // MEASURE-80
         if let Some((ticket, session)) = &self.session {
             let back_hover = Hover::new("session-back", w, cx);
             return v_flex()

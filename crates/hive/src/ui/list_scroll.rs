@@ -1,4 +1,5 @@
-//! Keeps the Changes list where the user scrolled it while its rows come and go.
+//! Keeps a virtual list where the user scrolled it while its rows come and go: the Changes
+//! list of the Git panel and the run history of Pipelines.
 use gpui_kit::{ListOffset, ListState};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -7,7 +8,7 @@ use std::hash::Hash;
 ///
 /// `ListState::reset` alone forgets the scroll position and shows the first row, so staging
 /// one file far down the list would throw the user back to its start.
-pub(super) fn replace_rows<K: Hash + Eq>(list: &ListState, old: &[K], new: &[K]) {
+pub(crate) fn replace_rows<K: Hash + Eq>(list: &ListState, old: &[K], new: &[K]) {
     let top = after_change(old, new, list.logical_scroll_top());
     list.reset(new.len());
     list.scroll_to(top);

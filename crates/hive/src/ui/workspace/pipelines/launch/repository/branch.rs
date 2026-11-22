@@ -1,7 +1,7 @@
 //! The branch a lane commits to: a free local branch, or a new one named in the same menu.
 use super::*;
 use crate::ui::hover::SmoothHoverBg as _;
-use gpui_kit::component::popover::Popover;
+use gpui_kit::component::{popover::Popover, spinner::Spinner};
 use hive_core::git::branches::{Branch, is_valid_name};
 
 const MENU_WIDTH: Pixels = px(340.);
@@ -32,6 +32,25 @@ fn choices<'a>(branches: &'a [Branch], query: &str) -> (Vec<&'a Branch>, Create)
         Create::Invalid
     };
     (local, create)
+}
+
+/// What the open menu lists. A read that failed is its own state: shown as one still in
+/// progress it would leave the menu waiting for an answer that never comes.
+#[derive(Debug, PartialEq, Eq)]
+enum Listing {
+    Reading,
+    Failed(String),
+    Branches(Vec<Branch>),
+}
+
+impl From<Preview<'_>> for Listing {
+    fn from(read: Preview<'_>) -> Self {
+        match read {
+            Preview::Reading => Self::Reading,
+            Preview::Failed(error) => Self::Failed(error.to_owned()),
+            Preview::Ready(preview) => Self::Branches(preview.branches.clone()),
+        }
+    }
 }
 
 /// What Enter does with the typed text: take the exact free branch or create a new one.
@@ -86,6 +105,17 @@ impl LaunchForm {
         if open {
             b.branch_query
                 .update(cx, |query, cx| query.set_value("", window, cx));
+            // Branches made, removed or checked out outside Hive since the card was read
+            // show up now; the list read earlier stays until the answer arrives.
+            b.read(cx);
+        }
+        cx.notify();
+    }
+
+    /// Asks Git about repository `i` again, after a failed read or to pick up outside changes.
+    pub(super) fn read_again(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(binding) = self.bindings.get(i) {
+            binding.read(cx);
         }
         cx.notify();
     }
@@ -102,7 +132,7 @@ impl LaunchForm {
         b.ref_input = None;
         b.branch = branch;
         b.branch_open = false;
-        b.preview(cx);
+        b.read(cx);
         cx.notify();
     }
 
@@ -116,7 +146,7 @@ impl LaunchForm {
         };
         let b = &self.bindings[i];
         let text = b.branch_query.read(cx).value().to_string();
-        let Some(Ok(preview)) = b.base_preview(cx) else {
+        let Some(preview) = b.ready(cx) else {
             return;
         };
         if let Some(choice) = enter_choice(&preview.branches, &text) {
@@ -135,14 +165,10 @@ fn branch_menu(
     let Some(form) = view.upgrade() else {
         return div().into_any_element();
     };
-    let Some((query, branches, selected, base)) = form.read(cx).bindings.get(i).map(|b| {
-        let branches = b
-            .base_preview(cx)
-            .and_then(|p| p.as_ref().ok())
-            .map(|p| p.branches.clone());
+    let Some((query, listing, selected, base)) = form.read(cx).bindings.get(i).map(|b| {
         (
             b.branch_query.clone(),
-            branches,
+            Listing::from(b.base(cx)),
             b.branch.clone(),
             short_name(&b.default_reference).to_owned(),
         )
@@ -155,9 +181,31 @@ fn branch_menu(
         .max_h(MENU_LIST_HEIGHT)
         .overflow_y_scroll()
         .gap_0p5();
-    let Some(branches) = branches else {
-        list = list.child(subtle("Reading branches…", cx));
-        return menu_frame(&query, list, cx);
+    let branches = match listing {
+        Listing::Branches(branches) => branches,
+        Listing::Reading => {
+            let reading = h_flex()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .child(Spinner::new().icon(Lucide::LoaderCircle).xsmall())
+                .child(subtle("Reading branches…", cx));
+            return menu_frame(&query, list.child(reading), cx);
+        }
+        Listing::Failed(error) => {
+            let failure = v_flex()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(format!("Branches can’t be read: {error}")),
+                )
+                .child(h_flex().child(retry_button(view, i, window, cx)));
+            return menu_frame(&query, list.child(failure), cx);
+        }
     };
     let (local, create) = choices(&branches, &text);
     match create {
@@ -226,6 +274,26 @@ fn menu_frame(query: &Entity<InputState>, list: impl IntoElement, cx: &App) -> A
         .into_any_element()
 }
 
+fn retry_button(
+    view: &WeakEntity<LaunchForm>,
+    i: usize,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    let id = ElementId::from(("pipeline-branch-retry", i));
+    let hover = Hover::new(id.clone(), window, cx);
+    let view = view.clone();
+    Button::new(id)
+        .cursor_pointer()
+        .small()
+        .icon(Lucide::RotateCcw)
+        .label("Try again")
+        .on_click(move |_, _, cx| {
+            let _ = view.update(cx, |this, cx| this.read_again(i, cx));
+        })
+        .smooth_hover(ButtonLook::Outline, &hover, cx)
+}
+
 /// One menu entry; `choice` is `None` for a branch Git cannot check out again.
 fn menu_row(
     view: &WeakEntity<LaunchForm>,
@@ -274,7 +342,7 @@ fn menu_row(
 
 #[cfg(test)]
 mod tests {
-    use super::{Branch, Create, WorkBranch, choices, enter_choice};
+    use super::{Branch, Create, Listing, Preview, WorkBranch, choices, enter_choice};
 
     fn local(name: &str, worktree: Option<&str>) -> Branch {
         Branch {
@@ -296,6 +364,26 @@ mod tests {
                 worktree: None,
             },
         ]
+    }
+
+    #[test]
+    fn a_failed_read_is_listed_as_its_error_and_not_as_a_read_in_progress() {
+        assert_eq!(Listing::from(Preview::Reading), Listing::Reading);
+        assert_eq!(
+            Listing::from(Preview::Failed("fatal: not a git repository")),
+            Listing::Failed("fatal: not a git repository".into())
+        );
+        let preview = hive_core::pipeline::workspace::BasePreview {
+            worktrees_dir: "/repo-worktrees".into(),
+            commit: "4f2c9d1".into(),
+            dirty: false,
+            branches: branches(),
+            checks: Vec::new(),
+        };
+        assert_eq!(
+            Listing::from(Preview::Ready(&preview)),
+            Listing::Branches(branches())
+        );
     }
 
     #[test]

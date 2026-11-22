@@ -42,6 +42,7 @@ mod git;
 pub(crate) mod history;
 mod persistence;
 mod pipelines;
+pub(crate) mod measure80; // MEASURE-80
 mod project_center;
 mod right_tab;
 pub(crate) mod switcher;
@@ -183,7 +184,7 @@ impl Workspace {
                 &pipeline_runs,
                 window,
                 |this, _, event: &crate::state::pipelines::RevealRun, window, cx| {
-                    this.show_pipeline_run(event.0, window, cx)
+                    this.show_pipeline_run(event.0, None, window, cx)
                 },
             ),
             cx.subscribe_in(
@@ -339,6 +340,7 @@ impl Workspace {
         this.watch_git(window, cx);
         this.watch_files(window, cx);
         this.sync_selection(window, cx);
+        measure80::start(window, cx); // MEASURE-80
         this
     }
 
@@ -407,10 +409,7 @@ impl Workspace {
             .read(cx)
             .ticket_for_session(session)
         {
-            self.show_pipeline_run(ticket.run, window, cx);
-            if let Some(panel) = self.open_pipeline_panel() {
-                panel.update(cx, |panel, cx| panel.show_attempt(ticket, window, cx));
-            }
+            self.show_pipeline_run(ticket.run, Some(ticket), window, cx);
             return;
         }
         self.select_place_of(session, cx);
@@ -742,6 +741,7 @@ impl Render for Workspace {
                 center(center_el, 1.).into_any_element(),
             )
         };
+        measure80::FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed); // MEASURE-80
         let overlay = self.pipeline_overlay(window, cx);
         let covered = overlay.as_ref().is_some_and(|(covered, _)| *covered);
         let mut content = h_flex()

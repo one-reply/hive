@@ -70,7 +70,7 @@ impl LaunchForm {
             }
         }
         for binding in &self.bindings {
-            binding.preview(cx);
+            binding.read(cx);
         }
         cx.notify();
     }

@@ -40,7 +40,6 @@ mod header;
 mod operation;
 mod pull_request;
 mod review;
-mod scroll;
 #[cfg(test)]
 mod tests;
 

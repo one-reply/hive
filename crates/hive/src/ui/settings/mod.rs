@@ -386,13 +386,8 @@ impl SettingsWindow {
             .focus_visible(|style| style.bg(fg.opacity(NAV_SELECTED_OPACITY)))
             .child(Icon::new(page.icon()).size_4())
             .child(page.label())
+            // Enter and Space on the focused item arrive as this click too.
             .on_click(cx.listener(move |this, _, window, cx| this.show_page(page, window, cx)))
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    cx.stop_propagation();
-                    this.show_page(page, window, cx);
-                }
-            }))
     }
 
     /// One nav item per project, the Projects section of the navigation.

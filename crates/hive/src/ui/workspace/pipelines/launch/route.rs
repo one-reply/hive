@@ -48,7 +48,7 @@ impl LaunchForm {
         let checks = self
             .bindings
             .iter()
-            .filter_map(|b| Some(b.command(b.base_preview(cx)?.as_ref().ok()?, cx)))
+            .filter_map(|b| Some(b.command(b.ready(cx)?, cx)))
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join(", ");

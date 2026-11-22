@@ -121,7 +121,7 @@ impl Binding {
             .custom_command
             .update(cx, |i, cx| i.set_value(draft.custom_command, window, cx));
         binding.set_setup(draft.setup, window, cx);
-        binding.preview(cx);
+        binding.read(cx);
         binding
     }
     pub(super) fn bind(
@@ -138,52 +138,73 @@ impl Binding {
         self.ref_input = None;
         self.branch = WorkBranch::Unchosen;
         self.check = Check::Suggested;
-        self.preview(cx);
+        self.read(cx);
+    }
+    pub(super) fn branch_menu_open(&self) -> bool {
+        self.branch_open
     }
     /// The branch the lane commits to, once the user has chosen or named one.
     pub(super) fn branch_name(&self) -> Option<&str> {
         self.branch.name()
     }
-    pub(super) fn preview(&self, cx: &mut Context<LaunchForm>) {
-        if let Some(project) = &self.project {
-            AppState::get(cx).pipelines.clone().update(cx, |p, cx| {
-                p.preview(
-                    project.clone(),
-                    self.checkout.as_ref().unwrap_or(project).clone(),
-                    self.reference.clone(),
-                    cx,
-                )
-            });
+    /// What Git is asked about this repository, `None` until one is bound.
+    fn preview_key(&self) -> Option<PreviewKey> {
+        let project = self.project.as_ref()?;
+        Some(PreviewKey {
+            project: project.clone(),
+            checkout: self.checkout.as_ref().unwrap_or(project).clone(),
+            reference: self.reference.clone(),
+        })
+    }
+    /// Asks Git about the repository again: its base commit, branches and local changes.
+    pub(super) fn read(&self, cx: &mut Context<LaunchForm>) {
+        if let Some(key) = self.preview_key() {
+            let pipelines = AppState::get(cx).pipelines.clone();
+            pipelines.update(cx, |pipelines, cx| pipelines.refresh_preview(key, cx));
         }
     }
-    pub(super) fn base_preview<'a>(&self, cx: &'a App) -> Option<&'a Result<BasePreview, String>> {
-        let project = self.project.as_ref()?;
-        AppState::get(cx).pipelines.read(cx).previews.get(&(
-            project.clone(),
-            self.checkout.as_ref().unwrap_or(project).clone(),
-            self.reference.clone(),
-        ))
+    /// Where the read of the repository stands; reading until one is bound.
+    pub(super) fn base<'a>(&self, cx: &'a App) -> Preview<'a> {
+        match self.preview_key() {
+            Some(key) => AppState::get(cx).pipelines.read(cx).preview(&key),
+            None => Preview::Reading,
+        }
+    }
+    /// What Git answered, once the repository is read.
+    pub(super) fn ready<'a>(&self, cx: &'a App) -> Option<&'a BasePreview> {
+        match self.base(cx) {
+            Preview::Ready(preview) => Some(preview),
+            Preview::Reading | Preview::Failed(_) => None,
+        }
+    }
+    /// Whether an answer from Git is still on its way, also behind an earlier one.
+    pub(super) fn is_reading(&self, cx: &App) -> bool {
+        self.preview_key().is_some_and(|key| {
+            AppState::get(cx)
+                .pipelines
+                .read(cx)
+                .is_reading_preview(&key)
+        })
     }
     /// `None` for an optional lane the user left without a repository.
     pub(super) fn state(&self, cx: &App) -> Option<LaneState> {
         self.project.as_ref()?;
-        if self.ref_input.is_some() {
-            return Some(LaneState::EditingRef);
+        let missing_command = matches!(self.check, Check::Custom)
+            && self.custom_command.read(cx).value().trim().is_empty();
+        Some(lane_state(
+            self.ref_input.is_some(),
+            &self.branch,
+            self.base(cx),
+            missing_command,
+        ))
+    }
+    /// What this repository's card says that decides what the run does.
+    pub(super) fn shown(&self, preview: &BasePreview, cx: &App) -> Shown {
+        Shown {
+            // Only a new branch starts from the user's checkout; a chosen branch is not open.
+            local_changes: preview.dirty && matches!(self.branch, WorkBranch::New(_)),
+            check: self.command(preview, cx),
         }
-        if self.branch == WorkBranch::Unchosen {
-            return Some(LaneState::NoBranch);
-        }
-        Some(match self.base_preview(cx) {
-            None => LaneState::Reading,
-            Some(Err(_)) => LaneState::Failed,
-            Some(Ok(_))
-                if matches!(self.check, Check::Custom)
-                    && self.custom_command.read(cx).value().trim().is_empty() =>
-            {
-                LaneState::MissingCommand
-            }
-            Some(Ok(_)) => LaneState::Ready,
-        })
     }
     pub(super) fn command(&self, preview: &BasePreview, cx: &App) -> String {
         match &self.check {

@@ -13,23 +13,27 @@ impl LaunchForm {
     pub(super) fn start_on_secondary_enter(
         &mut self,
         enter: &Enter,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if enter.secondary && self.blocked_by(cx).is_none() {
+        let blocked = self.blocked_by(cx).is_some();
+        let branch_menu_open = self.bindings.iter().any(Binding::branch_menu_open);
+        if start::starts_run(enter.secondary, blocked, branch_menu_open) {
             cx.stop_propagation();
-            self.submit(window, cx);
+            self.request_start(cx);
         }
     }
 
     pub(super) fn action_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let blocked = self.blocked_by(cx);
+        let starting = self.is_starting();
         let direct = self.is_direct();
         let shortcut = Keystroke::parse_with_os("secondary-enter", cx.platform_info().os)
             .inspect_err(|err| tracing::error!(%err, "start shortcut does not parse"))
             .ok()
             .map(|key| div().opacity(SHORTCUT_OPACITY).child(key_hint::label(&key)));
-        let hover = Hover::new("start-planning", window, cx).enabled(blocked.is_none());
+        let hover =
+            Hover::new("start-planning", window, cx).enabled(blocked.is_none() && !starting);
         let submit = Button::new("start-planning")
             .cursor_pointer()
             .with_size(ButtonSize::Medium)
@@ -40,8 +44,9 @@ impl LaunchForm {
                 "Start planning"
             })
             .children(shortcut)
-            .disabled(blocked.is_some())
-            .on_click(cx.listener(|this, _, w, cx| this.submit(w, cx)))
+            .loading(starting)
+            .disabled(blocked.is_some() || starting)
+            .on_click(cx.listener(|this, _, _, cx| this.request_start(cx)))
             .smooth_hover(ButtonLook::Primary, &hover, cx);
         let discard = button_with_size(
             "discard-launch-draft",
@@ -58,14 +63,12 @@ impl LaunchForm {
                 });
             },
         );
-        let status = blocked.map_or(
-            if direct {
-                "QA and your final acceptance follow development."
-            } else {
-                "You approve the plan before development."
-            },
-            Blocker::message,
-        );
+        let status: SharedString = match blocked {
+            Some(blocker) => self.blocker_message(blocker, cx),
+            None if starting => "Reading the repositories again before the run starts…".into(),
+            None if direct => "QA and your final acceptance follow development.".into(),
+            None => "You approve the plan before development.".into(),
+        };
         let row = h_flex()
             .w_full()
             .gap_2()

@@ -239,7 +239,7 @@ impl GitPanel {
             })
             .collect();
         if self.change_rows != rows {
-            scroll::replace_rows(
+            crate::ui::list_scroll::replace_rows(
                 &self.changes_list,
                 &row_keys(&self.change_rows, &self.change_files),
                 &row_keys(&rows, &files),

@@ -19,6 +19,8 @@ mod run;
 
 mod drawer;
 pub(super) use drawer::PanelSlot;
+mod navigation;
+use navigation::{Destination, Unsaved};
 
 enum Screen {
     Library,
@@ -54,24 +56,24 @@ impl PipelinePanel {
             _subscriptions: subscriptions,
         }
     }
+    /// Back to the library once the screen in view is done with: saved or discarded.
     fn home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.screen = Screen::Library;
-        self.focus.focus(window, cx);
-        cx.notify();
+        self.go(Destination::Library, window, cx);
     }
-    fn show_run(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        self.screen = Screen::Run(cx.new(|cx| run::RunView::new(id, window, cx)));
-        cx.notify();
-    }
-    pub(super) fn show_attempt(
+    /// Shows run `id`, on the live session of `attempt` when one is named.
+    pub(super) fn show_run(
         &mut self,
-        ticket: hive_core::pipeline::Ticket,
-        w: &mut Window,
+        id: u64,
+        attempt: Option<hive_core::pipeline::Ticket>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Screen::Run(view) = &self.screen {
-            view.update(cx, |v, cx| v.terminal(ticket, w, cx));
-        }
+        self.navigate(Destination::Run { id, attempt }, window, cx);
+    }
+    /// The launch form started run `id`. The form is finished, so nothing is asked.
+    fn run_started(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft = None;
+        self.go(Destination::Run { id, attempt: None }, window, cx);
     }
     fn edit(&mut self, original: Option<Template>, window: &mut Window, cx: &mut Context<Self>) {
         let parent = cx.weak_entity();
@@ -172,6 +174,7 @@ impl PipelinePanel {
 
 impl Render for PipelinePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _measure = crate::ui::workspace::measure80::panel(); // MEASURE-80
         let title = match &self.screen {
             Screen::Editor(_) => "Template editor",
             Screen::Launch(_) => "New run",
@@ -199,7 +202,9 @@ impl Render for PipelinePanel {
                     .icon(Lucide::Workflow)
                     .label("Pipelines")
                     .tooltip("Back to project pipelines")
-                    .on_click(cx.listener(|this, _, window, cx| this.home(window, cx)))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.navigate(Destination::Library, window, cx)
+                    }))
                     .smooth_hover(ButtonLook::Outline, &home_hover, cx),
             )
             .child(
@@ -358,22 +363,15 @@ fn button_with_size<V: 'static>(
         .on_click(cx.listener(move |this, _, w, cx| click(this, w, cx)))
         .smooth_hover(look, &hover, cx)
 }
-/// A focusable card or row: pointer, Enter and Space run the same transition.
+/// A focusable card or row: pointer, Enter and Space run the same transition. GPUI turns
+/// Enter or Space released on a focused element into a click, so a key-down handler of our
+/// own would run the transition a second time.
 fn on_activate<V: 'static, E: StatefulInteractiveElement>(
     element: E,
     cx: &Context<V>,
     activate: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
 ) -> E {
-    let click = std::rc::Rc::new(activate);
-    let key = click.clone();
-    element
-        .on_click(cx.listener(move |v, _, w, cx| click(v, w, cx)))
-        .on_key_down(cx.listener(move |v, event: &KeyDownEvent, w, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                key(v, w, cx);
-            }
-        }))
+    element.on_click(cx.listener(move |v, _, w, cx| activate(v, w, cx)))
 }
 fn icon_action<V: 'static>(
     id: impl Into<ElementId>,

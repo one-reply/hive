@@ -96,7 +96,7 @@ pub(super) fn run_row(
                 .size_4()
                 .text_color(cx.theme().muted_foreground),
         );
-    on_activate(row_element, cx, move |p, w, cx| p.show_run(id, w, cx))
+    on_activate(row_element, cx, move |p, w, cx| p.show_run(id, None, w, cx))
         .hover_bg(&hover, cx.theme().background, cx.theme().muted)
         .context_menu(menu)
         .into_any_element()

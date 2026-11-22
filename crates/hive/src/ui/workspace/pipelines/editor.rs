@@ -29,6 +29,8 @@ impl Render for Dragged {
 
 pub(super) struct TemplateEditor {
     original: Option<Template>,
+    /// The draft as the editor first showed it: what leaving without saving goes back to.
+    pub(super) opened: Template,
     parent: WeakEntity<PipelinePanel>,
     pub(super) template: Template,
     name: Entity<InputState>,
@@ -78,8 +80,9 @@ impl TemplateEditor {
             s.sync_prompts(w, cx);
             cx.notify()
         });
-        Self {
+        let mut editor = Self {
             original,
+            opened: template.clone(),
             parent,
             template,
             name,
@@ -90,7 +93,24 @@ impl TemplateEditor {
             compact: false,
             show_inspector: false,
             _subscriptions: [models, prompts],
+        };
+        // Read back through the same fields as every later comparison, so a field that
+        // tidies its text does not count as an edit.
+        if let Ok(opened) = editor.draft(cx) {
+            editor.opened = opened;
         }
+        editor
+    }
+    /// The recipe as it would be saved now, with the fields still in the inspector.
+    fn draft(&self, cx: &App) -> Result<Template, String> {
+        let mut draft = self.template.clone();
+        self.inspector.apply(self.selected, &mut draft, cx)?;
+        draft.name = self.name.read(cx).value().trim().to_owned();
+        Ok(draft)
+    }
+    /// Whether leaving the editor would drop something the user changed.
+    pub(super) fn is_modified(&self, cx: &App) -> bool {
+        differs_from(&self.opened, self.draft(cx))
     }
     fn apply(&mut self, cx: &App) -> bool {
         match self.inspector.apply(self.selected, &mut self.template, cx) {
@@ -206,6 +226,11 @@ impl TemplateEditor {
             Item::Review(i) => RoleKind::review(i, &self.template.reviews[i]),
         }
     }
+}
+
+/// A draft the inspector cannot apply still holds what the user typed, so it is an edit too.
+fn differs_from(opened: &Template, draft: Result<Template, String>) -> bool {
+    draft.map_or(true, |draft| draft != *opened)
 }
 
 impl Render for TemplateEditor {
@@ -371,7 +396,21 @@ impl Render for TemplateEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::unique_name;
+    use super::{Template, differs_from, unique_name};
+
+    #[test]
+    fn only_a_changed_or_unreadable_draft_counts_as_unsaved() {
+        let opened = Template::default();
+        assert!(!differs_from(&opened, Ok(opened.clone())));
+        let mut renamed = opened.clone();
+        renamed.name.push_str(" 2");
+        assert!(differs_from(&opened, Ok(renamed)));
+        assert!(differs_from(
+            &opened,
+            Err("Enter a name for this step or lane.".into())
+        ));
+    }
+
     #[test]
     fn new_drafts_get_a_free_numbered_name() {
         assert_eq!(

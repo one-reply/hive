@@ -160,13 +160,8 @@ impl PipelinesPage {
                             .child(prompt.text.clone()),
                     ),
             )
+            // Enter and Space on the focused row arrive as this click too.
             .on_click(cx.listener(move |page, _, window, cx| page.edit(id, window, cx)))
-            .on_key_down(cx.listener(move |page, event: &KeyDownEvent, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    cx.stop_propagation();
-                    page.edit(id, window, cx);
-                }
-            }))
     }
 
     fn render_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {

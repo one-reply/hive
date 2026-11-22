@@ -2,6 +2,7 @@
 //! check, then the optional setup command.
 use super::*;
 use gpui_kit::component::spinner::Spinner;
+use readiness::{BranchProblem, branch_problem};
 
 /// Branch, base and check share one row until the drawer is too narrow for them.
 const FIELD_MIN_WIDTH: Pixels = px(170.);
@@ -28,29 +29,44 @@ fn required(label: &'static str, cx: &App) -> Div {
 enum Notice {
     Reading,
     Dirty,
+    Branch(BranchProblem),
     Failed(String),
 }
 
-fn notice(notice: Notice, cx: &App) -> Div {
-    let row = h_flex().gap_2().items_center().text_xs();
-    let (color, text) = match notice {
-        Notice::Reading => {
-            return row
-                .text_color(cx.theme().muted_foreground)
-                .child(Spinner::new().icon(Lucide::LoaderCircle).xsmall())
-                .child("Reading repository…");
-        }
-        Notice::Dirty => (
-            cx.theme().warning,
-            "This checkout has local changes. The run uses committed files only.".to_owned(),
-        ),
-        Notice::Failed(error) => (cx.theme().danger, error),
-    };
-    row.child(Icon::new(Lucide::CircleAlert).size_3p5().text_color(color))
-        .child(div().min_w_0().flex_1().text_color(color).child(text))
-}
-
 impl LaunchForm {
+    fn notice(&self, i: usize, notice: Notice, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let row = h_flex().gap_2().items_center().text_xs();
+        let failed = matches!(notice, Notice::Failed(_));
+        let (color, text) = match notice {
+            Notice::Reading => {
+                return row
+                    .text_color(cx.theme().muted_foreground)
+                    .child(Spinner::new().icon(Lucide::LoaderCircle).xsmall())
+                    .child("Reading repository…");
+            }
+            Notice::Dirty => (
+                cx.theme().warning,
+                "This checkout has local changes. The run uses committed files only.".to_owned(),
+            ),
+            Notice::Branch(problem) => (cx.theme().danger, problem.message().to_owned()),
+            Notice::Failed(error) => (cx.theme().danger, error),
+        };
+        let row = row
+            .child(Icon::new(Lucide::CircleAlert).size_3p5().text_color(color))
+            .child(div().min_w_0().flex_1().text_color(color).child(text));
+        if !failed {
+            return row;
+        }
+        row.child(button(
+            ("read-repo-again", i),
+            "Try again",
+            ButtonLook::Outline,
+            window,
+            cx,
+            move |this, _, cx| this.read_again(i, cx),
+        ))
+    }
+
     pub(in crate::ui::workspace::pipelines::launch) fn repository_card(
         &self,
         i: usize,
@@ -75,7 +91,7 @@ impl LaunchForm {
             ),
             choices,
             cx,
-            move |this, p, window, cx| this.bindings[i].bind(Some(p), window, cx),
+            move |this, p, window, cx| this.rebind(i, p, window, cx),
         );
         // A recipe with several lanes names the one this repository fills.
         let lane = (i < self.template.lanes.len() && self.template.lanes.len() > 1).then(|| {
@@ -100,14 +116,13 @@ impl LaunchForm {
                 .child(head)
                 .child(subtle("Optional lane. Leave it empty to skip it.", cx));
         }
-        let preview = b.base_preview(cx);
-        let data = preview.and_then(|p| p.as_ref().ok()).cloned();
-        let message = match preview {
-            Some(Err(e)) => Some(Notice::Failed(e.clone())),
-            // Only a new branch starts from the user's checkout; a chosen branch is not open.
-            Some(Ok(p)) if p.dirty && matches!(b.branch, WorkBranch::New(_)) => Some(Notice::Dirty),
-            None => Some(Notice::Reading),
-            _ => None,
+        let data = b.ready(cx).cloned();
+        let message = match b.base(cx) {
+            Preview::Failed(error) => Some(Notice::Failed(error.to_owned())),
+            Preview::Reading => Some(Notice::Reading),
+            Preview::Ready(preview) => branch_problem(&b.branch, &preview.branches)
+                .map(Notice::Branch)
+                .or_else(|| b.shown(preview, cx).local_changes.then_some(Notice::Dirty)),
         };
         let remove = icon_action(
             ("remove-repo", i),
@@ -158,7 +173,7 @@ impl LaunchForm {
                                 if !value.is_empty() {
                                     b.reference = value;
                                 }
-                                b.preview(cx);
+                                b.read(cx);
                                 cx.notify();
                             }
                         },
@@ -174,7 +189,7 @@ impl LaunchForm {
         }
         group
             .child(self.setup_field(i, window, cx))
-            .when_some(message, |el, m| el.child(notice(m, cx)))
+            .children(message.map(|message| self.notice(i, message, window, cx)))
     }
 
     /// The setup command, or the button that brings its field in.
@@ -249,7 +264,7 @@ impl LaunchForm {
                 if let Some(value) = value {
                     b.reference = value;
                     b.ref_input = None;
-                    b.preview(cx);
+                    b.read(cx);
                 } else {
                     let editor = input(&b.reference, "Branch, tag or commit", w, cx);
                     editor.focus_handle(cx).focus(w, cx);

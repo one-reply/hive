@@ -1,5 +1,6 @@
 //! A task, its execution recipe and the repositories the planner may use.
 use super::*;
+use crate::state::pipelines::{Preview, PreviewKey};
 use gpui_kit::component::{Disableable as _, button::ButtonVariants as _, input::InputEvent};
 use hive_core::pipeline::{Lane, LanePreset, workspace::BasePreview};
 
@@ -10,8 +11,10 @@ mod mode;
 mod readiness;
 mod repository;
 mod route;
-use readiness::{Blocker, LaneState, blocker};
+mod start;
+use readiness::{Blocker, LaneState, blocker, lane_state};
 use repository::{Binding, dropdown, repositories};
+use start::Shown;
 
 const COMPOSER_WIDTH: Pixels = px(800.);
 /// Tall enough for a few sentences of intent and acceptance criteria without scrolling.
@@ -33,6 +36,8 @@ pub(super) struct LaunchForm {
     /// The pending write of the draft; dropping it cancels the write.
     draft_save: Option<Task<()>>,
     previous_recipe: Option<(Template, Template)>,
+    /// Set from the user's Start until every repository has been read again.
+    starting: Option<start::PendingStart>,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -57,7 +62,10 @@ impl LaunchForm {
             cx.observe_self(|form: &mut Self, cx| form.schedule_draft_save(cx)),
             cx.observe(&criteria, |_, _, cx| cx.notify()),
             cx.observe(&projects, |_, _, cx| cx.notify()),
-            cx.observe(&pipelines, |_, _, cx| cx.notify()),
+            cx.observe_in(&pipelines, window, |form, _, window, cx| {
+                form.resume_start(window, cx);
+                cx.notify();
+            }),
             cx.subscribe(&task, |_, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
@@ -89,6 +97,7 @@ impl LaunchForm {
             pristine,
             draft_save: None,
             previous_recipe: None,
+            starting: None,
             error: None,
             _subscriptions: subscriptions,
         };
@@ -119,37 +128,59 @@ impl LaunchForm {
         old.retain(|b| !previous.lanes.iter().any(|lane| lane.name == b.preset.name));
         self.bindings.append(&mut old);
         for binding in &self.bindings {
-            binding.preview(cx);
+            binding.read(cx);
         }
         self.error = None;
         cx.notify();
     }
 
     fn add_repository(&mut self, project: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(binding) = self.bindings.iter_mut().find(|b| b.project.is_none()) {
-            binding.bind(Some(project), window, cx);
-        } else {
-            let project_name = repositories(cx)
-                .into_iter()
-                .find(|(p, _)| p == &project)
-                .map(|(_, name)| name)
-                .unwrap_or_else(|| path_name(&project));
-            let mut name = project_name.clone();
-            let mut index = 2;
-            while self.bindings.iter().any(|b| b.preset.name == name) {
-                name = format!("{project_name} {index}");
-                index += 1;
-            }
-            let preset = LanePreset {
-                name,
-                profile: self.template.development.profile.clone(),
-                ..Default::default()
-            };
-            let binding = Binding::new(preset, Some(project), window, cx);
-            binding.preview(cx);
-            self.bindings.push(binding);
+        if let Some(index) = self.bindings.iter().position(|b| b.project.is_none()) {
+            self.rebind(index, project, window, cx);
+            return;
         }
+        let preset = LanePreset {
+            name: self.lane_name(self.bindings.len(), &project, cx),
+            profile: self.template.development.profile.clone(),
+            ..Default::default()
+        };
+        let binding = Binding::new(preset, Some(project), window, cx);
+        binding.read(cx);
+        self.bindings.push(binding);
         cx.notify();
+    }
+
+    /// Binds lane `index` to another repository, under the name `lane_name` gives it there.
+    fn rebind(
+        &mut self,
+        index: usize,
+        project: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.bindings[index].preset.name = self.lane_name(index, &project, cx);
+        self.bindings[index].bind(Some(project), window, cx);
+        cx.notify();
+    }
+
+    /// The name lane `index` has once it is bound to `project`.
+    fn lane_name(&self, index: usize, project: &Path, cx: &App) -> String {
+        let repository = repositories(cx)
+            .into_iter()
+            .find(|(path, _)| path == project)
+            .map_or_else(|| path_name(project), |(_, name)| name);
+        let others = self
+            .bindings
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| *other != index)
+            .map(|(_, binding)| binding.preset.name.as_str());
+        let recipe_lane = self
+            .template
+            .lanes
+            .get(index)
+            .map(|lane| lane.name.as_str());
+        lane_name_in(recipe_lane, &repository, others)
     }
 
     /// A recipe's lane only empties, so the user can bind it again; an added one goes away.
@@ -161,65 +192,20 @@ impl LaunchForm {
         }
         cx.notify();
     }
+}
 
-    /// The first thing that keeps the run from starting, `None` once it can.
-    fn blocked_by(&self, cx: &App) -> Option<Blocker> {
-        let lanes: Vec<_> = self.bindings.iter().filter_map(|b| b.state(cx)).collect();
-        let has_task = !self.task.read(cx).value().trim().is_empty();
-        let missing_criteria = self.is_direct() && self.criteria.read(cx).value().trim().is_empty();
-        blocker(has_task, &lanes, missing_criteria)
-    }
-
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut lanes = Vec::new();
-        for b in &self.bindings {
-            let Some(project) = &b.project else { continue };
-            let Some(Ok(preview)) = b.base_preview(cx) else {
-                return;
-            };
-            lanes.push(Lane {
-                name: b.preset.name.clone(),
-                project: project.clone(),
-                base: preview.commit.clone(),
-                branch: b.branch_name().unwrap_or_default().to_owned(),
-                base_branch: b.base_branch(),
-                command: b.command(preview, cx),
-                setup: b.setup_command(cx),
-                profile: b.preset.profile.clone(),
-                edits: b.preset.edits,
-                ..Default::default()
-            });
-        }
-        let task = self.task.read(cx).value().trim().to_owned();
-        let result = AppState::get(cx).pipelines.clone().update(cx, |p, cx| {
-            let options = crate::state::pipelines::LaunchOptions {
-                frozen: self.frozen,
-                regression: self.regression && self.can_start_direct(),
-                direct_criteria: (self.direct && self.can_start_direct())
-                    .then(|| self.criteria.read(cx).value().to_string()),
-            };
-            p.start(
-                self.project.clone(),
-                task,
-                self.template.clone(),
-                lanes,
-                options,
-                cx,
-            )
-        });
-        match result {
-            Ok(id) => {
-                self.abandon();
-                let _ = self.parent.update(cx, |p, cx| {
-                    p.draft = None;
-                    p.show_run(id, window, cx)
-                });
-            }
-            Err(e) => {
-                self.error = Some(e);
-                cx.notify();
-            }
-        }
+/// A recipe's lane keeps the name its stages refer to, whatever repository fills it. A lane
+/// the user added is named after its repository, so it takes the new one's name when it is
+/// rebound, numbered when another lane has that name: the planner prompt, the timeline and
+/// the pull request text all tell lanes apart by name.
+fn lane_name_in<'a>(
+    recipe_lane: Option<&str>,
+    repository: &str,
+    others: impl Iterator<Item = &'a str>,
+) -> String {
+    match recipe_lane {
+        Some(name) => name.to_owned(),
+        None => hive_core::pipeline::unique_name(repository, others),
     }
 }
 
@@ -385,7 +371,24 @@ impl Render for LaunchForm {
 
 #[cfg(test)]
 mod tests {
-    use super::{Path, PathBuf, Template, default_projects};
+    use super::{Path, PathBuf, Template, default_projects, lane_name_in};
+
+    #[test]
+    fn an_added_lane_takes_the_name_of_the_repository_it_is_bound_to() {
+        // Added for `api`, then switched to `web` in its card.
+        assert_eq!(lane_name_in(None, "web", ["Web UI"].into_iter()), "web");
+        // A second lane of a repository, and a name the recipe already uses.
+        assert_eq!(
+            lane_name_in(None, "web", ["web", "Web 2"].into_iter()),
+            "web 3"
+        );
+        assert_eq!(lane_name_in(None, "API", ["api"].into_iter()), "API 2");
+    }
+
+    #[test]
+    fn a_recipe_lane_keeps_its_name_whatever_repository_fills_it() {
+        assert_eq!(lane_name_in(Some("API"), "web", ["Web"].into_iter()), "API");
+    }
 
     #[test]
     fn matching_lanes_keep_their_repository_when_the_owner_matches_a_later_lane() {
