@@ -189,7 +189,18 @@ impl GitPanel {
                 div().into_any_element()
             };
         };
+        let unreadable = unreadable_notice(status.unreadable_paths).map(|text| {
+            div()
+                .px_3()
+                .py_1p5()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text)
+        });
         if status.files.is_empty() {
+            if let Some(notice) = unreadable {
+                return notice.into_any_element();
+            }
             return empty_state(
                 Lucide::CircleCheck,
                 "Working tree clean",
@@ -231,7 +242,7 @@ impl GitPanel {
             self.change_rows.clone_from(&rows);
         }
         let view = cx.entity().downgrade();
-        list(self.changes_list.clone(), move |index, window, cx| {
+        let changes = list(self.changes_list.clone(), move |index, window, cx| {
             view.update(cx, |this, cx| {
                 let (group, file) = rows[index];
                 let (label, source) = &GROUPS[group];
@@ -246,8 +257,45 @@ impl GitPanel {
                 )
             })
             .unwrap_or_else(|_| div().into_any_element())
-        })
-        .size_full()
-        .into_any_element()
+        });
+        match unreadable {
+            None => changes.size_full().into_any_element(),
+            Some(notice) => v_flex()
+                .size_full()
+                .child(notice)
+                .child(changes.flex_1().min_h_0())
+                .into_any_element(),
+        }
+    }
+}
+
+/// What the list says about changed files whose names Git returned in another encoding.
+fn unreadable_notice(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("1 changed file has a name that is not UTF-8. It is not listed here; use the terminal for it.".into()),
+        count => Some(format!(
+            "{count} changed files have names that are not UTF-8. They are not listed here; use the terminal for them."
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unreadable_notice;
+
+    #[test]
+    fn the_list_says_how_many_changed_files_it_cannot_name() {
+        assert_eq!(unreadable_notice(0), None);
+        assert!(
+            unreadable_notice(1)
+                .unwrap()
+                .starts_with("1 changed file has a name")
+        );
+        assert!(
+            unreadable_notice(3)
+                .unwrap()
+                .starts_with("3 changed files have names")
+        );
     }
 }

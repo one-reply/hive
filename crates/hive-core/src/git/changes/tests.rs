@@ -114,6 +114,120 @@ fn delete_branch_refuses_checked_out_and_unmerged_unless_forced() {
 }
 
 #[test]
+fn a_branch_beside_a_tag_of_the_same_name_switches_checks_and_deletes_by_its_ref() {
+    let repo = Repo::new();
+    repo.write("a", "1");
+    repo.commit();
+    repo.git(&["branch", "develop"]);
+    repo.git(&["switch", "-c", "older"]);
+    repo.write("a", "2");
+    repo.commit();
+    repo.git(&["switch", "main"]);
+    // The tag points at a commit main lacks, the branch at one it has.
+    repo.git(&["tag", "develop", "older"]);
+    repo.git(&["branch", "-D", "older"]);
+
+    let branches = branches::list(&Host::Local, &repo.0).unwrap();
+    let develop = branches
+        .iter()
+        .find(|b| b.reference == "refs/heads/develop")
+        .unwrap();
+    assert_eq!(develop.name, "heads/develop");
+    assert_eq!(develop.local_name(), Some("develop"));
+    assert!(branches::is_merged(&Host::Local, &repo.0, "develop").unwrap());
+
+    repo.action(Action::Switch("develop".into())).unwrap();
+    assert_eq!(repo.git(&["branch", "--show-current"]), "develop");
+    repo.git(&["switch", "main"]);
+    repo.action(Action::DeleteBranch {
+        name: "develop".into(),
+        force: false,
+    })
+    .unwrap();
+    assert_eq!(repo.git(&["tag", "--list", "develop"]), "develop");
+    assert!(
+        branches::list(&Host::Local, &repo.0)
+            .unwrap()
+            .iter()
+            .all(|b| b.reference != "refs/heads/develop")
+    );
+}
+
+#[test]
+fn names_and_messages_that_are_not_utf8_never_fail_status_history_or_branches() {
+    use std::ffi::{OsStr, OsString};
+    use std::os::unix::ffi::OsStrExt;
+    let repo = Repo::new();
+    repo.write("ok.txt", "ok\n");
+    repo.commit();
+    let blob = repo.git(&["hash-object", "-w", "ok.txt"]);
+    // APFS refuses such names on disk; Git stores whatever bytes the index and refs hold,
+    // as a repository from a Linux host does.
+    let mut cacheinfo = OsString::from(format!("100644,{blob},"));
+    cacheinfo.push(OsStr::from_bytes(b"caf\xe9.txt"));
+    let git = |args: &[&OsStr], env: &[(&str, &OsStr)]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .envs(env.iter().copied())
+            .current_dir(&repo.0)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    };
+    git(
+        &[
+            OsStr::new("update-index"),
+            OsStr::new("--add"),
+            OsStr::new("--cacheinfo"),
+            &cacheinfo,
+        ],
+        &[],
+    );
+    // `git commit` would re-encode a Latin-1 message; an old commit keeps its raw bytes.
+    let tree = repo.git(&["write-tree"]);
+    let parent = repo.git(&["rev-parse", "HEAD"]);
+    let mut object = format!("tree {tree}\nparent {parent}\nauthor Jos").into_bytes();
+    object.extend_from_slice(b"\xe9 <old@example.invalid> 1700000000 +0000\n");
+    object.extend_from_slice(b"committer Old <old@example.invalid> 1700000000 +0000\n\n");
+    object.extend_from_slice(b"caf\xe9 subject\n");
+    let object_path = repo.0.join("raw-commit");
+    std::fs::write(&object_path, object).unwrap();
+    let head = repo.git(&[
+        "hash-object",
+        "-t",
+        "commit",
+        "-w",
+        object_path.to_str().unwrap(),
+    ]);
+    std::fs::remove_file(object_path).unwrap();
+    repo.git(&["update-ref", "refs/heads/main", &head]);
+    let mut packed = std::fs::read(repo.0.join(".git/packed-refs")).unwrap_or_default();
+    packed.extend_from_slice(format!("{head} refs/heads/caf").as_bytes());
+    packed.extend_from_slice(b"\xe9\n");
+    std::fs::write(repo.0.join(".git/packed-refs"), packed).unwrap();
+
+    let page = history::read(&Host::Local, &repo.0, "HEAD", 0).unwrap();
+    assert_eq!(page[0].subject, "caf\u{fffd} subject");
+    assert_eq!(page[0].author, "Jos\u{fffd}");
+    assert!(
+        history::commit_files(&Host::Local, &repo.0, "HEAD")
+            .unwrap()
+            .is_empty()
+    );
+    // The file exists only in the index, so the work tree shows it deleted.
+    let status = status::read(&Host::Local, &repo.0).unwrap();
+    assert!(status.files.is_empty(), "{status:?}");
+    assert_eq!(status.unreadable_paths, 1);
+    assert!(!status.is_clean());
+    let names: Vec<_> = branches::list(&Host::Local, &repo.0)
+        .unwrap()
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
+    assert_eq!(names, ["main"]);
+}
+
+#[test]
 fn branches_list_newest_commit_first() {
     let repo = Repo::new();
     repo.write("a", "1");
@@ -614,6 +728,7 @@ fn every_action_that_runs_hooks_or_asks_a_remote_can_be_stopped() {
         Action::ForcePush {
             remote: origin(),
             expected: "0123abcd".into(),
+            head: "4567ef01".into(),
         },
         Action::Rebase {
             onto: "refs/remotes/origin/main".into(),

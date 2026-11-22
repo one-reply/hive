@@ -1,5 +1,5 @@
 //! Branch discovery and conservative checkout operations.
-use super::{GitError, READ_LIMIT, bytes, conflicts, run, status, text};
+use super::{GitError, READ_LIMIT, bytes, conflicts, run, status};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -15,6 +15,17 @@ pub struct Branch {
     pub remote: bool,
     /// Checkout already using this local branch.
     pub worktree: Option<PathBuf>,
+}
+
+impl Branch {
+    /// The name Git's branch commands take for a local branch. The display name differs next
+    /// to a tag of the same name, where Git shortens `refs/heads/develop` to `heads/develop`.
+    pub fn local_name(&self) -> Option<&str> {
+        if self.remote {
+            return None;
+        }
+        self.reference.strip_prefix("refs/heads/")
+    }
 }
 
 /// Blocking: lists local and remote branches, most recently committed first (name as the
@@ -36,8 +47,11 @@ pub fn list(host: &Host, cwd: &Path) -> Result<Vec<Branch>, GitError> {
         READ_LIMIT,
         false,
     )?;
-    text(&raw)?
-        .lines()
+    // A branch whose name is not UTF-8 cannot be named back to Git; it is left out, not the
+    // whole list.
+    raw.split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| std::str::from_utf8(line).ok())
         .map(|line| {
             let fields: Vec<_> = line.split('\0').collect();
             if fields.len() != 4 {
@@ -175,10 +189,17 @@ pub fn create(
     }
 }
 
-/// Whether every commit of `name` is reachable from HEAD, as `git branch -d` requires.
+/// Whether every commit of the local branch `name` is reachable from HEAD, as `git branch -d`
+/// requires.
 pub fn is_merged(host: &Host, cwd: &Path, name: &str) -> Result<bool, GitError> {
     validate_name(host, cwd, name)?;
-    match run(host, cwd, &["merge-base", "--is-ancestor", name, "HEAD"]) {
+    // A bare name would resolve to a tag of the same name before the branch.
+    let reference = format!("refs/heads/{name}");
+    match run(
+        host,
+        cwd,
+        &["merge-base", "--is-ancestor", &reference, "HEAD"],
+    ) {
         Ok(_) => Ok(true),
         Err(GitError::Failed { code: Some(1), .. }) => Ok(false),
         Err(error) => Err(error),
@@ -191,7 +212,7 @@ pub fn delete(host: &Host, cwd: &Path, name: &str, force: bool) -> Result<(), Gi
     validate_name(host, cwd, name)?;
     let branch = list(host, cwd)?
         .into_iter()
-        .find(|b| !b.remote && b.name == name)
+        .find(|b| b.local_name() == Some(name))
         .ok_or_else(|| GitError::Invalid(format!("Branch {name} no longer exists.")))?;
     if let Some(worktree) = branch.worktree {
         return Err(GitError::Invalid(format!(

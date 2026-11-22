@@ -242,7 +242,8 @@ fn taken_names(project: &Project) -> Result<HashSet<String>, GitError> {
     let branches = git::run(
         &project.host,
         &project.path,
-        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+        // `refname:short` would print `heads/x` for a branch that shares its name with a tag.
+        &["for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads"],
     )?;
     Ok(branches
         .lines()

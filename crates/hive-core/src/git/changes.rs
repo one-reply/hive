@@ -1,5 +1,5 @@
 //! Explicit index, commit, remote and rebase operations. No implicit staging or automatic
-//! stash; the one force push is bound to the remote commit the user confirmed.
+//! stash; the one force push is bound to the commits the user confirmed.
 use super::{GitError, READ_LIMIT, branches, bytes_mutation, conflicts, diff, rebase, status};
 use crate::command::Cancellation;
 use crate::host::Host;
@@ -11,7 +11,7 @@ mod discard;
 mod remote;
 pub use discard::Discard;
 pub use remote::{ForcePushPreview, force_push_preview, remotes, upstream_remote};
-pub(super) use remote::{fetch_remote, push_destination};
+pub(super) use remote::{fetch_remote, push_destination, remote_tip};
 
 /// A user-requested Git mutation, scoped by the caller to one host and worktree.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -52,9 +52,14 @@ pub enum Action {
     Sync { remote: String },
     /// Commit the index, then sync; a failure after the commit leaves it intact.
     CommitAndSync { message: String, remote: String },
-    /// Replace the remote branch of the same name, unless it has moved off `expected`, the
-    /// commit whose loss the caller must have confirmed.
-    ForcePush { remote: String, expected: String },
+    /// Replace the remote branch of the same name with `head`, unless the remote has moved
+    /// off `expected` or the local branch off `head`: the commits [`ForcePushPreview`] read,
+    /// whose replacement the caller must have confirmed.
+    ForcePush {
+        remote: String,
+        expected: String,
+        head: String,
+    },
     /// Replay the current branch on top of the branch `onto` names by its full ref, fetching
     /// its remote first; the caller must have confirmed rewriting the branch.
     Rebase { onto: String },
@@ -245,7 +250,7 @@ pub fn execute(
         Action::Sync { remote } => return remote::sync(host, cwd, remote, stop),
         Action::CommitAndSync { message, remote } => {
             // Reject what the sync would refuse before creating a local commit.
-            remote::upstream_destination(host, cwd, remote)?;
+            remote::upstream_route(host, cwd, remote)?;
             require_fully_staged(host, cwd)?;
             commit(host, cwd, message, stop)?;
             return remote::sync(host, cwd, remote, stop).map_err(|source| {
@@ -254,8 +259,12 @@ pub fn execute(
                 }
             });
         }
-        Action::ForcePush { remote, expected } => {
-            return remote::force_push(host, cwd, remote, expected, stop).map(Some);
+        Action::ForcePush {
+            remote,
+            expected,
+            head,
+        } => {
+            return remote::force_push(host, cwd, remote, expected, head, stop).map(Some);
         }
         Action::Rebase { onto } => return rebase::onto_branch(host, cwd, onto, stop),
         Action::Stage(selected) => paths(host, cwd, &["add", "-A"], selected),
@@ -279,13 +288,13 @@ pub fn execute(
             publish,
         } => {
             // Reject an unavailable destination before creating a local commit.
-            let destination = push_destination(host, cwd, remote, *publish)?;
+            let (branch, destination) = remote::push_route(host, cwd, remote, *publish)?;
             commit(host, cwd, message, stop)?;
-            remote::push(host, cwd, remote, *publish, &destination, stop).map_err(|source| {
-                GitError::PushAfterCommit {
+            remote::push(host, cwd, remote, *publish, &branch, &destination, stop).map_err(
+                |source| GitError::PushAfterCommit {
                     source: Box::new(source),
-                }
-            })
+                },
+            )
         }
         Action::Switch(name) => branches::switch(host, cwd, name),
         Action::DeleteBranch { name, force } => branches::delete(host, cwd, name, *force),

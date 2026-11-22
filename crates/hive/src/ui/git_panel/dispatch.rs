@@ -7,11 +7,7 @@ impl GitPanel {
     pub(super) fn with_facts<R>(&self, cx: &App, read: impl FnOnce(&Facts) -> R) -> R {
         let git = self.git.read(cx);
         let message = self.message.read(cx).value();
-        let push = match git.push_action() {
-            Some(Action::Push { publish: true, .. }) => Some(PushTarget::NewBranch),
-            Some(Action::Push { .. }) => Some(PushTarget::Upstream),
-            _ => None,
-        };
+        let push = PushTarget::of(git.push_action().as_ref(), git.status.as_ref());
         read(&Facts {
             status: git.status.as_ref(),
             message: &message,
@@ -37,7 +33,8 @@ impl GitPanel {
             Entry::Commit => self.commit(cx),
             Entry::CommitAndPush => self.commit_and_push(window, cx),
             Entry::CommitAndSync => self.commit_and_sync(cx),
-            Entry::Push | Entry::Publish => self.push(window, cx),
+            Entry::Push => self.push(false, window, cx),
+            Entry::Publish => self.push(true, window, cx),
             Entry::ForcePush => self.force_push(window, cx),
             Entry::CreatePullRequest => self.create_pull_request(false, window, cx),
             Entry::PushBeforePullRequest => self.create_pull_request(true, window, cx),
@@ -99,10 +96,11 @@ impl GitPanel {
         }
     }
 
-    /// Pushes to the upstream, or publishes the branch once the user confirms where to.
-    fn push(&self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Pushes to the upstream, or publishes the branch under its own name once the user
+    /// confirms where to; publishing a branch that tracks another name moves its upstream.
+    fn push(&self, publish: bool, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.git.read(cx);
-        let Some(Action::Push { remote, publish }) = state.push_action() else {
+        let Some(Action::Push { remote, .. }) = state.push_action() else {
             return;
         };
         let Some(branch) = state
@@ -191,6 +189,7 @@ impl GitPanel {
                         let action = Action::ForcePush {
                             remote,
                             expected: preview.expected,
+                            head: preview.head,
                         };
                         git_controls::confirm_at(git, target, action, confirmation, window, cx);
                     }
@@ -256,7 +255,9 @@ fn force_push_warning(preview: &ForcePushPreview) -> String {
     if unlisted > 0 {
         warning.push_str(&format!("\n…and {unlisted} more"));
     }
-    warning.push_str("\n\nThe push is refused if the remote branch has moved since this was read.");
+    warning.push_str(
+        "\n\nThe push is refused if the remote branch or your local branch has moved since this was read.",
+    );
     warning
 }
 
@@ -286,6 +287,7 @@ mod tests {
         ForcePushPreview {
             upstream: "origin/feature".into(),
             expected: "0123abcd".into(),
+            head: "4567ef01".into(),
             discarded: discarded.iter().map(|commit| commit.to_string()).collect(),
             total,
         }

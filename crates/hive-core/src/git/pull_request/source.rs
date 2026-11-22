@@ -89,25 +89,7 @@ pub(crate) fn is_published(
     reference: &str,
     commit: &str,
 ) -> Result<bool, GitError> {
-    let listed = git::run(
-        host,
-        cwd,
-        &[
-            "-c",
-            "credential.interactive=false",
-            "ls-remote",
-            "--refs",
-            "--",
-            remote,
-            reference,
-        ],
-    )?;
-    // The pattern also matches longer refs that end the same way, so the name is compared.
-    let tip = listed
-        .lines()
-        .filter_map(|line| line.split_once('\t'))
-        .find_map(|(oid, name)| (name == reference).then_some(oid));
-    Ok(tip == Some(commit))
+    Ok(changes::remote_tip(host, cwd, remote, reference)?.as_deref() == Some(commit))
 }
 
 /// Blocking: the hosting CLI's selector (host/owner/repository) for the repository at `url`,

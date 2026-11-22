@@ -67,18 +67,68 @@ fn sync_only_pushes_or_only_fast_forwards_when_one_side_has_commits() {
 }
 
 #[test]
-fn sync_pushes_to_the_configured_branch_when_names_differ() {
+fn a_branch_that_tracks_another_name_is_never_pushed_there() {
+    // What `git switch -c topic origin/develop` leaves behind: topic's upstream is develop.
     let (repo, remote) = published();
-    remote.git(&["branch", "review"]);
+    remote.git(&["branch", "develop"]);
     repo.git(&["fetch", "origin"]);
-    repo.git(&["switch", "-c", "topic", "--track", "origin/review"]);
+    repo.git(&["switch", "-c", "topic", "--track", "origin/develop"]);
     repo.write("ours", "ours\n");
     repo.commit();
-    let main = remote.git(&["rev-parse", "main"]);
+    let develop = remote.git(&["rev-parse", "develop"]);
+    let push = Action::Push {
+        remote: "origin".into(),
+        publish: false,
+    };
 
-    assert_eq!(repo.action(sync()).unwrap(), synced(0, 1));
-    assert_eq!(head(&repo), remote.git(&["rev-parse", "review"]));
-    assert_eq!(remote.git(&["rev-parse", "main"]), main);
+    for error in [repo.action(sync()), repo.action(push)].map(Result::unwrap_err) {
+        let error = error.to_string();
+        assert!(error.contains("topic tracks origin/develop"), "{error}");
+        assert!(
+            error.contains("only to the remote branch of the same name"),
+            "{error}"
+        );
+    }
+    assert_eq!(remote.git(&["rev-parse", "develop"]), develop);
+
+    // Publishing under its own name is the way out, and its upstream follows.
+    let published = repo
+        .action(Action::Push {
+            remote: "origin".into(),
+            publish: true,
+        })
+        .unwrap();
+    assert_eq!(
+        published,
+        Some(Synced::Published {
+            remote: "origin".into()
+        })
+    );
+    assert_eq!(head(&repo), remote.git(&["rev-parse", "topic"]));
+    assert_eq!(remote.git(&["rev-parse", "develop"]), develop);
+    assert_eq!(repo.action(sync()).unwrap(), synced(0, 0));
+}
+
+#[test]
+fn sync_refuses_a_branch_deleted_on_the_remote_instead_of_recreating_it() {
+    let (repo, remote) = published();
+    repo.git(&["switch", "-c", "feature"]);
+    repo.write("feature", "one\n");
+    repo.commit();
+    repo.git(&["push", "--set-upstream", "origin", "feature"]);
+    // The request was merged and the hosting service deleted the branch; a plain fetch
+    // keeps the remote-tracking ref, so the last fetch still shows it.
+    remote.git(&["update-ref", "-d", "refs/heads/feature"]);
+    repo.git(&["fetch", "origin"]);
+    repo.write("feature", "two\n");
+    repo.commit();
+
+    let error = repo.action(sync()).unwrap_err().to_string();
+    assert!(
+        error.contains("origin/feature was deleted on the remote"),
+        "{error}"
+    );
+    assert!(remote.git(&["branch", "--list", "feature"]).is_empty());
 }
 
 #[test]

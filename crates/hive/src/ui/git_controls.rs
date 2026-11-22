@@ -96,10 +96,10 @@ impl BranchPicker {
                 window,
                 cx,
             );
-        } else {
-            self.git.update(cx, |g, cx| {
-                g.perform_at(self.target.clone(), Action::Switch(branch.name.clone()), cx)
-            });
+        } else if let Some(name) = branch.local_name() {
+            let action = Action::Switch(name.to_owned());
+            self.git
+                .update(cx, |g, cx| g.perform_at(self.target.clone(), action, cx));
         }
     }
 }
@@ -135,7 +135,7 @@ impl Render for BranchPicker {
                 .into_iter()
                 .enumerate()
                 .map(|(i, b)| {
-                    let current = !b.remote && current.as_deref() == Some(b.name.as_str());
+                    let current = b.local_name().is_some() && b.local_name() == current.as_deref();
                     self.branch_row(title, i, b, current, window, cx)
                 })
                 .collect();
@@ -197,7 +197,10 @@ impl BranchPicker {
     ) -> AnyElement {
         let (fg, muted) = (cx.theme().foreground, cx.theme().muted_foreground);
         let busy = self.git.read(cx).is_busy_at(&self.target);
-        let deletable = !branch.remote && !current && branch.worktree.is_none();
+        let deletable = branch
+            .local_name()
+            .filter(|_| !current && branch.worktree.is_none())
+            .map(str::to_owned);
         let row_id: SharedString = format!("branch-{group}-{ix}").into();
         let delete_id: SharedString = format!("delete-{group}-{ix}").into();
         let row_hover = Hover::new(row_id.clone(), window, cx);
@@ -243,8 +246,8 @@ impl BranchPicker {
             .when_some(detail, |row, detail| {
                 row.child(div().text_xs().text_color(muted).child(detail))
             })
-            .when(deletable, |row| {
-                let (git, name) = (self.git.clone(), branch.name.clone());
+            .when_some(deletable, |row, name| {
+                let git = self.git.clone();
                 // Hidden until the row is hovered; the button stops the row's own click.
                 row.child(
                     div().opacity(row_hover.progress()).child(

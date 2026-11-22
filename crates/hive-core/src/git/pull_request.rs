@@ -8,6 +8,8 @@ mod source;
 use crate::{command, host::Host};
 pub use create::{Draft, create};
 use serde::Deserialize;
+// Pipelines delivery, the only user outside this module, exists only in the desktop build.
+#[cfg(feature = "desktop")]
 pub(crate) use source::is_published;
 pub use source::{PublishedBranch, hosted_repository, published_branch, suggested_title};
 use std::{path::Path, time::Duration};

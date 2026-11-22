@@ -1,7 +1,9 @@
 //! Operations that talk to a remote: fetch, fast-forward pull, push, sync and force push.
 //!
-//! A push always names its destination. Nothing here rewrites a remote branch except
-//! [`force_push`], which is bound to the remote commit the user confirmed.
+//! A push always names its source branch and its destination, and only ever updates the
+//! remote branch of the same name, as Git's own `push.default=simple` does. Nothing here
+//! rewrites a remote branch except [`force_push`], which is bound to both commits the user
+//! confirmed: the remote one it replaces and the local one it sends.
 use super::Synced;
 use crate::command::Cancellation;
 use crate::git::{GitError, branches, history, rebase, run, run_stoppable, status};
@@ -112,9 +114,9 @@ pub(super) fn push_branch(
     publish: bool,
     stop: &Cancellation,
 ) -> Result<Synced, GitError> {
-    let destination = push_destination(host, cwd, remote, publish)?;
+    let (branch, destination) = push_route(host, cwd, remote, publish)?;
     let ahead = status::read(host, cwd)?.ahead;
-    push(host, cwd, remote, publish, &destination, stop)?;
+    push(host, cwd, remote, publish, &branch, &destination, stop)?;
     Ok(if publish {
         Synced::Published {
             remote: remote.into(),
@@ -127,41 +129,81 @@ pub(super) fn push_branch(
     })
 }
 
-/// The remote ref a push of the current branch to `remote` would update.
+/// The remote ref a push of the current branch to `remote` would update: the branch it
+/// creates when publishing, else whatever the branch's upstream names, of any name.
 pub(in crate::git) fn push_destination(
     host: &Host,
     cwd: &Path,
     remote: &str,
     publish: bool,
 ) -> Result<String, GitError> {
+    route(host, cwd, remote, publish).map(|(_, destination)| destination)
+}
+
+/// The current branch and the remote ref a push of it to `remote` would update.
+fn route(
+    host: &Host,
+    cwd: &Path,
+    remote: &str,
+    publish: bool,
+) -> Result<(String, String), GitError> {
     remote_exists(host, cwd, remote)?;
     let branch = status::read(host, cwd)?
         .branch
         .ok_or_else(|| GitError::Invalid("Create a branch before pushing detached HEAD.".into()))?;
     if publish {
-        return Ok(format!("refs/heads/{branch}"));
+        let destination = format!("refs/heads/{branch}");
+        return Ok((branch, destination));
     }
     if upstream_remote(host, cwd, &branch)?.as_deref() != Some(remote) {
         return Err(GitError::Invalid(
             "Push must use this branch's configured upstream remote.".into(),
         ));
     }
-    run(
+    let destination = run(
         host,
         cwd,
         &["config", "--get", &format!("branch.{branch}.merge")],
-    )
+    )?;
+    Ok((branch, destination))
 }
 
+/// The branch a push from the current one sends and the remote ref it updates. A branch
+/// started from `origin/develop` tracks `develop`; pushing it there would put unreviewed work
+/// on the integration branch, so only a remote branch of the same name is ever updated.
+pub(super) fn push_route(
+    host: &Host,
+    cwd: &Path,
+    remote: &str,
+    publish: bool,
+) -> Result<(String, String), GitError> {
+    let (branch, destination) = route(host, cwd, remote, publish)?;
+    namesake(&branch, remote, &destination)?;
+    Ok((branch, destination))
+}
+
+fn namesake(branch: &str, remote: &str, destination: &str) -> Result<(), GitError> {
+    if destination.strip_prefix("refs/heads/") == Some(branch) {
+        return Ok(());
+    }
+    Err(GitError::Invalid(format!(
+        "{branch} tracks {remote}/{}: Hive pushes a branch only to the remote branch of the same name. Publish it under its own name, or push from the terminal.",
+        branches::short_name(destination)
+    )))
+}
+
+/// Sends `branch`, by name rather than HEAD, so a checkout that moves on while the push
+/// starts cannot send another branch to `destination`.
 pub(super) fn push(
     host: &Host,
     cwd: &Path,
     remote: &str,
     publish: bool,
+    branch: &str,
     destination: &str,
     stop: &Cancellation,
 ) -> Result<(), GitError> {
-    let refspec = format!("HEAD:{destination}");
+    let refspec = format!("refs/heads/{branch}:{destination}");
     let mut args = vec!["-c", "credential.interactive=false", "push"];
     if publish {
         args.push("--set-upstream");
@@ -170,13 +212,14 @@ pub(super) fn push(
     run_stoppable(host, cwd, &args, stop).map(drop)
 }
 
-/// The upstream ref on `remote` of a branch that has commits and is published there; what a
-/// sync or a force push needs before it contacts the remote.
-pub(super) fn upstream_destination(
+/// The current branch and its upstream ref on `remote`, for a branch that has commits and is
+/// published there under its own name; what a sync or a force push needs before it contacts
+/// the remote.
+pub(super) fn upstream_route(
     host: &Host,
     cwd: &Path,
     remote: &str,
-) -> Result<String, GitError> {
+) -> Result<(String, String), GitError> {
     let status = status::read(host, cwd)?;
     if status.oid.is_none() {
         return Err(GitError::Invalid("Create the first commit first.".into()));
@@ -184,7 +227,44 @@ pub(super) fn upstream_destination(
     if status.branch.is_some() && status.upstream.is_none() {
         return Err(GitError::Invalid("Publish this branch first.".into()));
     }
-    push_destination(host, cwd, remote, false)
+    push_route(host, cwd, remote, false)
+}
+
+/// Blocking: the commit `reference` points at on `remote` right now, asked of the remote
+/// itself rather than of the last fetch; `None` when the remote has no such ref.
+pub(in crate::git) fn remote_tip(
+    host: &Host,
+    cwd: &Path,
+    remote: &str,
+    reference: &str,
+) -> Result<Option<String>, GitError> {
+    let listed = run(
+        host,
+        cwd,
+        &[
+            "-c",
+            "credential.interactive=false",
+            "ls-remote",
+            "--refs",
+            "--",
+            remote,
+            reference,
+        ],
+    )?;
+    // The pattern also matches longer refs that end the same way, so the name is compared.
+    Ok(listed
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .find_map(|(oid, name)| (name == reference).then(|| oid.to_owned())))
+}
+
+/// A fetch without `--prune` keeps the remote-tracking ref of a branch deleted on the remote,
+/// so only the remote itself can say the branch is gone.
+fn deleted_on_remote(remote: &str, destination: &str) -> GitError {
+    let name = branches::short_name(destination);
+    GitError::Invalid(format!(
+        "{remote}/{name} was deleted on the remote. Push to publish {name} there again, or switch to another branch if it was merged."
+    ))
 }
 
 /// Fetch `remote`, replay the local commits on top of the upstream, then push them.
@@ -197,11 +277,20 @@ pub(super) fn sync(
     remote: &str,
     stop: &Cancellation,
 ) -> Result<Option<Synced>, GitError> {
-    let destination = upstream_destination(host, cwd, remote)?;
+    let (branch, destination) = upstream_route(host, cwd, remote)?;
     branches::require_clean(host, cwd)?;
+    // Replaying onto a stale ref and pushing would bring a merged and deleted branch back.
+    if remote_tip(host, cwd, remote, &destination)?.is_none() {
+        return Err(deleted_on_remote(remote, &destination));
+    }
     fetch_remote(host, cwd, remote, stop)?;
     let upstream = upstream_commit(host, cwd)?;
     let fetched = status::read(host, cwd)?;
+    if fetched.branch.as_deref() != Some(branch.as_str()) {
+        return Err(GitError::Invalid(format!(
+            "The worktree left {branch} during the sync; nothing was replayed or pushed."
+        )));
+    }
     if fetched.behind > 0 {
         if fetched.ahead > 0 {
             refuse_rewritten(host, cwd, &fetched, &upstream)?;
@@ -212,7 +301,7 @@ pub(super) fn sync(
     }
     let pushed = status::read(host, cwd)?.ahead;
     if pushed > 0 {
-        push(host, cwd, remote, false, &destination, stop)?;
+        push(host, cwd, remote, false, &branch, &destination, stop)?;
     }
     Ok(Some(Synced::PulledAndPushed {
         remote: remote.into(),
@@ -269,8 +358,11 @@ fn refuse_rewritten(
 pub struct ForcePushPreview {
     /// Display name of the remote branch, such as `origin/feature`.
     pub upstream: String,
-    /// The commit the remote branch was at when last fetched; the push is bound to it.
+    /// The commit the remote branch is at, as the remote itself confirmed; the push is bound
+    /// to it.
     pub expected: String,
+    /// The local commit the push sends; the push is refused once the branch moves off it.
+    pub head: String,
     /// Abbreviated id and subject of the newest commits the push discards.
     pub discarded: Vec<String>,
     /// How many commits the push discards in total.
@@ -278,14 +370,28 @@ pub struct ForcePushPreview {
 }
 
 /// Blocking: reads the remote commits a force push of the current branch would discard.
+///
+/// The list is read from the last fetch, so the remote is asked first whether that fetch still
+/// holds: a branch deleted there, or moved since, would make the list describe the wrong loss.
 pub fn force_push_preview(
     host: &Host,
     cwd: &Path,
     remote: &str,
 ) -> Result<ForcePushPreview, GitError> {
-    force_destination(host, cwd, remote)?;
+    let (_, destination) = upstream_route(host, cwd, remote)?;
     let expected = upstream_commit(host, cwd)?;
-    let range = format!("HEAD..{expected}");
+    match remote_tip(host, cwd, remote, &destination)? {
+        None => return Err(deleted_on_remote(remote, &destination)),
+        Some(tip) if tip != expected => {
+            return Err(GitError::Invalid(format!(
+                "{remote}/{} moved since the last fetch. Fetch, then review the force push again.",
+                branches::short_name(&destination)
+            )));
+        }
+        Some(_) => {}
+    }
+    let head = branches::resolve(host, cwd, "HEAD")?;
+    let range = format!("{head}..{expected}");
     let limit = format!("--max-count={PREVIEW_COMMITS}");
     let discarded = run(host, cwd, &["log", "--format=%h %s", &limit, &range, "--"])?
         .lines()
@@ -295,42 +401,38 @@ pub fn force_push_preview(
         upstream: run(host, cwd, &["rev-parse", "--abbrev-ref", "@{upstream}"])?,
         total: history::count(host, cwd, &[&range])?,
         expected,
+        head,
         discarded,
     })
 }
 
-/// The remote ref a force push may replace: the one named like the current branch. A branch
-/// that tracks another name, such as a topic started from `origin/develop`, must never
-/// overwrite that branch.
-fn force_destination(host: &Host, cwd: &Path, remote: &str) -> Result<String, GitError> {
-    let destination = upstream_destination(host, cwd, remote)?;
-    let branch = status::read(host, cwd)?.branch.unwrap_or_default();
-    if destination != format!("refs/heads/{branch}") {
-        return Err(GitError::Invalid(format!(
-            "Force push only replaces a remote branch of the same name; {branch} tracks {remote}/{}.",
-            branches::short_name(&destination)
-        )));
-    }
-    Ok(destination)
-}
-
-/// Replace the remote branch with the local one, unless the remote has moved off `expected`,
-/// the commit the user confirmed discarding from.
+/// Replace the remote branch with `head`, unless the remote has moved off `expected` or the
+/// local branch has moved off `head`: the two commits whose replacement the user confirmed.
 pub(super) fn force_push(
     host: &Host,
     cwd: &Path,
     remote: &str,
     expected: &str,
+    head: &str,
     stop: &Cancellation,
 ) -> Result<Synced, GitError> {
-    if expected.is_empty() || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    let is_commit = |oid: &str| !oid.is_empty() && oid.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !is_commit(expected) || !is_commit(head) {
         return Err(GitError::Invalid(
             "Review the remote branch again before force pushing.".into(),
         ));
     }
-    let destination = force_destination(host, cwd, remote)?;
+    let (branch, destination) = upstream_route(host, cwd, remote)?;
+    // An agent that commits or resets in this worktree meanwhile would otherwise make the
+    // push discard more than the confirmation listed.
+    if status::read(host, cwd)?.oid.as_deref() != Some(head) {
+        return Err(GitError::Invalid(format!(
+            "{branch} moved since you confirmed. Review the force push again."
+        )));
+    }
     let lease = format!("--force-with-lease={destination}:{expected}");
-    let refspec = format!("HEAD:{destination}");
+    // The confirmed commit rather than HEAD, so nothing committed after the check rides along.
+    let refspec = format!("{head}:{destination}");
     let pushed = run_stoppable(
         host,
         cwd,

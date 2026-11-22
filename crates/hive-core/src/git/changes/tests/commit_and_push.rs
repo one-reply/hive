@@ -9,7 +9,7 @@ fn commit_and_push(publish: bool) -> Action {
 }
 
 #[test]
-fn publishes_only_staged_content_then_uses_configured_destination() {
+fn publishes_only_staged_content_and_refuses_an_upstream_of_another_name() {
     let repo = Repo::new();
     let remote = remote_for(&repo);
     repo.write("a", "staged\n");
@@ -27,17 +27,18 @@ fn publishes_only_staged_content_then_uses_configured_destination() {
     );
     assert!(!repo.git(&["diff"]).is_empty());
 
+    // An upstream of another name is refused before anything is committed.
     let published = remote.git(&["rev-parse", "main"]);
     remote.git(&["branch", "review"]);
+    let review = remote.git(&["rev-parse", "review"]);
     repo.git(&["config", "branch.main.merge", "refs/heads/review"]);
     repo.git(&["add", "a"]);
-    repo.action(commit_and_push(false)).unwrap();
-    assert_eq!(remote.git(&["show", "review:a"]), "unstaged");
+    let local = repo.git(&["rev-parse", "HEAD"]);
+    let error = repo.action(commit_and_push(false)).unwrap_err().to_string();
+    assert!(error.contains("main tracks origin/review"), "{error}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), local);
     assert_eq!(remote.git(&["rev-parse", "main"]), published);
-    assert_eq!(
-        repo.git(&["rev-parse", "HEAD"]),
-        remote.git(&["rev-parse", "review"])
-    );
+    assert_eq!(remote.git(&["rev-parse", "review"]), review);
 }
 
 #[test]
@@ -135,4 +136,30 @@ fn verification_reads_actual_remote_without_pushing_or_losing_staged_work() {
     assert!(report.contains("1 staged files"));
     assert_eq!(remote.git(&["rev-parse", "main"]), published);
     assert!(report.contains("has not retried"));
+}
+
+#[test]
+fn verification_of_an_interrupted_push_still_reports_when_the_remote_cannot_be_read() {
+    let (repo, _remote) = published();
+    repo.write("a", "ahead");
+    repo.commit();
+    // The network that interrupted the push is still down.
+    repo.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        "/nonexistent/hive-remote.git",
+    ]);
+    let action = Action::Push {
+        remote: "origin".into(),
+        publish: false,
+    };
+
+    let report = crate::git::verification::inspect(&Host::Local, &repo.0, Some(&action)).unwrap();
+    assert!(report.contains("Current HEAD:"), "{report}");
+    assert!(
+        report.contains("Remote origin: could not be read"),
+        "{report}"
+    );
+    assert!(report.contains("has not retried"), "{report}");
 }

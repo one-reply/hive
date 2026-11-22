@@ -172,6 +172,29 @@ pub(crate) fn bytes(
     invoke(host, cwd, args, input, limit, allow_exit_one, None)
 }
 
+/// Blocking: runs the POSIX `script` with `sh` in the environment [`bytes`] gives Git, with
+/// `args` as its positional parameters. For work that would otherwise start one Git process
+/// per file, which over SSH means one connection per file. A query: read deadline, no stop.
+pub(crate) fn script(
+    host: &Host,
+    cwd: &Path,
+    script: &str,
+    args: &[&str],
+    limit: usize,
+) -> Result<Vec<u8>, GitError> {
+    let mut argv = vec!["-c", script, "sh"];
+    argv.extend_from_slice(args);
+    let output = command::run(
+        environment(host, cwd, "sh", &argv),
+        &[],
+        &Cancellation::default(),
+        READ_TIMEOUT,
+        limit,
+    )
+    .map_err(|source| unfinished(host, cwd, &argv, source, false))?;
+    finish(host, cwd, &argv, output, false, false)
+}
+
 fn bytes_mutation(
     host: &Host,
     cwd: &Path,
@@ -182,6 +205,58 @@ fn bytes_mutation(
     stop: &Cancellation,
 ) -> Result<Vec<u8>, GitError> {
     invoke(host, cwd, args, input, limit, allow_exit_one, Some(stop))
+}
+
+/// `program` set up to run in `cwd` on `host` with the environment every Git command gets.
+fn environment(host: &Host, cwd: &Path, program: &str, args: &[&str]) -> std::process::Command {
+    let mut command = match host {
+        Host::Local => host.command(program, args, Some(cwd)),
+        Host::Ssh { .. } => {
+            let mut remote = vec![
+                "GIT_TERMINAL_PROMPT=0",
+                "GIT_EDITOR=true",
+                "GIT_ICASE_PATHSPECS=0",
+                "LC_ALL=C",
+                program,
+            ];
+            remote.extend_from_slice(args);
+            host.command("env", &remote, Some(cwd))
+        }
+    };
+    // Nothing here has a terminal: an editor Git opened would only hold the command until
+    // its deadline. The variable outranks `core.editor`, so configuration cannot bring it back.
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_EDITOR", "true")
+        // The panel confirms exact paths, even if a login shell requests case-insensitive matches.
+        .env("GIT_ICASE_PATHSPECS", "0")
+        .env("LC_ALL", "C");
+    command
+}
+
+/// A command that ran out of time or output, was stopped, or could not start.
+fn unfinished(
+    host: &Host,
+    cwd: &Path,
+    args: &[&str],
+    source: command::Error,
+    mutation: bool,
+) -> GitError {
+    match source {
+        command::Error::TooLarge(limit) if !mutation => GitError::TooLarge(limit),
+        source => GitError::Interrupted {
+            command: args.join(" "),
+            host: host.clone(),
+            cwd: cwd.to_owned(),
+            source,
+            mutation,
+            guidance: if mutation {
+                "Outcome unknown. Refresh and inspect the index, History and remote before retrying; no automatic retry was made."
+            } else {
+                "Refresh to retry."
+            },
+        },
+    }
 }
 
 fn invoke(
@@ -196,41 +271,20 @@ fn invoke(
 ) -> Result<Vec<u8>, GitError> {
     let mutation = stop.is_some();
     let unstoppable = Cancellation::default();
-    let mut command = match host {
-        Host::Local => host.command("git", args, Some(cwd)),
-        Host::Ssh { .. } => {
-            let mut remote = vec![
-                "GIT_TERMINAL_PROMPT=0",
-                "GIT_EDITOR=true",
-                "GIT_ICASE_PATHSPECS=0",
-                "LC_ALL=C",
-                "git",
-            ];
-            remote.extend_from_slice(args);
-            host.command("env", &remote, Some(cwd))
-        }
-    };
-    // Nothing here has a terminal: an editor Git opened would only hold the command until
-    // its deadline. The variable outranks `core.editor`, so configuration cannot bring it back.
-    command
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_EDITOR", "true")
-        // The panel confirms exact paths, even if a login shell requests case-insensitive matches.
-        .env("GIT_ICASE_PATHSPECS", "0")
-        .env("LC_ALL", "C");
+    let command = environment(host, cwd, "git", args);
     let timeout = if mutation {
         MUTATION_TIMEOUT
     } else {
         READ_TIMEOUT
     };
-    let output = command::run(command, input.unwrap_or_default(), stop.unwrap_or(&unstoppable), timeout, limit)
-        .map_err(|source| match source {
-            command::Error::TooLarge(limit) if !mutation => GitError::TooLarge(limit),
-            source => GitError::Interrupted {
-                command: args.join(" "), host: host.clone(), cwd: cwd.to_owned(), source, mutation,
-                guidance: if mutation { "Outcome unknown. Refresh and inspect the index, History and remote before retrying; no automatic retry was made." } else { "Refresh to retry." },
-            },
-        })?;
+    let output = command::run(
+        command,
+        input.unwrap_or_default(),
+        stop.unwrap_or(&unstoppable),
+        timeout,
+        limit,
+    )
+    .map_err(|source| unfinished(host, cwd, args, source, mutation))?;
     finish(host, cwd, args, output, allow_exit_one, mutation)
 }
 

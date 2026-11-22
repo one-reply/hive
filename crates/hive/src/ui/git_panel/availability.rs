@@ -1,6 +1,7 @@
 //! Which Git actions the worktree allows right now and, when one is unavailable, why: one
 //! rule per action, shared by the header buttons, the commit footer and its menu.
 use crate::state::pull_requests::Status as RequestStatus;
+use hive_core::git::changes::Action;
 use hive_core::git::pull_request::PullRequest;
 use hive_core::git::status::{Change, Status};
 
@@ -61,10 +62,38 @@ impl Entry {
 /// Where a push from the current branch would go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PushTarget {
-    /// The branch the current one tracks on a remote.
+    /// The branch of the same name that the current one tracks on a remote.
     Upstream,
     /// A branch the push creates on the selected remote, which it then tracks.
     NewBranch,
+    /// The remote branch the current one tracks has another name, as after
+    /// `git switch -c topic origin/develop`. Like Git's `push.default=simple`, Hive does not
+    /// push there; publishing under the branch's own name gives it a branch it can push to.
+    Elsewhere,
+}
+
+impl PushTarget {
+    /// Where the push `action` the worktree offers would send the branch `status` reads.
+    pub(super) fn of(action: Option<&Action>, status: Option<&Status>) -> Option<Self> {
+        let Action::Push { remote, publish } = action? else {
+            return None;
+        };
+        if *publish {
+            return Some(Self::NewBranch);
+        }
+        // Git shortens the upstream to `<remote>/<branch>`, whatever the remote's name holds.
+        let namesake = status.is_some_and(|status| {
+            matches!(
+                (&status.branch, &status.upstream),
+                (Some(branch), Some(upstream)) if *upstream == format!("{remote}/{branch}")
+            )
+        });
+        Some(if namesake {
+            Self::Upstream
+        } else {
+            Self::Elsewhere
+        })
+    }
 }
 
 /// What is known about the pull or merge request of the checked-out branch.
@@ -129,6 +158,7 @@ pub(super) enum Blocker {
     NoUpstream,
     NotPublished,
     Published,
+    OtherName,
     NoCommits,
     UpToDate,
     PushIsEnough,
@@ -159,6 +189,7 @@ impl Blocker {
             Self::NoUpstream => "No upstream",
             Self::NotPublished => "Not published",
             Self::Published => "Published",
+            Self::OtherName => "Tracks another branch",
             Self::NoCommits => "No commits",
             Self::UpToDate => "Up to date",
             Self::PushIsEnough => "Push is enough",
@@ -189,6 +220,9 @@ impl Blocker {
             Self::NoUpstream => "No upstream to pull from",
             Self::NotPublished => "Publish this branch first",
             Self::Published => "This branch is already published",
+            Self::OtherName => {
+                "This branch tracks a remote branch of another name; publish it under its own name first"
+            }
             Self::NoCommits => "Create the first commit first",
             Self::UpToDate => "Nothing to push",
             Self::PushIsEnough => "The remote has nothing to replace; Push is enough",
@@ -223,7 +257,11 @@ pub(super) fn blocker(entry: Entry, facts: &Facts) -> Option<Blocker> {
         Entry::StageAll => stage_all(status),
         Entry::Commit => commit(status, facts.message),
         Entry::CommitAndPush => {
-            commit(status, facts.message).or_else(|| push_target(status, facts).err())
+            commit(status, facts.message).or_else(|| match push_target(status, facts) {
+                Err(blocker) => Some(blocker),
+                Ok(PushTarget::Elsewhere) => Some(Blocker::OtherName),
+                Ok(PushTarget::Upstream | PushTarget::NewBranch) => None,
+            })
         }
         Entry::CommitAndSync => commit(status, facts.message)
             .or_else(|| upstream(status, facts).err())
@@ -238,12 +276,15 @@ pub(super) fn blocker(entry: Entry, facts: &Facts) -> Option<Blocker> {
         Entry::Push => match push_target(status, facts) {
             Err(blocker) => Some(blocker),
             Ok(PushTarget::NewBranch) => Some(Blocker::NotPublished),
+            Ok(PushTarget::Elsewhere) => Some(Blocker::OtherName),
             Ok(PushTarget::Upstream) => (status.ahead == 0).then_some(Blocker::UpToDate),
         },
         Entry::Publish => match push_target(status, facts) {
             Err(blocker) => Some(blocker),
             Ok(PushTarget::Upstream) => Some(Blocker::Published),
-            Ok(PushTarget::NewBranch) => status.oid.is_none().then_some(Blocker::NoCommits),
+            Ok(PushTarget::NewBranch | PushTarget::Elsewhere) => {
+                status.oid.is_none().then_some(Blocker::NoCommits)
+            }
         },
         Entry::ForcePush => upstream(status, facts).err().or({
             // Only a push the remote would refuse needs force.
@@ -260,10 +301,12 @@ pub(super) fn blocker(entry: Entry, facts: &Facts) -> Option<Blocker> {
         // The request is opened from what the remote holds.
         Entry::CreatePullRequest => request(status, facts, |target| match target {
             PushTarget::NewBranch => Some(Blocker::NotPublished),
+            PushTarget::Elsewhere => Some(Blocker::OtherName),
             PushTarget::Upstream => (status.ahead > 0).then_some(Blocker::PushFirst),
         }),
         Entry::PushBeforePullRequest => request(status, facts, |target| match target {
             PushTarget::NewBranch => status.oid.is_none().then_some(Blocker::NoCommits),
+            PushTarget::Elsewhere => Some(Blocker::OtherName),
             PushTarget::Upstream => (status.ahead == 0).then_some(Blocker::UpToDate),
         }),
         Entry::Pull => pull(status, facts),
@@ -279,16 +322,21 @@ pub(super) fn blocker(entry: Entry, facts: &Facts) -> Option<Blocker> {
 /// has somewhere to go, otherwise only commit, so a commit is always one click away.
 pub(super) fn commit_entry(facts: &Facts) -> Entry {
     match facts.status.map(|status| push_target(status, facts)) {
-        Some(Ok(_)) => Entry::CommitAndPush,
+        Some(Ok(PushTarget::Upstream | PushTarget::NewBranch)) => Entry::CommitAndPush,
         _ => Entry::Commit,
     }
 }
 
-/// What a button that sends commits does for this branch: push, or publish it first.
+/// What a button that sends commits does for this branch: push, or publish it first, also
+/// when it tracks a remote branch of another name.
 pub(super) fn push_entry(facts: &Facts) -> Entry {
-    match facts.status.and_then(|status| status.upstream.as_ref()) {
-        Some(_) => Entry::Push,
-        None => Entry::Publish,
+    match facts.push {
+        Some(PushTarget::Upstream) => Entry::Push,
+        Some(PushTarget::NewBranch | PushTarget::Elsewhere) => Entry::Publish,
+        None => match facts.status.and_then(|status| status.upstream.as_ref()) {
+            Some(_) => Entry::Push,
+            None => Entry::Publish,
+        },
     }
 }
 
@@ -338,6 +386,7 @@ fn upstream(status: &Status, facts: &Facts) -> Result<(), Blocker> {
     match push_target(status, facts)? {
         PushTarget::Upstream => Ok(()),
         PushTarget::NewBranch => Err(Blocker::NotPublished),
+        PushTarget::Elsewhere => Err(Blocker::OtherName),
     }
 }
 

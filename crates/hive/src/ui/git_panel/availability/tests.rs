@@ -422,3 +422,76 @@ fn every_blocker_has_a_short_note_and_a_longer_explanation() {
         assert!(!blocker.explanation().is_empty(), "{blocker:?}");
     }
 }
+
+#[test]
+fn the_push_target_names_an_upstream_of_another_name_apart() {
+    use hive_core::git::changes::Action;
+    let push = |remote: &str, publish| Action::Push {
+        remote: remote.into(),
+        publish,
+    };
+    let tracking = |upstream: &str| Status {
+        upstream: Some(upstream.into()),
+        ..published()
+    };
+    let of = |action: &Action, status: &Status| PushTarget::of(Some(action), Some(status));
+
+    assert_eq!(PushTarget::of(None, Some(&published())), None);
+    assert_eq!(
+        of(&push("origin", true), &Status::default()),
+        Some(PushTarget::NewBranch)
+    );
+    assert_eq!(
+        of(&push("origin", false), &tracking("origin/feature")),
+        Some(PushTarget::Upstream)
+    );
+    // A remote's name may itself hold a slash.
+    assert_eq!(
+        of(&push("team/fork", false), &tracking("team/fork/feature")),
+        Some(PushTarget::Upstream)
+    );
+    // `git switch -c feature origin/develop` leaves develop as the upstream.
+    assert_eq!(
+        of(&push("origin", false), &tracking("origin/develop")),
+        Some(PushTarget::Elsewhere)
+    );
+}
+
+#[test]
+fn a_branch_tracking_another_name_can_only_be_published_under_its_own() {
+    let mut status = Status {
+        upstream: Some("origin/develop".into()),
+        ahead: 1,
+        behind: 1,
+        files: vec![file("file.rs", Some(Change::Modified), None)],
+        ..published()
+    };
+    fn elsewhere(status: &Status) -> Facts<'_> {
+        Facts {
+            push: Some(PushTarget::Elsewhere),
+            ..facts(status, "message")
+        }
+    }
+    for entry in [
+        Entry::Push,
+        Entry::CommitAndPush,
+        Entry::CommitAndSync,
+        Entry::ForcePush,
+        Entry::CreatePullRequest,
+        Entry::PushBeforePullRequest,
+    ] {
+        assert_eq!(
+            blocker(entry, &elsewhere(&status)),
+            Some(Blocker::OtherName),
+            "{entry:?}"
+        );
+    }
+    assert_eq!(blocker(Entry::Publish, &elsewhere(&status)), None);
+    assert_eq!(commit_entry(&elsewhere(&status)), Entry::Commit);
+    assert_eq!(push_entry(&elsewhere(&status)), Entry::Publish);
+    status.files.clear();
+    assert_eq!(
+        blocker(Entry::Sync, &elsewhere(&status)),
+        Some(Blocker::OtherName)
+    );
+}

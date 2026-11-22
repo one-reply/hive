@@ -195,3 +195,64 @@ fn setup_runs_in_the_checkout_and_a_failure_carries_its_command_and_log() {
     assert!(output.contains("installing") && output.contains("lockfile is stale"));
     assert!(error.to_string().contains("exited with 3"), "{error}");
 }
+
+#[test]
+fn a_folder_is_named_by_a_pattern_for_its_contents_and_anchored_paths_look_inside() {
+    let patterns = IncludePatterns::parse(
+        "cache/**\nbuild/*\nconfig/local/*.yml\n.vscode/settings.json\n**/x\n",
+    );
+    assert!(patterns.matches("cache", true));
+    assert!(patterns.matches("build", true));
+    assert!(!patterns.matches("config", true));
+    assert!(!patterns.matches("cache", false));
+    assert_eq!(patterns.inside("config"), ["config/local"]);
+    assert_eq!(patterns.inside(".vscode"), [".vscode/settings.json"]);
+    // A wildcard first reaches everywhere, which would mean walking every ignored folder.
+    assert!(patterns.inside("node_modules").is_empty());
+}
+
+#[test]
+fn anchored_patterns_reach_files_inside_ignored_folders() {
+    let scratch = Scratch::new("nested");
+    scratch.write(".gitignore", ".vscode/\nconfig/\ncache/\nnode_modules/\n");
+    scratch.write("tracked.txt", "tracked");
+    git(&scratch.source(), &["add", ".gitignore", "tracked.txt"]);
+    git(&scratch.source(), &["commit", "-qm", "base"]);
+    scratch.write(".vscode/settings.json", "{}");
+    scratch.write(".vscode/launch.json", "launch");
+    scratch.write("config/local/dev.yml", "dev");
+    scratch.write("config/local/dev.json", "json");
+    scratch.write("config/other.yml", "other");
+    scratch.write("cache/deep/blob", "cached");
+    scratch.write("node_modules/pkg/settings.json", "dependency");
+    scratch.write(
+        INCLUDE_FILE,
+        ".vscode/settings.json\nconfig/local/*.yml\ncache/**\n**/settings.json\n",
+    );
+
+    let copied = copy_included(
+        &scratch.source(),
+        &scratch.checkout(),
+        &Cancellation::default(),
+    )
+    .unwrap();
+
+    assert_eq!(copied, 3);
+    assert_eq!(
+        scratch.copied(".vscode/settings.json").as_deref(),
+        Some("{}")
+    );
+    assert_eq!(
+        scratch.copied("config/local/dev.yml").as_deref(),
+        Some("dev")
+    );
+    assert_eq!(scratch.copied("cache/deep/blob").as_deref(), Some("cached"));
+    for absent in [
+        ".vscode/launch.json",
+        "config/local/dev.json",
+        "config/other.yml",
+        "node_modules/pkg/settings.json",
+    ] {
+        assert_eq!(scratch.copied(absent), None, "{absent}");
+    }
+}
