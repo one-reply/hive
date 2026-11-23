@@ -29,6 +29,18 @@ fn live_color(cx: &App) -> Hsla {
     cx.theme().magenta_light.lerp(&cx.theme().blue_light, 0.55)
 }
 
+/// A stage's detail at `progress` of its unfolding. `MotionReveal` lays its child out on
+/// its own, as wide as the widest thing in it wants to be: one row that cannot shrink would
+/// stretch the whole detail past the timeline and cut every line off at the edge. The
+/// wrapper holds the detail to the width of the timeline.
+fn unfolding(id: impl Into<ElementId>, progress: f32, detail: Div) -> MotionReveal {
+    MotionReveal::new(
+        id,
+        progress,
+        div().w_full().child(detail).into_any_element(),
+    )
+}
+
 const ROW_HEIGHT: f32 = 47.;
 const TRACK_HEIGHT: f32 = 23.;
 const TRACK_OPACITY: f32 = 0.65;
@@ -310,11 +322,7 @@ impl RunView {
             // A detail that is still folding away renders until its height reaches zero.
             if open || unfolded > 0. {
                 let detail = self.stage_detail(stage, run, w, cx).opacity(unfolded);
-                table = table.child(MotionReveal::new(
-                    ("stage-detail", i),
-                    unfolded,
-                    detail.into_any_element(),
-                ));
+                table = table.child(unfolding(("stage-detail", i), unfolded, detail));
             }
         }
         if let Some((a, b)) = scale {
@@ -356,5 +364,41 @@ impl RunView {
             );
         }
         scroll("run-timeline", table)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not a glob import: the parent's `gpui_kit::*` brings in GPUI's `test` attribute.
+    use super::unfolding;
+    use gpui_kit as gpui;
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Context, Pixels, TestAppContext, Window, div, px};
+
+    const WIDTH: Pixels = px(320.);
+
+    /// An unfolded detail with a row far wider than the `WIDTH` its column has.
+    struct Column;
+    impl Render for Column {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let detail = div()
+                .debug_selector(|| "detail".into())
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .child(div().flex_none().w(WIDTH * 4.).h(px(10.))),
+                );
+            div().w(WIDTH).child(unfolding("detail", 1., detail))
+        }
+    }
+
+    #[gpui::test]
+    fn an_unfolded_detail_is_as_wide_as_the_timeline_whatever_it_holds(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| Column);
+        cx.run_until_parked();
+        let detail = cx.debug_bounds("detail").expect("the unfolded detail");
+        assert_eq!(detail.size.width, WIDTH);
     }
 }

@@ -9,6 +9,7 @@ use gpui_kit::component::{
 };
 
 mod entries;
+mod reorder;
 mod runs;
 pub(super) use entries::Entry;
 use entries::entries;
@@ -300,6 +301,12 @@ impl PipelinePanel {
                 .focus_visible(move |s| s.border_color(accent))
                 .child(map::miniature(t, cx))
                 .child(bottom);
+            let card = reorder::reorderable(card, t, |name, onto, cx| {
+                AppState::get(cx)
+                    .pipelines
+                    .clone()
+                    .update(cx, |p, cx| p.move_template(name, onto, cx));
+            });
             cards = cards.child(on_activate(card, cx, pick).context_menu(menu));
         }
         if templates.is_empty() {

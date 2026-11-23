@@ -39,6 +39,20 @@ impl Pipelines {
         Ok(())
     }
 
+    /// Puts the template named `name` in the place of the one named `onto`, for every
+    /// project: the library is shared. A move that changes nothing is neither saved nor
+    /// announced.
+    pub(crate) fn move_template(&mut self, name: &str, onto: &str, cx: &mut Context<Self>) {
+        let moved = self.store.update(cx, |store, cx| {
+            store.try_edit_pipelines(cx, |library| {
+                library.move_template(name, onto).then_some(()).ok_or(())
+            })
+        });
+        if moved.is_ok() {
+            cx.notify();
+        }
+    }
+
     pub(crate) fn save_template(
         &mut self,
         original: Option<&Template>,

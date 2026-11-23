@@ -45,6 +45,22 @@ impl Library {
         }
         Ok(slot)
     }
+
+    /// Moves the template named `name` to the place of the one named `onto`; the templates
+    /// between them shift by one towards the gap. Returns whether the order changed: an
+    /// unknown name and a template moved onto itself change nothing.
+    pub fn move_template(&mut self, name: &str, onto: &str) -> bool {
+        let position = |wanted: &str| self.templates.iter().position(|t| t.name == wanted);
+        let (Some(from), Some(to)) = (position(name), position(onto)) else {
+            return false;
+        };
+        if from == to {
+            return false;
+        }
+        let template = self.templates.remove(from);
+        self.templates.insert(to, template);
+        true
+    }
 }
 
 impl Template {
@@ -115,6 +131,45 @@ mod tests {
         let taken = ["Plan", "plan 2"];
         assert_eq!(unique_name("Build", taken.into_iter()), "Build");
         assert_eq!(unique_name("PLAN", taken.into_iter()), "PLAN 3");
+    }
+
+    fn named(names: &[&str]) -> Library {
+        Library {
+            templates: names
+                .iter()
+                .map(|name| Template {
+                    name: (*name).into(),
+                    ..Template::default()
+                })
+                .collect(),
+            ..Library::default()
+        }
+    }
+
+    fn names(library: &Library) -> Vec<&str> {
+        library.templates.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_moved_template_takes_the_place_of_the_one_it_is_moved_onto() {
+        let mut library = named(&["A", "B", "C", "D"]);
+        assert!(library.move_template("A", "C"));
+        assert_eq!(names(&library), ["B", "C", "A", "D"]);
+        assert!(library.move_template("D", "B"));
+        assert_eq!(names(&library), ["D", "B", "C", "A"]);
+        assert!(library.move_template("D", "A"));
+        assert_eq!(names(&library), ["B", "C", "A", "D"]);
+    }
+
+    #[test]
+    fn a_move_onto_itself_or_with_an_unknown_name_changes_nothing() {
+        let mut library = named(&["A", "B"]);
+        let before = library.clone();
+        assert!(!library.move_template("A", "A"));
+        assert!(!library.move_template("A", "Gone"));
+        assert!(!library.move_template("Gone", "A"));
+        assert!(!named(&[]).move_template("A", "B"));
+        assert_eq!(library, before);
     }
 
     #[test]

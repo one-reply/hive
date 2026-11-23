@@ -225,11 +225,6 @@ fn lane_name_in<'a>(
     }
 }
 
-/// Marks a field that must be filled before planning can start.
-fn required_mark(cx: &App) -> Div {
-    div().text_xs().text_color(cx.theme().danger).child("*")
-}
-
 fn required_heading(title: &'static str, cx: &App) -> Div {
     h_flex()
         .gap_0p5()
