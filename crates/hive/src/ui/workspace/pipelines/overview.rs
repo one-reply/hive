@@ -1,13 +1,17 @@
 //! The status bar's Pipelines block, beside the panel's toggle: how many runs wait and work
 //! across every project, and on hover a card that lists them with the drafts. A click on a
 //! line goes to it. The block itself only shows; the toggle next to it opens the panel.
-use super::library::{DETAIL_SEPARATOR, RunRow};
+use super::library::DETAIL_SEPARATOR;
 use super::*;
-use crate::state::pipelines::{Entry, ListedRun, Overview};
+use crate::state::pipelines::Overview;
 use crate::ui::hover::SmoothHoverBg as _;
 use crate::ui::hover_card::{Dismiss, hover_card};
+use crate::ui::project_badge;
 use gpui_kit::component::progress::Progress;
-use hive_core::pipeline::{RunProgress, draft::LaunchDraft};
+use hive_core::pipeline::RunProgress;
+
+mod lines;
+use lines::{Line, ProjectMark, Target};
 
 /// Width of the card that lists the runs.
 const CARD_WIDTH: Pixels = px(360.);
@@ -15,12 +19,13 @@ const CARD_WIDTH: Pixels = px(360.);
 const LIST_MAX_HEIGHT: Pixels = px(420.);
 /// Height of a live run's progress bar.
 const PROGRESS_HEIGHT: Pixels = px(3.);
+/// Side of the project's badge before its name, the height of the line's small text.
+const PROJECT_BADGE: Pixels = px(12.);
 /// The block's icon while no run waits or works, as faint as the other idle status icons.
 const IDLE_ICON_OPACITY: f32 = 0.5;
-const UNTITLED_DRAFT: &str = "Untitled draft";
 
 pub(crate) struct PipelinesOverview {
-    _subscriptions: [Subscription; 3],
+    _subscriptions: [Subscription; 4],
 }
 
 impl PipelinesOverview {
@@ -28,12 +33,15 @@ impl PipelinesOverview {
         let app = AppState::get(cx);
         let (store, pipelines, agents) =
             (app.store.clone(), app.pipelines.clone(), app.agents.clone());
+        let projects = app.projects.clone();
         Self {
             _subscriptions: [
                 cx.observe(&store, |_, _, cx| cx.notify()),
                 cx.observe(&pipelines, |_, _, cx| cx.notify()),
                 // A run's status follows what its agent last reported.
                 cx.observe(&agents, |_, _, cx| cx.notify()),
+                // Every line carries its project's name and badge.
+                cx.observe(&projects, |_, _, cx| cx.notify()),
             ],
         }
     }
@@ -106,92 +114,13 @@ fn counter(count: usize, color: Hsla) -> Option<Div> {
     })
 }
 
-/// Where a click on a line leads.
-#[derive(Clone)]
-enum Target {
-    Run(u64),
-    Draft(PathBuf),
-}
-
-/// What the card shows of one run or draft, read out of the store before rendering.
-struct Line {
-    target: Target,
-    /// `None` for a draft.
-    status: Option<RunStatus>,
-    title: String,
-    detail: String,
-    progress: Option<RunProgress>,
-    /// False for a run whose project was removed from Hive.
-    reachable: bool,
-}
-
-fn run_line(listed: ListedRun, run: &Run, now: u64) -> Line {
-    let row = RunRow::of(run, listed.status, now);
-    let about = if listed.reachable {
-        row.detail.as_str()
-    } else {
-        "project removed from Hive"
-    };
-    Line {
-        target: Target::Run(listed.id),
-        status: Some(listed.status),
-        title: run::task_title(&row.task),
-        detail: [path_name(run.owner()).as_str(), about].join(DETAIL_SEPARATOR),
-        progress: (!row.finished).then(|| run.progress()),
-        reachable: listed.reachable,
-    }
-}
-
-fn draft_line(draft: &LaunchDraft) -> Line {
-    Line {
-        target: Target::Draft(draft.owner.clone()),
-        status: None,
-        title: draft_title(&draft.task),
-        detail: [path_name(&draft.owner).as_str(), &draft.template.name].join(DETAIL_SEPARATOR),
-        progress: None,
-        reachable: true,
-    }
-}
-
-/// A draft is named by its task, and one whose task is still empty by what it is.
-fn draft_title(task: &str) -> String {
-    let title = run::task_title(task);
-    if title.is_empty() {
-        UNTITLED_DRAFT.into()
-    } else {
-        title
-    }
-}
-
 /// The filled share of a progress bar, in percent; `None` when the run has nothing to count.
 fn percent(progress: RunProgress) -> Option<f32> {
     (progress.total > 0).then(|| progress.done as f32 / progress.total as f32 * 100.)
 }
 
-/// The overview's groups with each entry read out of the store. An entry that vanished
-/// between the overview and this read is skipped.
-fn lines(overview: &Overview, cx: &App) -> Vec<(&'static str, Vec<Line>)> {
-    let library = &AppState::get(cx).store.read(cx).state.pipelines;
-    let now = hive_core::pipeline::now_ms();
-    let line = |entry: &Entry| match entry {
-        Entry::Run(listed) => {
-            let run = library.runs.iter().find(|run| run.id() == listed.id)?;
-            Some(run_line(*listed, run, now))
-        }
-        Entry::Draft(owner) => {
-            let draft = library.drafts.iter().find(|draft| &draft.owner == owner)?;
-            Some(draft_line(draft))
-        }
-    };
-    overview
-        .groups
-        .iter()
-        .map(|(group, entries)| (group.label(), entries.iter().filter_map(line).collect()))
-        .collect()
-}
-
 fn card(overview: &Overview, dismiss: &Dismiss, window: &mut Window, cx: &mut App) -> Div {
-    let groups = lines(overview, cx);
+    let groups = lines::read(overview, cx);
     let mut list = v_flex().p_1p5().gap_0p5();
     for (label, group) in groups {
         list = list.child(subtle(label, cx).px_2().pt_1p5().pb_0p5());
@@ -226,6 +155,19 @@ fn card(overview: &Overview, dismiss: &Dismiss, window: &mut Window, cx: &mut Ap
                 .child(list),
         )
         .children(earlier)
+}
+
+/// A line's second row: the project's badge and name, then what is known of the run.
+fn project_facts(project: ProjectMark, facts: &str, cx: &App) -> Div {
+    let text = [project.name.as_str(), facts].join(DETAIL_SEPARATOR);
+    let badge = project.badge.map(|(identity, color)| {
+        project_badge::render(&identity, &project.name, color, PROJECT_BADGE)
+    });
+    h_flex()
+        .gap_1p5()
+        .min_w_0()
+        .children(badge)
+        .child(subtle(text, cx).flex_1().min_w_0().truncate())
 }
 
 fn line_row(line: Line, dismiss: &Dismiss, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -295,7 +237,7 @@ fn line_row(line: Line, dismiss: &Dismiss, window: &mut Window, cx: &mut App) ->
                         )
                         .child(status_pill(pill, color)),
                 )
-                .child(subtle(line.detail, cx).truncate())
+                .child(project_facts(line.project, &line.facts, cx))
                 .children(bar),
         );
     if !line.reachable {
@@ -320,7 +262,7 @@ fn line_row(line: Line, dismiss: &Dismiss, window: &mut Window, cx: &mut App) ->
 #[cfg(test)]
 mod tests {
     // Not a glob import: the parent's `gpui_kit::*` brings in GPUI's `test` attribute.
-    use super::{UNTITLED_DRAFT, draft_title, percent, summary};
+    use super::{percent, summary};
     use hive_core::pipeline::RunProgress;
 
     #[test]
@@ -329,13 +271,6 @@ mod tests {
         assert_eq!(summary(1, 0), "Pipelines: 1 needs you");
         assert_eq!(summary(2, 3), "Pipelines: 2 need you, 3 running");
         assert_eq!(summary(0, 1), "Pipelines: 1 running");
-    }
-
-    #[test]
-    fn a_draft_is_named_by_the_first_line_of_its_task() {
-        assert_eq!(draft_title("  Add login\nwith details"), "Add login");
-        assert_eq!(draft_title(""), UNTITLED_DRAFT);
-        assert_eq!(draft_title(" \n "), UNTITLED_DRAFT);
     }
 
     #[test]
