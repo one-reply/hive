@@ -17,6 +17,16 @@ impl StageChoice {
             Self::Review(kind) => kind.stage_name(),
         }
     }
+
+    fn role(self) -> RoleKind {
+        match self {
+            Self::Lane => RoleKind::Build,
+            Self::Review(ReviewKind::Code) => RoleKind::CodeReview,
+            Self::Review(ReviewKind::Security) => RoleKind::Security,
+            Self::Review(ReviewKind::Performance) => RoleKind::Performance,
+            Self::Review(ReviewKind::Acceptance) => RoleKind::Review,
+        }
+    }
 }
 /// Which positions an optional review can occupy on its side of QA.
 pub(super) fn review_positions(t: &Template, index: usize) -> std::ops::Range<usize> {
@@ -47,21 +57,28 @@ fn reorder<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
 }
 impl TemplateEditor {
     pub(super) fn add_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let options = std::iter::once(StageChoice::Lane)
-            .chain(ReviewKind::ALL.map(StageChoice::Review))
-            .map(|stage| (stage.label().to_owned(), false, stage))
-            .collect();
-        options_menu(
-            Button::new("add-stage")
-                .small()
-                .cursor_pointer()
-                .icon(Lucide::Plus)
-                .dropdown_caret(true)
-                .label("Add stage"),
-            options,
-            cx,
-            |s, stage, w, cx| s.add(stage, w, cx),
-        )
+        let editor = cx.entity();
+        Button::new("add-stage")
+            .small()
+            .cursor_pointer()
+            .icon(Lucide::Plus)
+            .dropdown_caret(true)
+            .label("Add stage")
+            .dropdown_menu(move |mut menu, window, _| {
+                for stage in std::iter::once(StageChoice::Lane)
+                    .chain(ReviewKind::ALL.map(StageChoice::Review))
+                {
+                    menu = menu.item(
+                        PopupMenuItem::new(stage.label())
+                            .icon(stage.role().icon())
+                            .on_click(window.listener_for(&editor, move |editor, _, w, cx| {
+                                editor.add(stage, w, cx);
+                            })),
+                    );
+                }
+                menu
+            })
+            .into_any_element()
     }
     pub(in crate::ui::workspace::pipelines) fn ordering(
         &self,
@@ -109,7 +126,23 @@ impl TemplateEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Item, Template, move_item, reorder};
+    use super::{Item, ReviewKind, RoleKind, StageChoice, Template, move_item, reorder};
+    use hive_core::pipeline::Library;
+
+    #[test]
+    fn add_menu_roles_match_the_stages_on_the_canvas() {
+        assert_eq!(StageChoice::Lane.role(), RoleKind::Build);
+        let library = Library::default();
+        let mut template = Template::default();
+        for kind in ReviewKind::ALL {
+            let i = template.add_review(library.review_step(kind));
+            assert_eq!(
+                StageChoice::Review(kind).role(),
+                RoleKind::review(i, &template.reviews[i])
+            );
+        }
+    }
+
     #[test]
     fn cannot_drag_the_qa_barrier_or_move_lanes_into_review() {
         let mut t = Template::default();
