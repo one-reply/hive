@@ -1,7 +1,7 @@
 use super::*;
 use crate::git::{
     diff::{self, DiffSource},
-    history,
+    history, run, testing,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,7 +12,11 @@ mod commit_and_push;
 mod commit_messages;
 mod conflicts;
 mod discard;
+mod force_push;
 mod line_stats;
+mod rebase;
+mod stop;
+mod sync;
 
 struct Repo(PathBuf);
 impl Repo {
@@ -24,15 +28,11 @@ impl Repo {
         ));
         std::fs::create_dir_all(&path).unwrap();
         let repo = Self(path.canonicalize().unwrap());
-        repo.git(&["init", "-b", "main"]);
-        repo.git(&["config", "user.name", "Hive Test"]);
-        repo.git(&["config", "user.email", "hive@example.invalid"]);
-        repo.git(&["config", "commit.gpgsign", "false"]);
-        repo.git(&["config", "core.hooksPath", "/dev/null"]);
+        testing::init(&repo.0);
         repo
     }
     fn git(&self, args: &[&str]) -> String {
-        run(&Host::Local, &self.0, args).unwrap()
+        testing::run(&self.0, args)
     }
     fn write(&self, path: &str, value: &str) {
         std::fs::write(self.0.join(path), value).unwrap();
@@ -47,36 +47,13 @@ impl Repo {
     /// Commits with a fixed committer date, so branch ordering is deterministic.
     fn commit_at(&self, date: &str) {
         self.git(&["add", "-A"]);
-        let status = std::process::Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "fixture"])
+        let status = testing::git(&self.0, &["commit", "--allow-empty", "-m", "fixture"])
             .env("GIT_COMMITTER_DATE", date)
             .env("GIT_AUTHOR_DATE", date)
-            .current_dir(&self.0)
             .status()
             .unwrap();
         assert!(status.success());
     }
-}
-
-#[test]
-fn a_stopped_commit_is_an_interrupted_mutation_and_quick_mutations_ignore_the_stop() {
-    let repo = Repo::new();
-    repo.write("a.txt", "one\n");
-    let stop = Cancellation::default();
-    stop.cancel();
-    let stage = Action::Stage(vec!["a.txt".into()]);
-    assert!(execute(&Host::Local, &repo.0, &stage, &stop).is_ok());
-    let error = execute(
-        &Host::Local,
-        &repo.0,
-        &Action::Commit("add a".into()),
-        &stop,
-    )
-    .unwrap_err();
-    assert!(error.outcome_unknown(), "{error}");
-    assert!(error.to_string().contains("Command cancelled"), "{error}");
-    // Nothing ran: the file is still staged and no commit exists.
-    assert!(repo.git(&["status", "--porcelain"]).starts_with("A  a.txt"));
 }
 
 #[test]
@@ -111,6 +88,119 @@ fn delete_branch_refuses_checked_out_and_unmerged_unless_forced() {
 }
 
 #[test]
+fn a_branch_beside_a_tag_of_the_same_name_switches_checks_and_deletes_by_its_ref() {
+    let repo = Repo::new();
+    repo.write("a", "1");
+    repo.commit();
+    repo.git(&["branch", "develop"]);
+    repo.git(&["switch", "-c", "older"]);
+    repo.write("a", "2");
+    repo.commit();
+    repo.git(&["switch", "main"]);
+    // The tag points at a commit main lacks, the branch at one it has.
+    repo.git(&["tag", "develop", "older"]);
+    repo.git(&["branch", "-D", "older"]);
+
+    let branches = branches::list(&Host::Local, &repo.0).unwrap();
+    let develop = branches
+        .iter()
+        .find(|b| b.reference == "refs/heads/develop")
+        .unwrap();
+    assert_eq!(develop.name, "heads/develop");
+    assert_eq!(develop.local_name(), Some("develop"));
+    assert!(branches::is_merged(&Host::Local, &repo.0, "develop").unwrap());
+
+    repo.action(Action::Switch("develop".into())).unwrap();
+    assert_eq!(repo.git(&["branch", "--show-current"]), "develop");
+    repo.git(&["switch", "main"]);
+    repo.action(Action::DeleteBranch {
+        name: "develop".into(),
+        force: false,
+    })
+    .unwrap();
+    assert_eq!(repo.git(&["tag", "--list", "develop"]), "develop");
+    assert!(
+        branches::list(&Host::Local, &repo.0)
+            .unwrap()
+            .iter()
+            .all(|b| b.reference != "refs/heads/develop")
+    );
+}
+
+#[test]
+fn names_and_messages_that_are_not_utf8_never_fail_status_history_or_branches() {
+    use std::ffi::{OsStr, OsString};
+    use std::os::unix::ffi::OsStrExt;
+    let repo = Repo::new();
+    repo.write("ok.txt", "ok\n");
+    repo.commit();
+    let blob = repo.git(&["hash-object", "-w", "ok.txt"]);
+    // APFS refuses such names on disk; Git stores whatever bytes the index and refs hold,
+    // as a repository from a Linux host does.
+    let mut cacheinfo = OsString::from(format!("100644,{blob},"));
+    cacheinfo.push(OsStr::from_bytes(b"caf\xe9.txt"));
+    let git = |args: &[&OsStr], env: &[(&str, &OsStr)]| {
+        let output = testing::git(&repo.0, &[])
+            .args(args)
+            .envs(env.iter().copied())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    };
+    git(
+        &[
+            OsStr::new("update-index"),
+            OsStr::new("--add"),
+            OsStr::new("--cacheinfo"),
+            &cacheinfo,
+        ],
+        &[],
+    );
+    // `git commit` would re-encode a Latin-1 message; an old commit keeps its raw bytes.
+    let tree = repo.git(&["write-tree"]);
+    let parent = repo.git(&["rev-parse", "HEAD"]);
+    let mut object = format!("tree {tree}\nparent {parent}\nauthor Jos").into_bytes();
+    object.extend_from_slice(b"\xe9 <old@example.invalid> 1700000000 +0000\n");
+    object.extend_from_slice(b"committer Old <old@example.invalid> 1700000000 +0000\n\n");
+    object.extend_from_slice(b"caf\xe9 subject\n");
+    let object_path = repo.0.join("raw-commit");
+    std::fs::write(&object_path, object).unwrap();
+    let head = repo.git(&[
+        "hash-object",
+        "-t",
+        "commit",
+        "-w",
+        object_path.to_str().unwrap(),
+    ]);
+    std::fs::remove_file(object_path).unwrap();
+    repo.git(&["update-ref", "refs/heads/main", &head]);
+    let mut packed = std::fs::read(repo.0.join(".git/packed-refs")).unwrap_or_default();
+    packed.extend_from_slice(format!("{head} refs/heads/caf").as_bytes());
+    packed.extend_from_slice(b"\xe9\n");
+    std::fs::write(repo.0.join(".git/packed-refs"), packed).unwrap();
+
+    let page = history::read(&Host::Local, &repo.0, "HEAD", 0).unwrap();
+    assert_eq!(page[0].subject, "caf\u{fffd} subject");
+    assert_eq!(page[0].author, "Jos\u{fffd}");
+    assert!(
+        history::commit_files(&Host::Local, &repo.0, "HEAD")
+            .unwrap()
+            .is_empty()
+    );
+    // The file exists only in the index, so the work tree shows it deleted.
+    let status = status::read(&Host::Local, &repo.0).unwrap();
+    assert!(status.files.is_empty(), "{status:?}");
+    assert_eq!(status.unreadable_paths, 1);
+    assert!(!status.is_clean());
+    let names: Vec<_> = branches::list(&Host::Local, &repo.0)
+        .unwrap()
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
+    assert_eq!(names, ["main"]);
+}
+
+#[test]
 fn branches_list_newest_commit_first() {
     let repo = Repo::new();
     repo.write("a", "1");
@@ -130,6 +220,39 @@ impl Drop for Repo {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// A bare repository added to `repo` as `origin`.
+fn remote_for(repo: &Repo) -> Repo {
+    let remote = Repo::new();
+    remote.git(&["config", "core.bare", "true"]);
+    repo.git(&["remote", "add", "origin", remote.0.to_str().unwrap()]);
+    remote
+}
+
+/// A repository whose `main` holds one commit and is published to the returned bare remote.
+fn published() -> (Repo, Repo) {
+    let repo = Repo::new();
+    let remote = remote_for(&repo);
+    repo.write("base", "base\n");
+    repo.commit();
+    repo.git(&["push", "--set-upstream", "origin", "main"]);
+    (repo, remote)
+}
+
+/// Another checkout of `remote`'s `main`, for the commits somebody else pushes.
+fn colleague(remote: &Repo) -> Repo {
+    let other = Repo::new();
+    other.git(&["remote", "add", "origin", remote.0.to_str().unwrap()]);
+    other.git(&["fetch", "origin"]);
+    other.git(&["reset", "--hard", "origin/main"]);
+    other.git(&["branch", "--set-upstream-to=origin/main"]);
+    other
+}
+
+/// Makes the hook `name` of `repo` fail with a recognizable message.
+fn reject_hook(repo: &Repo, name: &str) {
+    testing::hook(&repo.0, name, "echo rejected-by-fixture >&2\nexit 1\n");
 }
 
 #[test]
@@ -556,6 +679,54 @@ fn clean_checkout_still_rejects_unfinished_rebase_and_large_preview() {
 }
 
 #[test]
+fn every_action_that_runs_hooks_or_asks_a_remote_can_be_stopped() {
+    let origin = || "origin".to_string();
+    let slow = [
+        Action::Sync { remote: origin() },
+        Action::CommitAndSync {
+            message: "message".into(),
+            remote: origin(),
+        },
+        Action::ForcePush {
+            remote: origin(),
+            expected: "0123abcd".into(),
+            head: "4567ef01".into(),
+        },
+        Action::Rebase {
+            onto: "refs/remotes/origin/main".into(),
+        },
+        Action::Push {
+            remote: origin(),
+            publish: false,
+        },
+    ];
+    for action in slow {
+        assert!(action.is_stoppable(), "{action:?}");
+    }
+    // A checkout runs `post-checkout` and long-running filters such as LFS.
+    let checkouts = [
+        Action::Switch("main".into()),
+        Action::CreateBranch {
+            name: "feature".into(),
+            base: "main".into(),
+            track: false,
+        },
+        Action::AbortOperation,
+    ];
+    for action in checkouts {
+        assert!(action.is_stoppable(), "{action:?}");
+    }
+    assert!(!Action::Stage(vec![]).is_stoppable());
+    assert!(
+        !Action::DeleteBranch {
+            name: "feature".into(),
+            force: false
+        }
+        .is_stoppable()
+    );
+}
+
+#[test]
 fn synced_summaries_read_naturally() {
     let origin = || "origin".to_string();
     let cases = [
@@ -599,6 +770,66 @@ fn synced_summaries_read_naturally() {
         (
             Synced::Published { remote: origin() },
             "Published to origin",
+        ),
+        (
+            Synced::PulledAndPushed {
+                remote: origin(),
+                pulled: 0,
+                pushed: 0,
+            },
+            "Already in sync with origin",
+        ),
+        (
+            Synced::PulledAndPushed {
+                remote: origin(),
+                pulled: 2,
+                pushed: 0,
+            },
+            "Pulled 2 commits",
+        ),
+        (
+            Synced::PulledAndPushed {
+                remote: origin(),
+                pulled: 0,
+                pushed: 1,
+            },
+            "Pushed 1 commit to origin",
+        ),
+        (
+            Synced::PulledAndPushed {
+                remote: origin(),
+                pulled: 1,
+                pushed: 3,
+            },
+            "Pulled 1 commit, pushed 3 to origin",
+        ),
+        (
+            Synced::ForcePushed { remote: origin() },
+            "Force-pushed to origin",
+        ),
+        (
+            Synced::Rebased {
+                onto: "origin/develop".into(),
+                changed: false,
+                needs_force_push: false,
+            },
+            "Already up to date with origin/develop",
+        ),
+        (
+            Synced::Rebased {
+                onto: "origin/develop".into(),
+                changed: true,
+                needs_force_push: false,
+            },
+            "Rebased onto origin/develop",
+        ),
+        (
+            Synced::Rebased {
+                onto: "origin/develop".into(),
+                changed: true,
+                needs_force_push: true,
+            },
+            "Rebased onto origin/develop · Force Push to update the remote",
         ),
     ];
     for (synced, text) in cases {

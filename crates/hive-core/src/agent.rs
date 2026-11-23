@@ -6,11 +6,13 @@
 //! One process table snapshot serves every open terminal.
 
 pub mod api;
+mod claude_config;
 pub mod conversation;
 pub mod draft;
 pub mod hooks;
 pub mod launch;
 mod process_table;
+pub mod reference;
 
 pub use process_table::{AgentError, ProcessTable};
 

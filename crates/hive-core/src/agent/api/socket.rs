@@ -2,6 +2,7 @@
 //! Every connection gets its own thread, so a long `wait` never holds up another call.
 use super::{ApiError, Call, ErrorCode, Outcome};
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
@@ -14,6 +15,9 @@ const MAX_REQUEST: usize = 64 * 1024;
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 /// A client that connects but never finishes its line must not pin a thread.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// A failing `accept` (no descriptors left: `EMFILE`) fails again at once; waiting this long
+/// keeps the loop from spinning a core while the app recovers.
+const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 /// Calls served at once. Each holds a thread until the app answers, so a process that opens
 /// connections in a loop must not exhaust them; the panes of one window make a handful.
 const MAX_CALLS: usize = 64;
@@ -110,15 +114,31 @@ fn read_outcome(stream: &UnixStream) -> io::Result<Outcome> {
 // ponytail: the accept thread ends only with the process; it notices a dropped receiver at
 // the next connection. Add a shutdown handshake if Hive ever rebinds the socket at runtime.
 fn accept(listener: &UnixListener, calls: &async_channel::Sender<Incoming>) {
+    serve_connections(listener.incoming(), calls, std::thread::sleep);
+}
+
+/// The accept loop over `incoming`; `pause` waits after a failed accept.
+fn serve_connections(
+    incoming: impl Iterator<Item = io::Result<UnixStream>>,
+    calls: &async_channel::Sender<Incoming>,
+    mut pause: impl FnMut(Duration),
+) {
     let live = Arc::new(AtomicUsize::new(0));
-    for stream in listener.incoming() {
+    let mut failures = AcceptFailures::default();
+    for stream in incoming {
         if calls.is_closed() {
             return;
         }
         let stream = match stream {
-            Ok(stream) => stream,
+            Ok(stream) => {
+                failures.recovered();
+                stream
+            }
             Err(error) => {
-                tracing::warn!(%error, "agent API connection failed");
+                if failures.is_new(&error) {
+                    tracing::warn!(%error, "agent API connection failed; retrying");
+                }
+                pause(ACCEPT_RETRY);
                 continue;
             }
         };
@@ -141,13 +161,35 @@ fn accept(listener: &UnixListener, calls: &async_channel::Sender<Incoming>) {
     }
 }
 
+/// The failure the accept loop last logged, so a failure that repeats on every attempt is
+/// logged once rather than once per retry.
+#[derive(Default)]
+struct AcceptFailures {
+    last: Option<(Option<i32>, io::ErrorKind)>,
+}
+
+impl AcceptFailures {
+    /// Whether `error` differs from the failure logged last.
+    fn is_new(&mut self, error: &io::Error) -> bool {
+        let failure = Some((error.raw_os_error(), error.kind()));
+        let new = self.last != failure;
+        self.last = failure;
+        new
+    }
+
+    /// A connection was accepted: the next failure is news again.
+    fn recovered(&mut self) {
+        self.last = None;
+    }
+}
+
 fn serve(stream: &UnixStream, calls: &async_channel::Sender<Incoming>) -> io::Result<()> {
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
     let outcome = match read_line(stream, MAX_REQUEST)
         .and_then(|line| serde_json::from_slice::<Call>(&line).map_err(io::Error::other))
     {
-        Ok(call) => dispatch(call, calls),
+        Ok(call) => dispatch(call, stream, calls),
         Err(error) => Outcome::Error(ApiError::new(
             ErrorCode::InvalidRequest,
             format!("Not a Hive agent call: {error}"),
@@ -178,8 +220,8 @@ fn reply(stream: &UnixStream, outcome: &Outcome) -> io::Result<()> {
     writer.write_all(&line)
 }
 
-/// Blocks this connection's thread until the app answers.
-fn dispatch(call: Call, calls: &async_channel::Sender<Incoming>) -> Outcome {
+/// Blocks this connection's thread until the app answers or the caller hangs up.
+fn dispatch(call: Call, stream: &UnixStream, calls: &async_channel::Sender<Incoming>) -> Outcome {
     let unavailable = || {
         Outcome::Error(ApiError::new(
             ErrorCode::Unavailable,
@@ -190,7 +232,64 @@ fn dispatch(call: Call, calls: &async_channel::Sender<Incoming>) -> Outcome {
     if calls.send_blocking(Incoming { call, reply }).is_err() {
         return unavailable();
     }
+    let _hang_up = HangUp::watch(stream, answer.clone());
     answer.recv_blocking().unwrap_or_else(|_| unavailable())
+}
+
+/// Ends the wait for an answer when the caller hangs up. A `wait` can last ten minutes, and a
+/// tool that kills `hive agent` sooner (Claude Code's Bash tool does after two) would leave
+/// its thread and its place under [`MAX_CALLS`] taken until then. After its request line the
+/// caller sends nothing, so anything read, end of file included, means it has gone; a caller
+/// must keep its side open until the answer arrives.
+struct HangUp(Option<UnixStream>);
+
+impl HangUp {
+    fn watch(stream: &UnixStream, answer: async_channel::Receiver<Outcome>) -> Self {
+        let watcher = stream.try_clone().and_then(|watched| {
+            let released = watched.try_clone()?;
+            std::thread::Builder::new()
+                .name("hive-agent-call-watch".into())
+                .spawn(move || {
+                    wait_for_hang_up(&watched);
+                    answer.close();
+                })?;
+            Ok(released)
+        });
+        match watcher {
+            Ok(released) => Self(Some(released)),
+            Err(error) => {
+                // The call still ends at its own deadline, as it did before this watch.
+                tracing::debug!(%error, "cannot watch an agent API caller");
+                Self(None)
+            }
+        }
+    }
+}
+
+impl Drop for HangUp {
+    /// The answer came: shutting the read side ends the watcher's read.
+    fn drop(&mut self) {
+        if let Some(stream) = &self.0 {
+            let _ = stream.shutdown(Shutdown::Read);
+        }
+    }
+}
+
+/// Blocks until `stream` yields anything or fails; the request's read timeout only repeats it.
+fn wait_for_hang_up(mut stream: &UnixStream) {
+    let mut byte = [0];
+    loop {
+        match stream.read(&mut byte) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) => {}
+            _ => return,
+        }
+    }
 }
 
 /// One newline-terminated line, without the newline; EOF also ends it.
@@ -223,6 +322,32 @@ mod tests {
         directory.join("a")
     }
 
+    fn too_many_open_files() -> io::Error {
+        io::Error::from_raw_os_error(libc::EMFILE)
+    }
+
+    #[test]
+    fn a_failing_accept_waits_before_retrying_instead_of_spinning() {
+        let (calls, _receiver) = async_channel::unbounded();
+        let mut pauses = Vec::new();
+        let incoming = (0..1000).map(|_| Err(too_many_open_files()));
+        serve_connections(incoming, &calls, |pause| pauses.push(pause));
+        assert_eq!(pauses.len(), 1000);
+        assert!(pauses.iter().all(|pause| *pause == ACCEPT_RETRY));
+    }
+
+    #[test]
+    fn a_repeating_accept_failure_is_logged_once_until_a_connection_succeeds() {
+        let mut failures = AcceptFailures::default();
+        assert!(failures.is_new(&too_many_open_files()));
+        assert!(!failures.is_new(&too_many_open_files()));
+        assert!(!failures.is_new(&too_many_open_files()));
+        assert!(failures.is_new(&io::Error::from_raw_os_error(libc::ENFILE)));
+        assert!(failures.is_new(&too_many_open_files()));
+        failures.recovered();
+        assert!(failures.is_new(&too_many_open_files()));
+    }
+
     #[test]
     fn a_call_reaches_the_app_and_its_answer_reaches_the_caller() {
         let path = socket("answer");
@@ -247,6 +372,31 @@ mod tests {
             Outcome::Result(Response::Agents { agents: Vec::new() })
         );
         app.join().unwrap();
+    }
+
+    #[test]
+    fn a_caller_that_hangs_up_frees_its_call_before_the_app_answers() {
+        let path = socket("hang-up");
+        let calls = listen(&path).unwrap();
+        let wait = Call {
+            from: None,
+            request: Request::List,
+        };
+        let mut line = serde_json::to_vec(&wait).unwrap();
+        line.push(b'\n');
+        let mut caller = UnixStream::connect(&path).unwrap();
+        caller.write_all(&line).unwrap();
+        let incoming = calls.recv_blocking().unwrap();
+        assert!(!incoming.reply.is_closed(), "the caller is still there");
+        drop(caller);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !incoming.reply.is_closed() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the call still waits for an answer nobody reads"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

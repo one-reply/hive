@@ -63,12 +63,7 @@ impl ProcessTable {
     /// Every process of the foreground job of the terminal whose shell is `shell_pid`,
     /// including the shell itself when nothing else is in the foreground.
     pub fn foreground_pids(&self, shell_pid: u32) -> Vec<u32> {
-        let Some(foreground) = self
-            .processes
-            .iter()
-            .find(|p| p.pid == shell_pid)
-            .and_then(Self::foreground_group)
-        else {
+        let Some(foreground) = self.foreground_job(shell_pid) else {
             return Vec::new();
         };
         self.processes
@@ -76,6 +71,15 @@ impl ProcessTable {
             .filter(|p| p.pgid == foreground)
             .map(|p| p.pid)
             .collect()
+    }
+
+    /// The process group of the foreground job of the terminal whose shell is `shell_pid`:
+    /// stable while the job runs, whichever processes it starts and ends.
+    pub fn foreground_job(&self, shell_pid: u32) -> Option<u32> {
+        self.processes
+            .iter()
+            .find(|p| p.pid == shell_pid)
+            .and_then(Self::foreground_group)
     }
 
     fn foreground_group(shell: &Process) -> Option<u32> {
@@ -150,6 +154,8 @@ garbage line
         assert_eq!(table.foreground_pids(52000), [52000]);
         assert!(table.foreground_pids(1).is_empty());
         assert!(table.foreground_pids(4242).is_empty());
+        assert_eq!(table.foreground_job(54000), Some(54100));
+        assert_eq!(table.foreground_job(4242), None);
     }
 
     #[test]

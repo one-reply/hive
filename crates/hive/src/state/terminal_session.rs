@@ -63,6 +63,9 @@ pub(crate) struct TerminalSession {
     pending_input: VecDeque<Input>,
     paste_task: Option<Task<()>>,
     launch_task: Option<Task<()>>,
+    /// Every byte written to the terminal, for tests of what a key or the input method sent.
+    #[cfg(test)]
+    pub(crate) written: Vec<u8>,
 }
 
 impl EventEmitter<SessionEvent> for TerminalSession {}
@@ -70,9 +73,21 @@ impl EventEmitter<SessionEvent> for TerminalSession {}
 impl TerminalSession {
     #[cfg(test)]
     pub(crate) fn for_test(terminal: Terminal) -> Self {
+        Self::with_status_for_test(SessionStatus::Ready(terminal))
+    }
+
+    /// A session whose shell has not started: for tests of what surrounds a terminal, which
+    /// then need no process.
+    #[cfg(test)]
+    pub(crate) fn starting_for_test() -> Self {
+        Self::with_status_for_test(SessionStatus::Starting)
+    }
+
+    #[cfg(test)]
+    fn with_status_for_test(status: SessionStatus) -> Self {
         Self {
             host: Host::Local,
-            status: SessionStatus::Ready(terminal),
+            status,
             title: None,
             exited: false,
             directory: None,
@@ -93,6 +108,8 @@ impl TerminalSession {
             pending_input: VecDeque::new(),
             paste_task: None,
             launch_task: None,
+            #[cfg(test)]
+            written: Vec::new(),
         }
     }
 
@@ -291,6 +308,8 @@ impl TerminalSession {
             pending_input: VecDeque::new(),
             paste_task: None,
             launch_task: None,
+            #[cfg(test)]
+            written: Vec::new(),
         }
     }
 

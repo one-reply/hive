@@ -4,7 +4,7 @@
 //! query. Spec revision 0.4: <https://www.superlogical.com/rex/docs/build/program-status>.
 //!
 //! alacritty's parser drops unknown OSC sequences before its handler sees them, so the PTY
-//! reader runs every chunk through a [`Scanner`] before the parser gets it.
+//! reader runs every chunk through a scanner of its own before the parser gets it.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

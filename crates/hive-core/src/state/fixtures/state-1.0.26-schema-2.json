@@ -1,0 +1,843 @@
+{
+  "version": 2,
+  "settings": {
+    "hosting_servers": {
+      "github": null,
+      "gitlab": null
+    },
+    "files": {
+      "icons": "colored",
+      "density": "compact",
+      "git_decorations": true,
+      "auto_reveal": true,
+      "show_hidden": true,
+      "show_ignored": true,
+      "save_on_focus_change": true,
+      "code_completion": true,
+      "inline_blame": true,
+      "sticky_scroll": true,
+      "language_tools": true,
+      "font_size": 14.0
+    },
+    "default_cli_agent": "Codex",
+    "commit_message": {
+      "generator": {
+        "kind": "api",
+        "provider": "anthropic",
+        "model": "claude-haiku-5-5"
+      },
+      "prompt": "{basePrompt}\n\nBranch: {branch}\n\nStaged patch:\n{stagedPatch}"
+    },
+    "theme": "system",
+    "light_theme": "hive",
+    "dark_theme": "hive",
+    "ui_font_family": null,
+    "code_font_family": null,
+    "scrollbars": "system",
+    "sidebar_width": 299.53125,
+    "git_panel_width": 444.94922,
+    "git_panel_open": true,
+    "files_selected": false,
+    "diff_split": true,
+    "confirm_close_running_agent": true,
+    "agent_notifications": true,
+    "keep_awake_while_agents_work": false,
+    "ui_font_size": 16.0,
+    "terminal_font_size": 14.0,
+    "keybindings": {}
+  },
+  "projects": [
+    {
+      "path": "/Users/dev/projects/item1",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 16347926,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item2",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 2278750,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item3",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 1357990,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item4",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 2278750,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item5",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 9133302,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item6",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 16347926,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item7",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 15680580,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item8",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 15381256,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "collapsed"
+    },
+    {
+      "path": "/Users/dev/projects/item9",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 15381256,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    }
+  ],
+  "workspace": {
+    "selection": {
+      "host": {
+        "kind": "local"
+      },
+      "project": "/Users/dev/projects/item9",
+      "worktree": "/Users/dev/projects/item9"
+    },
+    "projects": [
+      {
+        "project": "/Users/dev/projects/item9",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item9",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item9",
+                    "worktree": "/Users/dev/projects/item9",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item1",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item1",
+        "focused": 0,
+        "layout": null
+      },
+      {
+        "project": "/Users/dev/projects/item2",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item2",
+        "focused": 0,
+        "layout": null
+      },
+      {
+        "project": "/Users/dev/projects/item3",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item3",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item3",
+                    "worktree": "/Users/dev/projects/item3",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item5",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item5",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item5",
+                    "worktree": "/Users/dev/projects/item5",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item13",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item14/item15.js",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item16",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item16",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item17/item18.json",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item19/item20.md",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item21.js",
+                "old_path": null,
+                "source": "Untracked",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item21",
+                "old_path": null,
+                "source": "Untracked",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item22/item23/item24",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item22/item23/item24.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item25/item26.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item25/item27/item28.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item7",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item7",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item7/item10",
+                    "worktree": "/Users/dev/projects/item7",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item7",
+                "path": "item10/item29/item30/item31/item32.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item7",
+                "path": "item10/item33/item34.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item7",
+                "path": "item10/item29/item30/item31/item35.js",
+                "old_path": null,
+                "source": "Untracked",
+                "whole_file_only": false
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item6",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item6",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item6",
+                    "worktree": "/Users/dev/projects/item6",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item8",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item8",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item8",
+                    "worktree": "/Users/dev/projects/item8",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item4",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item4",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item4/item10",
+                    "worktree": "/Users/dev/projects/item4",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              },
+              {
+                "kind": "file",
+                "worktree": "/Users/dev/projects/item4",
+                "path": "item10/item17.json",
+                "cursor": [
+                  7,
+                  0
+                ],
+                "scroll": [
+                  0.0,
+                  0.0
+                ]
+              }
+            ],
+            "active": 0
+          }
+        }
+      }
+    ]
+  },
+  "pipelines": {
+    "catalog_version": 1,
+    "templates": [
+      {
+        "name": "Feature delivery",
+        "planner": {
+          "name": "Plan",
+          "instruction": "Break the task into repository-specific assignments and acceptance criteria. Ask for clarification when needed.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null
+        },
+        "development": {
+          "name": "Development",
+          "instruction": "Implement the approved assignment in your worktree. Report what changed and what you verified.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null
+        },
+        "reviews": [
+          {
+            "name": "QA",
+            "instruction": "Verify the acceptance criteria across all participating repositories. Report reproducible findings with the affected lane.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null
+          },
+          {
+            "name": "Security & performance",
+            "instruction": "Review the changes for security and performance regressions. Report specific findings and affected lanes.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null
+          }
+        ],
+        "lanes": [
+          {
+            "name": "Development",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": ""
+          }
+        ]
+      },
+      {
+        "name": "Quick fix",
+        "planner": {
+          "name": "Plan",
+          "instruction": "Identify the root cause, the smallest complete fix and a regression check.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null
+        },
+        "development": {
+          "name": "Development",
+          "instruction": "Implement the approved assignment in your worktree. Report what changed and what you verified.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null
+        },
+        "reviews": [
+          {
+            "name": "QA",
+            "instruction": "Verify the acceptance criteria across all participating repositories. Report reproducible findings with the affected lane.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null
+          }
+        ],
+        "lanes": [
+          {
+            "name": "Development",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": ""
+          }
+        ]
+      },
+      {
+        "name": "Cross-repository",
+        "planner": {
+          "name": "Plan",
+          "instruction": "Define the shared contract and assign its changes and acceptance criteria to each participating repository.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null
+        },
+        "development": {
+          "name": "Development",
+          "instruction": "Implement the approved assignment in your worktree. Report what changed and what you verified.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null
+        },
+        "reviews": [
+          {
+            "name": "QA",
+            "instruction": "Verify the acceptance criteria across all participating repositories. Report reproducible findings with the affected lane.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null
+          },
+          {
+            "name": "Security & performance",
+            "instruction": "Review the changes for security and performance regressions. Report specific findings and affected lanes.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null
+          }
+        ],
+        "lanes": [
+          {
+            "name": "API",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": ""
+          },
+          {
+            "name": "Web",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": ""
+          }
+        ]
+      }
+    ],
+    "runs": [
+      {
+        "id": 17,
+        "owner": "/Users/dev/projects/item2",
+        "task": "Sample task 1.",
+        "template": {
+          "name": "Feature delivery",
+          "planner": {
+            "name": "Plan",
+            "instruction": "Break the task into repository-specific assignments and acceptance criteria. Ask for clarification when needed.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null
+          },
+          "development": {
+            "name": "Development",
+            "instruction": "Implement the approved assignment in your worktree. Report what changed and what you verified.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null
+          },
+          "reviews": [
+            {
+              "name": "QA",
+              "instruction": "Verify the acceptance criteria across all participating repositories. Report reproducible findings with the affected lane.",
+              "profile": {
+                "agent": "Codex",
+                "model": "",
+                "effort": ""
+              },
+              "limit": 3,
+              "return_lane": null
+            },
+            {
+              "name": "Security & performance",
+              "instruction": "Review the changes for security and performance regressions. Report specific findings and affected lanes.",
+              "profile": {
+                "agent": "Codex",
+                "model": "",
+                "effort": ""
+              },
+              "limit": 3,
+              "return_lane": null
+            }
+          ],
+          "lanes": [
+            {
+              "name": "Development",
+              "profile": {
+                "agent": "Codex",
+                "model": "",
+                "effort": ""
+              },
+              "command": ""
+            }
+          ]
+        },
+        "lanes": [
+          {
+            "name": "Development",
+            "project": "/Users/dev/projects/item2",
+            "base": "HEAD",
+            "worktree": "",
+            "command": "",
+            "assignment": "",
+            "criteria": "",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            }
+          }
+        ],
+        "phase": "planning",
+        "history": [],
+        "reports": [],
+        "timings": [],
+        "findings": [],
+        "commands": [],
+        "review_revision": null,
+        "sessions": [],
+        "outstanding": [
+          {
+            "run": 17,
+            "attempt": 1,
+            "lane": null
+          }
+        ],
+        "last_attempt": 1,
+        "rounds": [
+          0,
+          0
+        ],
+        "dismissed": [],
+        "feedback": ""
+      }
+    ]
+  },
+  "last_seen_release": null,
+  "reviewed": []
+}

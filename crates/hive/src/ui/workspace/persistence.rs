@@ -34,6 +34,7 @@ impl Workspace {
                 worktree: None,
                 focused: 0,
                 layout: None,
+                unavailable: Vec::new(),
             });
         if let Some((selected, cwd)) = self.selected_target(cx)
             && &selected == project

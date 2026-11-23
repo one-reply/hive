@@ -14,13 +14,7 @@ pub fn selection(
     unsaved: bool,
 ) -> Option<String> {
     let selected = text.get(range.clone()).filter(|value| !value.is_empty())?;
-    let start_line = text[..range.start].bytes().filter(|b| *b == b'\n').count() + 1;
-    let end_line = start_line
-        + selected
-            .trim_end_matches('\n')
-            .bytes()
-            .filter(|b| *b == b'\n')
-            .count();
+    let (start_line, end_line) = super::reference::selected_lines(text, range)?.into_inner();
     #[derive(serde::Serialize)]
     struct Context<'a> {
         host: &'a crate::host::Host,

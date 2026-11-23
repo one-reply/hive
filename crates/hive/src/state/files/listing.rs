@@ -1,5 +1,13 @@
 use super::*;
 
+/// What one read found: the listed directories, the ignored paths when Git was asked, and
+/// why some directories could not be read.
+pub(super) type Listing = (
+    BTreeMap<PathBuf, Vec<files::Entry>>,
+    Option<HashSet<PathBuf>>,
+    Option<String>,
+);
+
 impl Files {
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.loading || self.busy {
@@ -70,33 +78,7 @@ impl Files {
                     return;
                 }
                 this.loading = false;
-                match result {
-                    Ok((directories, ignored, error)) => {
-                        let changed = this.entries != directories
-                            || ignored
-                                .as_ref()
-                                .is_some_and(|ignored| this.ignored != *ignored);
-                        if this.error != error
-                            && let Some(error) = &error
-                        {
-                            tracing::warn!(%error, "file tree directory unavailable");
-                        }
-                        this.entries = directories;
-                        if let Some(ignored) = ignored {
-                            this.ignored = ignored;
-                        }
-                        this.error = error;
-                        if changed || this.pending_reveal.is_some() {
-                            this.rebuild(cx);
-                        }
-                    }
-                    Err(error) => {
-                        if this.error.as_ref() != Some(&error) {
-                            tracing::warn!(%error, "file tree failed");
-                        }
-                        this.error = Some(error);
-                    }
-                }
+                this.apply_listing(result, cx);
                 cx.notify();
                 if std::mem::take(&mut this.pending_refresh) {
                     this.refresh(cx);
@@ -104,6 +86,44 @@ impl Files {
             });
         }));
         cx.notify();
+    }
+
+    /// Applies a read of the listed directories. The rows are rebuilt only when it found
+    /// something new: a reveal still waiting for its row gets it from the rebuild that the
+    /// listing of its folders brings, and one whose row cannot appear must not rebuild the
+    /// tree on every poll.
+    pub(super) fn apply_listing(
+        &mut self,
+        result: Result<Listing, String>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok((directories, ignored, error)) => {
+                let changed = self.entries != directories
+                    || ignored
+                        .as_ref()
+                        .is_some_and(|ignored| self.ignored != *ignored);
+                if self.error != error
+                    && let Some(error) = &error
+                {
+                    tracing::warn!(%error, "file tree directory unavailable");
+                }
+                self.entries = directories;
+                if let Some(ignored) = ignored {
+                    self.ignored = ignored;
+                }
+                self.error = error;
+                if changed {
+                    self.rebuild(cx);
+                }
+            }
+            Err(error) => {
+                if self.error.as_ref() != Some(&error) {
+                    tracing::warn!(%error, "file tree failed");
+                }
+                self.error = Some(error);
+            }
+        }
     }
 
     pub(crate) fn refresh_all(&mut self, cx: &mut Context<Self>) {

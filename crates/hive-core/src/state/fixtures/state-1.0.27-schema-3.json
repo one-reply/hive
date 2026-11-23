@@ -1,0 +1,931 @@
+{
+  "version": 3,
+  "settings": {
+    "hosting_servers": {
+      "github": null,
+      "gitlab": null
+    },
+    "files": {
+      "icons": "colored",
+      "density": "compact",
+      "git_decorations": true,
+      "auto_reveal": true,
+      "show_hidden": true,
+      "show_ignored": true,
+      "save_on_focus_change": true,
+      "code_completion": true,
+      "inline_blame": true,
+      "sticky_scroll": true,
+      "language_tools": true,
+      "font_size": 14.0
+    },
+    "default_cli_agent": "Codex",
+    "commit_message": {
+      "generator": {
+        "kind": "api",
+        "provider": "anthropic",
+        "model": "claude-haiku-5-5"
+      },
+      "prompt": "{basePrompt}\n\nBranch: {branch}\n\nStaged patch:\n{stagedPatch}"
+    },
+    "theme": "system",
+    "light_theme": "hive",
+    "dark_theme": "hive",
+    "ui_font_family": null,
+    "code_font_family": null,
+    "scrollbars": "system",
+    "sidebar_width": 299.53125,
+    "git_panel_width": 444.94922,
+    "git_panel_open": true,
+    "files_selected": false,
+    "diff_split": true,
+    "confirm_close_running_agent": true,
+    "agent_notifications": true,
+    "keep_awake_while_agents_work": false,
+    "ui_font_size": 16.0,
+    "terminal_font_size": 14.0,
+    "keybindings": {}
+  },
+  "projects": [
+    {
+      "path": "/Users/dev/projects/item1",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 16347926,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item2",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 2278750,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item3",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 1357990,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item4",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 2278750,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item5",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 9133302,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item6",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 16347926,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item7",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 15680580,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    },
+    {
+      "path": "/Users/dev/projects/item8",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 15381256,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "collapsed"
+    },
+    {
+      "path": "/Users/dev/projects/item9",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 15381256,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded"
+    }
+  ],
+  "workspace": {
+    "selection": {
+      "host": {
+        "kind": "local"
+      },
+      "project": "/Users/dev/projects/item9",
+      "worktree": "/Users/dev/projects/item9"
+    },
+    "projects": [
+      {
+        "project": "/Users/dev/projects/item9",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item9",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item9",
+                    "worktree": "/Users/dev/projects/item9",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item1",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item1",
+        "focused": 0,
+        "layout": null
+      },
+      {
+        "project": "/Users/dev/projects/item2",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item2",
+        "focused": 0,
+        "layout": null
+      },
+      {
+        "project": "/Users/dev/projects/item3",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item3",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item3",
+                    "worktree": "/Users/dev/projects/item3",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item5",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item5",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item5",
+                    "worktree": "/Users/dev/projects/item5",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item13",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item14/item15.js",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item16",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item16",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item17/item18.json",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item19/item20.md",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item21.js",
+                "old_path": null,
+                "source": "Untracked",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item21",
+                "old_path": null,
+                "source": "Untracked",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item22/item23/item24",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item22/item23/item24.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item25/item26.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item25/item27/item28.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item7",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item7",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item7/item10",
+                    "worktree": "/Users/dev/projects/item7",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item7",
+                "path": "item10/item29/item30/item31/item32.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item7",
+                "path": "item10/item33/item34.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item7",
+                "path": "item10/item29/item30/item31/item35.js",
+                "old_path": null,
+                "source": "Untracked",
+                "whole_file_only": false
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item6",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item6",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item6",
+                    "worktree": "/Users/dev/projects/item6",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item8",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item8",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item8",
+                    "worktree": "/Users/dev/projects/item8",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item4",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item4",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item4/item10",
+                    "worktree": "/Users/dev/projects/item4",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              },
+              {
+                "kind": "file",
+                "worktree": "/Users/dev/projects/item4",
+                "path": "item10/item17.json",
+                "cursor": [
+                  7,
+                  0
+                ],
+                "scroll": [
+                  0.0,
+                  0.0
+                ]
+              }
+            ],
+            "active": 0
+          }
+        }
+      }
+    ]
+  },
+  "pipelines": {
+    "catalog_version": 2,
+    "templates": [
+      {
+        "name": "Feature delivery",
+        "planner": {
+          "name": "Plan",
+          "instruction": "Read the code the task touches in every listed worktree before planning; do not edit files. Give each lane that needs work a self-contained assignment: the modules to change, the expected behavior, and the tests to add or update. Write acceptance criteria as observable checks (a test, a command, a reproducible behavior), not intentions. Leave out lanes that need no changes. Ask the user when the requirements are ambiguous or a decision has real trade-offs instead of guessing.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 1
+        },
+        "development": {
+          "name": "Development",
+          "instruction": "Read the code your assignment touches and follow the repository's conventions and agent instructions (AGENTS.md, CLAUDE.md, CONTRIBUTING). Implement the smallest complete change that meets every acceptance criterion and fix root causes, not symptoms. Add or update tests for the new behavior, then run the project's formatter, linter and tests. If the handoff lists findings for your lane, resolve each one and say how. Do not push or switch branches. Report what changed, the commands you ran with their results, and what you could not verify.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 2
+        },
+        "reviews": [
+          {
+            "name": "QA",
+            "instruction": "Verify, do not fix. In each worktree inspect the actual changes (git status, git diff, the branch's commits) and check every acceptance criterion against the code and tests, not against the developer's summary. Look for unhandled edge cases and error paths, broken callers of changed code, and missing or weak tests. Your sandbox is read-only, so you may be unable to build; Hive runs each lane's configured checks itself. Report only concrete defects, each with its location, a reproduction or failing case, and the expected behavior; skip style preferences.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 3
+          },
+          {
+            "name": "Security & performance",
+            "instruction": "Review only the changed code and the paths it affects. Security: untrusted input reaching shell commands, queries, file paths or HTML; missing authentication or authorization checks; secrets in code, logs or errors; unsafe deserialization; risky new dependencies. Performance: extra work on hot paths, I/O or queries inside loops, unbounded memory or result sizes, blocking calls on async or UI threads. Report only issues with a concrete exploit or a measurable cost, each with its location and a fix; skip theoretical concerns and code the change does not touch.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 4
+          }
+        ],
+        "lanes": [
+          {
+            "name": "Development",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": ""
+          }
+        ]
+      },
+      {
+        "name": "Quick fix",
+        "planner": {
+          "name": "Plan",
+          "instruction": "Locate the bug by reading the code; do not edit files. Identify the root cause and every caller that shares the faulty path, then assign the smallest complete fix to the lane that owns it. Acceptance criteria must include the original symptom gone and a regression test that fails before the fix and passes after it. Ask the user when you cannot tell what the correct behavior is.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 5
+        },
+        "development": {
+          "name": "Development",
+          "instruction": "Fix the root cause in the shared code path, not only the reported call site. First write a regression test that fails without the fix, then make it pass. Keep the diff focused: no refactoring or unrelated changes. Run the project's formatter, linter and tests. Do not push or switch branches. Report the root cause, the fix, and the test evidence.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 6
+        },
+        "reviews": [
+          {
+            "name": "QA",
+            "instruction": "Verify, do not fix. Confirm the change removes the root cause rather than masking the symptom: it covers every caller of the faulty path, and the regression test would fail without the fix. Check that it changes no behavior beyond the fix. Your sandbox is read-only; Hive runs each lane's configured checks itself. Report only concrete defects, each with its location, a reproduction and the expected behavior.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 7
+          }
+        ],
+        "lanes": [
+          {
+            "name": "Development",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": ""
+          }
+        ]
+      },
+      {
+        "name": "Cross-repository",
+        "planner": {
+          "name": "Plan",
+          "instruction": "Read the code on both sides of the boundary in every worktree; do not edit files. Define the shared contract first: endpoints or messages, field names and types, optionality, errors and status values. Repeat it verbatim in every affected assignment so the lanes cannot drift, and state which side stays backward compatible while the other is deployed. Give each lane criteria that verify its side of the contract. Ask the user when the contract involves a product decision.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 8
+        },
+        "development": {
+          "name": "Development",
+          "instruction": "Implement your side of the contract exactly as the assignment states it. If the contract is wrong or incomplete, stop and report the problem instead of inventing a variant. Keep the backward compatibility the plan requires. Add tests for your side of the contract, including error cases, then run the project's formatter, linter and tests. Do not push or switch branches. Report what changed and how you verified it.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 9
+        },
+        "reviews": [
+          {
+            "name": "QA",
+            "instruction": "Verify, do not fix. Check that every lane implements the same contract: compare names, types, optionality, error codes and status values on both sides, then trace one complete request through the changed code from client to server and back. Your sandbox is read-only; Hive runs each lane's configured checks itself. Report each mismatch against the lane that deviates from the planned contract, with the location on both sides.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 10
+          },
+          {
+            "name": "Security & performance",
+            "instruction": "Review only the changed code and the paths it affects. Security: untrusted input reaching shell commands, queries, file paths or HTML; missing authentication or authorization checks; secrets in code, logs or errors; unsafe deserialization; risky new dependencies. Performance: extra work on hot paths, I/O or queries inside loops, unbounded memory or result sizes, blocking calls on async or UI threads. Report only issues with a concrete exploit or a measurable cost, each with its location and a fix; skip theoretical concerns and code the change does not touch.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 4
+          }
+        ],
+        "lanes": [
+          {
+            "name": "API",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": ""
+          },
+          {
+            "name": "Web",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": ""
+          }
+        ]
+      }
+    ],
+    "prompts": [
+      {
+        "id": 1,
+        "name": "Feature planner",
+        "text": "Read the code the task touches in every listed worktree before planning; do not edit files. Give each lane that needs work a self-contained assignment: the modules to change, the expected behavior, and the tests to add or update. Write acceptance criteria as observable checks (a test, a command, a reproducible behavior), not intentions. Leave out lanes that need no changes. Ask the user when the requirements are ambiguous or a decision has real trade-offs instead of guessing."
+      },
+      {
+        "id": 2,
+        "name": "Developer",
+        "text": "Read the code your assignment touches and follow the repository's conventions and agent instructions (AGENTS.md, CLAUDE.md, CONTRIBUTING). Implement the smallest complete change that meets every acceptance criterion and fix root causes, not symptoms. Add or update tests for the new behavior, then run the project's formatter, linter and tests. If the handoff lists findings for your lane, resolve each one and say how. Do not push or switch branches. Report what changed, the commands you ran with their results, and what you could not verify."
+      },
+      {
+        "id": 3,
+        "name": "QA reviewer",
+        "text": "Verify, do not fix. In each worktree inspect the actual changes (git status, git diff, the branch's commits) and check every acceptance criterion against the code and tests, not against the developer's summary. Look for unhandled edge cases and error paths, broken callers of changed code, and missing or weak tests. Your sandbox is read-only, so you may be unable to build; Hive runs each lane's configured checks itself. Report only concrete defects, each with its location, a reproduction or failing case, and the expected behavior; skip style preferences."
+      },
+      {
+        "id": 4,
+        "name": "Security & performance reviewer",
+        "text": "Review only the changed code and the paths it affects. Security: untrusted input reaching shell commands, queries, file paths or HTML; missing authentication or authorization checks; secrets in code, logs or errors; unsafe deserialization; risky new dependencies. Performance: extra work on hot paths, I/O or queries inside loops, unbounded memory or result sizes, blocking calls on async or UI threads. Report only issues with a concrete exploit or a measurable cost, each with its location and a fix; skip theoretical concerns and code the change does not touch."
+      },
+      {
+        "id": 5,
+        "name": "Bug-fix planner",
+        "text": "Locate the bug by reading the code; do not edit files. Identify the root cause and every caller that shares the faulty path, then assign the smallest complete fix to the lane that owns it. Acceptance criteria must include the original symptom gone and a regression test that fails before the fix and passes after it. Ask the user when you cannot tell what the correct behavior is."
+      },
+      {
+        "id": 6,
+        "name": "Bug-fix developer",
+        "text": "Fix the root cause in the shared code path, not only the reported call site. First write a regression test that fails without the fix, then make it pass. Keep the diff focused: no refactoring or unrelated changes. Run the project's formatter, linter and tests. Do not push or switch branches. Report the root cause, the fix, and the test evidence."
+      },
+      {
+        "id": 7,
+        "name": "Bug-fix QA reviewer",
+        "text": "Verify, do not fix. Confirm the change removes the root cause rather than masking the symptom: it covers every caller of the faulty path, and the regression test would fail without the fix. Check that it changes no behavior beyond the fix. Your sandbox is read-only; Hive runs each lane's configured checks itself. Report only concrete defects, each with its location, a reproduction and the expected behavior."
+      },
+      {
+        "id": 8,
+        "name": "Contract planner",
+        "text": "Read the code on both sides of the boundary in every worktree; do not edit files. Define the shared contract first: endpoints or messages, field names and types, optionality, errors and status values. Repeat it verbatim in every affected assignment so the lanes cannot drift, and state which side stays backward compatible while the other is deployed. Give each lane criteria that verify its side of the contract. Ask the user when the contract involves a product decision."
+      },
+      {
+        "id": 9,
+        "name": "Contract developer",
+        "text": "Implement your side of the contract exactly as the assignment states it. If the contract is wrong or incomplete, stop and report the problem instead of inventing a variant. Keep the backward compatibility the plan requires. Add tests for your side of the contract, including error cases, then run the project's formatter, linter and tests. Do not push or switch branches. Report what changed and how you verified it."
+      },
+      {
+        "id": 10,
+        "name": "Contract QA reviewer",
+        "text": "Verify, do not fix. Check that every lane implements the same contract: compare names, types, optionality, error codes and status values on both sides, then trace one complete request through the changed code from client to server and back. Your sandbox is read-only; Hive runs each lane's configured checks itself. Report each mismatch against the lane that deviates from the planned contract, with the location on both sides."
+      },
+      {
+        "id": 11,
+        "name": "Code reviewer",
+        "text": "Review the changed code for correctness and maintainability: logic errors, unhandled edge cases and error paths, broken callers of changed functions, logic that duplicates code already in the repository, and missing or weak tests. Report only actionable defects, each with its location, the problem and the expected fix; skip style that the formatter or linter already enforces."
+      },
+      {
+        "id": 12,
+        "name": "Security reviewer",
+        "text": "Review the changed code and the paths it touches for vulnerabilities: untrusted input reaching shell commands, queries, file paths or HTML; missing authentication or authorization checks; secrets in code, logs or errors; unsafe deserialization; risky new dependencies. Report each issue with its location, how it can be exploited and a defensive fix; skip theoretical concerns and code the change does not touch."
+      },
+      {
+        "id": 13,
+        "name": "Performance reviewer",
+        "text": "Inspect the changed paths for performance regressions: extra work on hot paths, I/O or queries inside loops, unbounded memory or result sizes, blocking calls on async or UI threads, missing limits or pagination. Report each issue with its location, its expected cost at realistic input sizes and a fix; do not flag micro-optimizations without evidence."
+      },
+      {
+        "id": 14,
+        "name": "Acceptance reviewer",
+        "text": "Check the changes against every approved acceptance criterion in each worktree, using the code and tests rather than the developers' summaries. Report each unmet criterion with its evidence and the expected behavior."
+      }
+    ],
+    "runs": [
+      {
+        "id": 17,
+        "owner": "/Users/dev/projects/item2",
+        "task": "Sample task 1.",
+        "template": {
+          "name": "Feature delivery",
+          "planner": {
+            "name": "Plan",
+            "instruction": "Read the code the task touches in every listed worktree before planning; do not edit files. Give each lane that needs work a self-contained assignment: the modules to change, the expected behavior, and the tests to add or update. Write acceptance criteria as observable checks (a test, a command, a reproducible behavior), not intentions. Leave out lanes that need no changes. Ask the user when the requirements are ambiguous or a decision has real trade-offs instead of guessing.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 1
+          },
+          "development": {
+            "name": "Development",
+            "instruction": "Read the code your assignment touches and follow the repository's conventions and agent instructions (AGENTS.md, CLAUDE.md, CONTRIBUTING). Implement the smallest complete change that meets every acceptance criterion and fix root causes, not symptoms. Add or update tests for the new behavior, then run the project's formatter, linter and tests. If the handoff lists findings for your lane, resolve each one and say how. Do not push or switch branches. Report what changed, the commands you ran with their results, and what you could not verify.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 2
+          },
+          "reviews": [
+            {
+              "name": "QA",
+              "instruction": "Verify, do not fix. In each worktree inspect the actual changes (git status, git diff, the branch's commits) and check every acceptance criterion against the code and tests, not against the developer's summary. Look for unhandled edge cases and error paths, broken callers of changed code, and missing or weak tests. Your sandbox is read-only, so you may be unable to build; Hive runs each lane's configured checks itself. Report only concrete defects, each with its location, a reproduction or failing case, and the expected behavior; skip style preferences.",
+              "profile": {
+                "agent": "Codex",
+                "model": "",
+                "effort": ""
+              },
+              "limit": 3,
+              "return_lane": null,
+              "prompt": 3
+            },
+            {
+              "name": "Security & performance",
+              "instruction": "Review only the changed code and the paths it affects. Security: untrusted input reaching shell commands, queries, file paths or HTML; missing authentication or authorization checks; secrets in code, logs or errors; unsafe deserialization; risky new dependencies. Performance: extra work on hot paths, I/O or queries inside loops, unbounded memory or result sizes, blocking calls on async or UI threads. Report only issues with a concrete exploit or a measurable cost, each with its location and a fix; skip theoretical concerns and code the change does not touch.",
+              "profile": {
+                "agent": "Codex",
+                "model": "",
+                "effort": ""
+              },
+              "limit": 3,
+              "return_lane": null,
+              "prompt": 4
+            }
+          ],
+          "lanes": [
+            {
+              "name": "Development",
+              "profile": {
+                "agent": "Codex",
+                "model": "",
+                "effort": ""
+              },
+              "command": ""
+            }
+          ]
+        },
+        "lanes": [
+          {
+            "name": "Development",
+            "project": "/Users/dev/projects/item2",
+            "base": "HEAD",
+            "branch": "",
+            "worktree": "",
+            "command": "",
+            "assignment": "",
+            "criteria": "",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            }
+          }
+        ],
+        "phase": "planning",
+        "history": [],
+        "reports": [],
+        "timings": [],
+        "findings": [],
+        "commands": [],
+        "review_revision": null,
+        "sessions": [],
+        "outstanding": [
+          {
+            "run": 17,
+            "attempt": 1,
+            "lane": null
+          }
+        ],
+        "last_attempt": 1,
+        "rounds": [
+          0,
+          0
+        ],
+        "dismissed": [],
+        "feedback": ""
+      }
+    ]
+  },
+  "last_seen_release": null,
+  "reviewed": []
+}

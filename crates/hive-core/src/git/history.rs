@@ -49,14 +49,27 @@ pub fn read(host: &Host, cwd: &Path, head: &str, skip: usize) -> Result<Vec<Comm
         .0
         .iter()
         .map(|f| {
+            // Old commits may carry Latin-1 names and subjects without an encoding header;
+            // they are only displayed, so a lossy rendering keeps the page readable.
             Ok(Commit {
                 oid: text(f[0])?.into(),
-                author: text(f[1])?.into(),
+                author: String::from_utf8_lossy(f[1]).into_owned(),
                 date: text(f[2])?.into(),
-                subject: text(f[3])?.into(),
+                subject: String::from_utf8_lossy(f[3]).into_owned(),
             })
         })
         .collect()
+}
+
+/// Blocking: how many commits `revisions` select, as `git rev-list --count` reads them.
+pub(super) fn count(host: &Host, cwd: &Path, revisions: &[&str]) -> Result<usize, GitError> {
+    let mut args = vec!["rev-list", "--count"];
+    args.extend_from_slice(revisions);
+    args.push("--");
+    let raw = run(host, cwd, &args)?;
+    raw.trim()
+        .parse()
+        .map_err(|_| GitError::Invalid(format!("Unexpected `git rev-list --count` output: {raw}")))
 }
 
 pub(super) fn commit_args(host: &Host, cwd: &Path, commit: &str) -> Result<Vec<String>, GitError> {
@@ -129,6 +142,7 @@ pub(crate) fn files(
     )?;
     let mut parts = raw.split(|b| *b == 0).filter(|p| !p.is_empty());
     let mut result = Vec::new();
+    let mut unreadable = 0usize;
     while let Some(code) = parts.next() {
         let change = match code.first() {
             Some(b'A') => Change::Added,
@@ -138,23 +152,31 @@ pub(crate) fn files(
             Some(b'T') => Change::TypeChanged,
             _ => Change::Modified,
         };
-        let mut path = text(
-            parts
-                .next()
-                .ok_or_else(|| GitError::Invalid("Missing Git path".into()))?,
-        )?
-        .to_string();
-        let old_path = if matches!(change, Change::Renamed | Change::Copied) {
-            let old = path;
-            path = text(
+        let first = parts
+            .next()
+            .ok_or_else(|| GitError::Invalid("Missing Git path".into()))?;
+        let second = if matches!(change, Change::Renamed | Change::Copied) {
+            Some(
                 parts
                     .next()
                     .ok_or_else(|| GitError::Invalid("Missing rename destination".into()))?,
-            )?
-            .into();
-            Some(old)
+            )
         } else {
             None
+        };
+        // A path that is not UTF-8 cannot be opened by name; that file is left out of the
+        // list rather than failing the whole commit.
+        let decoded = (
+            std::str::from_utf8(first),
+            second.map(std::str::from_utf8).transpose(),
+        );
+        let (Ok(first), Ok(second)) = decoded else {
+            unreadable += 1;
+            continue;
+        };
+        let (path, old_path) = match second {
+            Some(path) => (path.to_owned(), Some(first.to_owned())),
+            None => (first.to_owned(), None),
         };
         result.push(FileChange {
             staged_stats: counts.get(&path).copied(),
@@ -166,6 +188,9 @@ pub(crate) fn files(
             unstaged: None,
             submodule: false,
         });
+    }
+    if unreadable > 0 {
+        tracing::warn!(unreadable, path = %cwd.display(), "left out changed files whose names are not UTF-8");
     }
     Ok(result)
 }

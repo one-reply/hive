@@ -25,5 +25,7 @@ objc2-user-notifications.workspace = true
 block2.workspace = true
 
 [dev-dependencies]
+# The one Git environment of every test that runs `git` (`hive_core::git::testing`).
+hive-core = { workspace = true, features = ["test-support"] }
 # Window tests (`#[gpui::test]`, simulated keystrokes) for editor key handling.
 gpui-pre = { workspace = true, features = ["test-support"] }

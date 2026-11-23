@@ -130,8 +130,12 @@ pub struct Settings {
     pub files_selected: bool,
     /// Side-by-side diff instead of the default unified presentation.
     pub diff_split: bool,
-    /// Ask before closing a terminal pane or tab in which a CLI agent is running.
+    /// Ask before ending a terminal in which a CLI agent is running: closing its pane, tab or
+    /// window, or quitting the app.
     pub confirm_close_running_agent: bool,
+    /// In terminals, Option with a key sends that key after ESC (Meta) instead of the
+    /// character macOS puts on the combination.
+    pub option_as_meta: bool,
     /// Post a system notification when an agent needs input or approval, finishes or fails.
     pub agent_notifications: bool,
     /// Hold an idle-sleep assertion while any agent is working, so a long turn is not cut off
@@ -164,6 +168,7 @@ impl Default for Settings {
             files_selected: false,
             diff_split: false,
             confirm_close_running_agent: true,
+            option_as_meta: false,
             agent_notifications: true,
             keep_awake_while_agents_work: true,
             ui_font_size: UI_FONT_SIZE_DEFAULT,
@@ -412,6 +417,20 @@ mod tests {
         let saved = serde_json::to_string(&settings).expect("serializable");
         let reloaded: Settings = serde_json::from_str(&saved).expect("valid json");
         assert!(!reloaded.confirm_close_running_agent);
+    }
+
+    #[test]
+    fn option_as_meta_is_off_for_settings_saved_before_it_existed_and_round_trips() {
+        // A settings object as 1.0.31 wrote it: the field is absent.
+        let saved =
+            r#"{"theme":"dark","confirm_close_running_agent":true,"terminal_font_size":13.0}"#;
+        let settings: Settings = serde_json::from_str(saved).expect("valid json");
+        assert!(!settings.option_as_meta, "Option composes characters");
+        let settings: Settings =
+            serde_json::from_str(r#"{"option_as_meta":true}"#).expect("valid json");
+        let saved = serde_json::to_string(&settings).expect("serializable");
+        let reloaded: Settings = serde_json::from_str(&saved).expect("valid json");
+        assert!(reloaded.option_as_meta);
     }
 
     #[test]

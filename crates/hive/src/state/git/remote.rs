@@ -1,6 +1,6 @@
 //! Progress and a short-lived confirmation for fetch, pull and push.
 use super::*;
-use hive_core::git::changes::Synced;
+use hive_core::git::changes::{ForcePushPreview, Synced};
 
 /// How long the confirmation of a finished remote operation stays in the panel.
 const SYNCED_VISIBLE: Duration = Duration::from_secs(5);
@@ -12,6 +12,15 @@ pub(crate) enum RemoteOperation {
     Pull,
     Push,
     Publish,
+}
+
+/// A force push that waits for its confirmation.
+pub(crate) struct ForcePushRequest {
+    pub target: Target,
+    /// The remote the branch tracks.
+    pub remote: String,
+    /// What the push would replace there, once it is read off the foreground thread.
+    pub preview: async_channel::Receiver<Result<ForcePushPreview, git::GitError>>,
 }
 
 impl RemoteOperation {
@@ -31,6 +40,33 @@ impl Git {
     /// The remote operation running on the active worktree.
     pub(crate) fn remote_operation(&self) -> Option<RemoteOperation> {
         self.remote_operations.get(self.target.as_ref()?).copied()
+    }
+
+    /// Starts reading what a force push of the active worktree would replace on the remote
+    /// its branch tracks; the worktree is busy meanwhile. `None` when the branch has no
+    /// upstream on a remote or the worktree is busy already.
+    pub(crate) fn preview_force_push(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<ForcePushRequest> {
+        let target = self.target.clone()?;
+        let Some(Action::Push {
+            remote,
+            publish: false,
+        }) = self.push_action()
+        else {
+            return None;
+        };
+        let (host, path, name) = (target.host.clone(), target.path.clone(), remote.clone());
+        let preview = cx
+            .background_executor()
+            .spawn(async move { git::changes::force_push_preview(&host, &path, &name) });
+        let preview = self.prepare(&target, preview, cx)?;
+        Some(ForcePushRequest {
+            target,
+            remote,
+            preview,
+        })
     }
 
     /// What the last remote operation on the active worktree changed, while it is fresh.

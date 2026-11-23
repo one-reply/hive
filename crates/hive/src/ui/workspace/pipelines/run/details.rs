@@ -74,7 +74,7 @@ impl RunView {
                 let mut assigned = 0;
                 for (i, lane) in r.lanes().iter().enumerate() {
                     let fields = self.editing_plan.then(|| self.plan.get(i)).flatten();
-                    if fields.is_none() && lane.assignment.is_empty() {
+                    if fields.is_none() && !lane.is_assigned() {
                         continue;
                     }
                     assigned += 1;
@@ -112,7 +112,7 @@ impl RunView {
             Stage::Develop(i) => {
                 let lane = &r.lanes()[i];
                 detail = detail.child(heading(path_name(&lane.project)));
-                if !lane.assignment.is_empty() {
+                if lane.is_assigned() {
                     detail = detail
                         .child(div().text_sm().child(lane.assignment.clone()))
                         .child(subtle(lane.criteria.clone(), cx));

@@ -9,6 +9,7 @@ use hive_core::terminal::{Cell, Color, CursorShape, Flags, NamedColor, Point as 
 use std::sync::Arc;
 
 use super::glyph_cache::{self, CellText, Variant};
+use super::input::{Composition, TerminalInputHandler};
 use super::mouse::GridGeometry;
 use super::view::TerminalView;
 
@@ -41,6 +42,11 @@ pub struct Prepaint {
     rects: Vec<(Bounds<Pixels>, Hsla)>,
     glyphs: Vec<(Point<Pixels>, Arc<LineLayout>, DecorationRun)>,
     cursor: Option<(Bounds<Pixels>, Hsla, CursorShape)>,
+    /// The cell the cursor is in, drawn or not: where the input method composes and shows
+    /// its candidates. `None` when the cursor is scrolled out of view.
+    cursor_cell: Option<Bounds<Pixels>>,
+    /// Text the input method is composing, drawn over the grid at the cursor.
+    composition: Option<Composition>,
     line_height: Pixels,
     hitbox: Hitbox,
     /// A hovered link is under the pointer.
@@ -93,21 +99,9 @@ impl Palette {
                 if let Some(rgb) = colors.colors[i as usize] {
                     return to_hsla(rgb);
                 }
-                match i {
-                    0..=15 => self.ansi[i as usize],
-                    16..=231 => {
-                        let i = i - 16;
-                        let step = |v: u8| if v == 0 { 0 } else { 55 + 40 * v };
-                        to_hsla(Rgb {
-                            r: step(i / 36),
-                            g: step((i / 6) % 6),
-                            b: step(i % 6),
-                        })
-                    }
-                    _ => {
-                        let v = 8 + 10 * (i - 232);
-                        to_hsla(Rgb { r: v, g: v, b: v })
-                    }
+                match hive_core::terminal::indexed(i) {
+                    Some(rgb) => to_hsla(rgb),
+                    None => self.ansi.get(usize::from(i)).copied().unwrap_or(self.fg),
                 }
             }
         }
@@ -205,6 +199,7 @@ impl Element for TerminalElement {
 
         let view = self.view.read(cx);
         let link = view.hovered_link().cloned();
+        let marked_text = view.marked_text().map(str::to_owned);
         let session = view.session().read(cx);
         let terminal = session
             .terminal()
@@ -222,6 +217,16 @@ impl Element for TerminalElement {
         };
         let cursor_opacity = view.cursor_opacity();
         let cursor_visible = content.cursor.shape != CursorShape::Hidden && cursor_opacity > 0.;
+        let cursor_cell = cursor_point
+            .filter(|point| point.line < rows as usize && point.column.0 < cols as usize)
+            .map(|point| Bounds {
+                origin: inner.origin
+                    + gpui_kit::point(
+                        cell_width * point.column.0 as f32,
+                        line_height * point.line as f32,
+                    ),
+                size: size(cell_width, line_height),
+            });
 
         for indexed in display_iter {
             let cell: &Cell = indexed.cell;
@@ -327,11 +332,25 @@ impl Element for TerminalElement {
                 .collect()
         });
 
+        let composition = marked_text.zip(cursor_cell).map(|(text, cell)| {
+            Composition::shape(
+                &text,
+                cell,
+                inner,
+                base_font.clone(),
+                font_size,
+                (palette.fg, palette.bg),
+                window,
+            )
+        });
+
         Prepaint {
             background: palette.bg,
             rects,
             glyphs,
             cursor,
+            cursor_cell,
+            composition,
             line_height,
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
             over_link: link.is_some(),
@@ -386,7 +405,22 @@ impl Element for TerminalElement {
                     cx,
                 );
             }
+            if let Some(composition) = &prepaint.composition {
+                composition.paint(line_height, window, cx);
+            }
         });
+        // Registered for the focused terminal only, and again on every paint: the handler
+        // carries this frame's cursor position for the input method's candidate window.
+        let focus_handle = self.view.read(cx).focus_handle().clone();
+        window.handle_input(
+            &focus_handle,
+            TerminalInputHandler::new(
+                self.view.clone(),
+                prepaint.cursor_cell,
+                prepaint.composition.take(),
+            ),
+            cx,
+        );
     }
 }
 

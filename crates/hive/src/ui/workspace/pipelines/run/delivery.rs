@@ -39,7 +39,7 @@ impl RunView {
         );
         let app = AppState::get(cx);
         let branch = hive_core::pipeline::workspace::branch(run.id(), lane);
-        let head = format!("{:?}", hive_core::projects::Head::Branch(branch));
+        let head = hive_core::projects::Head::Branch(branch);
         let cached = match app
             .pull_requests
             .read(cx)
@@ -158,50 +158,29 @@ impl RunView {
             return;
         };
         let id = self.id;
-        let branch = run.lanes()[ix].branch.clone();
-        let title = input(&title, "Title", w, cx);
-        let body = area(&body, "Description", w, cx);
-        let base = input(
-            &run.lanes()[ix].base_branch,
-            "The repository's default branch",
+        let lane = &run.lanes()[ix];
+        let draft = Draft {
+            title,
+            body,
+            base: lane.base_branch.clone(),
+        };
+        let view = cx.weak_entity();
+        crate::ui::pull_request_dialog::open(
+            pull_request_hint(&lane.branch),
+            &draft,
             w,
             cx,
+            move |draft, _, cx| {
+                let result = AppState::get(cx)
+                    .pipelines
+                    .clone()
+                    .update(cx, |p, cx| p.open_pull_request(id, ix, draft, cx));
+                let _ = view.update(cx, |this, cx| {
+                    this.error = result.err();
+                    cx.notify();
+                });
+            },
         );
-        let view = cx.weak_entity();
-        w.open_alert_dialog(cx, move |dialog, _, cx| {
-            let (title, body, base) = (title.clone(), body.clone(), base.clone());
-            let view = view.clone();
-            dialog
-                .title("Create pull request")
-                .child(subtle(pull_request_hint(&branch), cx))
-                .child(field("Title", &title, cx))
-                .child(paragraph("Description", &body, cx))
-                .child(field("Merge into", &base, cx))
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Create pull request")
-                        .show_cancel(true)
-                        .on_ok(move |_, _, cx| {
-                            let draft = Draft {
-                                title: title.read(cx).value().to_string(),
-                                body: body.read(cx).value().to_string(),
-                                base: base.read(cx).value().trim().to_owned(),
-                            };
-                            if draft.title.trim().is_empty() {
-                                return false;
-                            }
-                            let result = AppState::get(cx)
-                                .pipelines
-                                .clone()
-                                .update(cx, |p, cx| p.open_pull_request(id, ix, draft, cx));
-                            let _ = view.update(cx, |this, cx| {
-                                this.error = result.err();
-                                cx.notify();
-                            });
-                            true
-                        }),
-                )
-        });
     }
 }
 

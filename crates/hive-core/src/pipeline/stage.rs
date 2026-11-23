@@ -185,7 +185,7 @@ impl Stage {
             return StageStatus::Complete;
         }
         if let Self::Develop(i) = self
-            && run.lanes.get(i).is_some_and(|l| l.assignment.is_empty())
+            && run.lanes.get(i).is_some_and(|l| !l.is_assigned())
             && !matches!(run.phase, Phase::Planning | Phase::ApprovePlan)
         {
             return StageStatus::Unassigned;

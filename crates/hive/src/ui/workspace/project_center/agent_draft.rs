@@ -78,6 +78,7 @@ impl ProjectCenter {
                 &self.host,
                 Some(worktree),
                 Some(Launch::New(agent)),
+                Reveal::Requested,
                 self.dock.downgrade(),
                 window,
                 cx,

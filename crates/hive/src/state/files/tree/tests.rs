@@ -1,50 +1,23 @@
-use super::{Files, SearchMode, content_search, search};
+use super::{Files, SearchMode};
 use gpui::{AppContext as _, Entity, TestAppContext};
 use gpui_kit as gpui;
-use hive_core::{files::Entry, settings::FilesSettings};
+use hive_core::files::Entry;
+use hive_core::files::tree::{Contents, NodeKind};
 use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
 };
 
 fn navigator(cx: &mut TestAppContext) -> Entity<Files> {
-    cx.new(|_| Files {
-        target: None,
-        error: None,
-        visible: false,
-        window_active: true,
-        entries: BTreeMap::from([(
-            PathBuf::new(),
-            vec![Entry {
-                path: "lib.rs".into(),
-                directory: false,
-                unsupported: false,
-            }],
-        )]),
-        expanded: HashSet::new(),
-        nodes: Vec::new(),
-        tree_generation: 0,
-        loading: false,
-        busy: false,
-        settings: FilesSettings::default(),
-        decorations: BTreeMap::new(),
-        ignored: HashSet::new(),
-        dirty: HashSet::new(),
-        missing: HashSet::new(),
-        active: None,
-        recent: Vec::new(),
-        destination_for: None,
-        pending_reveal: None,
-        pending_refresh: false,
-        search: search::Search::default(),
-        search_mode: SearchMode::Names,
-        content: content_search::ContentSearch::default(),
-        generation: 0,
-        _operation: None,
-        _read: None,
-        _poll: None,
-        _subscriptions: Vec::new(),
-    })
+    let listing = BTreeMap::from([(
+        PathBuf::new(),
+        vec![Entry {
+            path: "lib.rs".into(),
+            directory: false,
+            unsupported: false,
+        }],
+    )]);
+    cx.new(|cx| Files::listed_for_test(listing, HashSet::new(), cx))
 }
 
 #[gpui::test]
@@ -83,6 +56,50 @@ fn automatic_reveal_preserves_the_filename_filter(cx: &mut TestAppContext) {
         files.reveal("lib.rs".into(), cx);
         assert_eq!(files.search_text(), "preview");
         assert!(files.nodes().is_empty());
+    });
+}
+
+#[gpui::test]
+fn a_reveal_whose_row_never_appears_does_not_rebuild_the_tree_on_every_poll(
+    cx: &mut TestAppContext,
+) {
+    let files = navigator(cx);
+    files.update(cx, |files, cx| {
+        files.reveal("gone/missing.rs".into(), cx);
+        let generation = files.tree_generation();
+        for _ in 0..3 {
+            let unchanged = files.entries.clone();
+            files.apply_listing(Ok((unchanged, None, None)), cx);
+        }
+        assert_eq!(files.tree_generation(), generation);
+        assert_eq!(files.reveal_request(), Some(Path::new("gone/missing.rs")));
+
+        // The listing of its folder is news, and the rebuild it brings has the row.
+        let mut listing = files.entries.clone();
+        let entry = |path: &str, directory| Entry {
+            path: path.into(),
+            directory,
+            unsupported: false,
+        };
+        listing
+            .get_mut(Path::new(""))
+            .unwrap()
+            .push(entry("gone", true));
+        listing.insert("gone".into(), vec![entry("gone/missing.rs", false)]);
+        files.apply_listing(Ok((listing, None, None)), cx);
+        assert_eq!(files.tree_generation(), generation + 1);
+        let gone = files
+            .nodes()
+            .iter()
+            .find(|node| node.path == Path::new("gone"));
+        assert!(
+            matches!(
+                gone.map(|node| &node.kind),
+                Some(NodeKind::Directory { contents: Contents::Children(children), .. })
+                    if children[0].path == Path::new("gone/missing.rs")
+            ),
+            "{gone:?}"
+        );
     });
 }
 

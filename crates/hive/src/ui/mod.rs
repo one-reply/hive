@@ -2,7 +2,9 @@
 
 pub(crate) mod agent_logo;
 pub mod app_menu;
+pub(crate) mod code_reference;
 pub(crate) mod conflict_panel;
+pub(crate) mod destructive;
 pub(crate) mod diff_panel;
 pub(crate) mod editor_panel;
 pub(crate) mod excerpts;
@@ -12,7 +14,9 @@ pub(crate) mod git_panel;
 pub(crate) mod hover;
 pub(crate) mod key_hint;
 pub mod keymap;
+pub(crate) mod list_scroll;
 pub(crate) mod project_badge;
+mod pull_request_dialog;
 pub(crate) mod release_notes;
 pub mod settings;
 pub mod sidebar;

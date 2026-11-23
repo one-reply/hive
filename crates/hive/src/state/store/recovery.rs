@@ -60,16 +60,26 @@ impl RecoveryWriter {
         }
     }
 
-    pub(super) fn new(executor: &BackgroundExecutor) -> (Self, async_channel::Receiver<String>) {
+    /// `directory` is where this session keeps its drafts. A session without one drops
+    /// them: the data folder belongs to another Hive, whose drafts it must not replace.
+    pub(super) fn new(
+        executor: &BackgroundExecutor,
+        directory: Option<std::path::PathBuf>,
+    ) -> (Self, async_channel::Receiver<String>) {
         let (sender, receiver) = async_channel::bounded(1);
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let snapshots = pending.clone();
         let (errors, error_receiver) = async_channel::bounded(1);
         let (finished, done) = mpsc::channel();
         let task = executor.spawn(async move {
-            let directory = hive_core::state::hive_dir().join("editor-recovery");
             drain(receiver, snapshots, |key, pending: Pending| {
-                let result = save_pending(&directory, &key, &pending).map_err(|e| e.to_string());
+                let result = match &directory {
+                    Some(directory) => {
+                        save_pending(directory, &key, &pending).map_err(|e| e.to_string())
+                    }
+                    // Nothing is kept, and the document goes on as if its draft were settled.
+                    None => Ok(()),
+                };
                 if let Err(error) = &result {
                     tracing::error!(%error, "editor recovery failed");
                     let _ = errors.force_send(error.to_string());
@@ -154,6 +164,7 @@ async fn drain<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit as gpui;
     use std::{
         future::Future,
         task::{Context, Wake, Waker},
@@ -201,6 +212,60 @@ mod tests {
         assert_eq!(records[0].draft.path, std::path::Path::new("b"));
         assert_eq!(records[0].draft.text, "unsaved");
         assert!(!directory.join(format!("{old_key}.json")).exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn a_session_without_the_data_folder_neither_writes_nor_removes_drafts(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!("hive-recovery-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a"), "base").unwrap();
+        let local = hive_core::host::Host::Local;
+        let draft = |path: &str, text: &str| Draft {
+            host: local.clone(),
+            project: root.clone(),
+            root: root.clone(),
+            path: path.into(),
+            base: hive_core::files::read(&local, &root, std::path::Path::new("a")).unwrap(),
+            text: text.into(),
+        };
+        let directory = root.join("recovery");
+        let saved = |directory: &std::path::Path| {
+            let (records, errors) = recovery::load(directory);
+            assert!(errors.is_empty(), "{errors:?}");
+            let mut texts: Vec<_> = records.into_iter().map(|r| r.draft.text).collect();
+            texts.sort();
+            texts
+        };
+
+        // The Hive that holds the folder keeps a draft of `a`.
+        let first = draft("a", "the first copy's edit");
+        let (owner, _errors) =
+            cx.update(|cx| RecoveryWriter::new(cx.background_executor(), Some(directory.clone())));
+        let kept = owner.replace(first.key(), Some(first.clone()), Vec::new());
+        cx.run_until_parked();
+        assert_eq!(kept.try_recv(), Ok(Ok(())));
+        assert_eq!(saved(&directory), ["the first copy's edit"]);
+
+        // A second copy edits the same file and another one, discards the first and renames
+        // the second over it. Each step alone would replace or remove the owner's draft.
+        let (second, _errors) = cx.update(|cx| RecoveryWriter::new(cx.background_executor(), None));
+        let other = draft("b", "the second copy's edit");
+        for (key, draft, retired) in [
+            (first.key(), Some(draft("a", "overwritten")), Vec::new()),
+            (other.key(), Some(other.clone()), Vec::new()),
+            (first.key(), None, Vec::new()),
+            (other.key(), None, vec![first.key()]),
+        ] {
+            let answer = second.replace(key, draft, retired);
+            cx.run_until_parked();
+            // Its documents are told the draft is settled, so closing and renaming go on.
+            assert_eq!(answer.try_recv(), Ok(Ok(())));
+        }
+        assert_eq!(saved(&directory), ["the first copy's edit"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 

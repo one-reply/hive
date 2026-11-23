@@ -205,14 +205,25 @@ impl Render for CreateWorktree {
                 h_flex()
                     .justify_end()
                     .gap_2()
-                    .child(
+                    // Git may sit in a checkout hook or a download for minutes, and the
+                    // dialog cannot be dismissed meanwhile: Stop ends Git instead.
+                    .child(if self.busy {
+                        Button::new("stop-create")
+                            .cursor_pointer()
+                            .label("Stop")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.projects
+                                    .read(cx)
+                                    .stop_creating(&this.host, &this.project)
+                            }))
+                            .smooth_hover(ButtonLook::Ghost, &cancel_hover, cx)
+                    } else {
                         Button::new("cancel-create")
                             .cursor_pointer()
                             .label("Cancel")
-                            .disabled(self.busy)
                             .on_click(|_, window, cx| window.close_dialog(cx))
-                            .smooth_hover(ButtonLook::Ghost, &cancel_hover, cx),
-                    )
+                            .smooth_hover(ButtonLook::Ghost, &cancel_hover, cx)
+                    })
                     .child(
                         Button::new("create-start")
                             .cursor_pointer()

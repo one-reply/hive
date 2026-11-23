@@ -1,4 +1,4 @@
-use super::{Pipelines, Store, check_branches};
+use super::{Pipelines, Preview, PreviewKey, Store, check_branches};
 use gpui_kit as gpui;
 use gpui_kit::{AppContext as _, Entity, TestAppContext};
 use hive_core::state::ProjectRef;
@@ -261,6 +261,84 @@ fn invalid_decision_does_not_partially_edit_the_run(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_decision_that_moves_the_run_replaces_the_failed_step_it_leaves(cx: &mut TestAppContext) {
+    use hive_core::pipeline::CriterionDecision;
+    const STALE: &str = "The acceptance check could not read the worktree.";
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        p.store.update(cx, |s, cx| {
+            let run = &mut s.state.pipelines.runs[0];
+            let reviewed = reviewed(run, Phase::Acceptance, &"a".repeat(40));
+            let mut saved = serde_json::to_value(reviewed).unwrap();
+            saved["lanes"][0]["criteria"] = "Sign-in works".into();
+            *run = serde_json::from_value(saved).unwrap();
+            s.set_test_writer(cx, |_| Ok(()));
+        });
+        p.fail(42, STALE.into(), cx);
+
+        // A note on a criterion leaves the run at the gate whose check failed.
+        let observed = CriterionDecision::Manual("Signed in by hand".into());
+        p.edit(42, cx, |run| {
+            Ok(run.decide_criterion(0, "Sign-in works", "reviewed", observed)?)
+        })
+        .unwrap();
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Acceptance);
+        assert_eq!(p.error(42), Some(STALE));
+
+        p.edit(42, cx, |run| {
+            Ok(run.request_changes("Handle the expired session")?)
+        })
+        .unwrap();
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Development);
+        assert_eq!(p.error(42), None);
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, _| {
+        // The development step ran instead of waiting for a retry: it got as far as the
+        // fixture's checkout, which Git never made.
+        let failure = p
+            .error(42)
+            .expect("the fixture has no checkout to develop in");
+        assert_ne!(failure, STALE);
+    });
+}
+
+#[gpui::test]
+fn an_edit_that_leaves_work_in_the_same_phase_replaces_the_failed_step_too(
+    cx: &mut TestAppContext,
+) {
+    const STALE: &str = "Preparing Web: the checkout is busy.";
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        p.store.update(cx, |s, cx| {
+            let run = &mut s.state.pipelines.runs[0];
+            let mut developing = reviewed(run, Phase::Acceptance, &"a".repeat(40));
+            developing
+                .request_changes("Handle the expired session")
+                .unwrap();
+            *run = developing;
+            s.set_test_writer(cx, |_| Ok(()));
+        });
+        p.fail(42, STALE.into(), cx);
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        // No decision does this today; the rule must not depend on that.
+        p.edit(42, cx, |run| Ok(run.restart_attempt(&ticket).map(drop)?))
+            .unwrap();
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Development);
+        assert_eq!(p.error(42), None);
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, _| {
+        let failure = p
+            .error(42)
+            .expect("the fixture has no checkout to develop in");
+        assert_ne!(failure, STALE);
+    });
+}
+
+#[gpui::test]
 fn only_the_reviewed_revision_can_be_accepted(cx: &mut TestAppContext) {
     let pipelines = recovering(cx);
     pipelines.update(cx, |p, cx| {
@@ -290,12 +368,100 @@ fn only_the_reviewed_revision_can_be_accepted(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_checkpoint_that_could_not_be_saved_is_forgotten_once_a_later_one_is(cx: &mut TestAppContext) {
+    use hive_core::pipeline::CriterionDecision;
+    fn note(p: &mut Pipelines, criterion: &str, cx: &mut gpui::Context<Pipelines>) {
+        let observed = CriterionDecision::Manual("Checked by hand".into());
+        p.edit(42, cx, |run| {
+            Ok(run.decide_criterion(0, criterion, "reviewed", observed)?)
+        })
+        .unwrap();
+    }
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        p.store.update(cx, |s, _| {
+            let run = &mut s.state.pipelines.runs[0];
+            let reviewed = reviewed(run, Phase::Acceptance, &"a".repeat(40));
+            let mut saved = serde_json::to_value(reviewed).unwrap();
+            saved["lanes"][0]["criteria"] = "Sign-in works\nSign-out works".into();
+            *run = serde_json::from_value(saved).unwrap();
+        });
+        // The fixture cannot save yet.
+        note(p, "Sign-in works", cx);
+    });
+    cx.run_until_parked();
+    pipelines.update(cx, |p, cx| {
+        assert!(p.error(42).unwrap().contains("checkpoint"));
+        p.store
+            .update(cx, |s, cx| s.set_test_writer(cx, |_| Ok(())));
+        // The next edit stays at the gate and schedules nothing, but its save holds both.
+        note(p, "Sign-out works", cx);
+    });
+    cx.run_until_parked();
+    pipelines.update(cx, |p, cx| {
+        assert_eq!(p.error(42), None);
+
+        // Any other failure is not about saving and outlives a save.
+        p.fail(42, "The checkout is busy.".into(), cx);
+        note(p, "Sign-in works", cx);
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, _| {
+        assert_eq!(p.error(42), Some("The checkout is busy."))
+    });
+}
+
+#[gpui::test]
+fn retry_repeats_the_acceptance_check_only_when_that_check_is_what_failed(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    let tree = "a".repeat(40);
+    pipelines.update(cx, |p, cx| {
+        p.suspended.clear();
+        p.store.update(cx, |s, _| {
+            let run = &mut s.state.pipelines.runs[0];
+            let decision = reviewed(run, Phase::Decision(1), &tree);
+            let mut saved = serde_json::to_value(decision).unwrap();
+            saved["findings"] = serde_json::json!([{"lane": 0, "description": "Left open"}]);
+            *run = serde_json::from_value(saved).unwrap();
+        });
+        // The user's own decision reaches the gate; the fixture cannot save it.
+        p.edit(42, cx, |run| {
+            Ok(run.dismiss_finding(0, "Tracked separately")?)
+        })
+        .unwrap();
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Acceptance);
+    });
+    cx.run_until_parked();
+    pipelines.update(cx, |p, cx| {
+        assert!(p.error(42).unwrap().contains("checkpoint"));
+        p.retry(42, cx).unwrap();
+        assert!(!p.accepting(42), "saving again is not accepting");
+    });
+    cx.run_until_parked();
+    pipelines.update(cx, |p, cx| {
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Acceptance);
+        assert!(p.error(42).unwrap().contains("checkpoint"));
+
+        // The check Accept started could not read the worktree: Retry asks it again.
+        let runtime = p.runtime_mut(42);
+        runtime.generation = 7;
+        runtime.accept_job = Some(7);
+        p.finish_acceptance(42, 7, Err("fatal: not a git repository".into()), cx);
+        assert_eq!(p.error(42), Some("fatal: not a git repository"));
+        p.retry(42, cx).unwrap();
+        assert!(p.accepting(42));
+        assert_eq!(p.error(42), None);
+    });
+}
+
+#[gpui::test]
 fn cancelling_drops_everything_held_for_the_run(cx: &mut TestAppContext) {
     let pipelines = recovering(cx);
     pipelines.update(cx, |p, cx| {
         let worker = std::sync::Arc::new(hive_core::command::Cancellation::default());
         let runtime = p.runtime_mut(42);
-        runtime.error = Some("Checkout failed".into());
+        runtime.error = Some(super::runtime::Failure::Step("Checkout failed".into()));
         runtime.worker = Some(worker.clone());
         runtime.review = Some(Err("unreadable".into()));
         runtime.review_job = Some(7);
@@ -561,6 +727,124 @@ fn a_step_failure_is_announced_once_until_it_changes(cx: &mut TestAppContext) {
     assert_eq!(seen.borrow().len(), 2);
 }
 
+/// The agent of the fixture's planning attempt, as the agents entity sees it.
+struct StepAgent {
+    agents: Entity<crate::state::agents::Agents>,
+    pane: gpui::EntityId,
+}
+
+impl StepAgent {
+    /// Makes the attempt live in a pipeline pane watched as one `kind` was launched in.
+    fn attach(
+        pipelines: &Entity<Pipelines>,
+        kind: hive_core::agent::AgentKind,
+        cx: &mut TestAppContext,
+    ) -> Self {
+        pipelines.update(cx, |p, cx| {
+            let ticket = p.run(42, cx).unwrap().pending()[0];
+            attach_session(p, ticket, cx);
+            let session = p.session(&ticket).unwrap();
+            session.update(cx, |session, _| {
+                let grant = hive_core::agent::api::ReportGrant::generate().unwrap();
+                session.report_grant = Some(grant);
+            });
+            p.agents.update(cx, |agents, cx| {
+                let terminal = session.read(cx).terminal().unwrap();
+                agents.watch(&session, &Host::Local, Some(kind), Path::new("/"), terminal);
+            });
+            Self {
+                agents: p.agents.clone(),
+                pane: session.entity_id(),
+            }
+        })
+    }
+
+    /// The agent reports `status`, as its hooks or OSC 7501 would.
+    fn report(&self, status: hive_core::agent::AgentStatus, cx: &mut TestAppContext) {
+        self.agents.update(cx, |agents, cx| {
+            agents.report_for_test(self.pane, status, cx)
+        });
+    }
+
+    /// Time passes with the agent silent, and the poll looks again.
+    fn stay_quiet(&self, cx: &mut TestAppContext) {
+        self.agents
+            .update(cx, |agents, cx| agents.settle_quiet_turns_for_test(cx));
+    }
+}
+
+fn run_status(pipelines: &Entity<Pipelines>, cx: &mut TestAppContext) -> super::RunStatus {
+    pipelines.read_with(cx, |p, cx| p.status(p.run(42, cx).unwrap(), cx))
+}
+
+#[gpui::test]
+fn a_step_whose_agent_went_idle_after_working_without_a_report_waits_for_the_user(
+    cx: &mut TestAppContext,
+) {
+    use super::RunStatus;
+    use hive_core::agent::{AgentKind, AgentStatus};
+    let pipelines = recovering(cx);
+    let agent = StepAgent::attach(&pipelines, AgentKind::Codex, cx);
+    let redraws = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = redraws.clone();
+    let _observer =
+        cx.update(|cx| cx.observe(&pipelines, move |_, _| counter.set(counter.get() + 1)));
+
+    // Codex is idle until it takes its prompt: the step has only started, however long.
+    agent.report(AgentStatus::Idle, cx);
+    agent.stay_quiet(cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+    agent.report(AgentStatus::Working, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+
+    // Idle in the middle of a turn: it works again before anyone is asked anything.
+    agent.report(AgentStatus::Idle, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+    agent.report(AgentStatus::Working, cx);
+    agent.stay_quiet(cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+    pipelines.read_with(cx, |p, cx| assert!(p.attention(cx).is_empty()));
+    let before = redraws.get();
+
+    // It ended the turn with a question in plain text instead of a report.
+    agent.report(AgentStatus::Idle, cx);
+    agent.stay_quiet(cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::NeedsYou);
+    pipelines.read_with(cx, |p, cx| {
+        let attention = p.attention(cx);
+        assert_eq!(attention.len(), 1);
+        assert!(attention[0].2.ends_with("Agent waits for a reply"));
+        // The request is announced by the agents; the slow-attempt notice stays out of it.
+        let ticket = p.run(42, cx).unwrap().pending()[0];
+        assert!(p.agent_waits(&ticket, cx));
+    });
+    assert!(redraws.get() > before, "views of the run are told");
+
+    // The user answered in the session; the next unreported turn asks again.
+    agent.report(AgentStatus::Working, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+    agent.report(AgentStatus::Idle, cx);
+    agent.stay_quiet(cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::NeedsYou);
+}
+
+#[gpui::test]
+fn claude_code_going_idle_in_the_middle_of_a_turn_keeps_its_step_running(cx: &mut TestAppContext) {
+    use super::RunStatus;
+    use hive_core::agent::{AgentKind, AgentStatus};
+    let pipelines = recovering(cx);
+    let agent = StepAgent::attach(&pipelines, AgentKind::ClaudeCode, cx);
+    // `UserPromptSubmit`, then the `SessionStart` of a compaction.
+    agent.report(AgentStatus::Working, cx);
+    agent.report(AgentStatus::Idle, cx);
+    agent.stay_quiet(cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::Running);
+    pipelines.read_with(cx, |p, cx| assert!(p.attention(cx).is_empty()));
+    // Its own `done` is what ends a turn without a report.
+    agent.report(AgentStatus::Done, cx);
+    assert_eq!(run_status(&pipelines, cx), RunStatus::NeedsYou);
+}
+
 #[gpui::test]
 fn an_attempt_past_its_time_budget_is_announced_once(cx: &mut TestAppContext) {
     use super::status::Waiting;
@@ -597,7 +881,7 @@ fn only_a_finished_run_can_be_deleted_and_nothing_is_kept_for_it(cx: &mut TestAp
         assert!(error.contains("Stop the run"), "{error}");
         assert!(p.run(42, cx).is_ok());
         p.cancel(42, cx).unwrap();
-        p.runtime_mut(42).error = Some("A stale error".into());
+        p.runtime_mut(42).error = Some(super::runtime::Failure::Step("A stale error".into()));
         p.delete_run(42, cx).unwrap();
         assert!(p.run(42, cx).is_err());
         assert!(p.runtime(42).is_none());
@@ -813,4 +1097,151 @@ fn lanes_in_one_repository_share_its_branch_and_other_repositories_may_differ() 
             .contains("same branch")
     );
     assert!(check_branches([(web, &lanes[0]), (api, &lanes[1])]).is_ok());
+}
+
+/// A Git repository in its own temporary directory, removed with the test.
+struct TempRepository(PathBuf);
+
+impl TempRepository {
+    fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("hive-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        let repository = Self(path.canonicalize().unwrap());
+        hive_core::git::testing::init(&repository.0);
+        repository
+    }
+
+    fn git(&self, args: &[&str]) {
+        hive_core::git::testing::run(&self.0, args);
+    }
+
+    fn commit(&self, file: &str) {
+        std::fs::write(self.0.join(file), file).unwrap();
+        self.git(&["add", "--", file]);
+        self.git(&["commit", "-m", file]);
+    }
+
+    fn key(&self, reference: &str) -> PreviewKey {
+        PreviewKey {
+            project: self.0.clone(),
+            checkout: self.0.clone(),
+            reference: reference.into(),
+        }
+    }
+}
+
+impl Drop for TempRepository {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The commit and the local-changes flag of a base that has been read.
+fn read_base(pipelines: &Pipelines, key: &PreviewKey) -> (String, bool) {
+    match pipelines.preview(key) {
+        Preview::Ready(preview) => (preview.commit.clone(), preview.dirty),
+        other => panic!("the base is not read: {other:?}"),
+    }
+}
+
+#[gpui::test]
+fn reading_a_base_again_sees_where_its_branch_moved_and_what_changed_locally(
+    cx: &mut TestAppContext,
+) {
+    let repository = TempRepository::new("pipeline-base-moved");
+    repository.commit("first.txt");
+    let key = repository.key("refs/heads/main");
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.store.update(cx, |s, _| {
+            let project = ProjectRef::new(repository.0.clone(), Host::Local);
+            s.state.projects.push(project);
+        });
+        p.refresh_preview(key.clone(), cx);
+        assert!(matches!(p.preview(&key), Preview::Reading));
+    });
+    cx.run_until_parked();
+    let (first, dirty) = pipelines.read_with(cx, |p, _| read_base(p, &key));
+    assert!(!dirty);
+
+    // What a terminal does while the form stays open.
+    repository.commit("second.txt");
+    std::fs::write(repository.0.join("untracked.txt"), "local").unwrap();
+    pipelines.update(cx, |p, cx| {
+        p.refresh_preview(key.clone(), cx);
+        // The earlier answer stays on screen until the new one arrives.
+        assert!(p.is_reading_preview(&key));
+        assert_eq!(read_base(p, &key), (first.clone(), false));
+    });
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, _| {
+        let (second, dirty) = read_base(p, &key);
+        assert_ne!(second, first);
+        assert!(dirty);
+        assert!(!p.is_reading_preview(&key));
+        // A run starts only from the commit read last.
+        assert!(p.previews.resolved(&repository.0, &second).is_some());
+        assert!(p.previews.resolved(&repository.0, &first).is_none());
+    });
+}
+
+#[gpui::test]
+fn a_base_that_cannot_be_read_fails_with_gits_answer_and_can_be_read_again(
+    cx: &mut TestAppContext,
+) {
+    let repository = TempRepository::new("pipeline-base-unreadable");
+    // No commit yet, so `main` resolves to nothing.
+    let key = repository.key("refs/heads/main");
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.store.update(cx, |s, _| {
+            let project = ProjectRef::new(repository.0.clone(), Host::Local);
+            s.state.projects.push(project);
+        });
+        p.refresh_preview(key.clone(), cx);
+    });
+    cx.run_until_parked();
+    pipelines.update(cx, |p, cx| {
+        let Preview::Failed(failure) = p.preview(&key) else {
+            panic!("an unborn branch was read: {:?}", p.preview(&key));
+        };
+        // Git's own line, without the command and the folder that the detail adds.
+        assert!(failure.summary.starts_with("fatal:"), "{failure:?}");
+        assert!(failure.detail.contains("rev-parse"), "{failure:?}");
+        assert!(!p.is_reading_preview(&key));
+        // The retry shows as a read in progress, not as the old failure.
+        p.refresh_preview(key.clone(), cx);
+        assert!(matches!(p.preview(&key), Preview::Reading));
+    });
+    repository.commit("first.txt");
+    cx.run_until_parked();
+    // The retry was started before the commit existed; whichever it saw, one more read is
+    // conclusive.
+    pipelines.update(cx, |p, cx| p.refresh_preview(key.clone(), cx));
+    cx.run_until_parked();
+    pipelines.read_with(cx, |p, _| {
+        assert!(matches!(p.preview(&key), Preview::Ready(_)));
+    });
+}
+
+#[gpui::test]
+fn a_repository_removed_from_hive_fails_its_read_instead_of_staying_unread(
+    cx: &mut TestAppContext,
+) {
+    let pipelines = recovering(cx);
+    let key = PreviewKey {
+        project: "/removed-from-hive".into(),
+        checkout: "/removed-from-hive".into(),
+        reference: "HEAD".into(),
+    };
+    pipelines.update(cx, |p, cx| {
+        p.refresh_preview(key.clone(), cx);
+        let Preview::Failed(failure) = p.preview(&key) else {
+            panic!("the removed project is still being read");
+        };
+        let said = &failure.summary;
+        assert!(said.contains("no longer a project in Hive"), "{said}");
+        assert!(!p.is_reading_preview(&key));
+    });
 }

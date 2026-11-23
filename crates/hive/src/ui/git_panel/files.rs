@@ -1,5 +1,6 @@
 //! Changed-file groups and their bulk actions.
 use super::*;
+use std::rc::Rc;
 
 /// Groups of the Changes section, in display order.
 const GROUPS: [(&str, DiffSource); 4] = [
@@ -189,7 +190,18 @@ impl GitPanel {
                 div().into_any_element()
             };
         };
+        let unreadable = unreadable_notice(status.unreadable_paths).map(|text| {
+            div()
+                .px_3()
+                .py_1p5()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text)
+        });
         if status.files.is_empty() {
+            if let Some(notice) = unreadable {
+                return notice.into_any_element();
+            }
             return empty_state(
                 Lucide::CircleCheck,
                 "Working tree clean",
@@ -198,7 +210,7 @@ impl GitPanel {
             )
             .into_any_element();
         }
-        let files = status.files.clone();
+        let files: Rc<[FileChange]> = status.files.clone().into();
         let filter = self.filter.read(cx).value().to_lowercase();
         let mut rows = Vec::new();
         let groups: Vec<Vec<usize>> = GROUPS
@@ -227,11 +239,17 @@ impl GitPanel {
             })
             .collect();
         if self.change_rows != rows {
-            self.changes_list.reset(rows.len());
+            crate::ui::list_scroll::replace_rows(
+                &self.changes_list,
+                &row_keys(&self.change_rows, &self.change_files),
+                &row_keys(&rows, &files),
+            );
             self.change_rows.clone_from(&rows);
         }
+        // The rows name files by position, so they are only ever read with this snapshot.
+        self.change_files = files.clone();
         let view = cx.entity().downgrade();
-        list(self.changes_list.clone(), move |index, window, cx| {
+        let changes = list(self.changes_list.clone(), move |index, window, cx| {
             view.update(cx, |this, cx| {
                 let (group, file) = rows[index];
                 let (label, source) = &GROUPS[group];
@@ -246,8 +264,59 @@ impl GitPanel {
                 )
             })
             .unwrap_or_else(|_| div().into_any_element())
+        });
+        match unreadable {
+            None => changes.size_full().into_any_element(),
+            Some(notice) => v_flex()
+                .size_full()
+                .child(notice)
+                .child(changes.flex_1().min_h_0())
+                .into_any_element(),
+        }
+    }
+}
+
+/// What each row shows, whatever position its file has in the status: a group's header, or
+/// one path in a group. This is what tells a row that moved from one that was replaced.
+fn row_keys<'a>(
+    rows: &[(usize, Option<usize>)],
+    files: &'a [FileChange],
+) -> Vec<(usize, Option<&'a str>)> {
+    rows.iter()
+        .map(|&(group, file)| {
+            let path = file.and_then(|index| files.get(index));
+            (group, path.map(|file| file.path.as_str()))
         })
-        .size_full()
-        .into_any_element()
+        .collect()
+}
+
+/// What the list says about changed files whose names Git returned in another encoding.
+fn unreadable_notice(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("1 changed file has a name that is not UTF-8. It is not listed here; use the terminal for it.".into()),
+        count => Some(format!(
+            "{count} changed files have names that are not UTF-8. They are not listed here; use the terminal for them."
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unreadable_notice;
+
+    #[test]
+    fn the_list_says_how_many_changed_files_it_cannot_name() {
+        assert_eq!(unreadable_notice(0), None);
+        assert!(
+            unreadable_notice(1)
+                .unwrap()
+                .starts_with("1 changed file has a name")
+        );
+        assert!(
+            unreadable_notice(3)
+                .unwrap()
+                .starts_with("3 changed files have names")
+        );
     }
 }

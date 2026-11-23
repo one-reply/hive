@@ -40,7 +40,8 @@ and exit with status 1; usage mistakes exit with status 2.
 - `hive agent wait <target>` returns when the agent is no longer working.
 - `hive agent read <target> [--lines <n>]` prints the last lines of its terminal as plain text,
   80 by default. Full-screen agents show only their current screen, so prefer asking the agent
-  to answer with `hive agent send`.
+  to answer with `hive agent send`. Only a pane that runs an agent can be read, or the pane of
+  a helper you started after it exited; any other pane answers `no_agent`.
 - `hive agent interrupt <target>` presses Esc in the agent's pane to stop its current turn. It
   is refused with `agent_blocked` while the agent shows a dialog, and it never closes the pane.
 

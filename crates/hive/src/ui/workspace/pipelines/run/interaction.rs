@@ -30,6 +30,7 @@ pub(super) fn toggle<T: std::hash::Hash + Eq>(expanded: &mut HashSet<T>, key: T)
 #[cfg(test)]
 mod tests {
     use super::actionable;
+    use crate::ui::destructive::testing::press;
     use gpui_kit as gpui;
     use gpui_kit::prelude::*;
     use gpui_kit::{Context, FocusHandle, TestAppContext, Window, div};
@@ -53,8 +54,10 @@ mod tests {
             .child("QA")
         }
     }
+    /// A real key press is a key-down and a key-up; `simulate_keystrokes` sends only the
+    /// first, which hid a row that opened on one and closed again on the other.
     #[gpui::test]
-    fn focused_stage_opens_with_enter_and_collapses_with_space(cx: &mut TestAppContext) {
+    fn focused_stage_toggles_once_per_press_of_enter_or_space(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let (view, cx) = cx.add_window_view(|w, cx| {
             let focus = cx.focus_handle();
@@ -62,9 +65,9 @@ mod tests {
             Harness { open: false, focus }
         });
         cx.update(|w, cx| w.draw(cx).clear(cx));
-        cx.simulate_keystrokes("enter");
-        cx.update(|_, cx| assert!(view.read(cx).open));
-        cx.simulate_keystrokes("space");
-        cx.update(|_, cx| assert!(!view.read(cx).open));
+        for (key, open) in [("enter", true), ("space", false), ("space", true)] {
+            press(key, cx);
+            cx.update(|_, cx| assert_eq!(view.read(cx).open, open, "after {key}"));
+        }
     }
 }

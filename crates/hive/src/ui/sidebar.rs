@@ -9,7 +9,7 @@ use crate::ui::text_field::TextField;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::badge::Badge;
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -573,7 +573,8 @@ impl Sidebar {
         } else {
             CARD_HEIGHT
         };
-        let pr = worktree.map(|worktree| self.pr_card(project, worktree, window, cx));
+        let pr =
+            worktree.map(|worktree| self.pr_card(project, worktree, card.is_selected, window, cx));
         let height = header_height
             + card.agents.height
             + if pr.is_some() {
@@ -1004,13 +1005,13 @@ fn confirm_delete(
     let (project, worktree) = (project.clone(), worktree.clone());
     window.open_alert_dialog(cx, move |alert, _, _| {
         let (projects, project, worktree) = (projects.clone(), project.clone(), worktree.clone());
-        alert
-            .confirm()
-            .title("Delete Worktree")
-            .description(description.clone())
-            .ok_text("Delete")
-            .ok_variant(ButtonVariant::Danger)
-            .on_ok(move |_, window, cx| {
+        crate::ui::destructive::confirmation(
+            alert
+                .confirm()
+                .title("Delete Worktree")
+                .description(description.clone()),
+            "Delete",
+            move |window, cx| {
                 delete(
                     projects.clone(),
                     &project,
@@ -1020,7 +1021,8 @@ fn confirm_delete(
                     cx,
                 );
                 true
-            })
+            },
+        )
     });
 }
 
@@ -1066,13 +1068,13 @@ fn confirm_force_delete(
     let (project, worktree) = (project.clone(), worktree.clone());
     window.open_alert_dialog(cx, move |alert, _, _| {
         let (projects, project, worktree) = (projects.clone(), project.clone(), worktree.clone());
-        alert
-            .confirm()
-            .title("Worktree Has Changes")
-            .description(description.clone())
-            .ok_text("Force Delete")
-            .ok_variant(ButtonVariant::Danger)
-            .on_ok(move |_, window, cx| {
+        crate::ui::destructive::confirmation(
+            alert
+                .confirm()
+                .title("Worktree Has Changes")
+                .description(description.clone()),
+            "Force Delete",
+            move |window, cx| {
                 delete(
                     projects.clone(),
                     &project,
@@ -1082,7 +1084,8 @@ fn confirm_force_delete(
                     cx,
                 );
                 true
-            })
+            },
+        )
     });
 }
 

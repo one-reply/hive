@@ -220,6 +220,48 @@ impl Files {
         this
     }
 
+    /// A navigator that has listed `entries` (by folder) with `expanded` folders open, bound
+    /// to no worktree: nothing reads the disk or the app's other state.
+    #[cfg(test)]
+    pub(crate) fn listed_for_test(
+        entries: BTreeMap<PathBuf, Vec<Entry>>,
+        expanded: HashSet<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self {
+            target: None,
+            error: None,
+            visible: false,
+            window_active: true,
+            entries,
+            expanded,
+            nodes: Vec::new(),
+            tree_generation: 0,
+            loading: false,
+            busy: false,
+            settings: FilesSettings::default(),
+            decorations: BTreeMap::new(),
+            ignored: HashSet::new(),
+            dirty: HashSet::new(),
+            missing: HashSet::new(),
+            active: None,
+            recent: Vec::new(),
+            destination_for: None,
+            pending_reveal: None,
+            pending_refresh: false,
+            search: search::Search::default(),
+            search_mode: SearchMode::Names,
+            content: content_search::ContentSearch::default(),
+            generation: 0,
+            _operation: None,
+            _read: None,
+            _poll: None,
+            _subscriptions: Vec::new(),
+        };
+        this.rebuild(cx);
+        this
+    }
+
     /// Whether the navigator is on screen; a visible one keeps its listing fresh, a hidden
     /// one stops polling.
     pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {

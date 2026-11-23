@@ -28,7 +28,7 @@ pub struct Error {
 /// Whether an installed formatter is supported for this source file.
 pub fn supported(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|s| s.to_str()),
+        crate::files::lowercase_extension(path).as_deref(),
         Some("js" | "mjs" | "cjs" | "jsx" | "ts" | "mts" | "cts" | "tsx" | "rs")
     )
 }
@@ -67,7 +67,7 @@ pub fn format(
     let filename = path
         .to_str()
         .ok_or_else(|| fail("Formatter requires a UTF-8 path".into()))?;
-    let script = if relative.extension().is_some_and(|ext| ext == "rs") {
+    let script = if crate::files::lowercase_extension(relative).as_deref() == Some("rs") {
         let metadata = run(host, directory, "d=$PWD; while [ ! -f \"$d/Cargo.toml\" ]; do [ \"$d\" = / ] && { printf '{}'; exit; }; d=${d%/*}; [ -n \"$d\" ] || d=/; done; exec cargo metadata --no-deps --offline --locked --format-version 1", "", METADATA_LIMIT, cancellation).map_err(fail)?;
         // Cargo reports physical manifest paths, including when the worktree was opened via an alias.
         let physical = run(host, directory, "pwd -P", "", LIMIT, cancellation).map_err(fail)?;
@@ -198,6 +198,10 @@ fn edition(metadata: &str, path: &Path) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Runs this toolchain's real `cargo metadata` and `rustfmt`, on purpose: it checks how
+    /// Cargo reports the physical path of a manifest behind a symlink, which a fake would
+    /// only restate. Wherever these tests run, `cargo test` needs cargo and the definition of
+    /// done needs rustfmt.
     #[test]
     fn rust_formatting_uses_the_package_edition_through_a_symlink_root() {
         use std::{fs, os::unix::fs::symlink};

@@ -95,6 +95,7 @@ mod tests {
                         value: Tabs { items, active: 0 },
                     }],
                 }),
+                unavailable: Vec::new(),
             }],
             ..Default::default()
         }

@@ -56,14 +56,16 @@ pub(crate) fn init(cx: &mut App) -> Result<Task<()>, &'static str> {
         while receiver.recv().await.is_ok() {
             let request = Request(());
             cx.update(|cx| {
-                let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied())
+                let open = cx.active_window().or_else(|| cx.windows().first().copied());
+                let Some(window) =
+                    open.or_else(|| crate::ui::workspace::exit_guard::window_to_ask_in(cx))
                 else {
                     return request.reply(true, cx);
                 };
                 // A window that closed meanwhile drops the request, which cancels this quit.
                 if window
                     .update(cx, |_, window, cx| {
-                        crate::ui::editor_panel::close::quit(request, window, cx)
+                        crate::ui::workspace::exit_guard::quit(request, window, cx)
                     })
                     .is_err()
                 {

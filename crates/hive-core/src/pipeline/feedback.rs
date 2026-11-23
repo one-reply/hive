@@ -41,7 +41,7 @@ impl Run {
         if self.phase != Phase::Acceptance {
             return Err(Error::WrongStage("The result is no longer awaiting review"));
         }
-        if self.lanes.get(lane).is_none_or(|l| l.assignment.is_empty())
+        if self.lanes.get(lane).is_none_or(|l| !l.is_assigned())
             || self.review_trees.get(lane).is_none_or(|t| t != tree)
             || note.trim().is_empty()
         {
@@ -116,7 +116,7 @@ impl Run {
             .lanes
             .iter()
             .enumerate()
-            .filter(|(_, l)| !l.assignment.trim().is_empty())
+            .filter(|(_, l)| l.is_assigned())
             .map(|(i, _)| i)
             .collect();
         self.develop(active);

@@ -52,6 +52,7 @@ fn inactive_strip_selects_card_then_active_strip_only_toggles_agents(cx: &mut Te
                 path: "/unused".into(),
                 source: std::io::Error::other("persistence disabled for test"),
             }),
+            hive_core::state::Access::Held,
             cx,
         )
     });

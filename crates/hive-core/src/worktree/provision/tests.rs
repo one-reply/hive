@@ -11,7 +11,7 @@ impl Scratch {
         let scratch = Self(root.canonicalize().unwrap());
         fs::create_dir(scratch.source()).unwrap();
         fs::create_dir(scratch.checkout()).unwrap();
-        git(&scratch.source(), &["init", "-q", "-b", "main"]);
+        crate::git::testing::init(&scratch.source());
         scratch
     }
 
@@ -41,21 +41,7 @@ impl Drop for Scratch {
 }
 
 fn git(path: &Path, args: &[&str]) {
-    let output = Host::Local
-        .command("git", args, Some(path))
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_AUTHOR_NAME", "Test")
-        .env("GIT_COMMITTER_NAME", "Test")
-        .env("GIT_AUTHOR_EMAIL", "test@example.test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.test")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    crate::git::testing::run(path, args);
 }
 
 #[test]
@@ -194,4 +180,86 @@ fn setup_runs_in_the_checkout_and_a_failure_carries_its_command_and_log() {
     assert_eq!(outcome, "exited with 3");
     assert!(output.contains("installing") && output.contains("lockfile is stale"));
     assert!(error.to_string().contains("exited with 3"), "{error}");
+}
+
+#[test]
+fn a_setup_that_never_finishes_reports_its_last_output() {
+    let scratch = Scratch::new("hung-setup");
+    let error = setup_within(
+        "echo 'fetching packages'; echo 'waiting for the registry' >&2; exec sleep 600",
+        &scratch.checkout(),
+        &Cancellation::default(),
+        Duration::from_secs(3),
+    )
+    .unwrap_err();
+    let ProvisionError::Setup {
+        outcome, output, ..
+    } = &error
+    else {
+        panic!("{error}");
+    };
+    assert_eq!(outcome, "timed out");
+    assert!(output.contains("fetching packages"), "{output}");
+    assert!(output.contains("waiting for the registry"), "{output}");
+}
+
+#[test]
+fn a_folder_is_named_by_a_pattern_for_its_contents_and_anchored_paths_look_inside() {
+    let patterns = IncludePatterns::parse(
+        "cache/**\nbuild/*\nconfig/local/*.yml\n.vscode/settings.json\n**/x\n",
+    );
+    assert!(patterns.matches("cache", true));
+    assert!(patterns.matches("build", true));
+    assert!(!patterns.matches("config", true));
+    assert!(!patterns.matches("cache", false));
+    assert_eq!(patterns.inside("config"), ["config/local"]);
+    assert_eq!(patterns.inside(".vscode"), [".vscode/settings.json"]);
+    // A wildcard first reaches everywhere, which would mean walking every ignored folder.
+    assert!(patterns.inside("node_modules").is_empty());
+}
+
+#[test]
+fn anchored_patterns_reach_files_inside_ignored_folders() {
+    let scratch = Scratch::new("nested");
+    scratch.write(".gitignore", ".vscode/\nconfig/\ncache/\nnode_modules/\n");
+    scratch.write("tracked.txt", "tracked");
+    git(&scratch.source(), &["add", ".gitignore", "tracked.txt"]);
+    git(&scratch.source(), &["commit", "-qm", "base"]);
+    scratch.write(".vscode/settings.json", "{}");
+    scratch.write(".vscode/launch.json", "launch");
+    scratch.write("config/local/dev.yml", "dev");
+    scratch.write("config/local/dev.json", "json");
+    scratch.write("config/other.yml", "other");
+    scratch.write("cache/deep/blob", "cached");
+    scratch.write("node_modules/pkg/settings.json", "dependency");
+    scratch.write(
+        INCLUDE_FILE,
+        ".vscode/settings.json\nconfig/local/*.yml\ncache/**\n**/settings.json\n",
+    );
+
+    let copied = copy_included(
+        &scratch.source(),
+        &scratch.checkout(),
+        &Cancellation::default(),
+    )
+    .unwrap();
+
+    assert_eq!(copied, 3);
+    assert_eq!(
+        scratch.copied(".vscode/settings.json").as_deref(),
+        Some("{}")
+    );
+    assert_eq!(
+        scratch.copied("config/local/dev.yml").as_deref(),
+        Some("dev")
+    );
+    assert_eq!(scratch.copied("cache/deep/blob").as_deref(), Some("cached"));
+    for absent in [
+        ".vscode/launch.json",
+        "config/local/dev.json",
+        "config/other.yml",
+        "node_modules/pkg/settings.json",
+    ] {
+        assert_eq!(scratch.copied(absent), None, "{absent}");
+    }
 }

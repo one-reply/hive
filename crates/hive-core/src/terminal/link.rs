@@ -6,7 +6,8 @@
 use std::ops::RangeInclusive;
 use std::sync::{Mutex, PoisonError};
 
-use alacritty_terminal::index::{Boundary, Direction};
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Boundary, Column, Direction};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 
@@ -16,6 +17,11 @@ use super::{Point, Terminal};
 /// Characters a URL cannot contain, after Alacritty's default hint pattern. Lowercase only:
 /// `RegexSearch` turns case-insensitive matching off when the pattern has an uppercase letter.
 const URL_PATTERN: &str = r#"https?://[^\x00-\x1f\x7f-\x9f<>"\s{}\^⟨⟩`\\]+"#;
+
+/// How far a URL may reach from the hovered cell. The lookup runs on every render under the
+/// terminal lock, and one wrapped line (minified output) can fill the whole scrollback:
+/// unbounded, that is a regex pass over a million cells per frame.
+const URL_ROWS: i32 = 100;
 
 /// A web link covering a run of grid cells.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,9 +93,15 @@ fn hyperlink_at<T>(term: &Term<T>, point: Point) -> Option<TerminalLink> {
     })
 }
 
-/// A URL in the text of the (soft-wrapped) line under `point`.
+/// A URL in the text of the (soft-wrapped) line under `point`, looked for no further than
+/// [`URL_ROWS`] rows either side of it.
 fn url_at<T>(term: &Term<T>, point: Point, regex: &mut RegexSearch) -> Option<TerminalLink> {
-    let (line_start, line_end) = (term.line_search_left(point), term.line_search_right(point));
+    let line_start = term
+        .line_search_left(point)
+        .max(Point::new(point.line - URL_ROWS, Column(0)));
+    let line_end = term
+        .line_search_right(point)
+        .min(Point::new(point.line + URL_ROWS, term.last_column()));
     let found = RegexIter::new(line_start, line_end, Direction::Right, term, regex)
         .take_while(|found| *found.start() <= point)
         .find(|found| found.contains(&point))?;
@@ -141,7 +153,6 @@ mod tests {
     use super::*;
     use crate::terminal::TerminalSize;
     use alacritty_terminal::event::VoidListener;
-    use alacritty_terminal::grid::Dimensions as _;
     use alacritty_terminal::index::Column;
     use alacritty_terminal::term::Config;
     use alacritty_terminal::vte::ansi::Processor;
@@ -255,6 +266,23 @@ mod tests {
     fn osc8_hyperlink_with_another_scheme_is_ignored() {
         let term = term("\x1b]8;;file:///etc/passwd\x1b\\label\x1b]8;;\x1b\\", 40, 2);
         assert_eq!(url(&term, 0, 1), None);
+    }
+
+    #[test]
+    fn a_url_is_looked_for_only_near_the_pointer_on_a_line_that_fills_the_scrollback() {
+        // One logical line: a URL, then 300 rows of the same token, as minified output prints.
+        let text = format!("https://x.test/{}", "a".repeat(40 * 300));
+        let term = term(&text, 40, 10);
+        let last_row = grid_point(&term, Point::new(9, Column(0)));
+        let start_row = term.line_search_left(last_row).line;
+        assert_eq!(last_row.line - start_row, 300);
+        let mut regex = RegexSearch::new(URL_PATTERN).unwrap();
+        let close = Point::new(start_row + URL_ROWS, Column(5));
+        // Within reach, the URL is found from the rest of its line...
+        assert!(url_at(&term, close, &mut regex).is_some());
+        // ...but not from further down, where it would cost a pass over the whole line.
+        let far = Point::new(start_row + URL_ROWS + 1, Column(5));
+        assert_eq!(url_at(&term, far, &mut regex), None);
     }
 
     #[test]

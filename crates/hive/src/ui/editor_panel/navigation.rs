@@ -78,7 +78,12 @@ pub(super) fn breadcrumbs(
             .cursor_pointer()
             .icon(Lucide::ChevronRight)
             .label(current.unwrap_or_else(|| "Symbols".into()))
-            .tooltip("Go to symbol (⌘⇧O)")
+            .tooltip(crate::ui::key_hint::tooltip(
+                "Go to symbol",
+                &super::GoToSymbol,
+                super::EDITOR_PANEL_CONTEXT,
+                window,
+            ))
             .on_click(move |_, window, cx| open(&document, window, cx))
             .smooth_hover(ButtonLook::Ghost, &hover, cx)
             .flex_shrink_0(),

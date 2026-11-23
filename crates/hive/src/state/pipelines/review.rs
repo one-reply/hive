@@ -206,7 +206,7 @@ impl Pipelines {
             })
         });
         if let Err(error) = result {
-            self.fail(id, error, cx);
+            self.stop_for(id, runtime::Failure::Acceptance(error), cx);
         }
     }
 }

@@ -1,7 +1,7 @@
 //! File access with explicit cancellation owned by the caller's background task.
 use super::{Entry, FileError, FileIndex, Snapshot};
 use crate::{command::Cancellation, host::Host};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A borrowed host and cancellation token for one sequence of filesystem operations.
 pub struct Access<'a> {
@@ -100,6 +100,17 @@ impl<'a> Access<'a> {
                 self.cancellation,
             )
         }
+    }
+    /// Copy entries from this Mac into a worktree folder without replacing anything; see
+    /// [`super::paste_entries`]. SSH worktrees refuse it: the helper protocol carries no
+    /// file uploads yet.
+    pub fn paste(
+        &self,
+        root: &Path,
+        directory: &Path,
+        sources: &[PathBuf],
+    ) -> Result<Vec<PathBuf>, FileError> {
+        super::paste_entries(self.host, root, directory, sources, self.cancellation)
     }
     /// Move without overwriting the destination.
     pub fn move_entry(&self, root: &Path, path: &Path, to: &Path) -> Result<(), FileError> {

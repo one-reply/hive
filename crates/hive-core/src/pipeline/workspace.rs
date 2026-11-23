@@ -1,7 +1,7 @@
 //! Local Git checkouts, required commands and acceptance diffs for a pipeline run.
 use super::{CommandResult, Lane, test_output};
 use crate::{
-    command::{self, Cancellation},
+    command::{self, Cancellation, End, Log},
     git::{self, GitError, diff::DiffSource, status::Change},
     host::Host,
     projects::{self, Project},
@@ -15,6 +15,11 @@ use std::time::Duration;
 mod check_choices;
 
 const CHECK_OUTPUT: usize = 64 * 1024;
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Last line of a check that ran out of time. Last, because the excerpt in a repair brief
+/// keeps the end of the output.
+const CHECK_TIMED_OUT: &str =
+    "[Timed out: Hive stopped the command before it finished. Above is its last output.]";
 
 /// Immutable start revision and whether the selected checkout also has local changes.
 #[derive(Clone, Debug)]
@@ -248,6 +253,14 @@ pub fn verify(run: u64, lane: &Lane) -> Result<(), GitError> {
 
 /// Execute user-configured QA scripts in each indicated checkout. A command error is a failed required check.
 pub fn checks(lanes: &[Lane], cancellation: &Cancellation) -> Vec<CommandResult> {
+    checks_within(lanes, cancellation, CHECK_TIMEOUT)
+}
+
+fn checks_within(
+    lanes: &[Lane],
+    cancellation: &Cancellation,
+    timeout: Duration,
+) -> Vec<CommandResult> {
     let mut results = Vec::new();
     for (index, lane) in lanes
         .iter()
@@ -263,26 +276,14 @@ pub fn checks(lanes: &[Lane], cancellation: &Cancellation) -> Vec<CommandResult>
         let (exit_code, output) = match command::run_with_observed_log_tail(
             command,
             cancellation,
-            Duration::from_secs(30 * 60),
+            timeout,
             CHECK_OUTPUT,
             |chunk| {
                 let room = test_output::REPORT_STDOUT.saturating_sub(stdout.len());
                 stdout.extend_from_slice(&chunk[..chunk.len().min(room)]);
             },
         ) {
-            Ok(result) => {
-                let mut output = String::from_utf8_lossy(&result.stdout).into_owned();
-                if !result.stderr.is_empty() {
-                    if !output.ends_with('\n') && !output.is_empty() {
-                        output.push('\n');
-                    }
-                    output.push_str(&String::from_utf8_lossy(&result.stderr));
-                }
-                if result.stdout.len() == CHECK_OUTPUT || result.stderr.len() == CHECK_OUTPUT {
-                    output.insert_str(0, "[Showing the last 64 KiB per output stream]\n");
-                }
-                (result.code, output)
-            }
+            Ok(log) => check_log(&log),
             Err(error) => (None, error.to_string()),
         };
         let passed = if exit_code == Some(0) {
@@ -302,13 +303,32 @@ pub fn checks(lanes: &[Lane], cancellation: &Cancellation) -> Vec<CommandResult>
     results
 }
 
+/// Exit code and saved output of one check. A check that ran out of time keeps its last
+/// output, so the developer sees what it was stuck on rather than a bare timeout.
+fn check_log(log: &Log) -> (Option<i32>, String) {
+    let mut output = log.text();
+    if log.stdout.len() == CHECK_OUTPUT || log.stderr.len() == CHECK_OUTPUT {
+        output.insert_str(0, "[Showing the last 64 KiB per output stream]\n");
+    }
+    match log.end {
+        End::Exited(code) => (code, output),
+        End::TimedOut => {
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str(CHECK_TIMED_OUT);
+            (None, output)
+        }
+    }
+}
+
 mod review;
 pub use review::{ReviewFile, ReviewRepo, patch, review, review_round};
 
 mod regression;
 pub use regression::{RegressionResult, run_regression};
 mod publication;
-pub use publication::{PublishedBranch, publication};
+pub use publication::publication;
 mod snapshot;
 pub(super) use snapshot::is_object_name;
 pub use snapshot::{release_trees, reviewed_trees};

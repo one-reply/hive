@@ -37,6 +37,7 @@ use switcher::attention::Attention;
 
 mod center;
 mod center_dock;
+pub(crate) mod exit_guard;
 mod files;
 mod git;
 pub(crate) mod history;
@@ -143,10 +144,10 @@ fn run_notice_key(run: u64) -> (&'static str, u64) {
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.on_window_should_close(cx, |window, cx| {
-            if AppState::get(cx).documents.read(cx).dirty(cx).is_empty() {
+            if exit_guard::closes_at_once(window, cx) {
                 return true;
             }
-            crate::ui::editor_panel::close::all(window, cx, |window, _| window.remove_window());
+            exit_guard::close_window(window, cx);
             false
         });
         let app = AppState::get(cx);
@@ -167,8 +168,14 @@ impl Workspace {
 
         if let Some(notice) = &store.read(cx).notice {
             let notice = notice.clone();
+            // It may say that nothing this session does is saved: it stays until dismissed.
             window.defer(cx, move |window, cx| {
-                window.push_notification(Notification::error(notice).title("State recovery"), cx);
+                window.push_notification(
+                    Notification::error(notice)
+                        .title("State recovery")
+                        .autohide(false),
+                    cx,
+                );
             });
         }
         let pipeline_runs = AppState::get(cx).pipelines.clone();
@@ -177,7 +184,7 @@ impl Workspace {
                 &pipeline_runs,
                 window,
                 |this, _, event: &crate::state::pipelines::RevealRun, window, cx| {
-                    this.show_pipeline_run(event.0, window, cx)
+                    this.show_pipeline_run(event.0, None, window, cx)
                 },
             ),
             cx.subscribe_in(
@@ -248,10 +255,9 @@ impl Workspace {
                     let project = this.project_of(&request.host, &request.worktree, cx);
                     let session = match project {
                         Some(project) => {
-                            let shown = this.shown.as_ref() == Some(&project);
                             let session = this
                                 .center(&project, window, cx)
-                                .spawn_agent(request, shown, window, cx);
+                                .spawn_agent(request, window, cx);
                             this.sync_active_worktrees(cx);
                             this.save_center(&project, window, cx);
                             cx.notify();
@@ -401,10 +407,7 @@ impl Workspace {
             .read(cx)
             .ticket_for_session(session)
         {
-            self.show_pipeline_run(ticket.run, window, cx);
-            if let Some(panel) = self.open_pipeline_panel() {
-                panel.update(cx, |panel, cx| panel.show_attempt(ticket, window, cx));
-            }
+            self.show_pipeline_run(ticket.run, Some(ticket), window, cx);
             return;
         }
         self.select_place_of(session, cx);
@@ -831,6 +834,9 @@ impl Render for Workspace {
 fn cached<V: Render>(view: &Entity<V>) -> impl IntoElement {
     view.clone().cached(StyleRefinement::default().size_full())
 }
+
+#[cfg(test)]
+mod cached_tests;
 
 /// Drag payload of the sidebar resize handle; renders nothing under the pointer.
 struct SidebarResize;

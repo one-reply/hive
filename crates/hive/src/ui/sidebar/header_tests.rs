@@ -68,6 +68,7 @@ fn project_names_expand_on_selection_and_toggle_when_active(cx: &mut TestAppCont
                 path: "/unused".into(),
                 source: std::io::Error::other("persistence disabled for test"),
             }),
+            hive_core::state::Access::Held,
             cx,
         )
     });

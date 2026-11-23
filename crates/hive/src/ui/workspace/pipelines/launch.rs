@@ -1,20 +1,24 @@
 //! A task, its execution recipe and the repositories the planner may use.
 use super::*;
+use crate::state::pipelines::{Preview, PreviewKey};
 use gpui_kit::component::{Disableable as _, button::ButtonVariants as _, input::InputEvent};
 use hive_core::pipeline::{Lane, LanePreset, workspace::BasePreview};
 
+mod actions;
 mod again;
 mod draft;
 mod mode;
 mod readiness;
 mod repository;
 mod route;
-use readiness::{Blocker, LaneState, blocker};
+mod start;
+use readiness::{Blocker, LaneState, blocker, lane_state};
 use repository::{Binding, dropdown, repositories};
+use start::Shown;
 
 const COMPOSER_WIDTH: Pixels = px(800.);
 /// Tall enough for a few sentences of intent and acceptance criteria without scrolling.
-const TASK_ROWS: usize = 6;
+const TASK_ROWS: usize = 8;
 
 pub(super) struct LaunchForm {
     project: PathBuf,
@@ -32,6 +36,8 @@ pub(super) struct LaunchForm {
     /// The pending write of the draft; dropping it cancels the write.
     draft_save: Option<Task<()>>,
     previous_recipe: Option<(Template, Template)>,
+    /// Set from the user's Start until every repository has been read again.
+    starting: Option<start::PendingStart>,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -56,7 +62,10 @@ impl LaunchForm {
             cx.observe_self(|form: &mut Self, cx| form.schedule_draft_save(cx)),
             cx.observe(&criteria, |_, _, cx| cx.notify()),
             cx.observe(&projects, |_, _, cx| cx.notify()),
-            cx.observe(&pipelines, |_, _, cx| cx.notify()),
+            cx.observe_in(&pipelines, window, |form, _, window, cx| {
+                form.resume_start(window, cx);
+                cx.notify();
+            }),
             cx.subscribe(&task, |_, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
@@ -88,6 +97,7 @@ impl LaunchForm {
             pristine,
             draft_save: None,
             previous_recipe: None,
+            starting: None,
             error: None,
             _subscriptions: subscriptions,
         };
@@ -118,37 +128,59 @@ impl LaunchForm {
         old.retain(|b| !previous.lanes.iter().any(|lane| lane.name == b.preset.name));
         self.bindings.append(&mut old);
         for binding in &self.bindings {
-            binding.preview(cx);
+            binding.read(cx);
         }
         self.error = None;
         cx.notify();
     }
 
     fn add_repository(&mut self, project: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(binding) = self.bindings.iter_mut().find(|b| b.project.is_none()) {
-            binding.bind(Some(project), window, cx);
-        } else {
-            let project_name = repositories(cx)
-                .into_iter()
-                .find(|(p, _)| p == &project)
-                .map(|(_, name)| name)
-                .unwrap_or_else(|| path_name(&project));
-            let mut name = project_name.clone();
-            let mut index = 2;
-            while self.bindings.iter().any(|b| b.preset.name == name) {
-                name = format!("{project_name} {index}");
-                index += 1;
-            }
-            let preset = LanePreset {
-                name,
-                profile: self.template.development.profile.clone(),
-                ..Default::default()
-            };
-            let binding = Binding::new(preset, Some(project), window, cx);
-            binding.preview(cx);
-            self.bindings.push(binding);
+        if let Some(index) = self.bindings.iter().position(|b| b.project.is_none()) {
+            self.rebind(index, project, window, cx);
+            return;
         }
+        let preset = LanePreset {
+            name: self.lane_name(self.bindings.len(), &project, cx),
+            profile: self.template.development.profile.clone(),
+            ..Default::default()
+        };
+        let binding = Binding::new(preset, Some(project), window, cx);
+        binding.read(cx);
+        self.bindings.push(binding);
         cx.notify();
+    }
+
+    /// Binds lane `index` to another repository, under the name `lane_name` gives it there.
+    fn rebind(
+        &mut self,
+        index: usize,
+        project: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.bindings[index].preset.name = self.lane_name(index, &project, cx);
+        self.bindings[index].bind(Some(project), window, cx);
+        cx.notify();
+    }
+
+    /// The name lane `index` has once it is bound to `project`.
+    fn lane_name(&self, index: usize, project: &Path, cx: &App) -> String {
+        let repository = repositories(cx)
+            .into_iter()
+            .find(|(path, _)| path == project)
+            .map_or_else(|| path_name(project), |(_, name)| name);
+        let others = self
+            .bindings
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| *other != index)
+            .map(|(_, binding)| binding.preset.name.as_str());
+        let recipe_lane = self
+            .template
+            .lanes
+            .get(index)
+            .map(|lane| lane.name.as_str());
+        lane_name_in(recipe_lane, &repository, others)
     }
 
     /// A recipe's lane only empties, so the user can bind it again; an added one goes away.
@@ -160,57 +192,20 @@ impl LaunchForm {
         }
         cx.notify();
     }
+}
 
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut lanes = Vec::new();
-        for b in &self.bindings {
-            let Some(project) = &b.project else { continue };
-            let Some(Ok(preview)) = b.base_preview(cx) else {
-                return;
-            };
-            lanes.push(Lane {
-                name: b.preset.name.clone(),
-                project: project.clone(),
-                base: preview.commit.clone(),
-                branch: b.branch_name().unwrap_or_default().to_owned(),
-                base_branch: b.base_branch(),
-                command: b.command(preview, cx),
-                setup: b.setup_command(cx),
-                profile: b.preset.profile.clone(),
-                edits: b.preset.edits,
-                ..Default::default()
-            });
-        }
-        let task = self.task.read(cx).value().trim().to_owned();
-        let result = AppState::get(cx).pipelines.clone().update(cx, |p, cx| {
-            let options = crate::state::pipelines::LaunchOptions {
-                frozen: self.frozen,
-                regression: self.regression && self.can_start_direct(),
-                direct_criteria: (self.direct && self.can_start_direct())
-                    .then(|| self.criteria.read(cx).value().to_string()),
-            };
-            p.start(
-                self.project.clone(),
-                task,
-                self.template.clone(),
-                lanes,
-                options,
-                cx,
-            )
-        });
-        match result {
-            Ok(id) => {
-                self.abandon();
-                let _ = self.parent.update(cx, |p, cx| {
-                    p.draft = None;
-                    p.show_run(id, window, cx)
-                });
-            }
-            Err(e) => {
-                self.error = Some(e);
-                cx.notify();
-            }
-        }
+/// A recipe's lane keeps the name its stages refer to, whatever repository fills it. A lane
+/// the user added is named after its repository, so it takes the new one's name when it is
+/// rebound, numbered when another lane has that name: the planner prompt, the timeline and
+/// the pull request text all tell lanes apart by name.
+fn lane_name_in<'a>(
+    recipe_lane: Option<&str>,
+    repository: &str,
+    others: impl Iterator<Item = &'a str>,
+) -> String {
+    match recipe_lane {
+        Some(name) => name.to_owned(),
+        None => hive_core::pipeline::unique_name(repository, others),
     }
 }
 
@@ -226,26 +221,9 @@ fn required_heading(title: &'static str, cx: &App) -> Div {
         .child(required_mark(cx))
 }
 
-/// A section title with one line on why it matters, and an optional action on the right.
-fn section(
-    title: impl IntoElement,
-    hint: &'static str,
-    action: Option<AnyElement>,
-    cx: &App,
-) -> Div {
-    h_flex()
-        .w_full()
-        .items_end()
-        .justify_between()
-        .gap_3()
-        .child(
-            v_flex()
-                .min_w_0()
-                .gap_0p5()
-                .child(title)
-                .child(subtle(hint, cx)),
-        )
-        .children(action)
+/// A section title with one line on why it matters.
+fn section(title: impl IntoElement, hint: &'static str, cx: &App) -> Div {
+    v_flex().gap_0p5().child(title).child(subtle(hint, cx))
 }
 
 fn default_projects(
@@ -271,9 +249,10 @@ fn default_projects(
     result
 }
 
-impl Render for LaunchForm {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let projects = repositories(cx);
+impl LaunchForm {
+    /// The recipe and the stages it runs, so the user knows what the run does before
+    /// describing the task.
+    fn header(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let templates = AppState::get(cx)
             .store
             .read(cx)
@@ -281,14 +260,7 @@ impl Render for LaunchForm {
             .pipelines
             .templates
             .clone();
-        let lanes: Vec<_> = self.bindings.iter().filter_map(|b| b.state(cx)).collect();
-        let has_task = !self.task.read(cx).value().trim().is_empty();
-        let direct = self.direct && self.can_start_direct();
-        let blocked = blocker(has_task, &lanes).or_else(|| {
-            (direct && self.criteria.read(cx).value().trim().is_empty())
-                .then_some(Blocker::Criteria)
-        });
-        let template = options_menu(
+        let recipe = options_menu(
             dropdown(
                 "launch-recipe",
                 Lucide::Workflow,
@@ -305,10 +277,28 @@ impl Render for LaunchForm {
                 this.apply_template(t, w, cx)
             },
         );
-        let mut repos = v_flex().w_full().gap_2();
-        for i in 0..self.bindings.len() {
-            repos = repos.child(self.repository_card(i, &projects, window, cx));
-        }
+        v_flex()
+            .gap_3()
+            .child(
+                h_flex()
+                    .w_full()
+                    .flex_wrap()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("New run"),
+                    )
+                    .child(h_flex().gap_2().child(subtle("Workflow", cx)).child(recipe)),
+            )
+            .child(self.route(cx))
+            .children(self.recipe_version(window, cx))
+    }
+
+    fn repositories(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let projects = repositories(cx);
         let add = options_menu(
             Button::new("add-pipeline-repo")
                 .small()
@@ -323,81 +313,30 @@ impl Render for LaunchForm {
             cx,
             |this, p, w, cx| this.add_repository(p, w, cx),
         );
-        let hover = Hover::new("start-planning", window, cx).enabled(blocked.is_none());
-        let submit = Button::new("start-planning")
-            .cursor_pointer()
-            .with_size(ButtonSize::Medium)
-            .label(if direct {
-                "Start development"
-            } else {
-                "Start planning"
-            })
-            .icon(Lucide::Play)
-            .disabled(blocked.is_some())
-            .on_click(cx.listener(|this, _, w, cx| this.submit(w, cx)))
-            .smooth_hover(ButtonLook::Primary, &hover, cx);
-        let footer_hint = blocked.map_or(
-            if direct {
-                "QA and your final acceptance follow development."
-            } else {
-                "You approve the plan before development."
-            },
-            Blocker::message,
-        );
-        let header = v_flex()
-            .gap_1()
-            .child(
-                div()
-                    .text_3xl()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("New run"),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Describe the task and choose where to run it."),
-            );
-        let workflow = card(cx)
-            .w_full()
-            .gap_3()
-            .child(
-                h_flex()
-                    .gap_3()
-                    .flex_wrap()
-                    .child(heading("Workflow"))
-                    .child(template),
-            )
-            .child(self.route(cx))
-            .children(self.recipe_version(window, cx))
-            .when(self.can_start_direct(), |card| {
-                card.child(button(
-                    "independent-regression",
-                    if self.regression {
-                        "Independent regression test: on"
-                    } else {
-                        "Independent regression test: off"
-                    },
-                    ButtonLook::Outline,
-                    window,
-                    cx,
-                    |v, _, cx| {
-                        v.regression = !v.regression;
-                        cx.notify();
-                    },
-                ))
-            })
-            .children(self.quick_start_toggle(direct, window, cx));
+        let mut section = v_flex().gap_2().child(section(
+            required_heading("Repositories", cx),
+            "Agents commit to the chosen branch in a separate worktree, so your checkout stays as it is.",
+            cx,
+        ));
+        for i in 0..self.bindings.len() {
+            section = section.child(self.repository_card(i, &projects, window, cx));
+        }
+        // The menu button keeps its own width instead of stretching across the column.
+        section.child(h_flex().child(add))
+    }
+}
+
+impl Render for LaunchForm {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let task = v_flex()
             .gap_2()
             .child(section(
                 required_heading("Task", cx),
-                if direct {
+                if self.is_direct() {
                     "Describe the change for the developer."
                 } else {
                     "Plain language is fine. The planner asks if something is unclear."
                 },
-                None,
                 cx,
             ))
             .child(TextField::textarea(
@@ -405,68 +344,51 @@ impl Render for LaunchForm {
                 &self.task,
                 cx,
             ));
-        let repositories = v_flex()
-            .gap_2()
-            .child(section(
-                required_heading("Repositories", cx),
-                "Agents commit to the chosen branch in a separate worktree, so your checkout stays as it is.",
-                Some(add),
-                cx,
-            ))
-            .child(repos);
-        let footer = h_flex()
-            .w_full()
-            .gap_3()
-            .flex_wrap()
-            .pt_4()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(submit)
-            .child(button(
-                "discard-launch-draft",
-                "Discard draft",
-                ButtonLook::Ghost,
-                window,
-                cx,
-                |v, w, cx| {
-                    v.abandon();
-                    let _ = v.parent.update(cx, |p, cx| {
-                        p.discard_draft(cx);
-                        p.home(w, cx);
-                    });
-                },
-            ))
-            .child(subtle(footer_hint, cx));
         let body = v_flex()
             .w_full()
             .max_w(COMPOSER_WIDTH)
             .gap_6()
-            .child(header)
-            .child(workflow)
+            .child(self.header(window, cx))
             .child(task)
-            .when(direct, |el| {
-                el.child(paragraph("Acceptance criteria", &self.criteria, cx))
-            })
-            .child(repositories)
-            .when_some(self.error.clone(), |el, e| {
-                el.child(div().text_sm().text_color(cx.theme().danger).child(e))
-            })
-            .child(footer);
-        scroll(
-            "pipeline-launch",
-            h_flex()
-                .items_start()
-                .justify_center()
-                .pt_6()
-                .pb_8()
-                .child(body),
-        )
+            .child(self.repositories(window, cx))
+            .children(self.options(window, cx));
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .capture_action(cx.listener(Self::start_on_secondary_enter))
+            .child(scroll(
+                "pipeline-launch",
+                h_flex()
+                    .items_start()
+                    .justify_center()
+                    .pt_2()
+                    .pb_8()
+                    .child(body),
+            ))
+            .child(self.action_bar(window, cx))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Path, PathBuf, Template, default_projects};
+    use super::{Path, PathBuf, Template, default_projects, lane_name_in};
+
+    #[test]
+    fn an_added_lane_takes_the_name_of_the_repository_it_is_bound_to() {
+        // Added for `api`, then switched to `web` in its card.
+        assert_eq!(lane_name_in(None, "web", ["Web UI"].into_iter()), "web");
+        // A second lane of a repository, and a name the recipe already uses.
+        assert_eq!(
+            lane_name_in(None, "web", ["web", "Web 2"].into_iter()),
+            "web 3"
+        );
+        assert_eq!(lane_name_in(None, "API", ["api"].into_iter()), "API 2");
+    }
+
+    #[test]
+    fn a_recipe_lane_keeps_its_name_whatever_repository_fills_it() {
+        assert_eq!(lane_name_in(Some("API"), "web", ["Web"].into_iter()), "API");
+    }
 
     #[test]
     fn matching_lanes_keep_their_repository_when_the_owner_matches_a_later_lane() {

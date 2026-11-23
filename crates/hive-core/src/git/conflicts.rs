@@ -1,5 +1,5 @@
 //! Unmerged paths and the operation that left them: whole-file resolution, abort and continue.
-use super::{GitError, READ_TIMEOUT, changes, run, run_mutation, run_stoppable, status};
+use super::{GitError, READ_TIMEOUT, changes, run, run_stoppable, status};
 use crate::command::{self, Cancellation};
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
@@ -87,7 +87,7 @@ pub enum Operation {
 
 impl Operation {
     /// The Git subcommand that accepts `--abort` and `--continue` for this operation.
-    fn command(self) -> &'static str {
+    pub(super) fn command(self) -> &'static str {
         match self {
             Self::Merge => "merge",
             Self::Rebase => "rebase",
@@ -236,9 +236,9 @@ pub(super) fn resolve_with(
 }
 
 /// Abandon the unfinished operation and restore the state it started from.
-pub(super) fn abort(host: &Host, cwd: &Path) -> Result<(), GitError> {
+pub(super) fn abort(host: &Host, cwd: &Path, stop: &Cancellation) -> Result<(), GitError> {
     let operation = require_operation(host, cwd)?;
-    run_mutation(host, cwd, &[operation.command(), "--abort"]).map(drop)
+    run_stoppable(host, cwd, &[operation.command(), "--abort"], stop).map(drop)
 }
 
 /// Conclude the unfinished operation, or advance it to its next stop.
@@ -253,13 +253,25 @@ pub(super) fn continue_operation(
             "Resolve every conflict before continuing.".into(),
         ));
     }
-    match run_stoppable(host, cwd, &[operation.command(), "--continue"], stop) {
-        Ok(_) => Ok(()),
-        // Git exits non-zero when the next replayed commit conflicts; that is the operation
-        // moving on, and the new conflicts are what the user needs to see.
+    let continued = run_stoppable(host, cwd, &[operation.command(), "--continue"], stop);
+    paused(host, cwd, continued).map(drop)
+}
+
+/// Whether a replay that Git ended stopped on a conflict rather than finished.
+///
+/// Git exits non-zero when the next replayed commit conflicts; that is the operation moving
+/// on, and the new conflicts are what the user needs to see. A non-zero exit without
+/// conflicts, such as a commit that could not be signed, stays an error.
+pub(super) fn paused(
+    host: &Host,
+    cwd: &Path,
+    replayed: Result<String, GitError>,
+) -> Result<bool, GitError> {
+    match replayed {
+        Ok(_) => Ok(false),
         Err(error @ GitError::Failed { .. }) => {
             if status::read(host, cwd)?.has_conflicts() {
-                Ok(())
+                Ok(true)
             } else {
                 Err(error)
             }

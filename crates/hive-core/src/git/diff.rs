@@ -53,6 +53,61 @@ impl FileDiff {
     pub fn can_stage_hunks(&self) -> bool {
         self.partial_staging && !self.hunks.is_empty()
     }
+    /// The hunks' lines in patch order, numbered on the sides they belong to.
+    pub fn body_lines(&self) -> Vec<BodyLine<'_>> {
+        let mut lines = Vec::new();
+        // The current hunk's index and the next line number on each side.
+        let mut hunk: Option<(usize, usize, usize)> = None;
+        for line in self.patch.lines() {
+            if let Some((old_line, new_line)) = hunk_start(line) {
+                let index = hunk.map_or(0, |(index, ..)| index + 1);
+                hunk = Some((index, old_line, new_line));
+                continue;
+            }
+            let Some((index, old_line, new_line)) = hunk.as_mut() else {
+                continue;
+            };
+            // The markers are ASCII, so the text after them starts on a char boundary.
+            let (original, modified, text) = match line.as_bytes().first() {
+                Some(b' ') => (Some(*old_line), Some(*new_line), &line[1..]),
+                Some(b'-') => (Some(*old_line), None, &line[1..]),
+                Some(b'+') => (None, Some(*new_line), &line[1..]),
+                // "\ No newline at end of file" belongs to neither side.
+                _ => continue,
+            };
+            *old_line += usize::from(original.is_some());
+            *new_line += usize::from(modified.is_some());
+            lines.push(BodyLine {
+                hunk: *index,
+                original,
+                modified,
+                text,
+            });
+        }
+        lines
+    }
+}
+
+/// One line of a hunk, with its one-based number on each side that has it: a context line
+/// on both, a removed line on the original side only, an added line on the modified side only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BodyLine<'a> {
+    /// Index of the line's hunk in [`FileDiff::hunks`].
+    pub hunk: usize,
+    /// Number in the original file.
+    pub original: Option<usize>,
+    /// Number in the modified file.
+    pub modified: Option<usize>,
+    /// The line without its marker and line ending.
+    pub text: &'a str,
+}
+
+/// The first original and modified lines named by a `@@ -a,b +c,d @@` hunk header.
+fn hunk_start(line: &str) -> Option<(usize, usize)> {
+    let mut fields = line.strip_prefix("@@ ")?.split_whitespace();
+    let mut number =
+        || -> Option<usize> { fields.next()?.get(1..)?.split(',').next()?.parse().ok() };
+    Some((number()?, number()?))
 }
 
 pub(super) fn validate_path(path: &str) -> Result<(), GitError> {
@@ -143,21 +198,14 @@ pub(crate) fn read_patch(
     parse(text(&raw)?.to_string())
 }
 
-fn parse(patch: String) -> Result<FileDiff, GitError> {
+pub(crate) fn parse(patch: String) -> Result<FileDiff, GitError> {
     let mut offsets = Vec::new();
     let mut position = 0;
     for line in patch.split_inclusive('\n') {
         if line.starts_with("@@ ") {
-            let mut fields = line.split_whitespace();
-            fields.next();
-            let number = |field: Option<&str>| {
-                field
-                    .and_then(|f| f.get(1..))
-                    .and_then(|f| f.split(',').next())
-                    .and_then(|f| f.parse().ok())
-                    .ok_or_else(|| GitError::Invalid("Malformed diff hunk".into()))
-            };
-            offsets.push((position, number(fields.next())?, number(fields.next())?));
+            let (old_line, new_line) =
+                hunk_start(line).ok_or_else(|| GitError::Invalid("Malformed diff hunk".into()))?;
+            offsets.push((position, old_line, new_line));
         }
         position += line.len();
     }
@@ -276,6 +324,35 @@ mod tests {
                 .unwrap()
                 .can_stage_hunks()
         );
+    }
+
+    #[test]
+    fn body_lines_number_each_side_and_skip_headers_and_newline_markers() {
+        let diff = parse(include_str!("fixtures/diff-three-hunks.patch").into()).unwrap();
+        let lines = diff.body_lines();
+        let line = |text: &str| *lines.iter().find(|line| line.text == text).unwrap();
+        let body = |hunk, original, modified, text| BodyLine {
+            hunk,
+            original,
+            modified,
+            text,
+        };
+        assert_eq!(lines.len(), 7 + 7 + 12);
+        assert_eq!(line("line 1"), body(0, Some(1), Some(1), "line 1"));
+        assert_eq!(line("line 3"), body(0, Some(3), None, "line 3"));
+        assert_eq!(
+            line("line 3 changed"),
+            body(0, None, Some(3), "line 3 changed")
+        );
+        assert_eq!(line("line 15"), body(1, Some(15), None, "line 15"));
+        assert_eq!(line("line 16"), body(1, Some(16), Some(15), "line 16"));
+        assert_eq!(line("added two"), body(2, None, Some(26), "added two"));
+        assert_eq!(line("tail"), body(2, Some(31), None, "tail"));
+        assert_eq!(
+            line("tail changed"),
+            body(2, None, Some(32), "tail changed")
+        );
+        assert!(!lines.iter().any(|line| line.text.contains("No newline")));
     }
 
     #[test]

@@ -5,11 +5,12 @@ use crate::ui::text_field::TextField;
 use crate::{
     app::AppState,
     state::git::{Git, Section},
+    state::pull_requests::{PullRequestEvent, PullRequests},
     state::store::Store,
     state::worktree_memory::WorktreeMemory,
 };
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::base::Disableable as _;
+use gpui_kit::base::{Disableable as _, Selectable as _};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -21,22 +22,28 @@ use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hive_core::git::{
-    changes::{Action, Discard},
+    branches,
+    changes::{Action, Discard, ForcePushPreview},
     diff::DiffSource,
     status::{Change, FileChange, Status},
 };
 use hive_core::projects::Target;
 use std::collections::HashSet;
 
+mod availability;
 mod commit;
+mod dispatch;
 mod error;
 mod file_row;
 mod files;
 mod header;
 mod operation;
+mod pull_request;
 mod review;
 #[cfg(test)]
 mod tests;
+
+use availability::{Blocker, Entry, Facts, PushTarget, Request, staged_count};
 
 actions!(source_control, [CommitChanges]);
 
@@ -57,6 +64,8 @@ struct ListView {
 
 pub(crate) struct GitPanel {
     git: Entity<Git>,
+    /// What the hosting service says about each worktree's request, and where one is opened.
+    pull_requests: Entity<PullRequests>,
     /// The agent the error card offers; the only setting this panel draws.
     default_agent: hive_core::agent::AgentKind,
     filter: Entity<InputState>,
@@ -67,22 +76,36 @@ pub(crate) struct GitPanel {
     /// Filter and folded groups of the worktrees that are not shown.
     list_views: WorktreeMemory<ListView>,
     changes_list: ListState,
+    /// The rows `changes_list` holds: a group, and for a file row its position in
+    /// `change_files`.
     change_rows: Vec<(usize, Option<usize>)>,
+    /// The status files `change_rows` was built from.
+    change_files: std::rc::Rc<[FileChange]>,
     /// Session-only height of the commit message box.
     message_size: commit::MessageSize,
+    /// The footer's menu of Git actions.
+    actions_menu: commit::ActionsMenu,
     _subscriptions: Vec<Subscription>,
 }
 
 impl GitPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let app = AppState::get(cx);
-        Self::over(app.git.clone(), app.store.clone(), window, cx)
+        Self::over(
+            app.git.clone(),
+            app.store.clone(),
+            app.pull_requests.clone(),
+            window,
+            cx,
+        )
     }
 
-    /// The panel of `git`, taking the one setting it draws from `store`.
+    /// The panel of `git`, taking the one setting it draws from `store` and opening requests
+    /// through `pull_requests`.
     fn over(
         git: Entity<Git>,
         store: Entity<Store>,
+        pull_requests: Entity<PullRequests>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -108,6 +131,10 @@ impl GitPanel {
                     .as_ref()
                     .map(|t| state.draft(t).to_string())
                     .unwrap_or_default();
+                // The menu lists what this worktree allowed while it was idle.
+                if this.draft_target != target || state.is_busy() {
+                    this.close_actions_menu(window, cx);
+                }
                 if this.draft_target != target {
                     this.follow_list_view(target.as_ref(), window, cx);
                 }
@@ -119,6 +146,13 @@ impl GitPanel {
                 cx.notify();
             }),
             cx.observe(&filter, |_, _, cx| cx.notify()),
+            cx.subscribe_in(
+                &pull_requests,
+                window,
+                |_, _, event: &PullRequestEvent, window, cx| {
+                    pull_request::announce(event, window, cx)
+                },
+            ),
             cx.subscribe(&message, |this, input, event, cx| {
                 if matches!(event, InputEvent::Change)
                     && let Some(target) = this.draft_target.clone()
@@ -132,6 +166,7 @@ impl GitPanel {
         let draft_target = git.read(cx).target.clone();
         Self {
             git,
+            pull_requests,
             default_agent: store.read(cx).state.settings.default_cli_agent(),
             filter,
             message,
@@ -140,7 +175,9 @@ impl GitPanel {
             list_views: WorktreeMemory::default(),
             changes_list: ListState::new(0, ListAlignment::Top, ROW_HEIGHT),
             change_rows: Vec::new(),
+            change_files: Default::default(),
             message_size: commit::MessageSize::default(),
+            actions_menu: commit::ActionsMenu::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -160,6 +197,9 @@ impl GitPanel {
         let view = self
             .list_views
             .switch(self.draft_target.as_ref(), target, shown);
+        // Another worktree's list starts at its top, even where it names the same files.
+        self.change_rows.clear();
+        self.change_files = Default::default();
         self.collapsed = view.collapsed;
         if self.filter.read(cx).value().as_ref() != view.filter {
             self.filter
@@ -248,7 +288,9 @@ impl Render for GitPanel {
             .min_w_0()
             .key_context("SourceControl")
             .bg(cx.theme().background)
-            .on_action(cx.listener(|this, _: &CommitChanges, _, cx| this.commit(cx)))
+            .on_action(cx.listener(|this, _: &CommitChanges, window, cx| {
+                this.perform(Entry::Commit, window, cx)
+            }))
             // The panel's bounds cap the message box at half its height.
             .on_drag_move(cx.listener(
                 |this, event: &DragMoveEvent<commit::MessageResize>, _, cx| {

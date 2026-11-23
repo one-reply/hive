@@ -88,13 +88,58 @@ mod native {
     /// is deleted and created anew; `security -i` exits with the status of the last command,
     /// so a missing item to delete is not a failure.
     pub(super) fn save_key(service: &str, provider: Provider, key: &ApiKey) -> Result<(), Error> {
+        // Read only when there is an item to lose. One saved with the old per-build ACL asks
+        // for the login password once; refused, the key is replaced without a way back.
+        let previous = match has_key(service, provider) {
+            Ok(true) => load_key(service, provider).unwrap_or_else(|error| {
+                tracing::warn!(%error, "previous API key not read before replacing it");
+                None
+            }),
+            _ => None,
+        };
+        replace(service, provider, key, previous.as_ref(), security_tool)
+    }
+
+    /// Deletes the item and adds `key` in one `security` session. When that fails after the
+    /// delete went through, `previous` is put back, so a failed save keeps the old key.
+    fn replace(
+        service: &str,
+        provider: Provider,
+        key: &ApiKey,
+        previous: Option<&ApiKey>,
+        mut run: impl FnMut(&str) -> Result<crate::command::Output, crate::command::Error>,
+    ) -> Result<(), Error> {
         let account = provider.account();
-        let hex: String = key.as_str().bytes().map(|b| format!("{b:02x}")).collect();
-        let command = format!(
-            "delete-generic-password -s {service} -a {account}\n\
-             add-generic-password -A -s {service} -a {account} -X {hex}\n"
+        let replacement = format!(
+            "delete-generic-password -s {service} -a {account}\n{}",
+            add_command(service, provider, key)
         );
-        let output = security_tool(&command).map_err(|error| {
+        let saved = outcome(provider, run(&replacement));
+        if saved.is_err()
+            && let Some(previous) = previous
+        {
+            // The delete may not have happened; then the old item is still there and this add
+            // is refused as a duplicate, which changes nothing.
+            if let Err(error) = outcome(provider, run(&add_command(service, provider, previous))) {
+                tracing::debug!(%error, "previous API key not restored");
+            }
+        }
+        saved
+    }
+
+    fn add_command(service: &str, provider: Provider, key: &ApiKey) -> String {
+        let hex: String = key.as_str().bytes().map(|b| format!("{b:02x}")).collect();
+        format!(
+            "add-generic-password -A -s {service} -a {} -X {hex}\n",
+            provider.account()
+        )
+    }
+
+    fn outcome(
+        provider: Provider,
+        output: Result<crate::command::Output, crate::command::Error>,
+    ) -> Result<(), Error> {
+        let output = output.map_err(|error| {
             tracing::warn!(%error, "security tool failed");
             Error::Keychain {
                 provider,
@@ -118,7 +163,7 @@ mod native {
     /// Runs one command in `security -i`, where the command line is read from stdin,
     /// bounded by the shared runner so a stalled prompt cannot hold the task forever.
     fn security_tool(command: &str) -> Result<crate::command::Output, crate::command::Error> {
-        let mut security = std::process::Command::new("security");
+        let mut security = std::process::Command::new(crate::keychain::SECURITY);
         security.arg("-i");
         crate::command::run(
             security,
@@ -194,6 +239,50 @@ mod native {
             delete_key(&service, provider).unwrap();
             assert!(!has_key(&service, provider).unwrap());
             assert!(load_key(&service, provider).unwrap().is_none());
+        }
+
+        #[test]
+        fn a_replacement_that_fails_puts_the_previous_key_back() {
+            let output = |code, stderr: &str| crate::command::Output {
+                code: Some(code),
+                stdout: Vec::new(),
+                stderr: stderr.as_bytes().to_vec(),
+            };
+            let new = ApiKey::try_from("sk-new".to_owned()).unwrap();
+            let old = ApiKey::try_from("sk-old".to_owned()).unwrap();
+            let mut sent = Vec::new();
+            let result = replace("hive.test", Provider::OpenAi, &new, Some(&old), |command| {
+                sent.push(command.to_owned());
+                Ok(if sent.len() == 1 {
+                    output(1, "add-generic-password: returned -61\n")
+                } else {
+                    output(0, "")
+                })
+            });
+            assert!(matches!(
+                result,
+                Err(Error::Keychain {
+                    operation: "save",
+                    code: -61,
+                    ..
+                })
+            ));
+            assert_eq!(sent.len(), 2, "{sent:?}");
+            assert!(sent[0].starts_with("delete-generic-password"));
+            // "sk-old" as the hex `-X` takes.
+            assert!(sent[1].ends_with("-X 736b2d6f6c64\n"), "{}", sent[1]);
+            assert!(!sent[1].contains("delete"));
+
+            for previous in [None, Some(&old)] {
+                let mut calls = 0;
+                let saved = replace("hive.test", Provider::OpenAi, &new, previous, |_| {
+                    calls += 1;
+                    Ok(output(i32::from(previous.is_none()), ""))
+                });
+                // Nothing to restore without a previous key, nothing to undo after a success.
+                assert_eq!(calls, 1);
+                assert_eq!(saved.is_ok(), previous.is_some());
+            }
         }
 
         #[test]

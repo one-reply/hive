@@ -2,55 +2,187 @@
 use super::*;
 use crate::state::pipelines::RunStatus;
 use crate::ui::hover::{SmoothHoverBg as _, WIDE_HOVER_DURATION};
+use crate::ui::list_scroll::replace_rows;
 use gpui_kit::component::{
-    button::{ButtonVariant, ButtonVariants as _},
+    button::ButtonVariants as _,
     menu::{ContextMenuExt as _, PopupMenu},
 };
 
+mod entries;
 mod runs;
+pub(super) use entries::Entry;
+use entries::entries;
 use runs::{RunRow, run_detail, run_row};
 
 /// Strength of the selection accent a hovered, unselected template card's border eases to.
 const HOVER_BORDER_OPACITY: f32 = 0.6;
-
+/// Space around the page, the same as around the other pipeline screens.
+const PAGE_PADDING: Pixels = px(24.);
+/// Space between the template cards and the run history.
+const WORKFLOWS_GAP: Pixels = px(32.);
+const ROW_GAP: Pixels = px(4.);
+/// How far beyond the view rows are drawn, so scrolling and Tab meet rows that are already there.
+pub(super) const HISTORY_OVERDRAW: Pixels = px(240.);
+/// How often the ages of the listed runs are worded anew.
+const AGE_TICK: Duration = Duration::from_secs(60);
 impl PipelinePanel {
-    pub(super) fn library(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The library page as a virtual list: the workflows block, then the project's runs.
+    pub(super) fn library(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let state = AppState::get(cx);
         let pipelines = state.pipelines.read(cx);
-        let lib = &state.store.read(cx).state.pipelines;
-        let templates = lib.templates.clone();
-        let now = hive_core::pipeline::now_ms();
-        let mut runs = lib
+        let runs: Vec<_> = state
+            .store
+            .read(cx)
+            .state
+            .pipelines
             .runs
             .iter()
             .rev()
-            .filter(|r| r.owner() == self.project)
-            .map(|r| {
-                let status = pipelines.status(r, cx);
-                let finished = matches!(status, RunStatus::Completed | RunStatus::Cancelled);
-                // A finished run's phase repeats its status, and a live one's length is still
-                // growing, so each row shows only the one that says something.
-                let detail = run_detail(
-                    &r.template().name,
-                    (!finished).then(|| phase_label(r)).as_deref(),
-                    r.age(now).as_deref(),
-                    finished.then(|| run::length(r, now)).flatten().as_deref(),
-                );
-                RunRow {
-                    id: r.id(),
-                    task: r.task().to_owned(),
-                    detail,
-                    status,
-                    finished,
-                }
-            })
-            .collect::<Vec<_>>();
-        let draft_template = self.draft_template(cx);
-        let outside_attention = pipelines
+            .filter(|run| run.owner() == self.project)
+            .map(|run| (run.id(), pipelines.status(run, cx)))
+            .collect();
+        let elsewhere: Vec<_> = pipelines
             .attention(cx)
             .into_iter()
             .filter(|(_, owner, _)| owner != &self.project)
-            .collect::<Vec<_>>();
+            .map(|(id, ..)| id)
+            .collect();
+        let entries: Rc<[Entry]> = entries(&runs, &elsewhere).into();
+        if *self.entries != *entries {
+            replace_rows(&self.history, &self.entries, &entries);
+            self.entries = entries.clone();
+        }
+        if !runs.is_empty() {
+            self.keep_ages_current(cx);
+        }
+        let view = cx.entity().downgrade();
+        let page = list(self.history.clone(), move |ix, window, cx| {
+            view.update(cx, |this, cx| this.entry(&entries, ix, window, cx))
+                .unwrap_or_else(|_| div().into_any_element())
+        });
+        div()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .child(page.size_full())
+            .into_any_element()
+    }
+
+    /// Run ages are worded to the minute, and the cached panel repaints only when told to.
+    /// The tick is armed by a render, so it stops once the library is no longer drawn.
+    fn keep_ages_current(&mut self, cx: &mut Context<Self>) {
+        if self.age_tick.is_some() {
+            return;
+        }
+        self.age_tick = Some(cx.spawn(async move |panel, cx| {
+            cx.background_executor().timer(AGE_TICK).await;
+            let _ = panel.update(cx, |panel, cx| {
+                panel.age_tick = None;
+                cx.notify();
+            });
+        }));
+    }
+
+    fn entry(
+        &self,
+        entries: &[Entry],
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(entry) = entries.get(ix) else {
+            return div().into_any_element();
+        };
+        let body = match *entry {
+            Entry::Workflows => self.workflows(window, cx).into_any_element(),
+            Entry::Section(title) => heading(title).into_any_element(),
+            Entry::Run(id) => self.run_entry(id, window, cx),
+            Entry::Elsewhere(id) => self.elsewhere_entry(id, window, cx),
+            Entry::NoRuns => h_flex()
+                .gap_2()
+                .py_3()
+                .child(
+                    Icon::new(Lucide::Clock)
+                        .size_4()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .child(subtle("No runs in this project yet.", cx))
+                .into_any_element(),
+        };
+        let below = if ix + 1 == entries.len() {
+            PAGE_PADDING
+        } else if *entry == Entry::Workflows {
+            WORKFLOWS_GAP
+        } else {
+            ROW_GAP
+        };
+        div()
+            .px(PAGE_PADDING)
+            .when(ix == 0, |el| el.pt(PAGE_PADDING))
+            .pb(below)
+            .child(body)
+            .into_any_element()
+    }
+
+    fn run_entry(&self, id: u64, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let state = AppState::get(cx);
+        let runs = &state.store.read(cx).state.pipelines.runs;
+        let Some(run) = runs.iter().find(|run| run.id() == id) else {
+            return div().into_any_element();
+        };
+        let status = state.pipelines.read(cx).status(run, cx);
+        let finished = matches!(status, RunStatus::Completed | RunStatus::Cancelled);
+        let now = hive_core::pipeline::now_ms();
+        // A finished run's phase repeats its status, and a live one's length is still
+        // growing, so each row shows only the one that says something.
+        let detail = run_detail(
+            &run.template().name,
+            (!finished).then(|| phase_label(run)).as_deref(),
+            run.age(now).as_deref(),
+            finished.then(|| run::length(run, now)).flatten().as_deref(),
+        );
+        let row = RunRow {
+            id,
+            task: run.task().to_owned(),
+            detail,
+            status,
+            finished,
+        };
+        run_row(row, window, cx)
+    }
+
+    /// A run of another project that waits for the user; a click goes to it.
+    fn elsewhere_entry(&self, id: u64, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let waiting = AppState::get(cx).pipelines.read(cx).attention(cx);
+        let Some((_, owner, task)) = waiting.into_iter().find(|(run, ..)| *run == id) else {
+            return div().into_any_element();
+        };
+        button(
+            ("other-project-run", id),
+            format!("{} · {}", path_name(&owner), task),
+            ButtonLook::Ghost,
+            window,
+            cx,
+            move |_, _, cx| {
+                AppState::get(cx)
+                    .pipelines
+                    .clone()
+                    .update(cx, |p, cx| p.reveal(id, cx))
+            },
+        )
+        .into_any_element()
+    }
+
+    /// The title, the actions and the template cards.
+    fn workflows(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let templates = AppState::get(cx)
+            .store
+            .read(cx)
+            .state
+            .pipelines
+            .templates
+            .clone();
+        let draft_template = self.draft_template(cx);
         let selected = templates
             .iter()
             .position(|t| Some(&t.name) == self.selected_template.as_ref())
@@ -80,7 +212,6 @@ impl PipelinePanel {
                 move |p, w, cx| p.launch(launch.clone(), w, cx),
             ));
         }
-        let history_is_empty = runs.is_empty();
         let mut cards = h_flex().items_stretch().gap_3().flex_wrap();
         for (i, t) in templates.iter().enumerate() {
             let id = SharedString::from(format!("workflow-template-{}", t.name));
@@ -177,70 +308,22 @@ impl PipelinePanel {
         if templates.is_empty() {
             cards = cards.child(subtle("Create a template to start a run.", cx));
         }
-        let mut history = v_flex().gap_1();
-        // The sort is stable, so each section keeps the newest run first.
-        runs.sort_by_key(|r| history_section(r.status).0);
-        let mut previous = None;
-        for (i, row) in runs.into_iter().enumerate() {
-            let (_, section) = history_section(row.status);
-            if previous != Some(section) {
-                history = history.child(heading(section));
-                previous = Some(section);
-            }
-            history = history.child(run_row(i, row, window, cx));
-        }
-        if !outside_attention.is_empty() {
-            history = history.child(heading("Needs you in other projects"));
-            for (id, owner, task) in outside_attention {
-                history = history.child(button(
-                    ("other-project-run", id as usize),
-                    format!("{} · {}", path_name(&owner), task),
-                    ButtonLook::Ghost,
-                    window,
-                    cx,
-                    move |_, _, cx| {
-                        AppState::get(cx)
-                            .pipelines
-                            .clone()
-                            .update(cx, |p, cx| p.reveal(id, cx))
-                    },
-                ));
-            }
-        }
-        if history_is_empty {
-            history = history.child(
+        v_flex()
+            .gap_5()
+            .child(
                 h_flex()
-                    .gap_2()
-                    .py_3()
+                    .gap_3()
+                    .flex_wrap()
+                    .justify_between()
                     .child(
-                        Icon::new(Lucide::Clock)
-                            .size_4()
-                            .text_color(cx.theme().muted_foreground),
+                        div()
+                            .text_xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Workflows"),
                     )
-                    .child(subtle("No runs in this project yet.", cx)),
-            );
-        }
-        scroll(
-            "pipeline-library",
-            v_flex()
-                .p_2()
-                .gap_5()
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .flex_wrap()
-                        .justify_between()
-                        .child(
-                            div()
-                                .text_xl()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Workflows"),
-                        )
-                        .child(actions),
-                )
-                .child(cards)
-                .child(v_flex().gap_2().pt_3().child(history)),
-        )
+                    .child(actions),
+            )
+            .child(cards)
     }
 }
 
@@ -283,15 +366,12 @@ fn confirm_delete(template: &Template, window: &mut Window, cx: &mut App) {
     let template = template.clone();
     window.open_alert_dialog(cx, move |alert, _, _| {
         let template = template.clone();
-        alert
+        crate::ui::destructive::confirmation(alert
             .confirm()
             .title(format!("Delete “{}”?", template.name))
             .description(
                 "This removes the template from all projects. Existing runs keep their workflow.",
-            )
-            .ok_text("Delete")
-            .ok_variant(ButtonVariant::Danger)
-            .on_ok(move |_, window, cx| {
+            ), "Delete", move |window, cx| {
                 let pipelines = AppState::get(cx).pipelines.clone();
                 if let Err(error) = pipelines.update(cx, |p, cx| p.delete_template(&template, cx)) {
                     window.push_notification(Notification::error(error), cx);
@@ -299,29 +379,4 @@ fn confirm_delete(template: &Template, window: &mut Window, cx: &mut App) {
                 true
             })
     });
-}
-
-/// Where a run is listed in the history, in display order: what waits for the user comes
-/// before what is working, and finished runs come last.
-fn history_section(status: RunStatus) -> (u8, &'static str) {
-    match status {
-        RunStatus::NeedsYou | RunStatus::Failed => (0, "Needs you"),
-        RunStatus::Running => (1, "Running"),
-        RunStatus::Completed | RunStatus::Cancelled => (2, "Recent"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{RunStatus, history_section};
-
-    #[test]
-    fn runs_that_wait_for_the_user_are_listed_before_working_and_finished_ones() {
-        use RunStatus::*;
-        let mut runs = [Completed, Running, Failed, Cancelled, NeedsYou];
-        runs.sort_by_key(|status| history_section(*status).0);
-        assert_eq!(runs, [Failed, NeedsYou, Running, Completed, Cancelled]);
-        assert_eq!(history_section(Failed).1, history_section(NeedsYou).1);
-        assert_eq!(history_section(Completed).1, history_section(Cancelled).1);
-    }
 }

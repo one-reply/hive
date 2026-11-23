@@ -3,13 +3,34 @@
 use super::*;
 use hive_core::terminal::TerminalControl;
 
+/// Why a run stopped and waits for the user, which decides what a retry repeats.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Failure {
+    /// The step Hive scheduled: a checkout, a command or an agent's launch. A retry schedules
+    /// the step again.
+    Step(String),
+    /// The run's state did not reach disk. A retry saves again, and so does any later
+    /// change: once one is saved, this failure is behind the run.
+    Checkpoint(String),
+    /// The check the user's Accept started. Only this one is repeated by accepting again;
+    /// any other error at the acceptance gate must not accept on the user's behalf.
+    Acceptance(String),
+}
+
+impl Failure {
+    pub(super) fn message(&self) -> &str {
+        match self {
+            Self::Step(message) | Self::Checkpoint(message) | Self::Acceptance(message) => message,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RunRuntime {
     pub(super) reports: HashMap<Ticket, Vec<super::reports::Reply>>,
     /// Stamp of the scheduled step; results carrying an older stamp are dropped.
     pub(super) generation: u64,
-    /// Why the run stopped and waits for the user.
-    pub(super) error: Option<String>,
+    pub(super) error: Option<Failure>,
     /// Cancels the background step in flight.
     pub(super) worker: Option<Arc<Cancellation>>,
     /// Terminals of reported attempts that are still shutting down.
@@ -49,6 +70,16 @@ impl Pipelines {
     /// The diff of the file selected in the run's change list, once read.
     pub(crate) fn patch(&self, id: u64) -> Option<&PatchPreview> {
         self.runtime(id)?.patch.as_ref()
+    }
+
+    /// Forgets a failed save now that a later state of the run is on disk.
+    pub(super) fn forget_unsaved_checkpoint(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(runtime) = self.runtime.get_mut(&id)
+            && matches!(runtime.error, Some(Failure::Checkpoint(_)))
+        {
+            runtime.error = None;
+            cx.notify();
+        }
     }
 
     pub(super) fn clear_error(&mut self, id: u64) {

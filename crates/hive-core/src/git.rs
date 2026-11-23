@@ -16,9 +16,12 @@ pub mod history;
 pub mod hosting;
 mod numstat;
 pub mod pull_request;
+mod rebase;
 pub mod review_notes;
 pub mod reviewed;
 pub mod status;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod verification;
 
 /// Keep persisted revision tokens compatible across digest library versions.
@@ -35,7 +38,7 @@ pub(crate) fn sha256_hex(digest: &sha2::digest::Output<sha2::Sha256>) -> String 
 /// A `git` invocation that could not run or exited non-zero.
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
-    /// The process could not be started (no `git`, no `ssh`, bad cwd).
+    /// The process could not be started (no `git`, no `ssh`, bad cwd), so nothing changed.
     #[error("failed to run `git {command}` on {host:?}: {source}")]
     Spawn {
         command: String,
@@ -52,7 +55,8 @@ pub enum GitError {
         code: Option<i32>,
         stderr: String,
     },
-    /// A deadline or pipe failure interrupted Git; writes may already have taken effect.
+    /// A stop, a deadline or a pipe failure ended the command; unless it was stopped before
+    /// Git started, writes may already have taken effect.
     #[error("`git {command}` interrupted on {host:?} in {cwd}: {source}. {guidance}")]
     Interrupted {
         /// Arguments identifying the interrupted operation.
@@ -83,6 +87,14 @@ pub enum GitError {
         #[source]
         source: Box<GitError>,
     },
+    /// The commit succeeded locally, but the sync that followed did not finish.
+    #[error(
+        "Commit created locally, but the sync did not finish. Use Sync to retry once the cause is resolved.\n{source}"
+    )]
+    SyncAfterCommit {
+        #[source]
+        source: Box<GitError>,
+    },
 }
 
 impl GitError {
@@ -96,7 +108,9 @@ impl GitError {
     pub fn outcome_unknown(&self) -> bool {
         match self {
             Self::Interrupted { mutation, .. } => *mutation,
-            Self::PushAfterCommit { source } => source.outcome_unknown(),
+            Self::PushAfterCommit { source } | Self::SyncAfterCommit { source } => {
+                source.outcome_unknown()
+            }
             _ => false,
         }
     }
@@ -109,7 +123,9 @@ impl GitError {
             | GitError::TooLarge(_)
             | GitError::Interrupted { .. } => "",
             GitError::Failed { stderr, .. } => stderr,
-            GitError::PushAfterCommit { source } => source.stderr(),
+            GitError::PushAfterCommit { source } | GitError::SyncAfterCommit { source } => {
+                source.stderr()
+            }
         }
     }
 }
@@ -159,6 +175,29 @@ pub(crate) fn bytes(
     invoke(host, cwd, args, input, limit, allow_exit_one, None)
 }
 
+/// Blocking: runs the POSIX `script` with `sh` in the environment [`bytes`] gives Git, with
+/// `args` as its positional parameters. For work that would otherwise start one Git process
+/// per file, which over SSH means one connection per file. A query: read deadline, no stop.
+pub(crate) fn script(
+    host: &Host,
+    cwd: &Path,
+    script: &str,
+    args: &[&str],
+    limit: usize,
+) -> Result<Vec<u8>, GitError> {
+    let mut argv = vec!["-c", script, "sh"];
+    argv.extend_from_slice(args);
+    let output = command::run(
+        environment(host, cwd, "sh", &argv),
+        &[],
+        &Cancellation::default(),
+        READ_TIMEOUT,
+        limit,
+    )
+    .map_err(|source| unfinished(host, cwd, &argv, source, false))?;
+    finish(host, cwd, &argv, output, false, false)
+}
+
 fn bytes_mutation(
     host: &Host,
     cwd: &Path,
@@ -171,27 +210,17 @@ fn bytes_mutation(
     invoke(host, cwd, args, input, limit, allow_exit_one, Some(stop))
 }
 
-fn invoke(
-    host: &Host,
-    cwd: &Path,
-    args: &[&str],
-    input: Option<&[u8]>,
-    limit: usize,
-    allow_exit_one: bool,
-    // A mutation carries its stop switch; a query has none and the shorter deadline.
-    stop: Option<&Cancellation>,
-) -> Result<Vec<u8>, GitError> {
-    let mutation = stop.is_some();
-    let unstoppable = Cancellation::default();
+/// `program` set up to run in `cwd` on `host` with the environment every Git command gets.
+fn environment(host: &Host, cwd: &Path, program: &str, args: &[&str]) -> std::process::Command {
     let mut command = match host {
-        Host::Local => host.command("git", args, Some(cwd)),
+        Host::Local => host.command(program, args, Some(cwd)),
         Host::Ssh { .. } => {
             let mut remote = vec![
                 "GIT_TERMINAL_PROMPT=0",
                 "GIT_EDITOR=true",
                 "GIT_ICASE_PATHSPECS=0",
                 "LC_ALL=C",
-                "git",
+                program,
             ];
             remote.extend_from_slice(args);
             host.command("env", &remote, Some(cwd))
@@ -205,19 +234,78 @@ fn invoke(
         // The panel confirms exact paths, even if a login shell requests case-insensitive matches.
         .env("GIT_ICASE_PATHSPECS", "0")
         .env("LC_ALL", "C");
-    let timeout = if mutation {
-        MUTATION_TIMEOUT
-    } else {
-        READ_TIMEOUT
-    };
-    let output = command::run(command, input.unwrap_or_default(), stop.unwrap_or(&unstoppable), timeout, limit)
-        .map_err(|source| match source {
-            command::Error::TooLarge(limit) if !mutation => GitError::TooLarge(limit),
-            source => GitError::Interrupted {
-                command: args.join(" "), host: host.clone(), cwd: cwd.to_owned(), source, mutation,
-                guidance: if mutation { "Outcome unknown. Refresh and inspect the index, History and remote before retrying; no automatic retry was made." } else { "Refresh to retry." },
+    command
+}
+
+/// A command that could not start, ran out of time or output, or was stopped.
+fn unfinished(
+    host: &Host,
+    cwd: &Path,
+    args: &[&str],
+    source: command::Error,
+    mutation: bool,
+) -> GitError {
+    match source {
+        // Nothing ran, so there is no outcome to doubt, whatever the command would have done.
+        command::Error::Spawn(source) => GitError::Spawn {
+            command: args.join(" "),
+            host: host.clone(),
+            source,
+        },
+        // Stopped before the first command of an action, or between two of them. What ran
+        // before has its own result; this one did not run, so it leaves nothing to verify.
+        source @ command::Error::CancelledBeforeStart => GitError::Interrupted {
+            command: args.join(" "),
+            host: host.clone(),
+            cwd: cwd.to_owned(),
+            source,
+            mutation: false,
+            guidance: "It changed nothing.",
+        },
+        command::Error::TooLarge(limit) => GitError::TooLarge(limit),
+        source => GitError::Interrupted {
+            command: args.join(" "),
+            host: host.clone(),
+            cwd: cwd.to_owned(),
+            source,
+            mutation,
+            guidance: if mutation {
+                "Outcome unknown. Refresh and inspect the index, History and remote before retrying; no automatic retry was made."
+            } else {
+                "Refresh to retry."
             },
-        })?;
+        },
+    }
+}
+
+fn invoke(
+    host: &Host,
+    cwd: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    limit: usize,
+    allow_exit_one: bool,
+    // A mutation carries its stop switch; a query has none and the shorter deadline.
+    stop: Option<&Cancellation>,
+) -> Result<Vec<u8>, GitError> {
+    let command = environment(host, cwd, "git", args);
+    let input = input.unwrap_or_default();
+    // Whether a stop came before Git started is the supervisor's to say: it takes the last
+    // look before the process exists, and `unfinished` reads its answer.
+    let output = match stop {
+        // A hook prints as much as it likes. Ending Git for that would stop it halfway through
+        // the change, so the command runs on and only the end of its output is kept.
+        Some(stop) => command::run_keeping_tail(command, input, stop, MUTATION_TIMEOUT, limit),
+        None => command::run(
+            command,
+            input,
+            &Cancellation::default(),
+            READ_TIMEOUT,
+            limit,
+        ),
+    };
+    let mutation = stop.is_some();
+    let output = output.map_err(|source| unfinished(host, cwd, args, source, mutation))?;
     finish(host, cwd, args, output, allow_exit_one, mutation)
 }
 
@@ -301,6 +389,27 @@ mod transport_tests {
             }
         }
         assert!(!GitError::Invalid("not a git repository".into()).is_not_repository());
+    }
+
+    #[test]
+    fn a_mutation_the_supervisor_never_started_leaves_nothing_to_verify() {
+        // A Stop can land after the last look a caller took at its switch. Whatever the
+        // supervisor then answers for the process it did not start is not an unknown outcome.
+        let stop = Cancellation::default();
+        stop.cancel();
+        let never_started = |stop: &Cancellation| {
+            let program = std::process::Command::new("hive-must-not-spawn");
+            let source = command::run_keeping_tail(program, &[], stop, MUTATION_TIMEOUT, 1)
+                .err()
+                .expect("nothing by that name runs");
+            unfinished(&Host::Local, Path::new("/repo"), &["commit"], source, true)
+        };
+        let stopped = never_started(&stop);
+        assert!(!stopped.outcome_unknown(), "{stopped}");
+        assert!(stopped.to_string().contains("changed nothing"), "{stopped}");
+        let missing = never_started(&Cancellation::default());
+        assert!(matches!(missing, GitError::Spawn { .. }), "{missing:?}");
+        assert!(!missing.outcome_unknown());
     }
 
     #[test]

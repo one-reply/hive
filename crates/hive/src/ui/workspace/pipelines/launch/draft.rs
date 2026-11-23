@@ -97,6 +97,7 @@ impl LaunchForm {
     pub(in crate::ui::workspace::pipelines) fn abandon(&mut self) {
         self.keep_draft = false;
         self.draft_save = None;
+        self.starting = None;
     }
 
     /// Writes the draft once edits pause. A save already waiting covers this change too.

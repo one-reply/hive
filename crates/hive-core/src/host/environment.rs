@@ -33,6 +33,17 @@ pub struct Environment {
 }
 
 impl Environment {
+    /// An environment of exactly these variables, for a test that needs one without a shell.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn of<'a>(vars: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        Self {
+            vars: vars
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        }
+    }
+
     /// Every `KEY=VALUE` pair, ready for [`Command::envs`].
     pub fn iter(&self) -> impl Iterator<Item = (&OsStr, &OsStr)> {
         self.vars
@@ -89,6 +100,22 @@ pub enum CaptureError {
     },
 }
 
+impl CaptureError {
+    /// Whether asking again can succeed: a shell that was slow or failed may answer later,
+    /// but without `SHELL` there is nothing to ask.
+    pub fn is_retryable(&self) -> bool {
+        !matches!(self, Self::NoShell)
+    }
+}
+
+/// The waits before asking a failed login shell again. One slow only while the Mac starts up
+/// answers on a later try; one that hangs every time is given up on within minutes.
+pub const RETRY_AFTER: [Duration; 3] = [
+    Duration::from_secs(10),
+    Duration::from_secs(60),
+    Duration::from_secs(300),
+];
+
 static LOGIN: OnceLock<Environment> = OnceLock::new();
 
 /// Blocking: capture `$SHELL`'s login environment and apply it to every later local command.
@@ -114,10 +141,42 @@ pub fn login() -> Option<&'static Environment> {
 
 /// `PATH` as the user's terminal sees it, or the process `PATH` until the login shell answers.
 pub fn path() -> Option<OsString> {
-    login()
-        .and_then(|environment| environment.get("PATH"))
+    var("PATH")
+}
+
+/// `key` as a local command and the user's terminal see it: the login shell's value, else the
+/// process's, until the login shell answers or when it does not export `key`.
+pub fn var(key: &str) -> Option<OsString> {
+    lookup(login(), key)
+}
+
+fn lookup(login: Option<&Environment>, key: &str) -> Option<OsString> {
+    login
+        .and_then(|environment| environment.get(key))
         .map(OsStr::to_os_string)
-        .or_else(|| std::env::var_os("PATH"))
+        .or_else(|| std::env::var_os(key))
+}
+
+/// The file `execvp` would run for a bare `program` with this `PATH`, found ahead of time.
+/// A command whose variables include `PATH` makes std fork and exec the whole app so the child
+/// can search it; with a path std uses `posix_spawn`, about twice as fast. `None` leaves the
+/// search to `execvp`: a name with a slash, no match, or an entry relative to the child's
+/// directory before any match.
+pub(crate) fn resolve(program: &str, path: &OsStr) -> Option<std::path::PathBuf> {
+    if program.is_empty() || program.contains('/') {
+        return None;
+    }
+    for directory in std::env::split_paths(path) {
+        if !directory.is_absolute() {
+            return None;
+        }
+        let candidate = directory.join(program);
+        let is_file = std::fs::metadata(&candidate).is_ok_and(|metadata| metadata.is_file());
+        if is_file && rustix::fs::access(&candidate, rustix::fs::Access::EXEC_OK).is_ok() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Blocking: start `shell` as an interactive login shell and parse the environment it prints.
@@ -229,6 +288,18 @@ mod tests {
     #[test]
     fn path_falls_back_to_the_process_until_installed() {
         assert_eq!(path(), std::env::var_os("PATH"));
+    }
+
+    #[test]
+    fn a_variable_comes_from_the_login_shell_else_from_the_process() {
+        let login = Environment::of([("CLAUDE_CONFIG_DIR", "/srv/claude"), ("HOME", "/login")]);
+        assert_eq!(
+            lookup(Some(&login), "CLAUDE_CONFIG_DIR"),
+            Some("/srv/claude".into())
+        );
+        assert_eq!(lookup(Some(&login), "HOME"), Some("/login".into()));
+        assert_eq!(lookup(Some(&login), "PATH"), std::env::var_os("PATH"));
+        assert_eq!(lookup(None, "PATH"), std::env::var_os("PATH"));
     }
 
     /// Reproduces the Finder launch: run with launchd's PATH, e.g.

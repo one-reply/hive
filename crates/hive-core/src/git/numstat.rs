@@ -1,11 +1,23 @@
 //! Bounded, NUL-delimited line counts, independent of the full patch preview.
 use super::status::{Change, LineStats, Status};
-use super::{GitError, READ_LIMIT, bytes, diff, text};
+use super::{GitError, READ_LIMIT, bytes, diff, script, text};
 use crate::host::Host;
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+
+/// Bytes of untracked files read locally per status read, which runs every two seconds
+/// while the Git panel is open. 2 000 files of 20 KiB fit; a 300 MB log, which took 105 ms
+/// to count on every refresh, does not, and simply shows no count.
+const UNTRACKED_BYTES: u64 = 64 * 1024 * 1024;
+/// Untracked files counted by Git itself per status read: those with a custom diff driver
+/// and, on an SSH host, all of them. They are counted in one shell, never one connection
+/// each, but still one `git` process per file: 199 files took 1.4 s locally, so beyond this
+/// many the rest show no count.
+const GIT_COUNTED: usize = 100;
+/// `git diff --no-index` compares exactly two paths and exits 1 when they differ.
+const UNTRACKED_SCRIPT: &str = "for f do git diff --no-index --numstat -z --no-ext-diff --no-textconv -- /dev/null \"$f\"; s=$?; [ \"$s\" -le 1 ] || exit \"$s\"; done";
 
 pub(super) fn read(
     host: &Host,
@@ -60,15 +72,22 @@ pub(super) fn fill_status(host: &Host, cwd: &Path, status: &mut Status) {
             }
         }
     }
+    fill_untracked(host, cwd, status, UNTRACKED_BYTES);
+}
+
+/// Counts the lines of untracked files: locally by reading at most `budget` bytes, and by
+/// Git in one batch where that cannot be done, such as on an SSH host.
+fn fill_untracked(host: &Host, cwd: &Path, status: &mut Status, mut budget: u64) {
     let settings = untracked_settings(host, cwd, status);
-    for file in &mut status.files {
+    let mut by_git = Vec::new();
+    for (index, file) in status.files.iter_mut().enumerate() {
         if file.unstaged != Some(Change::Untracked) {
             continue;
         }
         if let Some((attributes, threshold)) = &settings
             && let Some(attribute) = attributes.get(&file.path)
         {
-            match local_untracked_counts(cwd, &file.path, attribute, *threshold) {
+            match local_untracked_counts(cwd, &file.path, attribute, *threshold, &mut budget) {
                 Ok(counts) => {
                     file.unstaged_stats = counts;
                     continue;
@@ -78,20 +97,28 @@ pub(super) fn fill_status(host: &Host, cwd: &Path, status: &mut Status) {
                 }
             }
         }
-        let counts = diff::validate_path(&file.path).and_then(|()| {
-            read(
-                host,
-                cwd,
-                &["diff", "--no-index"],
-                &["/dev/null", &file.path],
-            )
-        });
-        match counts {
-            Ok(counts) => file.unstaged_stats = counts.get(&file.path).copied(),
-            Err(error) => {
-                tracing::warn!(%error, path = %file.path, "Untracked line counts unavailable");
-            }
+        if diff::validate_path(&file.path).is_ok() && by_git.len() < GIT_COUNTED {
+            by_git.push(index);
         }
+    }
+    if by_git.is_empty() {
+        return;
+    }
+    let paths: Vec<&str> = by_git
+        .iter()
+        .map(|&index| status.files[index].path.as_str())
+        .collect();
+    let counts =
+        match script(host, cwd, UNTRACKED_SCRIPT, &paths, READ_LIMIT).and_then(|raw| parse(&raw)) {
+            Ok(counts) => counts,
+            Err(error) => {
+                tracing::warn!(%error, files = paths.len(), "Untracked line counts unavailable");
+                return;
+            }
+        };
+    for index in by_git {
+        let file = &mut status.files[index];
+        file.unstaged_stats = counts.get(&file.path).copied();
     }
 }
 
@@ -169,11 +196,14 @@ fn untracked_settings(
     }
 }
 
+/// `Ok(None)` for a binary or oversized file, and for one that would overrun what is left of
+/// `budget`, which reading it then uses up.
 fn local_untracked_counts(
     cwd: &Path,
     path: &str,
     attribute: &str,
     binary_threshold: u64,
+    budget: &mut u64,
 ) -> std::io::Result<Option<LineStats>> {
     diff::validate_path(path).map_err(std::io::Error::other)?;
     if !matches!(attribute, "unspecified" | "set" | "unset") {
@@ -205,7 +235,12 @@ fn local_untracked_counts(
     if !metadata.is_file() || (attribute != "set" && metadata.len() > binary_threshold) {
         return Ok(None);
     }
-    count_added_lines(file, attribute != "set")
+    let Some(left) = budget.checked_sub(metadata.len()) else {
+        return Ok(None);
+    };
+    *budget = left;
+    // A file that grows while it is read is counted only up to the size the budget allowed.
+    count_added_lines(file.take(metadata.len()), attribute != "set")
 }
 
 fn count_added_lines(
@@ -290,26 +325,43 @@ mod tests {
     #[test]
     fn local_settings_enable_the_batch_path_and_parse_git_size_units() {
         let root = std::env::temp_dir().join(format!("hive-numstat-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        super::super::run(&Host::Local, &root, &["init", "-q"]).unwrap();
-        super::super::run(
-            &Host::Local,
-            &root,
-            &["config", "core.bigFileThreshold", "512m"],
-        )
-        .unwrap();
+        crate::git::testing::init(&root);
+        crate::git::testing::run(&root, &["config", "core.bigFileThreshold", "512m"]);
         std::fs::write(root.join("new.txt"), "one\nlast").unwrap();
         let status = super::super::status::read(&Host::Local, &root).unwrap();
         let (attributes, threshold) = untracked_settings(&Host::Local, &root, &status).unwrap();
         assert_eq!(threshold, 512 * 1024 * 1024);
         assert_eq!(attributes["new.txt"], "unspecified");
+        let mut budget = 100;
         assert_eq!(
-            local_untracked_counts(&root, "new.txt", &attributes["new.txt"], threshold).unwrap(),
+            local_untracked_counts(
+                &root,
+                "new.txt",
+                &attributes["new.txt"],
+                threshold,
+                &mut budget
+            )
+            .unwrap(),
             Some(LineStats {
                 added: 2,
                 removed: 0
             })
         );
+        // The file's eight bytes came out of the budget; one that does not fit is not read.
+        assert_eq!(budget, 92);
+        let mut spent = 7;
+        assert_eq!(
+            local_untracked_counts(
+                &root,
+                "new.txt",
+                &attributes["new.txt"],
+                threshold,
+                &mut spent
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(spent, 7);
         super::super::run(
             &Host::Local,
             &root,

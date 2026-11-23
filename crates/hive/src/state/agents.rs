@@ -85,9 +85,17 @@ struct Watched {
     program: ProgramStatus,
     /// The agent's own last report, from hooks or OSC 7501; it beats the output estimate.
     reported: Option<AgentStatus>,
+    /// When the agent last reported a status.
+    reported_at: Option<Instant>,
+    /// The agent reported `working` since it appeared here; see [`ended_turn`].
+    worked: bool,
+    /// Since when the agent's own last report is `idle`.
+    idle_since: Option<Instant>,
     /// The agent the last poll saw here. Another one, or none, means `reported` and `helper`
     /// described an agent that is gone.
     sighted: Option<AgentKind>,
+    /// When the process table was read for the last poll that saw no agent here.
+    unsighted_at: Option<Instant>,
     unread: bool,
     helper: Option<Helper>,
 }
@@ -108,6 +116,8 @@ struct Probe {
     worktree: PathBuf,
     shell_pid: u32,
     activity: Activity,
+    /// The last poll's conversation lookup, reused while it is fresh.
+    discovery: Option<conversation::Discovery>,
 }
 
 /// A terminal's agent as seen by the poll, before titles are attached on the UI thread.
@@ -119,6 +129,8 @@ struct Sighting {
     status: AgentStatus,
     /// The conversation the agent runs, once its CLI has recorded one.
     conversation: Option<ResumeSession>,
+    /// The lookup behind `conversation`, kept for the next poll.
+    discovery: Option<conversation::Discovery>,
 }
 
 impl EventEmitter<AgentsEvent> for Agents {}
@@ -132,20 +144,22 @@ impl Agents {
                 let Ok(probes) = this.update(cx, |this, cx| this.probes(cx)) else {
                     return;
                 };
-                let sightings = cx
+                let (read_at, sightings) = cx
                     .background_executor()
                     .spawn(async move {
+                        let read_at = Instant::now();
                         if probes.is_empty() {
-                            Ok(Vec::new())
+                            (read_at, Ok(Vec::new()))
                         } else {
-                            look(&probes)
+                            (read_at, look(&probes))
                         }
                     })
                     .await;
                 if this
                     .update(cx, |this, cx| {
                         this.refresh_reports(cx);
-                        this.apply(sightings, cx);
+                        this.settle_turns(Instant::now(), cx);
+                        this.apply(sightings, read_at, cx);
                         this.settle_calls(cx);
                     })
                     .is_err()
@@ -223,7 +237,11 @@ impl Agents {
         self.watched.push(Watched {
             program: terminal.program_status(),
             reported: None,
+            reported_at: None,
+            worked: false,
+            idle_since: None,
             sighted: None,
+            unsighted_at: None,
             unread: false,
             helper: None,
             session: session.downgrade(),
@@ -234,6 +252,7 @@ impl Agents {
                 worktree: worktree.to_path_buf(),
                 shell_pid: terminal.shell_pid(),
                 activity: terminal.activity(),
+                discovery: None,
             },
         });
     }
@@ -309,6 +328,53 @@ impl Agents {
             .flat_map(|(path, sessions)| sessions.iter().map(move |session| (path, session)))
     }
 
+    /// Ends the turn of each pipeline step whose agent went idle and stayed quiet; see
+    /// [`ended_turn`]. The agent never says so itself, so the poll does it for it, through the
+    /// same path as a reported `done`.
+    fn settle_turns(&mut self, now: Instant, cx: &mut Context<Self>) {
+        let ended: Vec<EntityId> = self
+            .watched
+            .iter()
+            .filter(|watched| {
+                let step = watched.session.upgrade().is_some_and(|session| {
+                    let session = session.read(cx);
+                    !session.exited && session.report_grant.is_some()
+                });
+                ended_turn(
+                    step,
+                    watched.sighted.or(watched.probe.launched_agent),
+                    watched.worked,
+                    watched.reported,
+                    watched
+                        .idle_since
+                        .map(|since| now.saturating_duration_since(since)),
+                    watched.probe.activity.is_streaming(now),
+                )
+            })
+            .map(|watched| watched.id)
+            .collect();
+        for id in ended {
+            self.report_status(id, Some(AgentStatus::Done), cx);
+        }
+    }
+
+    /// The poll looks at the panes once their agents have been quiet for the whole grace.
+    #[cfg(test)]
+    pub(crate) fn settle_quiet_turns_for_test(&mut self, cx: &mut Context<Self>) {
+        self.settle_turns(Instant::now() + TURN_END_GRACE, cx);
+    }
+
+    /// The agent in terminal `id` reports `status`, as its hooks or OSC 7501 would.
+    #[cfg(test)]
+    pub(crate) fn report_for_test(
+        &mut self,
+        id: EntityId,
+        status: AgentStatus,
+        cx: &mut Context<Self>,
+    ) {
+        self.report_status(id, Some(status), cx);
+    }
+
     fn apply_reports(&mut self, reports: Vec<hooks::Report>, cx: &mut Context<Self>) {
         for report in reports {
             let Some(watched) = self
@@ -339,19 +405,30 @@ impl Agents {
 
     /// Applies a status the agent in terminal `id` reported itself; `None` withdraws it.
     fn report_status(&mut self, id: EntityId, status: Option<AgentStatus>, cx: &mut Context<Self>) {
-        if self.live_session(id, cx).is_none() {
+        let Some(session) = self.live_session(id, cx) else {
             return;
-        }
+        };
+        // The pane of a pipeline step, which owes Hive a stage report.
+        let step = session.read(cx).report_grant.is_some();
         let Some(watched) = self.watched.iter_mut().find(|watched| watched.id == id) else {
             return;
         };
-        if watched.reported != status {
-            cx.notify();
-        }
         let Some(status) = status else {
-            watched.reported = None;
+            if watched.reported.take().is_some() {
+                cx.notify();
+            }
+            watched.worked = false;
+            watched.idle_since = None;
             return;
         };
+        let kind = watched.sighted.or(watched.probe.launched_agent);
+        let status = recorded_status(step, kind, watched.reported, status);
+        watched.reported_at = Some(Instant::now());
+        watched.worked |= status == AgentStatus::Working;
+        if watched.reported != Some(status) {
+            cx.notify();
+            watched.idle_since = (status == AgentStatus::Idle).then(Instant::now);
+        }
         let previous = watched.reported;
         if update_status(&mut watched.reported, &mut watched.unread, status) {
             cx.emit(AgentsEvent::Attention(id, status));
@@ -409,17 +486,28 @@ impl Agents {
     }
 
     /// Drops what belonged to an agent that left its terminal: its reports and its parent.
+    /// `read_at` is when the poll read the process table that `seen` comes from.
     fn note_sightings(
         &mut self,
         seen: &HashMap<EntityId, (AgentKind, Option<ResumeSession>)>,
+        read_at: Instant,
         cx: &mut Context<Self>,
     ) {
         let mut gone = Vec::new();
         for watched in &mut self.watched {
             let kind = seen.get(&watched.id).map(|(kind, _)| *kind);
-            if watched.sighted.is_some() && watched.sighted != kind {
+            let left = watched.sighted.is_some() && watched.sighted != kind;
+            if left || kind.is_some() && reported_unseen(watched.reported_at, watched.unsighted_at)
+            {
                 watched.reported = None;
+                watched.worked = false;
+                watched.idle_since = None;
+            }
+            if left {
                 gone.extend(watched.helper.take());
+            }
+            if kind.is_none() {
+                watched.unsighted_at = Some(read_at);
             }
             watched.sighted = kind;
         }
@@ -428,7 +516,12 @@ impl Agents {
         }
     }
 
-    fn apply(&mut self, sightings: Result<Vec<Sighting>, String>, cx: &mut Context<Self>) {
+    fn apply(
+        &mut self,
+        sightings: Result<Vec<Sighting>, String>,
+        read_at: Instant,
+        cx: &mut Context<Self>,
+    ) {
         let sightings = match sightings {
             Ok(sightings) => {
                 self.last_error = None;
@@ -442,12 +535,18 @@ impl Agents {
                 return;
             }
         };
+        for watched in &mut self.watched {
+            watched.probe.discovery = sightings
+                .iter()
+                .find(|sighting| sighting.id == watched.id)
+                .and_then(|sighting| sighting.discovery.clone());
+        }
         let seen: HashMap<EntityId, (AgentKind, Option<ResumeSession>)> = sightings
             .iter()
             .map(|sighting| (sighting.id, (sighting.kind, sighting.conversation.clone())))
             .collect();
         self.track_conversations(&seen, cx);
-        self.note_sightings(&seen, cx);
+        self.note_sightings(&seen, read_at, cx);
         let mut by_worktree: HashMap<(Host, PathBuf), Vec<AgentSession>> = HashMap::new();
         for sighting in sightings {
             let session = self
@@ -501,11 +600,22 @@ fn look(probes: &[(EntityId, Probe)]) -> Result<Vec<Sighting>, String> {
             } else {
                 probe.launched_agent?
             };
-            let conversation = if probe.host.is_local() {
-                conversation::discover(kind, &table.as_ref()?.foreground_pids(probe.shell_pid))
+            let discovery = if probe.host.is_local() {
+                let table = table.as_ref()?;
+                let job = table.foreground_job(probe.shell_pid)?;
+                Some(conversation::Discovery::refresh(
+                    probe.discovery.as_ref(),
+                    kind,
+                    job,
+                    now,
+                    || conversation::discover(kind, &table.foreground_pids(probe.shell_pid)),
+                ))
             } else {
                 None
             };
+            let conversation = discovery
+                .as_ref()
+                .and_then(|discovery| discovery.found().cloned());
             Some(Sighting {
                 host: probe.host.clone(),
                 id: *id,
@@ -517,6 +627,7 @@ fn look(probes: &[(EntityId, Probe)]) -> Result<Vec<Sighting>, String> {
                     AgentStatus::Idle
                 },
                 conversation,
+                discovery,
             })
         })
         .collect();
@@ -553,6 +664,69 @@ fn helper_event(previous: Option<AgentStatus>, status: AgentStatus) -> Option<He
     }
 }
 
+/// How long a pipeline step's agent stays `idle`, with a silent terminal, before its turn
+/// counts as over. An agent that goes idle in the middle of a turn reports `working` again or
+/// keeps printing well within it; the poll runs every [`POLL_INTERVAL`], so the request shows
+/// up to one tick later.
+const TURN_END_GRACE: Duration = Duration::from_secs(3);
+
+/// Whether an agent's kind ends its turns by going quiet instead of saying `done`. Claude
+/// Code says `done` itself; its `idle` is a session start, which also follows `/clear` and a
+/// compaction in the middle of a turn.
+fn rests_silently(kind: Option<AgentKind>) -> bool {
+    kind != Some(AgentKind::ClaudeCode)
+}
+
+/// Whether the last report came from an agent the poll cannot see, such as Codex behind
+/// `ssh`: a poll that read the process table after the report found no agent in the
+/// terminal. An agent that appears later did not make it. A report newer than that read may
+/// be the new agent's own first word, which often comes before the poll sees it.
+fn reported_unseen(reported_at: Option<Instant>, unsighted_at: Option<Instant>) -> bool {
+    reported_at
+        .zip(unsighted_at)
+        .is_some_and(|(reported, unsighted)| reported < unsighted)
+}
+
+/// Whether a pipeline step's agent ended its turn without saying so.
+///
+/// A step ends with a stage report, so an agent back at its prompt finished a response
+/// without one. Codex 0.167 was measured ending every turn with `idle`, never `done`; left as
+/// idle such a step looks busy until its time budget runs out. The turn counts as over once
+/// the agent has been `working` since it appeared (an earlier `idle` is its start) and has
+/// then stayed `idle` with a silent terminal for [`TURN_END_GRACE`]. Outside a pipeline
+/// nothing is owed, and idle stays idle.
+fn ended_turn(
+    step: bool,
+    kind: Option<AgentKind>,
+    worked: bool,
+    reported: Option<AgentStatus>,
+    idle_for: Option<Duration>,
+    streaming: bool,
+) -> bool {
+    step && worked
+        && rests_silently(kind)
+        && reported == Some(AgentStatus::Idle)
+        && !streaming
+        && idle_for.is_some_and(|idle| idle >= TURN_END_GRACE)
+}
+
+/// The status to record for what an agent reported about itself. In a pipeline step a
+/// finished response stays finished when the agent then says `idle`: a newer Codex does so
+/// once the user has looked at its `done`, and one whose turn [`ended_turn`] repeats it.
+fn recorded_status(
+    step: bool,
+    kind: Option<AgentKind>,
+    previous: Option<AgentStatus>,
+    status: AgentStatus,
+) -> AgentStatus {
+    let finished = previous == Some(AgentStatus::Done) && status == AgentStatus::Idle;
+    if step && finished && rests_silently(kind) {
+        AgentStatus::Done
+    } else {
+        status
+    }
+}
+
 /// Records `status` and returns whether it is news worth a notification.
 fn update_status(
     current: &mut Option<AgentStatus>,
@@ -571,8 +745,263 @@ fn update_status(
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentStatus, HelperEvent, helper_event, update_status};
+    use super::{
+        AgentKind, AgentStatus, AgentsEvent, Duration, HelperEvent, Instant, TURN_END_GRACE,
+        ended_turn, helper_event, recorded_status, update_status,
+    };
     use gpui_kit as gpui;
+
+    const STATUSES: [AgentStatus; 6] = [
+        AgentStatus::Working,
+        AgentStatus::Idle,
+        AgentStatus::WaitingInput,
+        AgentStatus::WaitingApproval,
+        AgentStatus::Done,
+        AgentStatus::Failed,
+    ];
+    const KINDS: [Option<AgentKind>; 4] = [
+        None,
+        Some(AgentKind::Codex),
+        Some(AgentKind::OpenCode),
+        Some(AgentKind::ClaudeCode),
+    ];
+
+    #[test]
+    fn a_step_agent_ends_its_turn_by_staying_idle_and_silent_after_working() {
+        let codex = Some(AgentKind::Codex);
+        let idle = Some(AgentStatus::Idle);
+        let quiet = Some(TURN_END_GRACE);
+        assert!(ended_turn(true, codex, true, idle, quiet, false));
+        assert!(ended_turn(true, None, true, idle, quiet, false));
+
+        // Codex is idle before it takes its prompt: the step has only started.
+        assert!(!ended_turn(true, codex, false, idle, quiet, false));
+        // Idle a moment ago may be the middle of a turn; so may idle with output still coming.
+        let moment = Some(TURN_END_GRACE - Duration::from_millis(1));
+        assert!(!ended_turn(true, codex, true, idle, moment, false));
+        assert!(!ended_turn(true, codex, true, idle, quiet, true));
+        assert!(!ended_turn(true, codex, true, idle, None, false));
+        // Claude Code goes idle on a session start and says `done` itself.
+        let claude = Some(AgentKind::ClaudeCode);
+        assert!(!ended_turn(true, claude, true, idle, quiet, false));
+        // An ordinary pane owes no report.
+        assert!(!ended_turn(false, codex, true, idle, quiet, false));
+
+        // Nothing but a reported idle is rest, whatever else holds.
+        for reported in STATUSES.map(Some).into_iter().chain([None]) {
+            for kind in KINDS {
+                let rests = reported == idle && kind != claude;
+                assert_eq!(
+                    ended_turn(true, kind, true, reported, quiet, false),
+                    rests,
+                    "{kind:?} {reported:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_steps_finished_response_stays_finished_when_its_agent_says_idle() {
+        use AgentStatus::{Done, Idle};
+        let codex = Some(AgentKind::Codex);
+        assert_eq!(recorded_status(true, codex, Some(Done), Idle), Done);
+        // Without a finished response before it, idle is recorded as said.
+        for previous in STATUSES.map(Some).into_iter().chain([None]) {
+            for status in STATUSES {
+                for (step, kind) in [(true, codex), (false, codex), (true, KINDS[3])] {
+                    let kept = step && kind == codex && previous == Some(Done) && status == Idle;
+                    assert_eq!(
+                        recorded_status(step, kind, previous, status),
+                        if kept { Done } else { status },
+                        "step={step} {kind:?} {previous:?} -> {status:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A `/bin/cat` pane watched as one `kind` was launched in, with the statuses its agent is
+    /// recorded as and the attention it raised. The entity holds the pane weakly, so the
+    /// caller keeps it.
+    struct Pane {
+        agents: gpui::Entity<super::Agents>,
+        session: gpui::Entity<super::TerminalSession>,
+        attention: std::rc::Rc<std::cell::RefCell<Vec<AgentStatus>>>,
+        _subscription: gpui::Subscription,
+    }
+
+    impl Pane {
+        fn new(kind: AgentKind, step: bool, cx: &mut gpui::TestAppContext) -> Self {
+            use super::{Agents, Host, Path, Terminal, TerminalSession};
+            use gpui_kit::AppContext as _;
+            use hive_core::agent::api::ReportGrant;
+            use hive_core::terminal::TerminalSize;
+
+            let terminal =
+                Terminal::spawn(None, Some("/bin/cat"), TerminalSize::new(80, 24)).unwrap();
+            let session = cx.new(|_| {
+                let mut session = TerminalSession::for_test(terminal);
+                session.report_grant = step.then(|| ReportGrant::generate().unwrap());
+                session
+            });
+            let agents = cx.new(|cx| Agents::new(None, cx));
+            agents.update(cx, |agents, cx| {
+                let terminal = session.read(cx).terminal().unwrap();
+                agents.watch(&session, &Host::Local, Some(kind), Path::new("/"), terminal);
+            });
+            let attention = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let sink = attention.clone();
+            let subscription = cx.update(|cx| {
+                cx.subscribe(&agents, move |_, event: &AgentsEvent, _| {
+                    if let AgentsEvent::Attention(_, status) = event {
+                        sink.borrow_mut().push(*status);
+                    }
+                })
+            });
+            Self {
+                agents,
+                session,
+                attention,
+                _subscription: subscription,
+            }
+        }
+
+        /// Applies the agent's own report and returns the status it now has.
+        fn report(
+            &self,
+            status: Option<AgentStatus>,
+            cx: &mut gpui::TestAppContext,
+        ) -> Option<AgentStatus> {
+            let id = self.session.entity_id();
+            self.agents.update(cx, |agents, cx| {
+                agents.report_status(id, status, cx);
+                agents.recipient(id).status
+            })
+        }
+
+        /// The poll found `seen` in the pane, from a process table read at `read_at`; returns
+        /// the agent's status.
+        fn sight(
+            &self,
+            seen: Option<AgentKind>,
+            read_at: Instant,
+            cx: &mut gpui::TestAppContext,
+        ) -> Option<AgentStatus> {
+            let id = self.session.entity_id();
+            self.agents.update(cx, |agents, cx| {
+                let seen = seen.map(|kind| (id, (kind, None))).into_iter().collect();
+                agents.note_sightings(&seen, read_at, cx);
+                agents.recipient(id).status
+            })
+        }
+
+        /// The poll's look at the pane `after` its last report; returns the agent's status.
+        fn poll(&self, after: Duration, cx: &mut gpui::TestAppContext) -> Option<AgentStatus> {
+            let id = self.session.entity_id();
+            self.agents.update(cx, |agents, cx| {
+                agents.settle_turns(Instant::now() + after, cx);
+                agents.recipient(id).status
+            })
+        }
+    }
+
+    #[gpui::test]
+    fn a_step_agent_that_stays_idle_after_working_needs_attention_once_per_turn(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use AgentStatus::{Done, Idle, WaitingApproval, Working};
+        let pane = Pane::new(AgentKind::Codex, true, cx);
+        let (at_once, quiet) = (Duration::ZERO, TURN_END_GRACE);
+
+        // Codex is idle before it takes its prompt: however long, the step has only started.
+        assert_eq!(pane.report(Some(Idle), cx), Some(Idle));
+        assert_eq!(pane.poll(quiet, cx), Some(Idle));
+        assert_eq!(pane.report(Some(Working), cx), Some(Working));
+
+        // The turn ends once the agent has stayed idle and silent, not the moment it says so.
+        assert_eq!(pane.report(Some(Idle), cx), Some(Idle));
+        assert_eq!(pane.poll(at_once, cx), Some(Idle));
+        assert!(pane.attention.borrow().is_empty());
+        assert_eq!(pane.poll(quiet, cx), Some(Done));
+        assert_eq!(*pane.attention.borrow(), [Done]);
+        // Saying idle again, or the next poll, is the same finished response.
+        assert_eq!(pane.report(Some(Idle), cx), Some(Done));
+        assert_eq!(pane.poll(quiet, cx), Some(Done));
+        assert_eq!(*pane.attention.borrow(), [Done]);
+
+        // Idle in the middle of a turn: the agent works again before the grace is over.
+        assert_eq!(pane.report(Some(Working), cx), Some(Working));
+        assert_eq!(pane.report(Some(Idle), cx), Some(Idle));
+        assert_eq!(pane.report(Some(Working), cx), Some(Working));
+        assert_eq!(pane.poll(quiet, cx), Some(Working));
+        assert_eq!(*pane.attention.borrow(), [Done]);
+
+        // A dialog the user dismissed, then rest.
+        assert_eq!(
+            pane.report(Some(WaitingApproval), cx),
+            Some(WaitingApproval)
+        );
+        assert_eq!(pane.report(Some(Idle), cx), Some(Idle));
+        assert_eq!(pane.poll(quiet, cx), Some(Done));
+        // A newer Codex says `done`, then goes idle once the user looked at it.
+        assert_eq!(pane.report(Some(Done), cx), Some(Done));
+        assert_eq!(pane.report(Some(Idle), cx), Some(Done));
+        assert_eq!(*pane.attention.borrow(), [Done, WaitingApproval, Done]);
+
+        // The program withdrew its status: whatever runs next starts over.
+        assert_eq!(pane.report(None, cx), None);
+        assert_eq!(pane.report(Some(Idle), cx), Some(Idle));
+        assert_eq!(pane.poll(quiet, cx), Some(Idle));
+        assert_eq!(pane.attention.borrow().len(), 3);
+    }
+
+    /// Codex behind `ssh devbox` reports through the pane, but the poll sees only `ssh`. After
+    /// it, a local agent must not start out with Codex's last word.
+    #[gpui::test]
+    fn a_report_from_an_agent_the_poll_never_saw_is_not_passed_to_the_next_one(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use AgentStatus::{WaitingApproval, Working};
+        let later = || Instant::now() + Duration::from_millis(1);
+        let pane = Pane::new(AgentKind::Codex, false, cx);
+        assert_eq!(
+            pane.report(Some(WaitingApproval), cx),
+            Some(WaitingApproval)
+        );
+        assert_eq!(pane.sight(None, later(), cx), Some(WaitingApproval));
+        assert_eq!(pane.sight(Some(AgentKind::ClaudeCode), later(), cx), None);
+
+        // A new agent often speaks before the poll sees it: a read older than its report
+        // does not make the report a stranger's.
+        let pane = Pane::new(AgentKind::Codex, false, cx);
+        let before_the_report = Instant::now();
+        assert_eq!(pane.sight(None, before_the_report, cx), None);
+        assert_eq!(pane.report(Some(Working), cx), Some(Working));
+        assert_eq!(
+            pane.sight(Some(AgentKind::Codex), later(), cx),
+            Some(Working)
+        );
+        // An agent the poll keeps seeing keeps its own word.
+        assert_eq!(
+            pane.sight(Some(AgentKind::Codex), later(), cx),
+            Some(Working)
+        );
+    }
+
+    #[gpui::test]
+    fn idle_after_work_stays_idle_outside_a_pipeline_and_for_claude_code(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use AgentStatus::{Idle, Working};
+        for (kind, step) in [(AgentKind::Codex, false), (AgentKind::ClaudeCode, true)] {
+            let pane = Pane::new(kind, step, cx);
+            for report in [Working, Idle, Working, Idle] {
+                assert_eq!(pane.report(Some(report), cx), Some(report), "{kind:?}");
+            }
+            assert_eq!(pane.poll(TURN_END_GRACE, cx), Some(Idle), "{kind:?}");
+            assert!(pane.attention.borrow().is_empty(), "{kind:?}");
+        }
+    }
 
     #[gpui::test]
     fn background_request_changes_notify_observers_without_a_terminal_view(

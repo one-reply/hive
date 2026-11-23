@@ -38,14 +38,25 @@ pub(super) fn exec_sh(posix: &OsStr) -> OsString {
 /// POSIX text that runs the POSIX `action` with `sh` once the account's shell has read its
 /// login profile, so tools resolve as in the user's terminal. csh and tcsh accept `-l` only
 /// as their sole option (`-lc` is "Unknown option"), so for them `-c` reads `.cshrc` or
-/// `.tcshrc` but not `.login`.
+/// `.tcshrc` but not `.login`. bash and zsh then also report the `PATH` of their
+/// interactive startup files (see [`INTERACTIVE_PATH`]).
 pub(super) fn in_login_environment(action: &OsStr) -> OsString {
     let mut posix = OsString::from(
         "login=-lc && case ${SHELL##*/} in *csh) login=-c ;; esac && exec \"${SHELL:-/bin/sh}\" \"$login\" ",
     );
-    posix.push(quote_for_login_shell(&exec_sh(action)));
+    let mut script = OsString::from(INTERACTIVE_PATH);
+    script.push(action);
+    posix.push(quote_for_login_shell(&exec_sh(&script)));
     posix
 }
+
+/// bash and zsh read `.bashrc` and `.zshrc` only when interactive, and that is where nvm, fnm
+/// and many installers add to `PATH`; the login shell above is not interactive. Running the
+/// action in an interactive shell instead would let startup files read its stdin (a language
+/// server's protocol), print job-control noise and, for a bash login shell, close descriptors.
+/// So an interactive shell with no input and no stderr only prints its `PATH` after a marker
+/// that skips whatever banners it prints; anything else leaves `PATH` as the login shell set it.
+const INTERACTIVE_PATH: &str = "case ${SHELL##*/} in bash|zsh) hive_path=$(\"$SHELL\" -ic 'printf %s __HIVE_PATH__\"$PATH\"' </dev/null 2>/dev/null) && case $hive_path in *__HIVE_PATH__/*) PATH=${hive_path##*__HIVE_PATH__} && export PATH ;; esac ;; esac; ";
 
 /// POSIX single-quoting of raw path bytes, for a script only `sh` reads.
 pub(super) fn quote_path(path: &Path) -> OsString {

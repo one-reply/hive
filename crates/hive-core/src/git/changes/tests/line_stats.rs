@@ -153,3 +153,58 @@ fn batched_untracked_counts_match_git_for_attributes_and_literal_paths() {
         }
     }
 }
+
+#[test]
+fn untracked_files_git_must_count_are_counted_in_one_batch_like_one_at_a_time() {
+    let repo = Repo::new();
+    repo.write("tracked", "base\n");
+    repo.commit();
+    // A custom diff driver keeps Hive from counting locally, as an SSH host does for all.
+    repo.write(".gitattributes", "* diff=fixture\n");
+    repo.git(&["config", "diff.fixture.textconv", "false"]);
+    let paths = ["-literal\tфайл\n.txt", "two lines", "empty", "binary"];
+    for (path, contents) in paths.iter().zip(["one\ntwo", "a\nb\n", "", "x\0y\n"]) {
+        repo.write(path, contents);
+    }
+
+    let status = status::read_with_stats(&Host::Local, &repo.0).unwrap();
+    for path in paths {
+        let expected = crate::git::numstat::read(
+            &Host::Local,
+            &repo.0,
+            &["diff", "--no-index"],
+            &["/dev/null", path],
+        )
+        .unwrap();
+        assert_eq!(
+            file(&status.files, path).unstaged_stats,
+            expected.get(path).copied(),
+            "{path:?}"
+        );
+    }
+    assert_eq!(
+        file(&status.files, "two lines").unstaged_stats,
+        counts(2, 0)
+    );
+}
+
+#[test]
+fn git_counts_a_bounded_number_of_untracked_files_per_read() {
+    let repo = Repo::new();
+    repo.write("tracked", "base\n");
+    repo.commit();
+    repo.write(".gitattributes", "* diff=fixture\n");
+    for index in 0..105 {
+        repo.write(&format!("file{index:03}"), "line\n");
+    }
+
+    let status = status::read_with_stats(&Host::Local, &repo.0).unwrap();
+    let counted = status
+        .files
+        .iter()
+        .filter(|f| f.unstaged_stats.is_some())
+        .count();
+    // `.gitattributes` itself is untracked too.
+    assert_eq!(status.files.len(), 106);
+    assert_eq!(counted, 100);
+}

@@ -8,12 +8,16 @@ use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod access;
 pub(crate) mod lenient;
 mod persistence;
+mod retention;
 mod sidebar;
+pub use access::{Access, Lock};
 pub use sidebar::ProjectExpansion;
 pub mod workspace;
 pub use persistence::{LoadedState, Recovery, RecoveryCause, SCHEMA_VERSION, StateError};
+pub use retention::tidy;
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct ProjectRef {
@@ -96,6 +100,10 @@ pub struct State {
     /// Exact acknowledged diff revisions; never stores source text.
     #[serde(deserialize_with = "lenient::elements")]
     pub reviewed: Vec<crate::git::reviewed::Revision>,
+    /// Top-level sections a newer Hive wrote without bumping [`SCHEMA_VERSION`]. Saving writes
+    /// them back as they were read, so running this version does not erase them.
+    #[serde(skip)]
+    unknown_sections: serde_json::Map<String, serde_json::Value>,
 }
 
 impl State {
@@ -184,21 +192,68 @@ impl State {
     }
 }
 
+/// Variable that moves a debug build's data folder, so smoke tests stay out of `~/.hive`.
+const DEV_DATA_DIR: &str = "HIVE_DEV_DATA_DIR";
+
+/// Why `HIVE_DEV_DATA_DIR` cannot name the data folder. Whoever set it asked for a folder other
+/// than `~/.hive`, so an unusable value stops the application instead of being ignored.
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum DataFolderError {
+    /// The variable is set to nothing.
+    #[error("HIVE_DEV_DATA_DIR is set but empty; give it an absolute path or unset it")]
+    Empty,
+    /// The variable holds a path relative to wherever the process happens to start.
+    #[error("HIVE_DEV_DATA_DIR must be an absolute path, got {0:?}")]
+    Relative(PathBuf),
+}
+
+/// The folder a debug build was told to keep its data in instead of `~/.hive`; `None` when it
+/// was not told, and always for a release build, which ignores the variable.
+pub fn dev_data_dir() -> Result<Option<PathBuf>, DataFolderError> {
+    if cfg!(debug_assertions) {
+        dev_data_dir_from(std::env::var_os(DEV_DATA_DIR))
+    } else {
+        Ok(None)
+    }
+}
+
+fn dev_data_dir_from(
+    value: Option<std::ffi::OsString>,
+) -> Result<Option<PathBuf>, DataFolderError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Err(DataFolderError::Empty);
+    }
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        Ok(Some(path))
+    } else {
+        Err(DataFolderError::Relative(path))
+    }
+}
+
 /// Application data directory. Debug builds can isolate smoke tests from the running app.
 pub fn hive_dir() -> PathBuf {
-    #[cfg(debug_assertions)]
-    if let Some(path) = std::env::var_os("HIVE_DEV_DATA_DIR")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-    {
-        return path;
-    }
-    match home_dir() {
-        Some(home) => home.join(".hive"),
-        None => {
+    data_dir(dev_data_dir(), home_dir())
+}
+
+fn data_dir(dev: Result<Option<PathBuf>, DataFolderError>, home: Option<PathBuf>) -> PathBuf {
+    match (dev, home) {
+        (Ok(Some(path)), _) => path,
+        (Ok(None), Some(home)) => home.join(".hive"),
+        (Ok(None), None) => {
             // Never a relative `.hive` in whatever the current directory happens to be.
             let fallback = std::env::temp_dir().join("hive");
             tracing::error!(path = ?fallback, "no home directory; using a temporary data folder");
+            fallback
+        }
+        (Err(error), _) => {
+            // The application refuses to start on this error. A caller that did not ask first
+            // still must not reach the folder the variable was set to stay out of.
+            let fallback = std::env::temp_dir().join("hive-dev");
+            tracing::error!(%error, path = ?fallback, "using a temporary data folder");
             fallback
         }
     }
@@ -237,6 +292,7 @@ mod tests {
                 worktree: None,
                 focused: 0,
                 layout: None,
+                unavailable: Vec::new(),
             });
         }
         state.workspace.selection = Some(Selection {
@@ -283,6 +339,49 @@ mod tests {
         assert!(state.mark_release_seen("0.1.5"));
         assert!(!state.mark_release_seen("0.1.5"));
         assert_eq!(state.last_seen_release.as_deref(), Some("0.1.5"));
+    }
+
+    #[test]
+    fn a_dev_data_folder_is_used_only_when_it_is_an_absolute_path() {
+        let from = |value: &str| dev_data_dir_from(Some(value.into()));
+        assert_eq!(dev_data_dir_from(None), Ok(None));
+        assert_eq!(from("/tmp/hive-dev"), Ok(Some("/tmp/hive-dev".into())));
+        assert_eq!(from(""), Err(DataFolderError::Empty));
+        // `~` reaches the process unexpanded when the value was quoted.
+        for relative in ["relative/dir", "./data", "~/.hive-dev", " /tmp/x", ".."] {
+            assert_eq!(
+                from(relative),
+                Err(DataFolderError::Relative(relative.into())),
+                "{relative:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unusable_dev_data_folder_never_falls_back_to_the_real_one() {
+        let home = PathBuf::from("/Users/someone");
+        for error in [
+            DataFolderError::Empty,
+            DataFolderError::Relative("relative/dir".into()),
+        ] {
+            let message = error.to_string();
+            assert!(message.contains("HIVE_DEV_DATA_DIR"), "{message}");
+            for home in [Some(home.clone()), None] {
+                let folder = data_dir(Err(error.clone()), home);
+                assert!(folder.is_absolute(), "{folder:?}");
+                assert!(!folder.starts_with("/Users/someone"), "{folder:?}");
+                assert_ne!(
+                    folder,
+                    std::env::temp_dir().join("hive"),
+                    "the no-home folder"
+                );
+            }
+        }
+        assert_eq!(data_dir(Ok(None), Some(home.clone())), home.join(".hive"));
+        assert_eq!(
+            data_dir(Ok(Some("/tmp/hive-dev".into())), Some(home)),
+            Path::new("/tmp/hive-dev")
+        );
     }
 
     fn project(path: &str) -> ProjectRef {

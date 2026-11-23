@@ -1,0 +1,1186 @@
+{
+  "version": 6,
+  "settings": {
+    "hosting_servers": {
+      "github": null,
+      "gitlab": null
+    },
+    "files": {
+      "icons": "colored",
+      "density": "compact",
+      "git_decorations": true,
+      "auto_reveal": true,
+      "show_hidden": true,
+      "show_ignored": true,
+      "save_on_focus_change": true,
+      "code_completion": true,
+      "inline_blame": true,
+      "sticky_scroll": true,
+      "language_tools": true,
+      "font_size": 14.0
+    },
+    "default_cli_agent": "Codex",
+    "commit_message": {
+      "generator": {
+        "kind": "api",
+        "provider": "anthropic",
+        "model": "claude-haiku-5-5"
+      },
+      "prompt": "{basePrompt}\n\nBranch: {branch}\n\nStaged patch:\n{stagedPatch}"
+    },
+    "theme": "system",
+    "light_theme": "hive",
+    "dark_theme": "hive",
+    "ui_font_family": null,
+    "code_font_family": null,
+    "scrollbars": "system",
+    "sidebar_width": 299.53125,
+    "git_panel_width": 444.94922,
+    "git_panel_open": true,
+    "files_selected": false,
+    "diff_split": true,
+    "confirm_close_running_agent": true,
+    "agent_notifications": true,
+    "keep_awake_while_agents_work": false,
+    "ui_font_size": 16.0,
+    "terminal_font_size": 14.0,
+    "keybindings": {}
+  },
+  "projects": [
+    {
+      "path": "/Users/dev/projects/item1",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 16347926,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded",
+      "setup": ""
+    },
+    {
+      "path": "/Users/dev/projects/item2",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 2278750,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded",
+      "setup": ""
+    },
+    {
+      "path": "/Users/dev/projects/item3",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 1357990,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded",
+      "setup": ""
+    },
+    {
+      "path": "/Users/dev/projects/item4",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 2278750,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded",
+      "setup": ""
+    },
+    {
+      "path": "/Users/dev/projects/item5",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 9133302,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded",
+      "setup": ""
+    },
+    {
+      "path": "/Users/dev/projects/item6",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 16347926,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded",
+      "setup": ""
+    },
+    {
+      "path": "/Users/dev/projects/item7",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 15680580,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded",
+      "setup": ""
+    },
+    {
+      "path": "/Users/dev/projects/item8",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 15381256,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "collapsed",
+      "setup": ""
+    },
+    {
+      "path": "/Users/dev/projects/item9",
+      "host": {
+        "kind": "local"
+      },
+      "worktrees": "hive",
+      "identity": {
+        "name": null,
+        "color": 15381256,
+        "badge": {
+          "kind": "icon",
+          "value": "folder"
+        }
+      },
+      "expansion": "expanded",
+      "setup": ""
+    }
+  ],
+  "workspace": {
+    "selection": {
+      "host": {
+        "kind": "local"
+      },
+      "project": "/Users/dev/projects/item9",
+      "worktree": "/Users/dev/projects/item9"
+    },
+    "projects": [
+      {
+        "project": "/Users/dev/projects/item9",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item9",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item9",
+                    "worktree": "/Users/dev/projects/item9",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item1",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item1",
+        "focused": 0,
+        "layout": null
+      },
+      {
+        "project": "/Users/dev/projects/item2",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item2",
+        "focused": 0,
+        "layout": null
+      },
+      {
+        "project": "/Users/dev/projects/item3",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item3",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item3",
+                    "worktree": "/Users/dev/projects/item3",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item5",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item5",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item5",
+                    "worktree": "/Users/dev/projects/item5",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item13",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item14/item15.js",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item16",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item16",
+                "old_path": null,
+                "source": "Staged",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item17/item18.json",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item19/item20.md",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item21.js",
+                "old_path": null,
+                "source": "Untracked",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item11/item12/item21",
+                "old_path": null,
+                "source": "Untracked",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item22/item23/item24",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item22/item23/item24.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item25/item26.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item5",
+                "path": "item10/item25/item27/item28.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item7",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item7",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item7/item10",
+                    "worktree": "/Users/dev/projects/item7",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item7",
+                "path": "item10/item29/item30/item31/item32.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item7",
+                "path": "item10/item33/item34.js",
+                "old_path": null,
+                "source": "WorkingTree",
+                "whole_file_only": false
+              },
+              {
+                "kind": "diff",
+                "worktree": "/Users/dev/projects/item7",
+                "path": "item10/item29/item30/item31/item35.js",
+                "old_path": null,
+                "source": "Untracked",
+                "whole_file_only": false
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item6",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item6",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item6",
+                    "worktree": "/Users/dev/projects/item6",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item8",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item8",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item8",
+                    "worktree": "/Users/dev/projects/item8",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              }
+            ],
+            "active": 0
+          }
+        }
+      },
+      {
+        "project": "/Users/dev/projects/item4",
+        "host": {
+          "kind": "local"
+        },
+        "worktree": "/Users/dev/projects/item4",
+        "focused": 0,
+        "layout": {
+          "kind": "leaf",
+          "value": {
+            "items": [
+              {
+                "kind": "terminal",
+                "panes": {
+                  "kind": "leaf",
+                  "value": {
+                    "directory": "/Users/dev/projects/item4/item10",
+                    "worktree": "/Users/dev/projects/item4",
+                    "resume": null
+                  }
+                },
+                "active": 0
+              },
+              {
+                "kind": "file",
+                "worktree": "/Users/dev/projects/item4",
+                "path": "item10/item17.json",
+                "cursor": [
+                  7,
+                  0
+                ],
+                "scroll": [
+                  0.0,
+                  0.0
+                ]
+              }
+            ],
+            "active": 0
+          }
+        }
+      }
+    ]
+  },
+  "pipelines": {
+    "catalog_version": 3,
+    "templates": [
+      {
+        "shared_contract": false,
+        "name": "Sample name 1.",
+        "planner": {
+          "name": "Plan",
+          "instruction": "Sample text 1.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 1
+        },
+        "development": {
+          "name": "Development",
+          "instruction": "Sample text 2.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 2
+        },
+        "reviews": [
+          {
+            "name": "QA",
+            "instruction": "Sample text 3.",
+            "profile": {
+              "agent": "Codex",
+              "model": "gpt-6.2-sol",
+              "effort": "high"
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 3
+          },
+          {
+            "name": "Sample name 2.",
+            "instruction": "Sample text 4.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 4
+          }
+        ],
+        "lanes": [
+          {
+            "name": "Development",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": "",
+            "edits": "cli_default"
+          }
+        ]
+      },
+      {
+        "shared_contract": false,
+        "name": "Sample name 3.",
+        "planner": {
+          "name": "Plan",
+          "instruction": "Sample text 5.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 5
+        },
+        "development": {
+          "name": "Development",
+          "instruction": "Sample text 6.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 6
+        },
+        "reviews": [
+          {
+            "name": "QA",
+            "instruction": "Sample text 7.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 7
+          }
+        ],
+        "lanes": [
+          {
+            "name": "Development",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": "",
+            "edits": "cli_default"
+          }
+        ]
+      },
+      {
+        "shared_contract": true,
+        "name": "Sample name 4.",
+        "planner": {
+          "name": "Plan",
+          "instruction": "Sample text 8.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 8
+        },
+        "development": {
+          "name": "Development",
+          "instruction": "Sample text 9.",
+          "profile": {
+            "agent": "Codex",
+            "model": "",
+            "effort": ""
+          },
+          "limit": 3,
+          "return_lane": null,
+          "prompt": 9
+        },
+        "reviews": [
+          {
+            "name": "QA",
+            "instruction": "Sample text 10.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 10
+          },
+          {
+            "name": "Sample name 5.",
+            "instruction": "Sample text 4.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null,
+            "prompt": 4
+          }
+        ],
+        "lanes": [
+          {
+            "name": "Sample name 6.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": "",
+            "edits": "cli_default"
+          },
+          {
+            "name": "Sample name 7.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "command": "",
+            "edits": "cli_default"
+          }
+        ]
+      }
+    ],
+    "prompts": [
+      {
+        "id": 1,
+        "name": "Sample name 8.",
+        "text": "Sample text 1."
+      },
+      {
+        "id": 2,
+        "name": "Sample name 9.",
+        "text": "Sample text 2."
+      },
+      {
+        "id": 3,
+        "name": "Sample name 10.",
+        "text": "Sample text 3."
+      },
+      {
+        "id": 4,
+        "name": "Sample name 11.",
+        "text": "Sample text 4."
+      },
+      {
+        "id": 5,
+        "name": "Sample name 12.",
+        "text": "Sample text 5."
+      },
+      {
+        "id": 6,
+        "name": "Sample name 13.",
+        "text": "Sample text 6."
+      },
+      {
+        "id": 7,
+        "name": "Sample name 14.",
+        "text": "Sample text 7."
+      },
+      {
+        "id": 8,
+        "name": "Sample name 15.",
+        "text": "Sample text 8."
+      },
+      {
+        "id": 9,
+        "name": "Sample name 16.",
+        "text": "Sample text 9."
+      },
+      {
+        "id": 10,
+        "name": "Sample name 17.",
+        "text": "Sample text 10."
+      },
+      {
+        "id": 11,
+        "name": "Sample name 18.",
+        "text": "Sample text 11."
+      },
+      {
+        "id": 12,
+        "name": "Sample name 19.",
+        "text": "Sample text 12."
+      },
+      {
+        "id": 13,
+        "name": "Sample name 20.",
+        "text": "Sample text 13."
+      },
+      {
+        "id": 14,
+        "name": "Sample name 21.",
+        "text": "Sample text 14."
+      }
+    ],
+    "drafts": [],
+    "runs": [
+      {
+        "id": 4242,
+        "owner": "/Users/dev/projects/item2",
+        "direct_start": false,
+        "task": "Sample task 1.",
+        "template": {
+          "shared_contract": false,
+          "name": "Sample name 22.",
+          "planner": {
+            "name": "Plan",
+            "instruction": "Sample instruction 12.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null
+          },
+          "development": {
+            "name": "Development",
+            "instruction": "Sample instruction 13.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "limit": 3,
+            "return_lane": null
+          },
+          "reviews": [
+            {
+              "name": "QA",
+              "instruction": "Sample instruction 14.",
+              "profile": {
+                "agent": "Codex",
+                "model": "",
+                "effort": ""
+              },
+              "limit": 3,
+              "return_lane": null
+            },
+            {
+              "name": "Sample name 23.",
+              "instruction": "Sample instruction 15.",
+              "profile": {
+                "agent": "Codex",
+                "model": "",
+                "effort": ""
+              },
+              "limit": 3,
+              "return_lane": null
+            }
+          ],
+          "lanes": [
+            {
+              "name": "Development",
+              "profile": {
+                "agent": "Codex",
+                "model": "",
+                "effort": ""
+              },
+              "command": "",
+              "edits": "cli_default"
+            }
+          ]
+        },
+        "lanes": [
+          {
+            "name": "Development",
+            "project": "/Users/dev/projects/item2",
+            "base": "5140baaf8c32078ec032292e0f1df8164d73f7a6",
+            "branch": "",
+            "base_branch": "",
+            "worktree": "/Users/dev/projects/item2-worktrees/item36",
+            "command": "",
+            "setup": "",
+            "assignment": "Sample assignment 1.",
+            "criteria": "Sample criteria 1.",
+            "profile": {
+              "agent": "Codex",
+              "model": "",
+              "effort": ""
+            },
+            "edits": "cli_default"
+          }
+        ],
+        "contract": "",
+        "regression": null,
+        "phase": "accepted",
+        "history": [
+          "Sample history 1.",
+          "Sample history 2.",
+          "Sample history 3.",
+          "Sample history 4.",
+          "Sample history 5.",
+          "Sample history 6."
+        ],
+        "reports": [
+          [
+            {
+              "run": 4242,
+              "attempt": 1,
+              "lane": null
+            },
+            "planning",
+            {
+              "kind": "plan",
+              "assignments": [
+                {
+                  "lane": 0,
+                  "task": "Sample task 2.",
+                  "criteria": "Sample criteria 2."
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "run": 4242,
+              "attempt": 2,
+              "lane": 0
+            },
+            "development",
+            {
+              "kind": "developed",
+              "summary": "Sample summary 1."
+            }
+          ],
+          [
+            {
+              "run": 4242,
+              "attempt": 3,
+              "lane": null
+            },
+            {
+              "review": 0
+            },
+            {
+              "kind": "review",
+              "summary": "Sample summary 2.",
+              "evidence": [],
+              "findings": []
+            }
+          ],
+          [
+            {
+              "run": 4242,
+              "attempt": 4,
+              "lane": null
+            },
+            {
+              "review": 1
+            },
+            {
+              "kind": "review",
+              "summary": "Sample summary 3.",
+              "evidence": [],
+              "findings": []
+            }
+          ]
+        ],
+        "timings": [
+          {
+            "phase": "planning",
+            "lane": null,
+            "attempt": null,
+            "start_ms": 1760000000000,
+            "end_ms": 1760000041817,
+            "failed": false
+          },
+          {
+            "phase": "planning",
+            "lane": null,
+            "attempt": 1,
+            "start_ms": 1760000000210,
+            "end_ms": 1760000041817,
+            "failed": false
+          },
+          {
+            "phase": "approve_plan",
+            "lane": null,
+            "attempt": null,
+            "start_ms": 1760000041817,
+            "end_ms": 1760000107111,
+            "failed": false
+          },
+          {
+            "phase": "development",
+            "lane": null,
+            "attempt": null,
+            "start_ms": 1760000107111,
+            "end_ms": 1760000299370,
+            "failed": true
+          },
+          {
+            "phase": "development",
+            "lane": 0,
+            "attempt": 2,
+            "start_ms": 1760000107148,
+            "end_ms": 1760000299370,
+            "failed": true
+          },
+          {
+            "phase": "development",
+            "lane": null,
+            "attempt": null,
+            "start_ms": 1760000312772,
+            "end_ms": 1760000874130,
+            "failed": false
+          },
+          {
+            "phase": "development",
+            "lane": 0,
+            "attempt": 2,
+            "start_ms": 1760000312772,
+            "end_ms": 1760000874130,
+            "failed": false
+          },
+          {
+            "phase": {
+              "review": 0
+            },
+            "lane": null,
+            "attempt": null,
+            "start_ms": 1760000874130,
+            "end_ms": 1760001081708,
+            "failed": false
+          },
+          {
+            "phase": {
+              "review": 0
+            },
+            "lane": null,
+            "attempt": 3,
+            "start_ms": 1760000874281,
+            "end_ms": 1760001081708,
+            "failed": false
+          },
+          {
+            "phase": {
+              "review": 1
+            },
+            "lane": null,
+            "attempt": null,
+            "start_ms": 1760001081708,
+            "end_ms": 1760001251188,
+            "failed": false
+          },
+          {
+            "phase": {
+              "review": 1
+            },
+            "lane": null,
+            "attempt": 4,
+            "start_ms": 1760001081772,
+            "end_ms": 1760001251188,
+            "failed": false
+          },
+          {
+            "phase": "acceptance",
+            "lane": null,
+            "attempt": null,
+            "start_ms": 1760001251188,
+            "end_ms": 1760001280433,
+            "failed": false
+          },
+          {
+            "phase": "accepted",
+            "lane": null,
+            "attempt": null,
+            "start_ms": 1760001280433,
+            "end_ms": 1760001280433,
+            "failed": false
+          }
+        ],
+        "findings": [],
+        "commands": [],
+        "review_revision": "a354f10ece380b11d61f6847da563473a4970076ddb42a99d6afc01947f7b968",
+        "requests": [],
+        "review_trees": [],
+        "feedback_trees": [],
+        "comments": [],
+        "decisions": [],
+        "qa_focus": null,
+        "review_brief": "",
+        "check_revision": null,
+        "first_review_attempt": 0,
+        "sessions": [
+          [
+            {
+              "run": 4242,
+              "attempt": 1,
+              "lane": null
+            },
+            {
+              "agent": "Codex",
+              "id": "07392bf1-67f8-8ea6-1102-1e52bfd52af2"
+            }
+          ],
+          [
+            {
+              "run": 4242,
+              "attempt": 2,
+              "lane": 0
+            },
+            {
+              "agent": "Codex",
+              "id": "66c876fd-18d1-7221-5846-3a5c5dd69cf3"
+            }
+          ],
+          [
+            {
+              "run": 4242,
+              "attempt": 3,
+              "lane": null
+            },
+            {
+              "agent": "Codex",
+              "id": "8cc752b1-ad2d-716d-b24d-8b76d1b4e1fb"
+            }
+          ],
+          [
+            {
+              "run": 4242,
+              "attempt": 4,
+              "lane": null
+            },
+            {
+              "agent": "Codex",
+              "id": "b99b842a-2f27-2599-32b2-9f2e0fadbac6"
+            }
+          ]
+        ],
+        "outstanding": [],
+        "last_attempt": 4,
+        "rounds": [
+          0,
+          0
+        ],
+        "dismissed": [],
+        "notes": [],
+        "feedback": "Sample feedback 1.",
+        "briefs": [],
+        "continuations": []
+      }
+    ]
+  },
+  "last_seen_release": "1.0.31",
+  "reviewed": []
+}

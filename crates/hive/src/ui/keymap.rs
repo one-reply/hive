@@ -13,9 +13,12 @@ use crate::terminal::panel::{
 };
 use crate::terminal::view::{Copy, Paste};
 use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
-use crate::ui::editor_panel::{CloseFile, GoToSymbol, OpenFileSearch, SaveFile, SearchInFiles};
+use crate::ui::code_reference::CopyCodeReference;
+use crate::ui::editor_panel::{
+    CloseFile, EDITOR_PANEL_CONTEXT, GoToSymbol, OpenFileSearch, SaveFile, SearchInFiles,
+};
 use crate::ui::files_panel::{
-    CancelFileEdit, DeleteSelectedFile, OpenSelectedFile, RenameSelectedFile,
+    CancelFileEdit, DeleteSelectedFile, OpenSelectedFile, PasteFiles, RenameSelectedFile,
 };
 use crate::ui::git_panel::CommitChanges;
 use crate::ui::settings::OpenSettings;
@@ -117,33 +120,33 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 38] = [
+pub(crate) static SHORTCUTS: [Shortcut; 40] = [
     Shortcut {
         label: "Find references",
         default: "shift-f12",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(crate::ui::editor_panel::FindReferences),
     },
     Shortcut {
         label: "Show problems",
         default: "cmd-shift-m",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(crate::ui::editor_panel::ShowProblems),
     },
     Shortcut {
         label: "Peek definition",
         default: "alt-f12",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(crate::ui::editor_panel::PeekDefinition),
     },
     Shortcut {
         label: "Format document",
         default: "alt-shift-f",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(crate::ui::editor_panel::FormatDocument),
     },
     Shortcut {
@@ -165,7 +168,7 @@ pub(crate) static SHORTCUTS: [Shortcut; 38] = [
         label: "Go to symbol",
         default: "cmd-shift-o",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(GoToSymbol),
     },
     Shortcut {
@@ -186,7 +189,7 @@ pub(crate) static SHORTCUTS: [Shortcut; 38] = [
         label: "Save file",
         default: "cmd-s",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(SaveFile),
     },
     Shortcut {
@@ -196,6 +199,13 @@ pub(crate) static SHORTCUTS: [Shortcut; 38] = [
         category: Category::Workspace,
         context: CODE_EDITOR_CONTEXT,
         action: || Box::new(gpui_kit::component::input::ShowCompletions),
+    },
+    Shortcut {
+        label: "Copy lines for agent",
+        default: "cmd-shift-c",
+        category: Category::Workspace,
+        context: FILE_TAB_CONTEXT,
+        action: || Box::new(CopyCodeReference),
     },
     Shortcut {
         label: "Close file",
@@ -384,6 +394,13 @@ pub(crate) static SHORTCUTS: [Shortcut; 38] = [
         action: || Box::new(DeleteSelectedFile),
     },
     Shortcut {
+        label: "Paste files copied in Finder",
+        default: "cmd-v",
+        category: Category::Files,
+        context: FILES_TREE_CONTEXT,
+        action: || Box::new(PasteFiles),
+    },
+    Shortcut {
         label: "Cancel file name edit",
         default: "escape",
         category: Category::Files,
@@ -567,7 +584,7 @@ mod tests {
     const MAC: OperatingSystem = OperatingSystem::Mac;
 
     #[test]
-    fn file_mutations_never_match_editor_terminal_or_inline_input() {
+    fn file_tree_shortcuts_never_match_editor_terminal_or_inputs() {
         use gpui_kit::{KeyBindingContextPredicate, KeyContext};
         let contexts = |names: &[&str]| {
             names
@@ -575,10 +592,17 @@ mod tests {
                 .map(|name| KeyContext::parse(name).unwrap())
                 .collect::<Vec<_>>()
         };
-        for shortcut in SHORTCUTS
+        let tree_shortcuts = [
+            "Rename file",
+            "Delete file permanently",
+            "Paste files copied in Finder",
+        ];
+        let matched: Vec<_> = SHORTCUTS
             .iter()
-            .filter(|s| s.label == "Rename file" || s.label == "Delete file permanently")
-        {
+            .filter(|s| tree_shortcuts.contains(&s.label))
+            .collect();
+        assert_eq!(matched.len(), tree_shortcuts.len());
+        for shortcut in matched {
             let predicate = KeyBindingContextPredicate::parse(shortcut.context).unwrap();
             assert!(predicate.eval(&contexts(&["Workspace", "FilesPanel", "Tree"])));
             for scope in [
@@ -586,6 +610,8 @@ mod tests {
                 &["Workspace", "TerminalPanel", "Terminal"][..],
                 &["Workspace", "FilesPanel", "FileNameEdit", "Input"][..],
                 &["Workspace", "FilesPanel", "Tree", "FileNameEdit", "Input"][..],
+                // ⌘V in Find file must paste text, not files.
+                &["Workspace", "FilesPanel", "FileSearch", "Input"][..],
             ] {
                 assert!(
                     predicate.depth_of(&contexts(scope)).is_none(),
@@ -804,7 +830,8 @@ mod tests {
             .collect();
         for shortcut in &SHORTCUTS {
             let keystroke = keystroke(shortcut.default);
-            if crate::terminal::keys::to_bytes(&keystroke, TermMode::default()).is_none() {
+            // Option as Meta sends the most keys to the shell, so it is the case to hold.
+            if crate::terminal::keys::to_bytes(&keystroke, TermMode::default(), true).is_none() {
                 continue;
             }
             let (bindings, pending) = keymap.bindings_for_input(&[keystroke], &terminal);

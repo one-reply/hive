@@ -134,7 +134,7 @@ fn reports(run: &Run, cx: &App) -> Div {
             .child(heading(stage.title(run)));
         if let Stage::Develop(i) = stage {
             let lane = &run.lanes()[i];
-            if lane.assignment.trim().is_empty() && report.is_none() {
+            if !lane.is_assigned() && report.is_none() {
                 continue;
             }
             if !lane.worktree.as_os_str().is_empty() {

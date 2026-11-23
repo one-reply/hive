@@ -30,6 +30,7 @@ use sessions::LiveSession;
 mod stage;
 mod summary;
 mod timeline;
+mod unsaved;
 use stage::{Stage, StageIcon as _, StageStatus};
 
 use gpui_kit::component::{

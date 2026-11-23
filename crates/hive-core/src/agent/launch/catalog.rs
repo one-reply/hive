@@ -5,11 +5,7 @@ use crate::{
     host::Host,
 };
 use serde::{Deserialize, de::IgnoredAny};
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{collections::HashMap, path::Path, time::Duration};
 
 /// Aliases every supported Claude Code release resolves to the latest model of its family.
 const CLAUDE_ALIASES: [&str; 3] = ["haiku", "sonnet", "opus"];
@@ -114,17 +110,9 @@ fn is_model_id(id: &str) -> bool {
         && !id.chars().any(|ch| ch.is_control() || ch.is_whitespace())
 }
 
-/// Claude Code's global config: `$CLAUDE_CONFIG_DIR/.claude.json` when set, else in home.
-fn claude_config_path() -> Option<PathBuf> {
-    match std::env::var_os("CLAUDE_CONFIG_DIR") {
-        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir).join(".claude.json")),
-        _ => crate::state::home_dir().map(|home| home.join(".claude.json")),
-    }
-}
-
 /// A missing or unreadable config only costs the full IDs; the aliases still work.
 fn read_claude_config() -> Option<Vec<u8>> {
-    let path = claude_config_path()?;
+    let path = crate::agent::claude_config::locations()?.global_config;
     std::fs::read(&path)
         .inspect_err(|error| {
             tracing::debug!(path = %path.display(), %error, "Claude Code config not read");

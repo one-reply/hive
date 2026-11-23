@@ -156,6 +156,8 @@ impl TemplateEditor {
             .prompts()
             .to_vec();
         self.template.sync_prompts(&prompts);
+        // A prompt changed in Settings is not an edit of this draft.
+        self.opened.sync_prompts(&prompts);
         let form = &mut self.inspector;
         if let Some(id) = form.prompt {
             match prompts.iter().find(|p| p.id == id) {

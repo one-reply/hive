@@ -10,6 +10,9 @@ publish.workspace = true
 default = ["desktop"]
 desktop = ["dep:alacritty_terminal", "dep:rustix-openpty", "dep:polling", "dep:ureq", "dep:async-channel", "dep:security-framework", "dep:markdown"]
 remote-helper = []
+# Exposes `git::testing`, the hermetic Git environment, to the tests of other crates. It adds
+# functions only: nothing behaves differently until a test calls them.
+test-support = []
 
 [[bin]]
 name = "hive-remote"

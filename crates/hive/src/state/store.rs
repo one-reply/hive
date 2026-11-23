@@ -3,19 +3,42 @@ use hive_core::host::Host;
 use hive_core::identity::ProjectIdentity;
 use hive_core::settings::{DarkTheme, LightTheme, Scrollbars, ThemeChoice};
 use hive_core::state::workspace::{ProjectWorkspace, Selection};
-use hive_core::state::{LoadedState, ProjectRef, State, StateError};
+use hive_core::state::{Access, LoadedState, ProjectRef, State, StateError};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 mod recovery;
+mod startup;
+#[cfg(test)]
+mod tests;
 mod writer;
+use startup::{Opened, open};
 use writer::Writer;
+
+/// Where the Hive that holds the data folder keeps its editor drafts.
+fn recovery_directory() -> PathBuf {
+    hive_core::state::hive_dir().join("editor-recovery")
+}
+
+/// Blocking: the editor drafts this session restores, with the records that could not be
+/// read. A folder another Hive holds gives none: those drafts are that Hive's.
+pub(crate) fn load_drafts(
+    access: &Access,
+) -> (Vec<hive_core::files::recovery::Record>, Vec<String>) {
+    if startup::keeps_drafts(access) {
+        hive_core::files::recovery::load(&recovery_directory())
+    } else {
+        Default::default()
+    }
+}
 
 /// Persisted state. Every mutation saves to disk and notifies observers.
 pub struct Store {
     pub state: State,
     pub(crate) notice: Option<String>,
     writer: Option<Writer>,
+    /// The data folder lock, kept for as long as `writer` may save.
+    _access: Option<Access>,
     recovery: recovery::RecoveryWriter,
     _recovery_errors: Task<()>,
     stopping: bool,
@@ -34,6 +57,7 @@ impl Store {
             state: State::default(),
             notice: None,
             writer: None,
+            _access: None,
             recovery: recovery::RecoveryWriter::held(cx.background_executor()),
             _recovery_errors: Task::ready(()),
             stopping: false,
@@ -263,6 +287,11 @@ impl Store {
         self.commit(cx);
     }
 
+    pub(crate) fn set_option_as_meta(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.state.settings.option_as_meta = enabled;
+        self.commit(cx);
+    }
+
     pub(crate) fn set_agent_notifications(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.state.settings.agent_notifications = enabled;
         self.commit(cx);
@@ -281,8 +310,31 @@ impl Store {
         self.state.settings.files_selected = files;
         self.commit(cx);
     }
-    pub(crate) fn new(loaded: Result<LoadedState, StateError>, cx: &mut Context<Self>) -> Self {
-        let (recovery, recovery_errors) = recovery::RecoveryWriter::new(cx.background_executor());
+    /// `access` is this process's right to write the data folder, taken before `loaded` was read.
+    pub(crate) fn new(
+        loaded: Result<LoadedState, StateError>,
+        access: Access,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::start(open(loaded, access), State::save, cx)
+    }
+
+    /// `save` writes a snapshot to disk; a test passes its own to stay out of the data folder.
+    fn start(
+        opened: Opened,
+        save: impl Fn(&State) -> Result<(), StateError> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let Opened {
+            state,
+            notice,
+            access,
+            keeps_drafts,
+            rewrite,
+        } = opened;
+        let drafts = keeps_drafts.then(recovery_directory);
+        let (recovery, recovery_errors) =
+            recovery::RecoveryWriter::new(cx.background_executor(), drafts);
         let recovery_errors = cx.spawn(async move |this, cx| {
             while let Ok(error) = recovery_errors.recv().await {
                 if this.update(cx, |_, cx| cx.emit(SaveError(error))).is_err() {
@@ -290,27 +342,22 @@ impl Store {
                 }
             }
         });
-        let (state, notice) = match loaded {
-            Ok(loaded) => (
-                loaded.state,
-                loaded.recovery.map(|recovery| recovery_notice(&recovery)),
-            ),
-            Err(error) => {
-                tracing::error!(%error, "state loading failed; persistence disabled");
-                return Self {
-                    state: State::default(),
-                    notice: Some(format!(
-                        "{error}. Saving is disabled to protect the original state. Restart Hive after fixing the file."
-                    )),
-                    writer: None,
-                    recovery,
-                    _recovery_errors: recovery_errors,
-                    stopping: false,
-                    _errors: None,
-                };
-            }
+        let Some(access) = access else {
+            return Self {
+                state,
+                notice,
+                writer: None,
+                _access: None,
+                recovery,
+                _recovery_errors: recovery_errors,
+                stopping: false,
+                _errors: None,
+            };
         };
-        let (writer, errors) = Writer::new(cx.background_executor());
+        let (writer, errors) = Writer::with_save(cx.background_executor(), save);
+        if rewrite {
+            writer.submit(state.clone());
+        }
         let errors = cx.spawn(async move |this, cx| {
             while let Ok(error) = errors.recv().await {
                 if this.update(cx, |_, cx| cx.emit(SaveError(error))).is_err() {
@@ -322,6 +369,7 @@ impl Store {
             state,
             notice,
             writer: Some(writer),
+            _access: Some(access),
             recovery,
             _recovery_errors: recovery_errors,
             stopping: false,
@@ -522,23 +570,5 @@ impl Store {
             writer.submit(self.state.clone());
         }
         cx.notify();
-    }
-}
-
-/// What the user is told when `state.json` could not be used as written.
-fn recovery_notice(recovery: &hive_core::state::Recovery) -> String {
-    use hive_core::state::RecoveryCause;
-    let backup = recovery.backup.display();
-    match &recovery.cause {
-        RecoveryCause::Corrupt => format!(
-            "State was damaged. The original was preserved at {backup}. Default settings are in use."
-        ),
-        RecoveryCause::Partial(lost) => format!(
-            "Part of the saved state could not be read and was reset: {}. The original was preserved at {backup}.",
-            lost.join(", ")
-        ),
-        RecoveryCause::Newer { version } => format!(
-            "The saved state was written by a newer Hive (format {version}). Anything this version does not understand is kept only in the backup at {backup}."
-        ),
     }
 }

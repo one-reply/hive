@@ -140,11 +140,15 @@ impl FilesPanel {
     }
 
     pub(super) fn sync_selection(&mut self, tree: &TreeState, cx: &App) -> bool {
+        #[cfg(test)]
+        {
+            self.row_scans += 1;
+        }
         let visible = self.selectable_paths(tree, cx);
-        let cursor = tree
-            .selected_item()
-            .map(|item| tree::path(item.id.as_ref()));
-        self.selection.sync(&visible, cursor)
+        let cursor = tree.selected_item().map(|item| item.id.clone());
+        let path = cursor.as_ref().map(|id| tree::path(id.as_ref()));
+        self.synced_cursor = cursor;
+        self.selection.sync(&visible, path)
     }
 
     pub(super) fn select_row(

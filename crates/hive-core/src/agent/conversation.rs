@@ -5,8 +5,11 @@
 //! thread to a rollout that names its directory and client, and Antigravity keeps the latest
 //! conversation of each workspace in one cache file.
 mod codex;
+mod discovery;
 pub mod history;
 mod process;
+
+pub use discovery::Discovery;
 
 use super::{AgentKind, launch::ResumeSession};
 use serde::Deserialize;
@@ -54,13 +57,8 @@ struct ClaudeRecord {
     session_id: String,
 }
 
-/// Claude Code honours `CLAUDE_CONFIG_DIR`; shells started by Hive take it from the login shell.
 fn claude_config_directory() -> Option<PathBuf> {
-    crate::host::environment::login()
-        .and_then(|environment| environment.get("CLAUDE_CONFIG_DIR"))
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| crate::state::home_dir().map(|home| home.join(".claude")))
+    super::claude_config::locations().map(|locations| locations.directory)
 }
 
 fn claude_session(sessions: &Path, pid: u32) -> Option<ResumeSession> {
@@ -91,7 +89,8 @@ fn read_bounded_line(path: &Path, limit: u64) -> Option<Vec<u8>> {
 }
 
 /// The last `limit` bytes of `path`, starting at a whole line: the partial line the window
-/// cuts through is dropped. A shorter file is read whole.
+/// cuts through is dropped, so a window inside one long line is empty. A shorter file is read
+/// whole; `None` only when the file cannot be read.
 fn read_tail(path: &Path, limit: u64) -> Option<Vec<u8>> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path).ok()?;
@@ -101,8 +100,11 @@ fn read_tail(path: &Path, limit: u64) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     file.take(limit).read_to_end(&mut bytes).ok()?;
     if start > 0 {
-        let first_line_end = bytes.iter().position(|&byte| byte == b'\n')?;
-        bytes.drain(..=first_line_end);
+        let cut = bytes
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(bytes.len(), |end| end + 1);
+        bytes.drain(..cut);
     }
     Some(bytes)
 }
@@ -161,7 +163,7 @@ mod tests {
         // The window starts inside "second"; the cut line is dropped.
         assert_eq!(read_tail(&path, 10).unwrap(), b"third\n");
         std::fs::write(&path, "x".repeat(50)).unwrap();
-        assert!(read_tail(&path, 10).is_none());
+        assert!(read_tail(&path, 10).unwrap().is_empty());
         std::fs::remove_file(path).unwrap();
     }
 

@@ -1,6 +1,7 @@
 use super::completions::Completions;
 use super::*;
 use gpui_kit::component::input::{EditorState, InputEditsEvent, InputEvent, Position};
+use hive_core::agent::reference::{self, CodeReference, Version};
 use hive_core::code_navigation::Navigator;
 use hive_core::files::recovery::Draft;
 use hive_core::files::{self, Snapshot};
@@ -15,7 +16,7 @@ mod navigation;
 mod relocation;
 pub(crate) use blame::LineBlame;
 pub(crate) use image::{Content, PreviewState, SvgMode};
-pub(crate) use io::Changes;
+pub(crate) use io::{Changes, SaveBlocker};
 pub(crate) use navigation::{STICKY_BORDER_WIDTH, sticky_row_limit};
 
 #[derive(Clone, PartialEq, Eq)]
@@ -95,6 +96,27 @@ impl Document {
         document._poll = Task::ready(());
         document._subscriptions.clear();
         document.loading = false;
+        document
+    }
+
+    /// A document already read as `base` and then edited to `text`, without its poll or
+    /// its listeners: tests drive its saves and reads themselves.
+    #[cfg(test)]
+    pub(super) fn edited_for_test(
+        request: OpenFile,
+        base: Snapshot,
+        text: &str,
+        store: Entity<Store>,
+        registry: WeakEntity<Documents>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut document = Self::isolated_for_test(request, store, registry, window, cx);
+        document.base = Some(base);
+        document
+            .editor
+            .update(cx, |editor, cx| editor.set_value(text, window, cx));
+        document.update_dirty(cx);
         document
     }
 
@@ -239,6 +261,24 @@ impl Document {
             editor.selected_range(),
             self.dirty,
         )
+    }
+
+    /// The selected lines, or the cursor's line, as a reference for an agent's prompt.
+    pub(crate) fn code_reference(&self, cx: &App) -> Option<CodeReference> {
+        if self.content.is_raster() {
+            return None;
+        }
+        let editor = self.editor.read(cx);
+        let lines = reference::selected_lines(&editor.text().to_string(), editor.selected_range())?;
+        CodeReference::new(
+            self.target.host.clone(),
+            &self.target.path,
+            &self.path,
+            lines,
+            Version::Worktree,
+        )
+        .inspect_err(|error| tracing::warn!(%error, "no code reference for this file"))
+        .ok()
     }
 
     pub fn saved_position(&self, cx: &App) -> ([u32; 2], [f32; 2]) {

@@ -1,9 +1,10 @@
 //! Embedded terminal: the entity ([`view::TerminalView`]), its painter
-//! ([`element::TerminalElement`]), key mapping ([`keys`]), the dock panel ([`panel`]) and the
-//! layout of its panes ([`pane_tree`]).
+//! ([`element::TerminalElement`]), key mapping ([`keys`]), text from the system's input
+//! ([`input`]), the dock panel ([`panel`]) and the layout of its panes ([`pane_tree`]).
 
 pub mod element;
 mod glyph_cache;
+mod input;
 pub mod keys;
 mod mouse;
 pub mod pane_tree;

@@ -7,7 +7,12 @@ use crate::{
         git_diff::GitDiff,
         store::Store,
     },
-    ui::{editor_panel::CloseFile, tab_message, workspace::right_sidebar_toggle},
+    ui::{
+        code_reference::{self, CopyCodeReference},
+        editor_panel::CloseFile,
+        tab_message,
+        workspace::right_sidebar_toggle,
+    },
 };
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::button::Button;
@@ -18,7 +23,9 @@ use gpui_kit::component::dock::{BasePanel, DockArea, DockEvent, Panel, PanelEven
 use gpui_kit::component::input::Position;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use hive_core::agent::reference::{self, CodeReference};
 use hive_core::git::diff::DiffSource;
+use hive_core::git::review_notes::Line;
 
 mod comments;
 
@@ -133,6 +140,32 @@ impl DiffPanel {
         });
     }
 
+    /// The selected lines as a reference: selected line numbers, or selected text that
+    /// appears once in the diff.
+    fn code_reference(&self, cx: &App) -> Option<CodeReference> {
+        let review = self.review.read(cx);
+        let (request, patch) = (&review.request, review.patch.as_ref()?);
+        let display = self.display.read(cx);
+        let (version, lines) = match display.selected_lines() {
+            Some(range) => reference::diff_lines(
+                patch,
+                &request.source,
+                line(range.side(), range.start()),
+                line(range.end_side(), range.end()),
+            )?,
+            None => reference::find_in_diff(patch, &request.source, &display.selected_text(cx))?,
+        };
+        CodeReference::new(
+            request.target.host.clone(),
+            &request.target.path,
+            std::path::Path::new(&request.path),
+            lines,
+            version,
+        )
+        .inspect_err(|error| tracing::warn!(%error, "no code reference for this diff"))
+        .ok()
+    }
+
     fn navigate(&mut self, next: bool, cx: &mut Context<Self>) {
         let review = self.review.read(cx);
         let Some(patch) = &review.patch else {
@@ -156,6 +189,14 @@ impl DiffPanel {
         let position = DiffLinePosition::new(review.request.path.clone(), side, line.max(1));
         self.display
             .update(cx, |d, cx| d.scroll_to_line(position, cx));
+    }
+}
+
+/// A selection endpoint of the widget as `hive-core` names it.
+fn line(side: DiffSide, number: usize) -> Line {
+    match side {
+        DiffSide::Original => Line::Original(number),
+        DiffSide::Modified => Line::Modified(number),
     }
 }
 
@@ -361,6 +402,14 @@ impl Render for DiffPanel {
             .min_w_0()
             .min_h_0()
             .on_action(cx.listener(|this, _: &CloseFile, window, cx| this.close(window, cx)))
+            .on_action(cx.listener(|this, _: &CopyCodeReference, window, cx| {
+                code_reference::copy(
+                    this.code_reference(cx),
+                    "Select line numbers, or text that appears once in this diff.",
+                    window,
+                    cx,
+                )
+            }))
             .child(
                 h_flex()
                     .p_2()

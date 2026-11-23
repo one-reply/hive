@@ -84,8 +84,7 @@ impl Run {
             ) => {
                 for item in &evidence {
                     if self.lanes.get(item.lane).is_none_or(|l| {
-                        l.assignment.is_empty()
-                            || !l.criteria.lines().any(|line| item.confirms(line))
+                        !l.is_assigned() || !l.criteria.lines().any(|line| item.confirms(line))
                     }) {
                         return Err(Error::InvalidInput(
                             "Evidence must identify an approved criterion and a concrete observation",
@@ -97,10 +96,7 @@ impl Run {
                 }
                 if let Some(invalid) = findings.iter().find(|f| {
                     f.description.trim().is_empty()
-                        || self
-                            .lanes
-                            .get(f.lane)
-                            .is_none_or(|l| l.assignment.trim().is_empty())
+                        || self.lanes.get(f.lane).is_none_or(|l| !l.is_assigned())
                 }) {
                     return Err(Error::InvalidFinding(invalid.lane));
                 }
@@ -124,7 +120,13 @@ impl Run {
                     })
                     .partition(|f| f.severity.blocks());
                 self.findings = blocking;
-                self.notes.extend(notes.into_iter().map(|note| (ix, note)));
+                // Return to QA asks a reviewer about the same files again, and it repeats the
+                // notes it already left; acceptance and the pull request list each once.
+                for note in notes {
+                    if !self.notes.iter().any(|(_, held)| note.repeats(held)) {
+                        self.notes.push((ix, note));
+                    }
+                }
                 self.outstanding.clear();
                 // Only a run saved mid-review by a build that ran the checks afterwards gets
                 // here with a check still owed; skipping it would accept untested work.
@@ -186,7 +188,7 @@ impl Run {
             .lanes
             .iter()
             .enumerate()
-            .filter(|(_, l)| !l.assignment.trim().is_empty())
+            .filter(|(_, l)| l.is_assigned())
             .collect();
         if assigned.is_empty() || assigned.iter().any(|(_, l)| l.criteria.trim().is_empty()) {
             return Err(Error::InvalidInput(

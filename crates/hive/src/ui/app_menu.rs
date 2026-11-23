@@ -38,28 +38,16 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    cx.on_action(|_: &AddProject, cx| {
-        if let Some(handle) = cx.active_window() {
-            let _ = handle.update(cx, |_, window, cx| crate::ui::add_project::open(window, cx));
-        }
-    });
+    cx.on_action(|_: &AddProject, cx| with_active_window(cx, crate::ui::add_project::open));
     cx.on_action(|_: &ShowLogs, cx| cx.reveal_path(&hive_core::state::hive_dir().join("logs")));
     cx.on_action(|_: &ShowDataFolder, cx| cx.reveal_path(&hive_core::state::hive_dir()));
     cx.on_action(|_: &CloseWindow, cx| {
-        if let Some(handle) = cx.active_window() {
-            cx.defer(move |cx| {
-                let _ = handle.update(cx, |_, window, cx| {
-                    crate::ui::editor_panel::close::all(window, cx, |window, _| {
-                        window.remove_window()
-                    })
-                });
-            });
-        }
+        with_active_window(cx, crate::ui::workspace::exit_guard::close_window)
     });
-    cx.on_action(|_: &Minimize, cx| with_active_window(cx, |window| window.minimize_window()));
-    cx.on_action(|_: &Zoom, cx| with_active_window(cx, |window| window.zoom_window()));
+    cx.on_action(|_: &Minimize, cx| with_active_window(cx, |window, _| window.minimize_window()));
+    cx.on_action(|_: &Zoom, cx| with_active_window(cx, |window, _| window.zoom_window()));
     cx.on_action(|_: &ToggleFullScreen, cx| {
-        with_active_window(cx, |window| window.toggle_fullscreen())
+        with_active_window(cx, |window, _| window.toggle_fullscreen())
     });
     cx.on_action(|_: &About, cx| show_about(cx));
     cx.on_action(|_: &CheckForUpdates, cx| {
@@ -69,12 +57,7 @@ pub fn init(cx: &mut App) {
             .check()
             .map_err(str::to_owned);
         if let Err(error) = result {
-            cx.defer(move |cx| {
-                if cx.windows().is_empty() {
-                    crate::open_main_window(cx);
-                }
-                show_alert("Software Updates", &error, cx);
-            });
+            show_alert("Software Updates", error, cx);
         }
     });
     cx.bind_keys([
@@ -150,37 +133,48 @@ pub(crate) fn install(cx: &mut App) {
     ]);
 }
 
-fn with_active_window(cx: &mut App, act: impl FnOnce(&mut Window)) {
+/// Acts on the active window once the current dispatch is over: a global action handler runs
+/// inside that window's own update, where updating it again fails with "window not found".
+fn with_active_window(cx: &mut App, act: impl FnOnce(&mut Window, &mut App) + 'static) {
     let Some(handle) = cx.active_window() else {
         return;
     };
-    if let Err(err) = handle.update(cx, |_, window, _| act(window)) {
-        tracing::warn!(%err, "failed to act on the active window");
-    }
+    cx.defer(move |cx| {
+        if let Err(err) = handle.update(cx, |_, window, cx| act(window, cx)) {
+            tracing::warn!(%err, "failed to act on the active window");
+        }
+    });
 }
 
-/// GPUI has no native About panel, so the version goes into an alert on the active window.
+/// GPUI has no native About panel, so the version goes into an alert.
 fn show_about(cx: &mut App) {
     let detail = format!("Version {}", env!("CARGO_PKG_VERSION"));
-    show_alert("Hive", &detail, cx);
+    show_alert("Hive", detail, cx);
 }
 
-fn show_alert(message: &str, detail: &str, cx: &mut App) {
-    let Some(handle) = cx
-        .active_window()
-        .or_else(|| cx.windows().into_iter().next())
-    else {
-        return;
-    };
-    let answer = handle.update(cx, |_, window, cx| {
-        window.activate_window();
-        window.prompt(PromptLevel::Info, message, Some(detail), &["OK"], cx)
+/// Shows an alert on the active window, or on any open one, opening the main window when none
+/// is left. Deferred for the reason `with_active_window` gives.
+fn show_alert(message: &'static str, detail: String, cx: &mut App) {
+    cx.defer(move |cx| {
+        if cx.windows().is_empty() {
+            crate::open_main_window(cx);
+        }
+        let Some(handle) = cx
+            .active_window()
+            .or_else(|| cx.windows().into_iter().next())
+        else {
+            return;
+        };
+        let answer = handle.update(cx, |_, window, cx| {
+            window.activate_window();
+            window.prompt(PromptLevel::Info, message, Some(&detail), &["OK"], cx)
+        });
+        match answer {
+            // Awaited so the alert isn't torn down with its dropped receiver.
+            Ok(answer) => cx.foreground_executor().spawn(answer).detach(),
+            Err(err) => tracing::warn!(%err, "failed to show the app alert"),
+        }
     });
-    match answer {
-        // Awaited so the alert isn't torn down with its dropped receiver.
-        Ok(answer) => cx.foreground_executor().spawn(answer).detach(),
-        Err(err) => tracing::warn!(%err, "failed to show the app alert"),
-    }
 }
 
 #[cfg(test)]
@@ -193,12 +187,28 @@ mod tests {
         cx.add_empty_window().deactivate_window();
         cx.update(|cx| {
             assert!(cx.active_window().is_none());
-            super::show_alert("Software Updates", "Updater unavailable", cx);
-            assert!(cx.active_window().is_some());
+            super::show_alert("Software Updates", "Updater unavailable".into(), cx);
         });
+        cx.update(|cx| assert!(cx.active_window().is_some()));
         assert_eq!(
             cx.pending_prompt(),
             Some(("Software Updates".into(), "Updater unavailable".into()))
+        );
+        cx.simulate_prompt_answer("OK");
+    }
+
+    /// The menu dispatches through the active window, so the handler runs inside its update.
+    #[gpui::test]
+    fn about_from_the_menu_shows_the_version_on_the_active_window(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.update(super::init);
+        cx.add_empty_window().dispatch_action(super::About);
+        assert_eq!(
+            cx.pending_prompt(),
+            Some((
+                "Hive".into(),
+                format!("Version {}", env!("CARGO_PKG_VERSION"))
+            ))
         );
         cx.simulate_prompt_answer("OK");
     }

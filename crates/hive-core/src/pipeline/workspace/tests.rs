@@ -13,8 +13,7 @@ impl Scratch {
     fn lane(&self, name: &str) -> Lane {
         let path = self.0.join(name);
         fs::create_dir(&path).unwrap();
-        git(&path, &["init", "-q", "-b", "main"]);
-        git(&path, &["config", "core.hooksPath", "/dev/null"]);
+        crate::git::testing::init(&path);
         fs::write(path.join("contract"), "original\n").unwrap();
         git(&path, &["add", "contract"]);
         git(&path, &["commit", "-qm", "base"]);
@@ -34,21 +33,7 @@ impl Drop for Scratch {
     }
 }
 fn git(path: &Path, args: &[&str]) {
-    let output = Host::Local
-        .command("git", args, Some(path))
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_AUTHOR_NAME", "Test")
-        .env("GIT_COMMITTER_NAME", "Test")
-        .env("GIT_AUTHOR_EMAIL", "test@example.test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.test")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    crate::git::testing::run(path, args);
 }
 #[test]
 fn multi_repo_checks_and_acceptance_use_task_worktrees_and_report_new_files() {
@@ -691,9 +676,15 @@ fn independent_cargo_test_checks_the_base_and_pinned_candidate_without_touching_
     fs::write(project.join("src/lib.rs"), "pub fn count() -> u8 { 1 }\n").unwrap();
     fs::write(project.join(".gitignore"), "/target\n/Cargo.lock\n").unwrap();
     fs::create_dir(project.join(".cargo")).unwrap();
+    // One build directory for every checkout, as a developer's shared cache would give: the
+    // base and the candidate must still never see each other's build.
+    let shared = temp.0.join("shared-target");
     fs::write(
         project.join(".cargo/config.toml"),
-        "[net]\noffline = true\n",
+        format!(
+            "[net]\noffline = true\n[build]\ntarget-dir = {:?}\n",
+            shared.to_str().unwrap()
+        ),
     )
     .unwrap();
     git(project, &["add", "."]);
@@ -800,6 +791,132 @@ fn passing_test_names_survive_a_log_longer_than_the_saved_tail() {
     // A command that failed proves no test, whatever it printed.
     assert!(!failed.success);
     assert!(failed.passed.is_empty());
+}
+
+#[test]
+fn a_check_that_never_finishes_keeps_its_last_output() {
+    let dir = Scratch::new("hung-check");
+    let lane = Lane {
+        name: "api".into(),
+        assignment: "Fix".into(),
+        worktree: dir.0.clone(),
+        command: "echo 'test result: ok. 1 passed'; echo 'test suite::waits_for_a_lock has been running for over 60 seconds'; echo 'still holding the lock' >&2; exec sleep 600".into(),
+        ..Lane::default()
+    };
+    let results = checks_within(&[lane], &Cancellation::default(), Duration::from_secs(3));
+    let [hung] = results.as_slice() else {
+        panic!("one result: {results:?}");
+    };
+    assert!(!hung.success);
+    assert_eq!(hung.exit_code, None);
+    assert!(
+        hung.passed.is_empty(),
+        "a check that never ended proves nothing"
+    );
+    assert!(
+        hung.output
+            .contains("suite::waits_for_a_lock has been running"),
+        "{}",
+        hung.output
+    );
+    assert!(hung.output.contains("still holding the lock"));
+    // The repair brief quotes the end of the output, so the reason comes last.
+    assert!(hung.output.ends_with(CHECK_TIMED_OUT), "{}", hung.output);
+}
+
+#[test]
+fn a_regression_test_that_never_finishes_reports_its_last_output() {
+    use crate::pipeline::{RegressionTest, TestRunner};
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Scratch::new("hung-regression");
+    let root = &dir.0;
+    fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
+    let runner = root.join("node_modules/.bin/jest");
+    fs::write(
+        &runner,
+        "#!/bin/sh\necho 'RUNS src/sum.test.ts'\necho 'waiting for the dev server' >&2\nexec sleep 600\n",
+    )
+    .unwrap();
+    fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::create_dir(root.join("src")).unwrap();
+    fs::write(root.join("src/sum.test.ts"), "").unwrap();
+    let test = RegressionTest {
+        runner: TestRunner::Jest,
+        path: "src/sum.test.ts".into(),
+        name: "adds".into(),
+        expected: "expected 2".into(),
+    };
+    let detail = regression::execute(
+        &test,
+        root,
+        root,
+        true,
+        &Cancellation::default(),
+        Duration::from_secs(3),
+    )
+    .unwrap_err();
+    assert!(detail.starts_with("adds timed out"), "{detail}");
+    assert!(detail.contains("RUNS src/sum.test.ts"), "{detail}");
+    assert!(detail.contains("waiting for the dev server"), "{detail}");
+}
+
+#[test]
+fn cargo_regression_builds_never_use_a_shared_build_directory() {
+    use crate::pipeline::{RegressionTest, TestRunner};
+    let test = RegressionTest {
+        runner: TestRunner::Cargo,
+        path: "crates/counter/tests/counter.rs".into(),
+        name: "returns_two".into(),
+        expected: "expected two".into(),
+    };
+    let args = |command: &std::process::Command| -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    };
+    let removed = |command: &std::process::Command| -> Vec<String> {
+        command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect()
+    };
+    let base = regression::cargo_command(
+        &test,
+        Path::new("/scratch/base"),
+        Some(Path::new("/scratch/target")),
+    )
+    .unwrap();
+    let base_args = args(&base);
+    assert!(
+        base_args
+            .windows(2)
+            .any(|pair| pair == ["--target-dir", "/scratch/target"]),
+        "{base_args:?}"
+    );
+    // Cargo options, not arguments for the test binary.
+    let separator = base_args.iter().position(|arg| arg == "--").unwrap();
+    assert!(
+        base_args
+            .iter()
+            .position(|arg| arg == "--target-dir")
+            .unwrap()
+            < separator
+    );
+
+    let candidate = regression::cargo_command(&test, Path::new("/worktree"), None).unwrap();
+    assert!(!args(&candidate).contains(&"--target-dir".to_owned()));
+    for command in [&base, &candidate] {
+        let removed = removed(command);
+        for name in [
+            "CARGO_TARGET_DIR",
+            "CARGO_BUILD_TARGET_DIR",
+            "CARGO_BUILD_BUILD_DIR",
+        ] {
+            assert!(removed.contains(&name.to_owned()), "{name}: {removed:?}");
+        }
+    }
 }
 
 #[test]

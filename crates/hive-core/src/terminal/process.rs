@@ -1,4 +1,5 @@
 //! Spawn a macOS login shell without installing process-wide SIGCHLD handlers.
+use super::TerminalError;
 use crate::host::Host;
 use alacritty_terminal::event::WindowSize;
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
@@ -10,13 +11,19 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command};
 
-pub(super) fn spawn(mut command: Command, size: WindowSize) -> io::Result<(Child, File)> {
-    let pty = rustix_openpty::openpty(None, Some(&winsize(size)))?;
-    let mut modes = rustix::termios::tcgetattr(&pty.controller)?;
+pub(super) fn spawn(
+    mut command: Command,
+    size: WindowSize,
+) -> Result<(Child, File), TerminalError> {
+    let pty = rustix_openpty::openpty(None, Some(&winsize(size)))
+        .map_err(|error| TerminalError::pty("open a pty")(error.into()))?;
+    let configure =
+        |error: rustix::io::Errno| TerminalError::pty("configure the pty")(error.into());
+    let mut modes = rustix::termios::tcgetattr(&pty.controller).map_err(configure)?;
     modes.input_modes.insert(InputModes::IUTF8);
-    rustix::termios::tcsetattr(&pty.controller, OptionalActions::Now, &modes)?;
-    let flags = fcntl_getfl(&pty.controller)?;
-    fcntl_setfl(&pty.controller, flags | OFlags::NONBLOCK)?;
+    rustix::termios::tcsetattr(&pty.controller, OptionalActions::Now, &modes).map_err(configure)?;
+    let flags = fcntl_getfl(&pty.controller).map_err(configure)?;
+    fcntl_setfl(&pty.controller, flags | OFlags::NONBLOCK).map_err(configure)?;
     command
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
@@ -57,7 +64,9 @@ pub(super) fn spawn(mut command: Command, size: WindowSize) -> io::Result<(Child
     }
     // After login_tty: the pane keeps its tty and nothing else of Hive's.
     crate::command::keep_only_standard_streams(&mut command);
-    let child = command.spawn()?;
+    let child = command
+        .spawn()
+        .map_err(TerminalError::pty("start the process"))?;
     Ok((child, File::from(pty.controller)))
 }
 

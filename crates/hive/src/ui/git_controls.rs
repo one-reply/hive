@@ -1,10 +1,11 @@
 //! Branch selection and confirmations with their original worktree captured at opening.
 use crate::state::git::Git;
+use crate::ui::destructive;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
 use crate::ui::text_field::TextField;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{Button, ButtonVariant};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::searchable_list::SearchableVec;
@@ -21,6 +22,8 @@ use hive_core::projects::Target;
 use std::sync::Arc;
 
 const DIALOG_WIDTH: Pixels = px(460.);
+/// Why a confirming button is disabled while the worktree runs another operation.
+const BUSY: &str = "Wait for the current Git operation to finish";
 const BRANCH_LIST_HEIGHT: Pixels = px(320.);
 const BRANCH_ROW_HEIGHT: Pixels = px(28.);
 
@@ -96,10 +99,10 @@ impl BranchPicker {
                 window,
                 cx,
             );
-        } else {
-            self.git.update(cx, |g, cx| {
-                g.perform_at(self.target.clone(), Action::Switch(branch.name.clone()), cx)
-            });
+        } else if let Some(name) = branch.local_name() {
+            let action = Action::Switch(name.to_owned());
+            self.git
+                .update(cx, |g, cx| g.perform_at(self.target.clone(), action, cx));
         }
     }
 }
@@ -135,7 +138,7 @@ impl Render for BranchPicker {
                 .into_iter()
                 .enumerate()
                 .map(|(i, b)| {
-                    let current = !b.remote && current.as_deref() == Some(b.name.as_str());
+                    let current = b.local_name().is_some() && b.local_name() == current.as_deref();
                     self.branch_row(title, i, b, current, window, cx)
                 })
                 .collect();
@@ -197,7 +200,10 @@ impl BranchPicker {
     ) -> AnyElement {
         let (fg, muted) = (cx.theme().foreground, cx.theme().muted_foreground);
         let busy = self.git.read(cx).is_busy_at(&self.target);
-        let deletable = !branch.remote && !current && branch.worktree.is_none();
+        let deletable = branch
+            .local_name()
+            .filter(|_| !current && branch.worktree.is_none())
+            .map(str::to_owned);
         let row_id: SharedString = format!("branch-{group}-{ix}").into();
         let delete_id: SharedString = format!("delete-{group}-{ix}").into();
         let row_hover = Hover::new(row_id.clone(), window, cx);
@@ -243,8 +249,8 @@ impl BranchPicker {
             .when_some(detail, |row, detail| {
                 row.child(div().text_xs().text_color(muted).child(detail))
             })
-            .when(deletable, |row| {
-                let (git, name) = (self.git.clone(), branch.name.clone());
+            .when_some(deletable, |row, name| {
+                let git = self.git.clone();
                 // Hidden until the row is hovered; the button stops the row's own click.
                 row.child(
                     div().opacity(row_hover.progress()).child(
@@ -253,6 +259,8 @@ impl BranchPicker {
                             .xsmall()
                             .icon(Lucide::Trash)
                             .tooltip("Delete branch")
+                            // The merge check behind a click takes a while on a slow host.
+                            .loading(self.git.read(cx).is_preparing_at(&self.target))
                             .disabled(busy)
                             .on_click(move |_, window, cx| {
                                 // The row behind would otherwise switch to this branch.
@@ -382,21 +390,24 @@ fn start_points(
     (select, references)
 }
 
-/// Checks off the main thread whether `name` is merged into HEAD, then asks accordingly:
+/// Checks whether `name` is merged into HEAD, the worktree showing busy meanwhile, then asks
+/// accordingly:
 /// a plain delete, or a force delete that spells out what is discarded. A failed check
 /// falls back to the safe delete, which Git explains itself.
 fn confirm_delete(git: Entity<Git>, name: String, window: &mut Window, cx: &mut App) {
     let Some(target) = git.read(cx).target.clone() else {
         return;
     };
-    let check = {
-        let (host, path, name) = (target.host.clone(), target.path.clone(), name.clone());
-        cx.background_executor()
-            .spawn(async move { hive_core::git::branches::is_merged(&host, &path, &name) })
+    let Some(check) = git.update(cx, |git, cx| git.check_merged(&target, &name, cx)) else {
+        return;
     };
     window
         .spawn(cx, async move |cx| {
-            let merged = check.await.unwrap_or_else(|error| {
+            // The sender goes away only with source control itself.
+            let Ok(merged) = check.recv().await else {
+                return;
+            };
+            let merged = merged.unwrap_or_else(|error| {
                 tracing::warn!(%error, branch = %name, "merge check failed");
                 true
             });
@@ -432,7 +443,7 @@ pub(super) struct Confirmation {
     pub title: &'static str,
     pub description: String,
     pub ok_text: &'static str,
-    /// Destructive actions get a red button.
+    /// Destructive actions get a red button that Enter does not press (`ui::destructive`).
     pub danger: bool,
 }
 
@@ -470,24 +481,26 @@ pub(super) fn confirm_at(
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let (git, target, action) = (git.clone(), target.clone(), action.clone());
         let busy = git.read(cx).is_busy_at(&target);
-        alert
+        let alert = alert
             .confirm()
             .title(title)
-            .description(description.clone())
-            .ok_text(ok_text)
-            .when(busy, |alert| alert.footer(busy_footer(ok_text)))
-            .ok_variant(if danger {
-                ButtonVariant::Danger
-            } else {
-                ButtonVariant::Primary
-            })
-            .on_ok(move |_, _, cx| {
-                if git.read(cx).is_busy_at(&target) {
-                    return false;
-                }
-                git.update(cx, |g, cx| g.perform_at(target.clone(), action.clone(), cx));
-                true
-            })
+            .description(description.clone());
+        // The dialog is drawn from a snapshot, so the worktree is asked again on the press.
+        let perform = move |cx: &mut App| {
+            if git.read(cx).is_busy_at(&target) {
+                return false;
+            }
+            git.update(cx, |g, cx| g.perform_at(target.clone(), action.clone(), cx));
+            true
+        };
+        match (danger, busy) {
+            (true, true) => destructive::unavailable(alert, ok_text, BUSY),
+            (true, false) => destructive::confirmation(alert, ok_text, move |_, cx| perform(cx)),
+            (false, _) => alert
+                .ok_text(ok_text)
+                .when(busy, |alert| alert.footer(busy_footer(ok_text)))
+                .on_ok(move |_, _, cx| perform(cx)),
+        }
     });
 }
 
@@ -506,6 +519,6 @@ fn busy_footer(label: &'static str) -> impl IntoElement {
                 .cursor_pointer()
                 .label(label)
                 .disabled(true)
-                .tooltip("Wait for the current Git operation to finish"),
+                .tooltip(BUSY),
         )
 }

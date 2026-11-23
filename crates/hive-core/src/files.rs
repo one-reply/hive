@@ -20,11 +20,13 @@ mod mutations;
 #[cfg(feature = "desktop")]
 pub mod tree;
 pub use mutations::{
-    create_directory, create_file, delete_entry, entry_path, move_entry, name_taken, relocated_path,
+    create_directory, create_file, delete_entry, entry_path, move_entry, name_taken, paste_entries,
+    paste_name, relocated_path,
 };
 pub mod recovery;
 #[cfg(feature = "desktop")]
 pub mod search;
+pub(crate) use language::lowercase_extension;
 pub use language::{editor_language, is_dockerfile};
 pub use listing::{Entry, FileIndex, list_directory, list_files};
 
@@ -43,6 +45,19 @@ pub enum FileError {
         /// Requested root of the removal.
         path: PathBuf,
         /// First filesystem error encountered.
+        #[source]
+        source: Box<FileError>,
+    },
+    /// Pasting stopped after some of the entries were copied; those stay in place.
+    #[error("Pasted {pasted} of {total} items into {path}, then stopped. {source}")]
+    PartialPaste {
+        /// Folder the entries were pasted into.
+        path: PathBuf,
+        /// Entries copied completely before the failure.
+        pasted: usize,
+        /// Entries requested.
+        total: usize,
+        /// Failure of the first entry that could not be copied.
         #[source]
         source: Box<FileError>,
     },

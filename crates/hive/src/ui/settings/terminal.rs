@@ -1,5 +1,5 @@
-//! Terminal page: default CLI agent, close confirmation, agent notifications, keep-awake and
-//! terminal font size.
+//! Terminal page: default CLI agent, close confirmation, agent notifications, keep-awake,
+//! Option as Meta and terminal font size.
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{ActiveTheme as _, Icon, h_flex, v_flex};
@@ -31,6 +31,8 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
     let notify_store = store.clone();
     let keep_awake = store.read(cx).state.settings.keep_awake_while_agents_work;
     let keep_awake_store = store.clone();
+    let option_as_meta = store.read(cx).state.settings.option_as_meta;
+    let meta_store = store.clone();
     let blocked = notify && AppState::get(cx).notifications.read(cx).is_blocked();
     let agent = store.read(cx).state.settings.default_cli_agent();
     let agent_store = store.clone();
@@ -71,7 +73,7 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
         picker,
         cx,
     )).child(setting_row(
-        setting_title("Confirm closing running agents", "Ask before closing a terminal pane or tab in which a CLI agent is running.", cx),
+        setting_title("Confirm closing running agents", "Ask before closing a terminal pane, tab or window, or quitting Hive, while a CLI agent is running there.", cx),
         Switch::new("confirm-close-running-agent")
             .accessibility_label("Confirm closing running agents")
             .checked(confirm_close)
@@ -95,6 +97,15 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
             .checked(keep_awake)
             .on_click(move |value, _, cx| {
                 keep_awake_store.update(cx, |store, cx| store.set_keep_awake_while_agents_work(*value, cx))
+            }),
+        cx,
+    )).child(setting_row(
+        setting_title("Option as Meta", "Option with a key sends that key after Esc, for word motions and Alt shortcuts in shells and editors. When off, Option types the characters macOS puts on the key, such as accents.", cx),
+        Switch::new("option-as-meta")
+            .accessibility_label("Option as Meta")
+            .checked(option_as_meta)
+            .on_click(move |value, _, cx| {
+                meta_store.update(cx, |store, cx| store.set_option_as_meta(*value, cx))
             }),
         cx,
     )).child(setting_row(

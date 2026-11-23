@@ -2,7 +2,9 @@
 
 use crate::{git::diff::DiffSource, host::Host};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+mod restore;
 
 /// Project and worktree selected in the sidebar.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,50 +33,6 @@ pub struct Workspace {
     pub projects: Vec<ProjectWorkspace>,
 }
 
-impl Workspace {
-    /// Blocking: discard stale local directories and layouts for removed projects before opening windows.
-    pub fn prepare(&mut self, projects: &[super::ProjectRef]) {
-        self.prepare_with(projects, &|path| path.is_dir());
-    }
-
-    fn prepare_with(&mut self, projects: &[super::ProjectRef], is_dir: &impl Fn(&Path) -> bool) {
-        self.projects.retain(|saved| {
-            projects
-                .iter()
-                .any(|p| p.path == saved.project && p.host == saved.host)
-        });
-        for saved in &mut self.projects {
-            if saved.host != Host::Local {
-                continue;
-            }
-            let mut old_index = 0;
-            let mut new_index = 0;
-            let mut focused = 0;
-            saved.layout = saved.layout.as_ref().and_then(|layout| {
-                layout.filter_map(&mut |tabs| {
-                    let mut active = 0;
-                    let mut items = Vec::new();
-                    for (index, tab) in tabs.items.iter().enumerate() {
-                        if let Some(tab) = tab.prepare(is_dir) {
-                            if index <= tabs.active {
-                                active = items.len();
-                            }
-                            if old_index <= saved.focused {
-                                focused = new_index;
-                            }
-                            items.push(tab);
-                            new_index += 1;
-                        }
-                        old_index += 1;
-                    }
-                    (!items.is_empty()).then_some(Tabs { items, active })
-                })
-            });
-            saved.focused = focused;
-        }
-    }
-}
-
 /// One project's tabs and the selection that last accompanied them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectWorkspace {
@@ -94,6 +52,15 @@ pub struct ProjectWorkspace {
     /// Absent when the user closed every tab.
     #[serde(default)]
     pub layout: Option<Layout<Tabs>>,
+    /// Tabs whose folders could not be reached at launch (an unmounted volume, a disconnected
+    /// share), kept out of `layout` so a missing disk does not cost them. They rejoin the
+    /// layout at the first launch that finds their folder, and go once it was deleted.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "super::lenient::elements"
+    )]
+    pub unavailable: Vec<Tab>,
 }
 
 /// Direction in which split children are arranged.
@@ -250,51 +217,11 @@ pub enum Tab {
     Unknown,
 }
 
-impl Tab {
-    fn prepare(&self, is_dir: &impl Fn(&Path) -> bool) -> Option<Self> {
-        let available = |path: &Path| {
-            let exists = path.is_absolute() && is_dir(path);
-            if !exists {
-                tracing::warn!(?path, "skipping unavailable workspace directory");
-            }
-            exists
-        };
-        match self {
-            Self::Terminal { panes, active } => {
-                let mut old_index = 0;
-                let mut new_index = 0;
-                let mut selected = 0;
-                let panes = panes.filter_map(&mut |pane| {
-                    let keep = available(&pane.directory);
-                    if keep {
-                        if old_index <= *active {
-                            selected = new_index;
-                        }
-                        new_index += 1;
-                    }
-                    old_index += 1;
-                    keep.then_some(pane.clone())
-                })?;
-                Some(Self::Terminal {
-                    panes,
-                    active: selected,
-                })
-            }
-            Self::Diff { worktree, .. } => available(worktree).then(|| self.clone()),
-            Self::File { worktree, path, .. } => (available(worktree)
-                && !path.as_os_str().is_empty()
-                && path
-                    .components()
-                    .all(|c| matches!(c, std::path::Component::Normal(name) if name != ".git")))
-            .then(|| self.clone()),
-            Self::Unknown => None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::restore::Restored;
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn file_tabs_default_position_and_roundtrip() {
@@ -313,11 +240,11 @@ mod tests {
             serde_json::from_str::<Tab>(&serde_json::to_string(&file).unwrap()).unwrap(),
             file
         );
-        assert!(file.prepare(&|_| true).is_some());
+        assert!(matches!(file.restore(&|_| true), Restored::Ready(_)));
         let outside: Tab =
             serde_json::from_str(r#"{"kind":"file","worktree":"/project","path":"../secret"}"#)
                 .unwrap();
-        assert!(outside.prepare(&|_| true).is_none());
+        assert_eq!(outside.restore(&|_| true), Restored::Gone);
     }
 
     #[test]
@@ -489,6 +416,7 @@ mod tests {
                     active: 1,
                 },
             }),
+            unavailable: Vec::new(),
         };
         let mut workspace = Workspace {
             selection: None,
@@ -499,7 +427,8 @@ mod tests {
                 "/project".into(),
                 Host::Local,
             )],
-            &|p| p == Path::new("/kept"),
+            // `/gone` and `/project` were deleted from a disk that is still there.
+            &|p| p == Path::new("/kept") || p == Path::new("/"),
         );
         assert_eq!(workspace.projects[0].focused, 0);
         assert_eq!(
@@ -516,5 +445,207 @@ mod tests {
         );
         workspace.prepare_with(&[], &|_| true);
         assert!(workspace.projects.is_empty());
+    }
+    fn file(worktree: &str, path: &str) -> Tab {
+        Tab::File {
+            worktree: worktree.into(),
+            path: path.into(),
+            cursor: [0, 0],
+            scroll: [0., 0.],
+        }
+    }
+
+    fn terminal(directory: &str, worktree: &str) -> Tab {
+        Tab::Terminal {
+            panes: Layout::Leaf {
+                value: TerminalPane {
+                    directory: directory.into(),
+                    worktree: Some(worktree.into()),
+                    resume: None,
+                    name: None,
+                },
+            },
+            active: 0,
+        }
+    }
+
+    fn one_project(
+        layout: Layout<Tabs>,
+        focused: usize,
+    ) -> (Workspace, Vec<super::super::ProjectRef>) {
+        let workspace = Workspace {
+            selection: None,
+            projects: vec![ProjectWorkspace {
+                project: "/home/repo".into(),
+                host: Host::Local,
+                worktree: None,
+                focused,
+                layout: Some(layout),
+                unavailable: Vec::new(),
+            }],
+        };
+        let projects = vec![super::super::ProjectRef::new(
+            "/home/repo".into(),
+            Host::Local,
+        )];
+        (workspace, projects)
+    }
+
+    /// Folders on this machine: `/home/repo` always, the external volume only when mounted.
+    fn disk(mounted: bool) -> impl Fn(&Path) -> bool {
+        move |path: &Path| {
+            let internal = ["/", "/Volumes", "/home", "/home/repo"];
+            let external = [
+                "/Volumes/Disk",
+                "/Volumes/Disk/repo",
+                "/Volumes/Disk/repo/src",
+            ];
+            internal.iter().any(|p| path == Path::new(p))
+                || (mounted && external.iter().any(|p| path == Path::new(p)))
+        }
+    }
+
+    #[test]
+    fn tabs_on_an_unmounted_volume_wait_and_return_once_it_is_mounted() {
+        let layout = Layout::Split {
+            axis: SplitAxis::Horizontal,
+            children: vec![
+                Layout::Leaf {
+                    value: Tabs {
+                        items: vec![
+                            file("/Volumes/Disk/repo", "src/lib.rs"),
+                            file("/home/repo", "README.md"),
+                        ],
+                        active: 1,
+                    },
+                },
+                Layout::Leaf {
+                    value: Tabs {
+                        items: vec![terminal("/Volumes/Disk/repo/src", "/Volumes/Disk/repo")],
+                        active: 0,
+                    },
+                },
+            ],
+            sizes: vec![300., 300.],
+        };
+        let (mut workspace, projects) = one_project(layout, 1);
+
+        workspace.prepare_with(&projects, &disk(false));
+        let saved = &workspace.projects[0];
+        assert_eq!(
+            saved.layout,
+            Some(Layout::Leaf {
+                value: Tabs {
+                    items: vec![file("/home/repo", "README.md")],
+                    active: 0,
+                }
+            })
+        );
+        assert_eq!(saved.focused, 0);
+        assert_eq!(
+            saved.unavailable,
+            [
+                file("/Volumes/Disk/repo", "src/lib.rs"),
+                terminal("/Volumes/Disk/repo/src", "/Volumes/Disk/repo"),
+            ]
+        );
+        // What the next save writes still holds every tab.
+        let written: Workspace =
+            serde_json::from_str(&serde_json::to_string(&workspace).unwrap()).unwrap();
+        assert_eq!(written, workspace);
+
+        // Another launch while the disk is still away keeps them waiting.
+        let mut again = written.clone();
+        again.prepare_with(&projects, &disk(false));
+        assert_eq!(again, written);
+
+        let mut mounted = written;
+        mounted.prepare_with(&projects, &disk(true));
+        let saved = &mounted.projects[0];
+        assert!(saved.unavailable.is_empty());
+        assert_eq!(saved.focused, 0, "the focused tab keeps its place");
+        assert_eq!(
+            saved.layout,
+            Some(Layout::Leaf {
+                value: Tabs {
+                    items: vec![
+                        file("/home/repo", "README.md"),
+                        file("/Volumes/Disk/repo", "src/lib.rs"),
+                        terminal("/Volumes/Disk/repo/src", "/Volumes/Disk/repo"),
+                    ],
+                    active: 0,
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn a_terminal_whose_directory_was_deleted_starts_in_its_worktree() {
+        let (mut workspace, projects) = one_project(
+            Layout::Leaf {
+                value: Tabs {
+                    items: vec![terminal("/home/repo/target/tmp", "/home/repo")],
+                    active: 0,
+                },
+            },
+            0,
+        );
+        workspace.prepare_with(&projects, &disk(false));
+        assert_eq!(
+            workspace.projects[0].layout,
+            Some(Layout::Leaf {
+                value: Tabs {
+                    items: vec![terminal("/home/repo", "/home/repo")],
+                    active: 0,
+                }
+            })
+        );
+        assert!(workspace.projects[0].unavailable.is_empty());
+    }
+
+    #[test]
+    fn tabs_of_a_deleted_worktree_are_dropped_even_after_waiting() {
+        let (mut workspace, projects) = one_project(
+            Layout::Leaf {
+                value: Tabs {
+                    items: vec![
+                        file("/home/repo", "a.rs"),
+                        file("/home/repo-gone", "b.rs"),
+                        terminal("/home/repo-gone/src", "/home/repo-gone"),
+                    ],
+                    active: 0,
+                },
+            },
+            0,
+        );
+        workspace.projects[0].unavailable = vec![file("/home/old-worktree", "c.rs"), Tab::Unknown];
+        workspace.prepare_with(&projects, &disk(false));
+        assert!(workspace.projects[0].unavailable.is_empty());
+        assert_eq!(
+            workspace.projects[0].layout,
+            Some(Layout::Leaf {
+                value: Tabs {
+                    items: vec![file("/home/repo", "a.rs")],
+                    active: 0,
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn a_layout_without_waiting_tabs_reads_and_writes_as_before() {
+        let saved: ProjectWorkspace =
+            serde_json::from_str(r#"{"project":"/home/repo","layout":null}"#).unwrap();
+        assert!(saved.unavailable.is_empty());
+        assert!(
+            !serde_json::to_string(&saved)
+                .unwrap()
+                .contains("unavailable")
+        );
+        let damaged: ProjectWorkspace = serde_json::from_str(
+            r#"{"project":"/home/repo","unavailable":[{"kind":"file","worktree":"/v","path":"a"},{"kind":"file"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(damaged.unavailable, [file("/v", "a")]);
     }
 }

@@ -1,7 +1,7 @@
 //! Making a fresh worktree usable: Git checks out tracked files only, so the ignored files a
 //! project needs to build or run (`.env`, local config) are copied from the source checkout
 //! as `.worktreeinclude` names them, and the project's setup command installs the rest.
-use crate::command::{self, Cancellation};
+use crate::command::{self, Cancellation, End};
 use crate::git::{self, GitError};
 use crate::host::Host;
 use regex::Regex;
@@ -56,6 +56,10 @@ pub enum ProvisionError {
 /// leading or inner `/` anchoring the pattern to the repository root, and a trailing `/` for
 /// folders only. A pattern without `/` matches the name at any depth. Negation (`!`) is not
 /// supported: such a line is skipped, since guessing would copy the wrong files.
+///
+/// Inside an ignored folder only anchored patterns reach a file, such as
+/// `.vscode/settings.json` or `config/local/*.yml`; `**/settings.json` does not look inside
+/// one, since that would walk every ignored folder, `node_modules` included.
 #[derive(Debug)]
 pub struct IncludePatterns(Vec<Pattern>);
 
@@ -63,6 +67,9 @@ pub struct IncludePatterns(Vec<Pattern>);
 struct Pattern {
     path: Regex,
     folders_only: bool,
+    /// For an anchored pattern, the part of its path before any wildcard: the whole path, or
+    /// the folder its wildcard part lives in. `None` when a wildcard comes first.
+    within: Option<String>,
 }
 
 impl IncludePatterns {
@@ -71,11 +78,26 @@ impl IncludePatterns {
         Self(text.lines().filter_map(Pattern::parse).collect())
     }
 
-    /// Whether the repository-relative `path` is named by any pattern.
+    /// Whether the repository-relative `path` is named by any pattern. A folder is also named
+    /// by a pattern for everything in it, such as `cache/**` or `cache/*`.
     pub fn matches(&self, path: &str, is_folder: bool) -> bool {
+        let contents = is_folder.then(|| format!("{path}/"));
+        self.0.iter().any(|p| {
+            (is_folder || !p.folders_only)
+                && (p.path.is_match(path)
+                    || contents.as_deref().is_some_and(|c| p.path.is_match(c)))
+        })
+    }
+
+    /// The paths inside `folder` that anchored patterns point into, for Git to list the
+    /// ignored files there that a collapsed listing of `folder` hides.
+    fn inside(&self, folder: &str) -> Vec<&str> {
+        let prefix = format!("{folder}/");
         self.0
             .iter()
-            .any(|p| (is_folder || !p.folders_only) && p.path.is_match(path))
+            .filter_map(|p| p.within.as_deref())
+            .filter(|within| within.starts_with(&prefix))
+            .collect()
     }
 
     /// Whether the file names nothing.
@@ -103,6 +125,15 @@ impl Pattern {
         if body.is_empty() {
             return None;
         }
+        let within = anchored
+            .then(|| match body.find(['*', '?']) {
+                None => body,
+                Some(wildcard) => body[..wildcard]
+                    .rfind('/')
+                    .map_or("", |slash| &body[..slash]),
+            })
+            .filter(|within| !within.is_empty())
+            .map(str::to_owned);
         let mut expression = String::from(if anchored { "^" } else { "^(?:.*/)?" });
         let mut rest = body;
         while let Some(c) = rest.chars().next() {
@@ -123,7 +154,11 @@ impl Pattern {
         }
         expression.push('$');
         match Regex::new(&expression) {
-            Ok(path) => Some(Self { path, folders_only }),
+            Ok(path) => Some(Self {
+                path,
+                folders_only,
+                within,
+            }),
             Err(error) => {
                 tracing::warn!(line, %error, "unreadable .worktreeinclude pattern skipped");
                 None
@@ -157,46 +192,73 @@ pub fn copy_included(
     if patterns.is_empty() {
         return Ok(0);
     }
-    // `--directory` collapses an ignored folder into one entry, so a build cache with
-    // millions of files is neither walked nor listed.
-    let listing = git::bytes(
-        &Host::Local,
-        source,
-        &[
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--directory",
-            "-z",
-        ],
-        None,
-        IGNORED_LIST_LIMIT,
-        false,
-    )?;
-    let mut copied = 0;
-    for entry in listing.split(|byte| *byte == 0) {
-        let Ok(entry) = std::str::from_utf8(entry) else {
-            continue;
-        };
-        let (path, is_folder) = match entry.strip_suffix('/') {
-            Some(path) => (path, true),
-            None => (entry, false),
-        };
-        if path.is_empty() || !patterns.matches(path, is_folder) {
-            continue;
-        }
+    let copy = |path: &str| {
         let from = source.join(path);
         copy_entry(&from, &checkout.join(path), stop).map_err(|error| match error {
             CopyError::Stopped => ProvisionError::Stopped,
             CopyError::Io(source) => ProvisionError::Copy { path: from, source },
-        })?;
-        copied += 1;
+        })
+    };
+    // `--directory` collapses an ignored folder into one entry, so a build cache with
+    // millions of files is neither walked nor listed.
+    let mut copied = 0;
+    let mut deeper = Vec::new();
+    for (path, is_folder) in ignored_entries(&list_ignored(source, true, &[])?) {
+        if patterns.matches(path, is_folder) {
+            copy(path)?;
+            copied += 1;
+        } else if is_folder {
+            deeper.extend(patterns.inside(path).into_iter().map(str::to_owned));
+        }
+    }
+    // A pattern such as `.vscode/settings.json` names a file the collapsed listing hid in its
+    // ignored folder; Git lists the files under just those paths.
+    if !deeper.is_empty() {
+        for (path, _) in ignored_entries(&list_ignored(source, false, &deeper)?) {
+            if patterns.matches(path, false) {
+                copy(path)?;
+                copied += 1;
+            }
+        }
     }
     if copied > 0 {
         tracing::info!(?checkout, copied, "copied .worktreeinclude entries");
     }
     Ok(copied)
+}
+
+/// The untracked files Git ignores in `source`, under `paths` when there are any; with
+/// `collapsed`, an ignored folder is one entry ending in `/`.
+fn list_ignored(source: &Path, collapsed: bool, paths: &[String]) -> Result<Vec<u8>, GitError> {
+    let mut args = vec![
+        "--literal-pathspecs",
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "-z",
+    ];
+    if collapsed {
+        args.push("--directory");
+    }
+    if !paths.is_empty() {
+        args.push("--");
+        args.extend(paths.iter().map(String::as_str));
+    }
+    git::bytes(&Host::Local, source, &args, None, IGNORED_LIST_LIMIT, false)
+}
+
+/// Repository-relative paths of a listing and whether each is a collapsed folder. A name that
+/// is not UTF-8 cannot be matched against the patterns and is left out.
+fn ignored_entries(listing: &[u8]) -> impl Iterator<Item = (&str, bool)> {
+    listing
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| std::str::from_utf8(entry).ok())
+        .map(|entry| match entry.strip_suffix('/') {
+            Some(path) => (path, true),
+            None => (entry, false),
+        })
+        .filter(|(path, _)| !path.is_empty())
 }
 
 enum CopyError {
@@ -250,36 +312,36 @@ pub fn run_setup(
     if command.is_empty() {
         return Ok(());
     }
+    setup_within(command, checkout, stop, SETUP_TIMEOUT)
+}
+
+fn setup_within(
+    command: &str,
+    checkout: &Path,
+    stop: &Cancellation,
+    timeout: Duration,
+) -> Result<(), ProvisionError> {
     let failed = |outcome: String, output: String| ProvisionError::Setup {
         command: command.to_owned(),
         outcome,
         output,
     };
     let process = Host::Local.command("/bin/sh", &["-c", command], Some(checkout));
-    let result = command::run_with_log_tail(process, stop, SETUP_TIMEOUT, SETUP_LOG_TAIL).map_err(
-        |error| {
+    let log =
+        command::run_with_log_tail(process, stop, timeout, SETUP_LOG_TAIL).map_err(|error| {
             if stop.is_cancelled() {
                 ProvisionError::Stopped
             } else {
                 failed(error.to_string(), String::new())
             }
-        },
-    )?;
-    if result.code == Some(0) {
-        return Ok(());
-    }
-    let mut output = String::from_utf8_lossy(&result.stdout).into_owned();
-    if !result.stderr.is_empty() {
-        if !output.is_empty() && !output.ends_with('\n') {
-            output.push('\n');
-        }
-        output.push_str(&String::from_utf8_lossy(&result.stderr));
-    }
-    let outcome = match result.code {
-        Some(code) => format!("exited with {code}"),
-        None => "was terminated".to_owned(),
+        })?;
+    let outcome = match log.end {
+        End::Exited(Some(0)) => return Ok(()),
+        End::Exited(Some(code)) => format!("exited with {code}"),
+        End::Exited(None) => "was terminated".to_owned(),
+        End::TimedOut => "timed out".to_owned(),
     };
-    Err(failed(outcome, output))
+    Err(failed(outcome, log.text()))
 }
 
 #[cfg(test)]

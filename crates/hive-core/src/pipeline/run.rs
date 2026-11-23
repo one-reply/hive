@@ -308,9 +308,7 @@ impl Run {
         let reviewing = matches!(self.phase, Phase::Review(_));
         for (i, lane) in self.lanes.iter().enumerate() {
             // A reviewer may only file findings against lanes that have work to review.
-            if ticket.lane.is_some_and(|index| index != i)
-                || (reviewing && lane.assignment.trim().is_empty())
-            {
+            if ticket.lane.is_some_and(|index| index != i) || (reviewing && !lane.is_assigned()) {
                 continue;
             }
             // The base commit bounds the lane's changes: without it a reviewer of committed

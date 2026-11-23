@@ -8,6 +8,7 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 mod activity;
+mod colors;
 mod directory;
 mod events;
 mod link;
@@ -18,6 +19,7 @@ mod pty;
 mod scroll;
 mod selection;
 pub use activity::Activity;
+pub use colors::{Palette, indexed, set_palette};
 pub use directory::working_directory;
 use events::Publisher;
 pub use events::TerminalUpdate;
@@ -51,10 +53,23 @@ pub enum TerminalError {
         #[source]
         source: std::io::Error,
     },
-    #[error("failed to open pty: {0}")]
-    Pty(#[source] std::io::Error),
+    /// A step of starting the PTY and its process failed.
+    #[error("failed to {operation}: {source}")]
+    Pty {
+        /// What was being done, such as "open a pty" or "start the process".
+        operation: &'static str,
+        /// The system's answer.
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to start terminal event loop: {0}")]
     EventLoop(#[source] std::io::Error),
+}
+
+impl TerminalError {
+    fn pty(operation: &'static str) -> impl FnOnce(std::io::Error) -> Self {
+        move |source| Self::Pty { operation, source }
+    }
 }
 
 /// Grid dimensions in cells.
@@ -99,7 +114,8 @@ impl Dimensions for TerminalSize {
 }
 
 /// Alacritty's listener: forwards the events the UI cares about over a channel, and answers
-/// the ones that only need a PTY write (clipboard/color/size requests) right here.
+/// the ones that only need a PTY write (color and size requests) right here. Clipboard
+/// requests (OSC 52) are not supported and are dropped.
 #[derive(Clone)]
 pub struct Listener {
     events: Publisher,
@@ -118,6 +134,11 @@ impl EventListener for Listener {
             AlacEvent::TextAreaSizeRequest(format) => {
                 let size = *self.size.lock().unwrap_or_else(|e| e.into_inner());
                 self.write(format(size).into_bytes());
+            }
+            AlacEvent::ColorRequest(index, format) => {
+                if let Some(color) = colors::reported(index) {
+                    self.write(format(color).into_bytes());
+                }
             }
             event => {
                 // The event loop wakes the UI after every PTY read.
@@ -159,19 +180,31 @@ impl Terminal {
         shell: Option<&str>,
         size: TerminalSize,
     ) -> Result<Terminal, TerminalError> {
-        let command = process::command(cwd, shell).map_err(TerminalError::Pty)?;
+        let command = process::command(cwd, shell)
+            .map_err(TerminalError::pty("prepare the shell command"))?;
         Self::spawn_command(command, cwd, size)
     }
 
     /// The command [`Terminal::spawn`] runs for the user's login shell in `cwd`, for callers
     /// that add environment before [`Terminal::spawn_command`].
     pub fn shell_command(cwd: Option<&Path>) -> Result<std::process::Command, TerminalError> {
-        process::command(cwd, None).map_err(TerminalError::Pty)
+        process::command(cwd, None).map_err(TerminalError::pty("prepare the shell command"))
     }
 
     /// Spawn a prepared Host command as the foreground process of a fresh PTY.
     pub fn spawn_command(
         command: std::process::Command,
+        cwd: Option<&Path>,
+        size: TerminalSize,
+    ) -> Result<Terminal, TerminalError> {
+        let (child, file) = process::spawn(command, size.window_size())?;
+        Self::start(child, file, cwd, size)
+    }
+
+    /// Runs the event loop over a process already started on the PTY behind `file`.
+    fn start(
+        child: std::process::Child,
+        file: std::fs::File,
         cwd: Option<&Path>,
         size: TerminalSize,
     ) -> Result<Terminal, TerminalError> {
@@ -196,7 +229,6 @@ impl Terminal {
         let term = Term::new(config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
-        let (child, file) = process::spawn(command, window_size).map_err(TerminalError::Pty)?;
         let shell_pid = child.id();
         let program_status = ProgramStatus::default();
         let pty = ManagedPty::new(
@@ -207,7 +239,9 @@ impl Terminal {
             listener.clone(),
             program_status.clone(),
         );
-        let event_loop = EventLoop::new(term.clone(), listener.clone(), pty, false, false)
+        // Drain on exit: the exit note can come before the last output is read, and Darwin
+        // holds an exiting shell until that output is read.
+        let event_loop = EventLoop::new(term.clone(), listener.clone(), pty, true, false)
             .map_err(TerminalError::EventLoop)?;
         let sender = event_loop.channel();
         *listener.pty.lock().unwrap_or_else(|e| e.into_inner()) = Some(sender.clone());

@@ -20,6 +20,9 @@ pub(super) enum Incoming {
         method: String,
         params: Value,
     },
+    /// A whole message the client cannot use, said why. The stream is still in step, so one
+    /// such message must not end the session.
+    Ignored(&'static str),
 }
 
 pub(super) fn read(reader: &mut impl BufRead) -> Result<Option<Incoming>, Error> {
@@ -58,9 +61,20 @@ pub(super) fn read(reader: &mut impl BufRead) -> Result<Option<Incoming>, Error>
             );
         }
     }
-    let length = length
-        .filter(|length| *length <= FRAME_LIMIT)
-        .ok_or_else(|| Error::Protocol("Missing or oversized Content-Length".into()))?;
+    let length = length.ok_or_else(|| Error::Protocol("Missing Content-Length".into()))?;
+    if length > FRAME_LIMIT {
+        // A huge answer, such as every symbol of a large project: its request times out
+        // instead of the server being stopped.
+        let skipped = std::io::copy(
+            &mut (&mut *reader).take(length as u64),
+            &mut std::io::sink(),
+        )
+        .map_err(|e| Error::Protocol(e.to_string()))?;
+        if skipped < length as u64 {
+            return Err(Error::Protocol("Truncated oversized frame".into()));
+        }
+        return Ok(Some(Incoming::Ignored("frame exceeds 8 MiB")));
+    }
     let mut body = vec![0; length];
     reader
         .read_exact(&mut body)
@@ -76,8 +90,10 @@ fn parse(bytes: &[u8]) -> Result<Incoming, Error> {
     if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return Err(Error::Protocol("Expected JSON-RPC 2.0".into()));
     }
+    // JSON-RPC answers a request it could not read with `"id": null`.
     let id = object
         .get("id")
+        .filter(|id| !id.is_null())
         .map(|id| serde_json::from_value(id.clone()).map_err(|e| Error::Protocol(e.to_string())))
         .transpose()?;
     if let Some(method) = object.get("method").and_then(Value::as_str) {
@@ -90,7 +106,9 @@ fn parse(bytes: &[u8]) -> Result<Incoming, Error> {
             params: object.get("params").cloned().unwrap_or(Value::Null),
         });
     }
-    let id = id.ok_or_else(|| Error::Protocol("Response has no id".into()))?;
+    let Some(id) = id else {
+        return Ok(Incoming::Ignored("response without an id"));
+    };
     match (object.get("result"), object.get("error")) {
         (Some(result), None) => Ok(Incoming::Response(id, Ok(result.clone()))),
         (None, Some(error)) => {
@@ -146,6 +164,33 @@ mod tests {
         ));
         assert!(read(&mut reader).unwrap().is_none());
     }
+    #[test]
+    fn an_answer_nobody_can_match_or_hold_is_skipped_and_the_stream_goes_on() {
+        let mut bytes = encode(&serde_json::json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}})).unwrap();
+        let huge = "x".repeat(FRAME_LIMIT);
+        bytes.extend(encode(&serde_json::json!({"jsonrpc":"2.0","id":2,"result":"ok"})).unwrap());
+        bytes.extend(format!("Content-Length: {}\r\n\r\n\"{huge}\"", huge.len() + 2).into_bytes());
+        bytes.extend(encode(&serde_json::json!({"jsonrpc":"2.0","id":null,"method":"window/logMessage","params":{}})).unwrap());
+        let mut reader = std::io::Cursor::new(bytes);
+        assert!(matches!(
+            read(&mut reader).unwrap(),
+            Some(Incoming::Ignored(_))
+        ));
+        assert!(matches!(
+            read(&mut reader).unwrap(),
+            Some(Incoming::Response(Id::Number(2), Ok(_)))
+        ));
+        assert!(matches!(
+            read(&mut reader).unwrap(),
+            Some(Incoming::Ignored(_))
+        ));
+        assert!(matches!(
+            read(&mut reader).unwrap(),
+            Some(Incoming::Call { id: None, .. })
+        ));
+        assert!(read(&mut reader).unwrap().is_none());
+    }
+
     #[test]
     fn malformed_truncated_duplicate_and_oversized_frames_fail_boundedly() {
         for input in [

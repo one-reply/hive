@@ -15,7 +15,7 @@ pub(crate) mod history;
 mod language;
 mod language_features;
 mod source_preview;
-pub(crate) use document::{Changes, Content, Document, PreviewState, SvgMode};
+pub(crate) use document::{Changes, Content, Document, PreviewState, SaveBlocker, SvgMode};
 pub(crate) use document::{STICKY_BORDER_WIDTH, sticky_row_limit};
 pub(crate) use language::LanguageStatus;
 pub(crate) use source_preview::SourcePreview;
@@ -178,6 +178,23 @@ impl Documents {
         self.attach_language(&document, cx);
         definitions::install(&document, cx.weak_entity(), self.navigator.clone(), cx);
         language_features::install(&document, cx.weak_entity(), cx);
+        self.open.push(document.downgrade());
+        document
+    }
+
+    /// Registers a document read as `base` and edited to `text`, as an open tab holds it.
+    #[cfg(test)]
+    pub(crate) fn open_edited_for_test(
+        &mut self,
+        request: OpenFile,
+        base: hive_core::files::Snapshot,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<Document> {
+        let (store, registry) = (self.store.clone(), cx.weak_entity());
+        let document = cx
+            .new(|cx| Document::edited_for_test(request, base, text, store, registry, window, cx));
         self.open.push(document.downgrade());
         document
     }

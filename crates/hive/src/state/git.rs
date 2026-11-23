@@ -17,6 +17,7 @@ use std::time::Duration;
 mod conflicts;
 mod generation;
 mod mutations;
+mod preparation;
 mod remote;
 mod review;
 mod verification;
@@ -121,10 +122,14 @@ pub(crate) struct Git {
     failures: HashMap<Target, String>,
     operations: HashMap<Target, Task<()>>,
     busy: std::collections::HashSet<Target>,
+    /// Worktrees a confirmation is being prepared for.
+    preparing: std::collections::HashSet<Target>,
     unverified: std::collections::HashSet<Target>,
     inspected: std::collections::HashSet<Target>,
     interrupted_actions: HashMap<Target, Option<Action>>,
     remote_operations: HashMap<Target, RemoteOperation>,
+    /// Who waits to hear whether the mutation running on a worktree succeeded.
+    outcomes: HashMap<Target, async_channel::Sender<bool>>,
     synced: Option<(Target, git::changes::Synced)>,
     generations: HashMap<Target, std::sync::Arc<hive_core::commit_message::cli::Cancellation>>,
     /// Stop switches of the running mutations that can take minutes, one per worktree.
@@ -193,10 +198,12 @@ impl Git {
             failures: HashMap::new(),
             operations: HashMap::new(),
             busy: Default::default(),
+            preparing: Default::default(),
             unverified: Default::default(),
             inspected: Default::default(),
             interrupted_actions: HashMap::new(),
             remote_operations: HashMap::new(),
+            outcomes: HashMap::new(),
             synced: None,
             generations: HashMap::new(),
             stops: HashMap::new(),
@@ -318,11 +325,22 @@ impl Git {
         self.target.as_ref().is_some_and(|t| self.busy.contains(t))
     }
 
-    /// Whether the mutation running on the active worktree is one the user can stop.
+    /// Whether what runs on the active worktree is something the user can stop: a mutation
+    /// that may take minutes, or the generation of a commit message.
     pub(crate) fn can_stop(&self) -> bool {
         self.target
             .as_ref()
-            .is_some_and(|t| self.stops.contains_key(t))
+            .is_some_and(|t| self.stops.contains_key(t) || self.generations.contains_key(t))
+    }
+
+    /// Ends what runs on the active worktree, whichever of the two it is.
+    pub(crate) fn stop(&mut self, cx: &mut Context<Self>) {
+        match self.target.clone() {
+            Some(target) if self.generations.contains_key(&target) => {
+                self.stop_generation(&target, cx)
+            }
+            _ => self.stop_mutation(),
+        }
     }
 
     /// Ends the mutation running on the active worktree. Git is killed mid-command, so it
@@ -338,7 +356,9 @@ impl Git {
         self.target.as_ref().is_some_and(|t| self.is_busy_at(t))
     }
     pub(crate) fn is_busy_at(&self, target: &Target) -> bool {
-        self.busy.contains(target) || self.unverified.contains(target)
+        self.busy.contains(target)
+            || self.unverified.contains(target)
+            || self.preparing.contains(target)
     }
     pub(crate) fn is_generating(&self) -> bool {
         self.target
@@ -464,7 +484,7 @@ impl Git {
                                 status.upstream.clone(),
                             )) {
                         let branches = git::branches::list(&t.host, &t.path)?;
-                        let base = git::branches::default_base(&t.host, &t.path, &branches)?;
+                        let base = git::branches::default_base(&t.host, &t.path)?;
                         let remotes = git::changes::remotes(&t.host, &t.path)?;
                         let upstream = status
                             .branch
@@ -556,7 +576,18 @@ impl Git {
 
     fn report(&mut self, target: &Target, error: git::GitError, cx: &mut Context<Self>) {
         tracing::error!(path = ?target.path, %error, "source control failed");
-        let message = error.to_string();
+        self.report_message(target, error.to_string(), cx);
+    }
+
+    /// Shows `message` as what failed on `target`, for a step that is not a mutation run
+    /// through [`Git::perform`]: a read made for a confirmation, or a request to the hosting
+    /// service.
+    pub(crate) fn report_message(
+        &mut self,
+        target: &Target,
+        message: String,
+        cx: &mut Context<Self>,
+    ) {
         self.failures.insert(target.clone(), message.clone());
         if self.target.as_ref() == Some(target) {
             self.error = Some(message);
@@ -585,8 +616,18 @@ mod tests {
     use gpui_kit::{AppContext, Entity, TestAppContext};
     use hive_core::{git::status::Status, host::Host, projects::Target, state::StateError};
 
+    /// An empty repository in its own temporary directory, ready for commits.
+    pub(super) fn repository(name: &str) -> std::path::PathBuf {
+        let repo = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.canonicalize().unwrap();
+        hive_core::git::testing::init(&repo);
+        repo
+    }
+
     /// `Git` over a project list whose store never touches the disk.
-    fn source_control(cx: &mut TestAppContext) -> (Entity<Projects>, Entity<Git>) {
+    pub(super) fn source_control(cx: &mut TestAppContext) -> (Entity<Projects>, Entity<Git>) {
         let store = cx.new(|cx| {
             Store::new(
                 Err(StateError::Io {
@@ -594,6 +635,7 @@ mod tests {
                     path: "/unused".into(),
                     source: std::io::Error::other("persistence disabled for test"),
                 }),
+                hive_core::state::Access::Held,
                 cx,
             )
         });
@@ -786,26 +828,12 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn a_stopped_commit_frees_the_worktree_and_asks_to_verify(cx: &mut TestAppContext) {
+    /// A repository with `a.txt` staged, selected in a fresh `Git`.
+    fn staged(name: &str, cx: &mut TestAppContext) -> (std::path::PathBuf, Target, Entity<Git>) {
         use hive_core::git::changes::Action;
 
-        let repo = std::env::temp_dir().join(format!("hive-git-stop-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&repo);
-        std::fs::create_dir_all(&repo).unwrap();
-        let repo = repo.canonicalize().unwrap();
-        let run = |args: &[&str]| hive_core::git::run(&Host::Local, &repo, args);
-        for args in [
-            &["init", "-b", "main"][..],
-            &["config", "user.name", "Hive Test"],
-            &["config", "user.email", "hive@example.invalid"],
-            &["config", "commit.gpgsign", "false"],
-            &["config", "core.hooksPath", "/dev/null"],
-        ] {
-            run(args).unwrap();
-        }
+        let repo = repository(name);
         std::fs::write(repo.join("a.txt"), "one\n").unwrap();
-
         let (_, git) = source_control(cx);
         let target = Target {
             host: Host::Local,
@@ -820,10 +848,20 @@ mod tests {
             assert!(!git.can_stop());
         });
         cx.run_until_parked();
-        git.update(cx, |git, cx| {
+        // The rescan after a successful mutation follows the (empty) project selection.
+        git.update(cx, |git, _| {
             assert!(!git.is_running());
-            // The rescan after a successful mutation follows the (empty) project selection.
             git.target = Some(target.clone());
+        });
+        (repo, target, git)
+    }
+
+    #[gpui::test]
+    fn a_commit_stopped_before_git_started_leaves_nothing_to_verify(cx: &mut TestAppContext) {
+        use hive_core::git::changes::Action;
+
+        let (repo, _, git) = staged("hive-git-stop-early", cx);
+        git.update(cx, |git, cx| {
             git.perform(Action::Commit("add a".into()), cx);
             assert!(git.can_stop());
             git.stop_mutation();
@@ -832,9 +870,100 @@ mod tests {
         git.read_with(cx, |git, _| {
             assert!(!git.is_running());
             assert!(!git.can_stop());
+            // Git never ran: the worktree is not held back for an inspection of nothing.
+            assert!(!git.needs_verification());
+            let error = git.error.as_deref().unwrap_or_default();
+            assert!(error.contains("changed nothing"), "{error}");
+        });
+        let head = hive_core::git::run(&Host::Local, &repo, &["rev-parse", "--verify", "HEAD"]);
+        assert!(head.is_err(), "no commit was made");
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[gpui::test]
+    fn a_commit_stopped_while_its_hook_runs_frees_the_worktree_and_asks_to_verify(
+        cx: &mut TestAppContext,
+    ) {
+        use hive_core::git::changes::Action;
+
+        let (repo, target, git) = staged("hive-git-stop-midway", cx);
+        let started = hive_core::git::testing::stalling_hook(&repo, "pre-commit");
+        let stop = git.update(cx, |git, cx| {
+            git.perform(Action::Commit("add a".into()), cx);
+            assert!(git.can_stop());
+            git.stops.get(&target).cloned().expect("a commit can stop")
+        });
+        // The mutation runs on this thread once the executor is driven, so the stop the user
+        // would press comes from another one, as soon as the hook says it is running.
+        let presses_stop = std::thread::spawn(move || {
+            started
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the hook runs");
+            stop.cancel();
+        });
+        cx.run_until_parked();
+        presses_stop.join().unwrap();
+        git.read_with(cx, |git, _| {
+            assert!(!git.is_running());
+            assert!(!git.can_stop());
             assert!(git.needs_verification());
         });
-        assert!(run(&["rev-parse", "--verify", "--quiet", "HEAD"]).is_err());
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[gpui::test]
+    fn an_interrupted_sync_can_be_verified_and_acknowledged_mid_rebase(cx: &mut TestAppContext) {
+        use hive_core::git::changes::Action;
+
+        let repo = repository("hive-git-verify-rebase");
+        let run = |args: &[&str]| hive_core::git::run(&Host::Local, &repo, args);
+        let commit = |content: &str| {
+            std::fs::write(repo.join("a.txt"), content).unwrap();
+            run(&["commit", "-am", "change"]).unwrap();
+        };
+        std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+        run(&["add", "a.txt"]).unwrap();
+        run(&["commit", "-m", "base"]).unwrap();
+        run(&["switch", "-c", "other"]).unwrap();
+        commit("theirs\n");
+        run(&["switch", "main"]).unwrap();
+        commit("ours\n");
+        // What a sync stopped during its replay leaves: a paused rebase and a detached HEAD.
+        assert!(run(&["rebase", "other"]).is_err());
+
+        let (_, git) = source_control(cx);
+        let target = Target {
+            host: Host::Local,
+            project: repo.clone(),
+            path: repo.clone(),
+        };
+        let sync = Action::Sync {
+            remote: "origin".into(),
+        };
+        // The empty project list settles first; its notification would clear the target.
+        cx.run_until_parked();
+        git.update(cx, |git, cx| {
+            git.target = Some(target.clone());
+            git.unverified.insert(target.clone());
+            git.interrupted_actions.insert(target.clone(), Some(sync));
+            // Quarantined: not even Abort may run before the result is inspected.
+            git.perform(Action::AbortOperation, cx);
+            assert!(!git.is_running());
+            git.verify_result(cx);
+        });
+        cx.run_until_parked();
+        git.update(cx, |git, cx| {
+            let report = git.error.clone().unwrap_or_default();
+            assert!(git.result_inspected(), "{report}");
+            assert!(report.contains("A rebase is unfinished"), "{report}");
+            git.acknowledge_outcome(cx);
+            assert!(!git.needs_verification());
+            git.perform(Action::AbortOperation, cx);
+            assert!(git.is_running());
+        });
+        cx.run_until_parked();
+        assert_eq!(run(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap(), "main");
+        assert!(run(&["rev-parse", "--verify", "--quiet", "REBASE_HEAD"]).is_err());
         let _ = std::fs::remove_dir_all(&repo);
     }
 }

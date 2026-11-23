@@ -8,6 +8,17 @@ use std::os::unix::fs::OpenOptionsExt;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const REPORT_LIMIT: usize = 4 * 1024 * 1024;
+/// Variables that point Cargo's build output at one directory whatever the checkout. Cargo
+/// judges a local package fresh by modification times, not content, so a base and a candidate
+/// sharing such a directory each take the other's newer build as their own.
+const SHARED_BUILD_DIRECTORIES: [&str; 3] = [
+    "CARGO_TARGET_DIR",
+    "CARGO_BUILD_TARGET_DIR",
+    "CARGO_BUILD_BUILD_DIR",
+];
+/// Lines of a test log quoted when the test did not end as expected.
+const LOG_LINES: usize = 5;
+const LOG_CHARACTERS: usize = 1400;
 /// Extensions of the script configuration files Jest, Vitest and Vite accept.
 const SCRIPT_EXTENSIONS: [&str; 6] = ["js", "mjs", "cjs", "ts", "mts", "cts"];
 
@@ -176,7 +187,7 @@ pub fn run_regression(run: &Run, stop: &Cancellation) -> Result<RegressionResult
     } else {
         &lane.worktree
     };
-    let outcome = execute(test, cwd, &scratch.0, baseline, stop);
+    let outcome = execute(test, cwd, &scratch.0, baseline, stop, TEST_TIMEOUT);
     let detail = match outcome {
         Ok(detail) => detail,
         Err(e) => return Ok(issue(e)),
@@ -193,41 +204,43 @@ pub fn run_regression(run: &Run, stop: &Cancellation) -> Result<RegressionResult
     })
 }
 
-fn execute(
+pub(super) fn execute(
     test: &RegressionTest,
     cwd: &Path,
     scratch: &Path,
     baseline: bool,
     stop: &Cancellation,
+    timeout: Duration,
 ) -> Result<String, String> {
     let path = Path::new(&test.path);
     let report = scratch.join("result.json");
     let mut cmd = match test.runner {
         TestRunner::Cargo => {
-            let package = path
-                .parent()
-                .and_then(Path::parent)
-                .ok_or("Invalid Cargo test path")?;
-            let target = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .ok_or("Invalid Cargo test target")?;
-            let mut cmd = Host::Local.command(
-                "cargo",
-                &["test", "--color", "never", "--manifest-path"],
-                Some(cwd),
-            );
-            cmd.arg(package.join("Cargo.toml")).args([
-                "--test", target, "--", &test.name, "--exact", "--format", "pretty", "--color",
-                "never",
-            ]);
-            cmd
+            let base_target = baseline.then(|| scratch.join("target"));
+            cargo_command(test, cwd, base_target.as_deref())?
         }
         _ => js_command(test, cwd, &report)?,
     };
     cmd.env("CI", "1").env("NO_COLOR", "1");
-    let out = command::run_with_log_tail(cmd, stop, TEST_TIMEOUT, CHECK_OUTPUT)
-        .map_err(|e| e.to_string())?;
+    let out =
+        command::run_with_log_tail(cmd, stop, timeout, CHECK_OUTPUT).map_err(|e| e.to_string())?;
+    let code = match out.end {
+        End::Exited(code) => code,
+        // Libtest and the JS runners name the test that hangs on stdout; Cargo and Node
+        // report on stderr. Either may hold the clue.
+        End::TimedOut => {
+            let tails: Vec<_> = [&out.stdout, &out.stderr]
+                .into_iter()
+                .map(|stream| last_lines(stream))
+                .filter(|tail| !tail.is_empty())
+                .collect();
+            return Err(format!(
+                "{} timed out before finishing. Last output:\n{}",
+                test.name,
+                tails.join("\n")
+            ));
+        }
+    };
     let stdout = String::from_utf8_lossy(&out.stdout);
     let observed = match test.runner {
         TestRunner::Cargo => cargo_outcome(&stdout, &test.name, &test.expected, baseline),
@@ -249,36 +262,25 @@ fn execute(
         ),
     };
     let code_ok = if baseline {
-        out.code.is_some_and(|code| code != 0)
+        code.is_some_and(|code| code != 0)
     } else {
-        out.code == Some(0)
+        code == Some(0)
     };
     if !code_ok || !observed {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let tail = if stderr.trim().is_empty() {
-            stdout.as_ref()
+        let quoted = if out.stderr.trim_ascii().is_empty() {
+            &out.stdout
         } else {
-            stderr.as_ref()
+            &out.stderr
         };
-        let tail = tail
-            .lines()
-            .rev()
-            .take(5)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
         return Err(format!(
-            "{} did not produce the expected {} (exit {:?}).\n{}",
+            "{} did not produce the expected {} (exit {code:?}).\n{}",
             test.name,
             if baseline {
                 "named assertion failure"
             } else {
                 "passing result"
             },
-            out.code,
-            tail.chars().take(1400).collect::<String>()
+            last_lines(quoted)
         ));
     }
     Ok(format!(
@@ -291,6 +293,53 @@ fn execute(
             "passed".into()
         }
     ))
+}
+
+/// The last lines of one output stream, bounded for the run's history.
+fn last_lines(stream: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stream);
+    let lines: Vec<_> = text.lines().collect();
+    lines[lines.len().saturating_sub(LOG_LINES)..]
+        .join("\n")
+        .chars()
+        .take(LOG_CHARACTERS)
+        .collect()
+}
+
+/// `cargo test` for one exact integration test. The base always builds into `base_target`,
+/// an empty directory of its own, whatever the environment or a Cargo configuration says. The
+/// candidate builds where Cargo puts this checkout's output, still warm from development, and
+/// not into a directory the user's environment shares between checkouts.
+pub(super) fn cargo_command(
+    test: &RegressionTest,
+    cwd: &Path,
+    base_target: Option<&Path>,
+) -> Result<std::process::Command, String> {
+    let path = Path::new(&test.path);
+    let package = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Invalid Cargo test path")?;
+    let target = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or("Invalid Cargo test target")?;
+    let mut cmd = Host::Local.command(
+        "cargo",
+        &["test", "--color", "never", "--manifest-path"],
+        Some(cwd),
+    );
+    cmd.arg(package.join("Cargo.toml"));
+    if let Some(directory) = base_target {
+        cmd.arg("--target-dir").arg(directory);
+    }
+    cmd.args([
+        "--test", target, "--", &test.name, "--exact", "--format", "pretty", "--color", "never",
+    ]);
+    for name in SHARED_BUILD_DIRECTORIES {
+        cmd.env_remove(name);
+    }
+    Ok(cmd)
 }
 
 /// The runner installed nearest to the test, started where it finds its configuration.

@@ -302,5 +302,7 @@ fn the_login_shell_argument_reads_the_same_in_fish() {
         words[..3],
         [b"exec".to_vec(), b"sh".to_vec(), b"-c".to_vec()]
     );
-    assert_eq!(words[3], b"printf '%s' 'it'\\''s \\ !'");
+    let mut script = INTERACTIVE_PATH.as_bytes().to_vec();
+    script.extend_from_slice(b"printf '%s' 'it'\\''s \\ !'");
+    assert_eq!(words[3], script);
 }

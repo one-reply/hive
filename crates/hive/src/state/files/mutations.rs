@@ -1,11 +1,20 @@
 use super::*;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FileOperation {
     CreateFile(PathBuf),
     CreateDirectory(PathBuf),
-    Move { from: PathBuf, to: PathBuf },
+    Move {
+        from: PathBuf,
+        to: PathBuf,
+    },
     Delete(PathBuf),
+    /// Copy `sources`, absolute paths on this Mac, into the worktree folder `directory`.
+    Paste {
+        directory: PathBuf,
+        sources: Arc<[PathBuf]>,
+    },
 }
 
 impl FileOperation {
@@ -13,6 +22,16 @@ impl FileOperation {
         match self {
             Self::CreateFile(path) | Self::CreateDirectory(path) | Self::Delete(path) => path,
             Self::Move { from, .. } => from,
+            Self::Paste { directory, .. } => directory,
+        }
+    }
+
+    /// The entry whose open documents must hold still while this runs. A paste only adds
+    /// entries under names nothing uses yet, so the files of its folder stay editable.
+    fn changed_path(&self) -> Option<&Path> {
+        match self {
+            Self::Paste { .. } => None,
+            _ => Some(self.path()),
         }
     }
 
@@ -22,27 +41,28 @@ impl FileOperation {
             Self::Move { to, .. } => Some(to.as_path()),
             _ => None,
         };
-        std::iter::once(self.path()).chain(destination)
+        self.changed_path().into_iter().chain(destination)
     }
 
+    /// Runs the operation and returns the entries it created.
     fn run(
         &self,
         target: &Target,
         cancellation: &hive_core::command::Cancellation,
-    ) -> Result<(), files::FileError> {
+    ) -> Result<Vec<PathBuf>, files::FileError> {
+        let access = files::Access::new(&target.host, cancellation);
         match self {
-            Self::CreateFile(path) => {
-                files::Access::new(&target.host, cancellation).create_file(&target.path, path)
-            }
-            Self::CreateDirectory(path) => {
-                files::Access::new(&target.host, cancellation).create_directory(&target.path, path)
-            }
-            Self::Move { from, to } => {
-                files::Access::new(&target.host, cancellation).move_entry(&target.path, from, to)
-            }
-            Self::Delete(path) => {
-                files::Access::new(&target.host, cancellation).delete_entry(&target.path, path)
-            }
+            Self::CreateFile(path) => access
+                .create_file(&target.path, path)
+                .map(|()| vec![path.clone()]),
+            Self::CreateDirectory(path) => access
+                .create_directory(&target.path, path)
+                .map(|()| vec![path.clone()]),
+            Self::Move { from, to } => access
+                .move_entry(&target.path, from, to)
+                .map(|()| vec![to.clone()]),
+            Self::Delete(path) => access.delete_entry(&target.path, path).map(|()| Vec::new()),
+            Self::Paste { directory, sources } => access.paste(&target.path, directory, sources),
         }
     }
 }
@@ -61,7 +81,10 @@ impl Files {
             return;
         }
         let registry = AppState::get(cx).documents.clone();
-        let documents = registry.read(cx).in_path(&target, operation.path(), cx);
+        let documents = operation
+            .changed_path()
+            .map(|path| registry.read(cx).in_path(&target, path, cx))
+            .unwrap_or_default();
         let conflict = documents
             .iter()
             .any(|d| d.read(cx).saving || d.read(cx).path_busy);
@@ -152,6 +175,14 @@ impl Files {
                             this.reveal(to.clone(), cx);
                         }
                         FileOperation::Delete(path) => this.expanded.retain(|p| !p.starts_with(path)),
+                        FileOperation::Paste { directory, .. } => {
+                            if !directory.as_os_str().is_empty() {
+                                this.expand(directory.clone(), cx);
+                            }
+                            if let Some(first) = result.as_ref().ok().and_then(|created| created.first()) {
+                                this.reveal(first.clone(), cx);
+                            }
+                        }
                     }
                 } else if let Err(error) = &result {
                     tracing::warn!(%error, path = ?target.path, "file operation failed");
@@ -160,6 +191,7 @@ impl Files {
                 this.refresh_all(cx);
                 // A query typed during the mutation has been waiting for it.
                 this.search(cx);
+                let result = result.map(|_| ());
                 cx.emit(FilesEvent { target, operation, result, warning });
                 cx.notify();
             });
@@ -230,8 +262,54 @@ fn update_saved_paths(target: &Target, operation: &FileOperation, cx: &mut App) 
 #[cfg(test)]
 mod tests {
     use super::{FileOperation, lock_paths, unlock_paths};
-    use hive_core::{host::Host, projects::Target};
-    use std::path::PathBuf;
+    use hive_core::{command::Cancellation, host::Host, projects::Target};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
+
+    struct TemporaryDirectory(PathBuf);
+    impl Drop for TemporaryDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_paste_locks_no_open_documents_and_reports_the_entries_it_created() {
+        let temporary = TemporaryDirectory(
+            std::env::temp_dir().join(format!("hive-state-paste-{}", std::process::id())),
+        );
+        let worktree = temporary.0.join("worktree");
+        fs::create_dir_all(worktree.join("src")).unwrap();
+        fs::write(worktree.join("src/notes.md"), "mine").unwrap();
+        fs::write(temporary.0.join("notes.md"), "copied in Finder").unwrap();
+        let target = Target {
+            project: worktree.clone(),
+            path: worktree.clone(),
+            host: Host::Local,
+        };
+        let paste = FileOperation::Paste {
+            directory: "src".into(),
+            sources: Arc::from([temporary.0.join("notes.md")]),
+        };
+
+        assert_eq!(paste.path(), Path::new("src"));
+        assert_eq!(paste.changed_path(), None);
+        let mut locked = Vec::new();
+        lock_paths(&mut locked, &target, &paste);
+        assert!(locked.is_empty(), "files of the folder stay open to edits");
+        let created = paste.run(&target, &Cancellation::default()).unwrap();
+
+        assert_eq!(created, [PathBuf::from("src/notes copy.md")]);
+        assert_eq!(
+            fs::read_to_string(worktree.join("src/notes.md")).unwrap(),
+            "mine"
+        );
+        let delete = FileOperation::Delete("src".into());
+        assert_eq!(delete.changed_path(), Some(Path::new("src")));
+    }
 
     fn worktree(path: &str) -> Target {
         Target {

@@ -4,9 +4,14 @@ mod create;
 mod published;
 pub use published::{read_link, read_published};
 mod gitlab;
+mod source;
 use crate::{command, host::Host};
 pub use create::{Draft, create};
 use serde::Deserialize;
+// Pipelines delivery, the only user outside this module, exists only in the desktop build.
+#[cfg(feature = "desktop")]
+pub(crate) use source::is_published;
+pub use source::{PublishedBranch, hosted_repository, published_branch, suggested_title};
 use std::{path::Path, time::Duration};
 
 pub use super::hosting::Provider;
@@ -58,6 +63,12 @@ impl PullRequest {
     /// Whether the request was closed without merging, under either service's spelling.
     pub fn is_abandoned(&self) -> bool {
         self.state.eq_ignore_ascii_case("closed")
+    }
+    /// Whether the request still awaits its merge: GitHub's `OPEN` or GitLab's `opened`.
+    pub fn is_open(&self) -> bool {
+        ["open", "opened"]
+            .iter()
+            .any(|open| self.state.eq_ignore_ascii_case(open))
     }
     /// Current check summary, deliberately conservative for future status values.
     pub fn checks(&self) -> &'static str {
@@ -275,6 +286,22 @@ fn parse_github(bytes: &[u8]) -> Result<PullRequest, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_open_request_is_told_from_finished_ones_in_both_services_spellings() {
+        let request = |state: &str| PullRequest {
+            state: state.into(),
+            ..PullRequest::default()
+        };
+        for open in ["OPEN", "open", "opened"] {
+            assert!(request(open).is_open(), "{open}");
+            assert!(!request(open).is_abandoned(), "{open}");
+        }
+        // An unknown state is not assumed open: a new request may then be offered.
+        for finished in ["MERGED", "merged", "CLOSED", "closed", "locked", ""] {
+            assert!(!request(finished).is_open(), "{finished}");
+        }
+    }
 
     #[test]
     fn authentication_failures_keep_provider_and_do_not_match_dns_errors() {

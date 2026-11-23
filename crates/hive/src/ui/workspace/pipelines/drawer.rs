@@ -111,9 +111,12 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Shows run `id` in its project's panel, on the live session of `attempt` when one is
+    /// named.
     pub(in crate::ui::workspace) fn show_pipeline_run(
         &mut self,
         id: u64,
+        attempt: Option<hive_core::pipeline::Ticket>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -154,7 +157,7 @@ impl Workspace {
         let slot = self.pipeline_slot(owner, cx);
         slot.show(&cwd, window, cx);
         slot.view
-            .update(cx, |view, cx| view.show_run(id, window, cx));
+            .update(cx, |view, cx| view.show_run(id, attempt, window, cx));
         cx.notify();
     }
 
@@ -194,7 +197,9 @@ impl Workspace {
             .occlude()
             .bg(cx.theme().background)
             .pt(header_inset)
-            .child(slot.view.clone());
+            // Cached like the side panels: a frame another view asks for (a terminal, the
+            // spinner of a working agent) reuses the panel instead of rebuilding it.
+            .child(cached(&slot.view));
         Some((
             open && t >= 1.,
             self.window_drag_band(

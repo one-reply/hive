@@ -3,7 +3,7 @@
 use hive_core::agent::AgentKind;
 use hive_core::agent::api::{self, Address, ApiError, Call, ErrorCode, Outcome, Request, Response};
 use hive_core::agent::launch::AGENTS;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
@@ -16,6 +16,18 @@ const QUICK_TIMEOUT: Duration = Duration::from_secs(10);
 
 const USAGE: &str = "\
 Usage:
+  hive                  Start the Hive app
+  hive --help           Show this help
+  hive --version        Print the version
+  hive --skill          Explain how agents use `hive agent`
+  hive agent <command>  Reach the agents in Hive's terminals; `hive agent --help` lists the commands
+  hive mcp --socket <absolute-path> --terminal <id>";
+
+/// What a bare `hive` says instead of opening a second window on the same data folder.
+const RUNNING: &str = "Hive is already running, and this terminal is one of its panes.";
+
+const AGENT_USAGE: &str = "\
+Usage:
   hive agent list
   hive agent report <ticket-json> <result-json>
   hive agent start <name> --kind <claude|codex|opencode|agy> [--prompt <task>] [--tab]
@@ -25,15 +37,91 @@ Usage:
   hive agent interrupt <target>
 Every command accepts --timeout <seconds>. `hive --skill` explains how agents use them.";
 
-/// Runs a window-less mode named by `args`, or returns `None` to start the app.
-pub(crate) fn run(args: &[OsString]) -> Option<ExitCode> {
-    match args.get(1)?.to_str()? {
-        "--agent-hook" => Some(forward_hook(&args[2..])),
-        "--skill" => Some(print(api::SKILL.trim_end())),
-        "mcp" => Some(crate::mcp::run(&args[2..])),
-        "agent" => Some(agent(&args[2..])),
-        _ => None,
+/// How the process was started, where that changes what its arguments mean.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Origin {
+    /// launchd is the parent: Finder, the Dock, `open` or a relaunch started the app.
+    launch_services: bool,
+    /// A Hive pane started it, and a running Hive holds the data folder it would use.
+    pane_of_running_hive: bool,
+}
+
+impl Origin {
+    /// Blocking only for a bare `hive` typed in a Hive pane, which asks for the data folder's
+    /// lock and gives it back at once.
+    pub(crate) fn detect(args: &[OsString]) -> Self {
+        let in_pane = || std::env::var_os("HIVE_SOCKET").is_some_and(|socket| !socket.is_empty());
+        Self {
+            launch_services: std::os::unix::process::parent_id() == 1,
+            pane_of_running_hive: args.len() < 2
+                && in_pane()
+                && !hive_core::state::Access::acquire().can_write(),
+        }
     }
+}
+
+/// What the arguments after the program name ask the binary to do.
+#[derive(Debug, PartialEq)]
+enum Mode<'a> {
+    /// Open the window.
+    App,
+    /// A bare `hive` in a pane of the Hive that is already open.
+    Running,
+    Help,
+    Version,
+    Skill,
+    Hook(&'a [OsString]),
+    Mcp(&'a [OsString]),
+    Agent(&'a [OsString]),
+    /// A word no mode answers to.
+    Unknown(&'a OsStr),
+}
+
+/// The app starts only when nothing asks for anything else. The `hive` launcher is first on
+/// every pane's `PATH`, so a guess such as `hive --help` or `hive status` must never open a
+/// second Hive on the same data folder and hold the caller's shell until that window closes.
+/// A bare `hive` in a pane of the Hive that is already open gets the usage for the same reason.
+///
+/// A launch through LaunchServices is the opposite case: `open -a Hive --args …` is deliberate
+/// and its stderr leads nowhere, so a word no mode answers to still opens the window. macOS
+/// itself adds no arguments; `-psn_…` is the process serial number older versions appended.
+fn mode(args: &[OsString], origin: Origin) -> Mode<'_> {
+    let Some((first, rest)) = args.get(1..).and_then(<[OsString]>::split_first) else {
+        return if origin.pane_of_running_hive && !origin.launch_services {
+            Mode::Running
+        } else {
+            Mode::App
+        };
+    };
+    match first.to_str() {
+        Some(serial) if serial.starts_with("-psn_") => Mode::App,
+        Some("--help" | "-h" | "help") => Mode::Help,
+        Some("--version" | "-V") => Mode::Version,
+        Some("--skill") => Mode::Skill,
+        Some("--agent-hook") => Mode::Hook(rest),
+        Some("mcp") => Mode::Mcp(rest),
+        Some("agent") => Mode::Agent(rest),
+        _ if origin.launch_services => Mode::App,
+        _ => Mode::Unknown(first),
+    }
+}
+
+/// Runs a window-less mode named by `args`, or returns `None` to start the app.
+pub(crate) fn run(args: &[OsString], origin: Origin) -> Option<ExitCode> {
+    Some(match mode(args, origin) {
+        Mode::App => return None,
+        Mode::Running => print(&format!("{RUNNING}\n\n{USAGE}")),
+        Mode::Help => print(USAGE),
+        Mode::Version => print(concat!("hive ", env!("CARGO_PKG_VERSION"))),
+        Mode::Skill => print(api::SKILL.trim_end()),
+        Mode::Hook(args) => forward_hook(args),
+        Mode::Mcp(args) => crate::mcp::run(args),
+        Mode::Agent(args) => agent(args),
+        Mode::Unknown(word) => {
+            eprintln!("hive: unknown argument {word:?}\n\n{USAGE}");
+            ExitCode::from(2)
+        }
+    })
 }
 
 fn forward_hook(args: &[OsString]) -> ExitCode {
@@ -57,7 +145,7 @@ fn agent(args: &[OsString]) -> ExitCode {
         .map(|arg| arg.to_str().map(str::to_owned))
         .collect();
     let invocation = match args.as_deref().map(parse) {
-        Some(Ok(Parsed::Help)) => return print(USAGE),
+        Some(Ok(Parsed::Help)) => return print(AGENT_USAGE),
         Some(Ok(Parsed::Call(invocation))) => invocation,
         Some(Err(problem)) => return usage_error(&problem),
         None => return usage_error("arguments must be UTF-8"),
@@ -132,7 +220,7 @@ fn failure(error: &ApiError) -> ExitCode {
 }
 
 fn usage_error(problem: &str) -> ExitCode {
-    eprintln!("hive agent: {problem}\n\n{USAGE}");
+    eprintln!("hive agent: {problem}\n\n{AGENT_USAGE}");
     ExitCode::from(2)
 }
 
@@ -480,10 +568,124 @@ mod tests {
         assert!(parse(&["interrupt".into(), "reviewer".into(), "--wait".into()]).is_err());
     }
 
+    fn line(words: &[&str]) -> Vec<OsString> {
+        words.iter().map(OsString::from).collect()
+    }
+
+    /// A command typed in a terminal that is not a pane of a running Hive.
+    const SHELL: Origin = Origin {
+        launch_services: false,
+        pane_of_running_hive: false,
+    };
+    /// Finder, the Dock or `open`.
+    const LAUNCH_SERVICES: Origin = Origin {
+        launch_services: true,
+        pane_of_running_hive: false,
+    };
+    /// The `hive` launcher in a pane of the Hive that holds the data folder.
+    const PANE: Origin = Origin {
+        launch_services: false,
+        pane_of_running_hive: true,
+    };
+
+    fn from_shell(args: &[OsString]) -> Mode<'_> {
+        mode(args, SHELL)
+    }
+
     #[test]
-    fn only_window_less_modes_are_claimed() {
-        let args = |words: &[&str]| words.iter().map(OsString::from).collect::<Vec<_>>();
-        assert!(run(&args(&["hive"])).is_none());
-        assert!(run(&args(&["hive", "-psn_0_123"])).is_none());
+    fn a_launch_through_launch_services_opens_the_app_whatever_follows_args() {
+        // `open -a Hive --args …`: deliberate, and its stderr leads nowhere.
+        for words in [
+            &["hive", "-AppleLanguages", "(en)"][..],
+            &["hive", "-NSDocumentRevisionsDebugMode", "YES"],
+            &["hive", "status"],
+        ] {
+            assert_eq!(mode(&line(words), LAUNCH_SERVICES), Mode::App, "{words:?}");
+        }
+        assert_eq!(mode(&line(&["hive"]), LAUNCH_SERVICES), Mode::App);
+        // What Hive itself answers to stays a mode: an orphaned `hive mcp` is not a launch.
+        let mcp = line(&["hive", "mcp", "--socket", "/tmp/hh/a", "--terminal", "7"]);
+        assert_eq!(mode(&mcp, LAUNCH_SERVICES), Mode::Mcp(&mcp[2..]));
+        assert_eq!(
+            mode(&line(&["hive", "--version"]), LAUNCH_SERVICES),
+            Mode::Version
+        );
+    }
+
+    #[test]
+    fn a_bare_hive_in_a_pane_of_the_running_app_never_opens_a_second_window() {
+        assert_eq!(mode(&line(&["hive"]), PANE), Mode::Running);
+        assert_eq!(run(&line(&["hive"]), SHELL), None);
+        // `open -n -a Hive` from a pane passes the pane's environment on, and asks for a window.
+        let opened_from_pane = Origin {
+            launch_services: true,
+            pane_of_running_hive: true,
+        };
+        assert_eq!(mode(&line(&["hive"]), opened_from_pane), Mode::App);
+        // In a pane everything else means what it means anywhere.
+        assert_eq!(mode(&line(&["hive", "--help"]), PANE), Mode::Help);
+        let unknown = line(&["hive", "status"]);
+        assert_eq!(mode(&unknown, PANE), Mode::Unknown(&unknown[1]));
+    }
+
+    #[test]
+    fn the_app_starts_only_without_arguments_or_with_a_process_serial_number() {
+        assert_eq!(from_shell(&line(&["hive"])), Mode::App);
+        assert_eq!(from_shell(&line(&["hive", "-psn_0_123"])), Mode::App);
+        // A caller may exec the binary without even a program name.
+        assert_eq!(from_shell(&[]), Mode::App);
+        assert!(run(&line(&["hive"]), SHELL).is_none());
+        assert!(run(&line(&["hive", "-psn_0_123"]), SHELL).is_none());
+    }
+
+    #[test]
+    fn help_and_version_are_answered_without_a_window() {
+        for flag in ["--help", "-h", "help"] {
+            assert_eq!(from_shell(&line(&["hive", flag])), Mode::Help, "{flag}");
+        }
+        for flag in ["--version", "-V"] {
+            assert_eq!(from_shell(&line(&["hive", flag])), Mode::Version, "{flag}");
+        }
+        assert_eq!(from_shell(&line(&["hive", "--help", "agent"])), Mode::Help);
+    }
+
+    #[test]
+    fn a_window_less_mode_gets_the_words_after_its_name() {
+        let agent = line(&["hive", "agent", "send", "lead", "hi"]);
+        assert_eq!(from_shell(&agent), Mode::Agent(&agent[2..]));
+        assert_eq!(from_shell(&line(&["hive", "agent"])), Mode::Agent(&[]));
+        let mcp = line(&["hive", "mcp", "--socket", "/tmp/hh/a", "--terminal", "7"]);
+        assert_eq!(from_shell(&mcp), Mode::Mcp(&mcp[2..]));
+        let hook = line(&["hive", "--agent-hook", "/tmp/hh/e", "7"]);
+        assert_eq!(from_shell(&hook), Mode::Hook(&hook[2..]));
+        assert_eq!(from_shell(&line(&["hive", "--skill"])), Mode::Skill);
+    }
+
+    #[test]
+    fn an_unknown_argument_is_a_usage_error_and_never_starts_the_app() {
+        for word in [
+            "status",
+            "--verbose",
+            "--helpful",
+            "Agent",
+            "-psn",
+            "",
+            "-NSDocumentRevisionsDebugMode",
+        ] {
+            let args = line(&["hive", word]);
+            assert_eq!(
+                from_shell(&args),
+                Mode::Unknown(OsStr::new(word)),
+                "{word:?}"
+            );
+        }
+        use std::os::unix::ffi::OsStringExt as _;
+        let not_utf8 = [OsString::from("hive"), OsString::from_vec(vec![0xff, 0xfe])];
+        assert_eq!(from_shell(&not_utf8), Mode::Unknown(&not_utf8[1]));
+        assert_eq!(
+            run(&line(&["hive", "status"]), SHELL),
+            Some(ExitCode::from(2)),
+            "a usage error, as for `hive agent`"
+        );
     }
 }

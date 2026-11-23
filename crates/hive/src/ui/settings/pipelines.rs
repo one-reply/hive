@@ -5,7 +5,7 @@ use crate::{
     app::AppState,
     ui::hover::{ButtonLook, Hover, SmoothButton as _},
 };
-use gpui_kit::component::button::{ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::{
     assets::IconName as Lucide,
     component::{
@@ -102,16 +102,17 @@ impl PipelinesPage {
         let page = cx.entity();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let page = page.clone();
-            alert
-                .confirm()
-                .title("Discard changes?")
-                .description("The changes to this prompt have not been saved.")
-                .ok_text("Discard")
-                .ok_variant(ButtonVariant::Danger)
-                .on_ok(move |_, _, cx| {
+            crate::ui::destructive::confirmation(
+                alert
+                    .confirm()
+                    .title("Discard changes?")
+                    .description("The changes to this prompt have not been saved."),
+                "Discard",
+                move |_, cx| {
                     page.update(cx, |page, cx| page.show_list(cx));
                     true
-                })
+                },
+            )
         });
     }
 
@@ -176,19 +177,20 @@ impl PipelinesPage {
 fn confirm_delete(prompt: &Prompt, uses: usize, window: &mut Window, cx: &mut App) {
     let (id, name) = (prompt.id, prompt.name.clone());
     window.open_alert_dialog(cx, move |alert, _, _| {
-        alert
-            .confirm()
-            .title(format!("Delete “{name}”?"))
-            .description(delete_consequence(uses))
-            .ok_text("Delete")
-            .ok_variant(ButtonVariant::Danger)
-            .on_ok(move |_, _, cx| {
+        crate::ui::destructive::confirmation(
+            alert
+                .confirm()
+                .title(format!("Delete “{name}”?"))
+                .description(delete_consequence(uses)),
+            "Delete",
+            move |_, cx| {
                 let pipelines = AppState::get(cx).pipelines.clone();
                 if let Err(error) = pipelines.update(cx, |p, cx| p.delete_prompt(id, cx)) {
                     tracing::warn!(%error, id, "prompt was already deleted");
                 }
                 true
-            })
+            },
+        )
     });
 }
 

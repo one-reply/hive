@@ -19,6 +19,8 @@ mod run;
 
 mod drawer;
 pub(super) use drawer::PanelSlot;
+mod navigation;
+use navigation::{Destination, Unsaved};
 
 enum Screen {
     Library,
@@ -33,6 +35,12 @@ pub(super) struct PipelinePanel {
     screen: Screen,
     draft: Option<Entity<launch::LaunchForm>>,
     selected_template: Option<String>,
+    /// Scroll position and measured rows of the library page.
+    history: ListState,
+    /// What `history` lists, to tell rows that moved from rows that were replaced.
+    entries: Rc<[library::Entry]>,
+    /// The pending repaint that words the ages of the listed runs anew.
+    age_tick: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -41,9 +49,15 @@ impl PipelinePanel {
         let app = AppState::get(cx);
         let store = app.store.clone();
         let pipelines = app.pipelines.clone();
+        let agents = app.agents.clone();
+        // The panel is drawn from a cache, so it repaints only when it is told to. It and
+        // the screens inside it show nothing from another entity that is not observed here
+        // or by the screen itself.
         let subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe(&pipelines, |_, _, cx| cx.notify()),
+            // A run's status follows what its agent last reported.
+            cx.observe(&agents, |_, _, cx| cx.notify()),
         ];
         Self {
             project,
@@ -51,27 +65,33 @@ impl PipelinePanel {
             screen: Screen::Library,
             draft: None,
             selected_template: None,
+            history: Self::history_list(),
+            entries: Rc::from([]),
+            age_tick: None,
             _subscriptions: subscriptions,
         }
     }
+    fn history_list() -> ListState {
+        ListState::new(0, ListAlignment::Top, library::HISTORY_OVERDRAW)
+    }
+    /// Back to the library once the screen in view is done with: saved or discarded.
     fn home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.screen = Screen::Library;
-        self.focus.focus(window, cx);
-        cx.notify();
+        self.go(Destination::Library, window, cx);
     }
-    fn show_run(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        self.screen = Screen::Run(cx.new(|cx| run::RunView::new(id, window, cx)));
-        cx.notify();
-    }
-    pub(super) fn show_attempt(
+    /// Shows run `id`, on the live session of `attempt` when one is named.
+    pub(super) fn show_run(
         &mut self,
-        ticket: hive_core::pipeline::Ticket,
-        w: &mut Window,
+        id: u64,
+        attempt: Option<hive_core::pipeline::Ticket>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Screen::Run(view) = &self.screen {
-            view.update(cx, |v, cx| v.terminal(ticket, w, cx));
-        }
+        self.navigate(Destination::Run { id, attempt }, window, cx);
+    }
+    /// The launch form started run `id`. The form is finished, so nothing is asked.
+    fn run_started(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft = None;
+        self.go(Destination::Run { id, attempt: None }, window, cx);
     }
     fn edit(&mut self, original: Option<Template>, window: &mut Window, cx: &mut Context<Self>) {
         let parent = cx.weak_entity();
@@ -105,21 +125,18 @@ impl PipelinePanel {
             let panel = cx.weak_entity();
             window.open_alert_dialog(cx, move |alert, _, _| {
                 let panel = panel.clone();
-                alert
-                    .confirm()
-                    .title("Replace the current run draft?")
-                    .ok_text("Replace draft")
-                    .on_ok(move |_, w, cx| {
-                        let _ = panel.update(cx, |p, cx| {
-                            // The replaced form must not write itself back afterwards.
-                            if let Some(form) = &p.draft {
-                                form.update(cx, |form, _| form.abandon());
-                            }
-                            p.discard_draft(cx);
-                            p.launch_again(id, w, cx);
-                        });
-                        true
-                    })
+                let alert = alert.confirm().title("Replace the current run draft?");
+                crate::ui::destructive::confirmation(alert, "Replace draft", move |w, cx| {
+                    let _ = panel.update(cx, |p, cx| {
+                        // The replaced form must not write itself back afterwards.
+                        if let Some(form) = &p.draft {
+                            form.update(cx, |form, _| form.abandon());
+                        }
+                        p.discard_draft(cx);
+                        p.launch_again(id, w, cx);
+                    });
+                    true
+                })
             });
             return;
         }
@@ -179,11 +196,12 @@ impl Render for PipelinePanel {
             Screen::Library => "Library",
         };
         let content = match &self.screen {
-            Screen::Library => self.library(window, cx),
-            Screen::Editor(view) => view.clone().into_any_element(),
-            Screen::Launch(view) => view.clone().into_any_element(),
-            Screen::Run(view) => view.clone().into_any_element(),
+            Screen::Library => None,
+            Screen::Editor(view) => Some(view.clone().into_any_element()),
+            Screen::Launch(view) => Some(view.clone().into_any_element()),
+            Screen::Run(view) => Some(view.clone().into_any_element()),
         };
+        let content = content.unwrap_or_else(|| self.library(cx));
         let home_hover = Hover::new("pipeline-home", window, cx);
         let bar = h_flex()
             .h(TAB_BAR_HEIGHT)
@@ -199,7 +217,9 @@ impl Render for PipelinePanel {
                     .icon(Lucide::Workflow)
                     .label("Pipelines")
                     .tooltip("Back to project pipelines")
-                    .on_click(cx.listener(|this, _, window, cx| this.home(window, cx)))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.navigate(Destination::Library, window, cx)
+                    }))
                     .smooth_hover(ButtonLook::Outline, &home_hover, cx),
             )
             .child(
@@ -358,22 +378,15 @@ fn button_with_size<V: 'static>(
         .on_click(cx.listener(move |this, _, w, cx| click(this, w, cx)))
         .smooth_hover(look, &hover, cx)
 }
-/// A focusable card or row: pointer, Enter and Space run the same transition.
+/// A focusable card or row: pointer, Enter and Space run the same transition. GPUI turns
+/// Enter or Space released on a focused element into a click, so a key-down handler of our
+/// own would run the transition a second time.
 fn on_activate<V: 'static, E: StatefulInteractiveElement>(
     element: E,
     cx: &Context<V>,
     activate: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
 ) -> E {
-    let click = std::rc::Rc::new(activate);
-    let key = click.clone();
-    element
-        .on_click(cx.listener(move |v, _, w, cx| click(v, w, cx)))
-        .on_key_down(cx.listener(move |v, event: &KeyDownEvent, w, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                key(v, w, cx);
-            }
-        }))
+    element.on_click(cx.listener(move |v, _, w, cx| activate(v, w, cx)))
 }
 fn icon_action<V: 'static>(
     id: impl Into<ElementId>,

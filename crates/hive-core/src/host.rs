@@ -30,17 +30,7 @@ impl Host {
     /// A remote one runs with `sh`, whatever the account's login shell is.
     pub fn command(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> Command {
         match self {
-            Host::Local => {
-                let mut cmd = Command::new(program);
-                cmd.args(args);
-                if let Some(login) = environment::login() {
-                    cmd.envs(login.iter());
-                }
-                if let Some(dir) = cwd {
-                    cmd.current_dir(dir);
-                }
-                cmd
-            }
+            Host::Local => local_command(program, args, cwd, environment::login()),
             Host::Ssh { target } => {
                 let mut script = change_directory(cwd);
                 script.push(quote(program));
@@ -141,6 +131,31 @@ impl Host {
     }
 }
 
+/// `program` in the captured login environment `login`, found on its `PATH` up front so the
+/// spawn need not fork the app (see [`environment::resolve`]).
+fn local_command(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    login: Option<&environment::Environment>,
+) -> Command {
+    let resolved = login
+        .and_then(|login| login.get("PATH"))
+        .and_then(|path| environment::resolve(program, path));
+    let mut cmd = match resolved {
+        Some(file) => Command::new(file),
+        None => Command::new(program),
+    };
+    cmd.args(args);
+    if let Some(login) = login {
+        cmd.envs(login.iter());
+    }
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    cmd
+}
+
 /// `cd <dir> && `, the start of a remote POSIX script, or nothing without a directory.
 fn change_directory(cwd: Option<&Path>) -> OsString {
     let mut script = OsString::new();
@@ -168,12 +183,30 @@ fn ssh(target: &str, interactive: bool, posix: &OsStr) -> Command {
         "ServerAliveInterval=15",
         "-o",
         "ServerAliveCountMax=3",
-        "--",
-        target,
+        // Hive always sends its own command; a configured one would make ssh refuse it.
+        "-o",
+        "RemoteCommand=none",
     ]);
+    if !interactive {
+        command.args(BATCH_OPTIONS);
+    }
+    command.args(["--", target]);
     command.arg(exec_sh(posix));
     command
 }
+
+/// What `~/.ssh/config` may set that breaks a command whose output Hive reads: a master
+/// connection without `ControlPersist` keeps the command's ssh alive for every later session,
+/// a forward that cannot bind fails it under `ExitOnForwardFailure`, and a `LocalCommand`
+/// prints into its stdout. An existing master is still used. Terminals keep the user's setup.
+const BATCH_OPTIONS: [&str; 6] = [
+    "-o",
+    "ControlMaster=no",
+    "-o",
+    "ClearAllForwardings=yes",
+    "-o",
+    "PermitLocalCommand=no",
+];
 
 /// What sshd runs for `command` on an account whose login shell is `shell`: `shell -c <line>`
 /// in `home`, with sshd's small environment, here on this machine.

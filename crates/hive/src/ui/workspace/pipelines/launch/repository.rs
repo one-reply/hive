@@ -1,12 +1,11 @@
+//! One repository of the run: where its lane commits, what must pass and how its worktree
+//! is prepared.
 use super::*;
-use gpui_kit::component::spinner::Spinner;
 use hive_core::git::branches::short_name;
 
 mod branch;
+mod card;
 use hive_core::pipeline::draft::{DraftCheck as Check, DraftLane, WorkBranch};
-
-/// Repository, branch and check share one row until the drawer is too narrow for them.
-const FIELD_MIN_WIDTH: Pixels = px(170.);
 
 pub(super) struct Binding {
     pub preset: LanePreset,
@@ -24,6 +23,9 @@ pub(super) struct Binding {
     custom_command: Entity<InputState>,
     /// Runs once in the new worktree; starts as the command this project used last time.
     setup: Entity<InputState>,
+    /// The setup field is drawn only for a command or once the user asks for it: most
+    /// worktrees need none.
+    setup_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -57,12 +59,8 @@ impl Binding {
         cx: &mut Context<LaunchForm>,
     ) -> Self {
         let custom_command = input("", "Shell command", window, cx);
-        let setup = input(
-            &remembered_setup(project.as_deref(), cx),
-            "npm ci, bundle install… Leave empty when the worktree needs no setup",
-            window,
-            cx,
-        );
+        let remembered = remembered_setup(project.as_deref(), cx);
+        let setup = input(&remembered, "npm ci, bundle install…", window, cx);
         let branch_query = input("", "Search or name a new branch", window, cx);
         let subscriptions = vec![
             cx.subscribe(&setup, |_, _, event, cx| {
@@ -95,6 +93,7 @@ impl Binding {
             check: Check::Suggested,
             custom_command,
             setup,
+            setup_open: !remembered.trim().is_empty(),
             _subscriptions: subscriptions,
         }
     }
@@ -121,10 +120,8 @@ impl Binding {
         binding
             .custom_command
             .update(cx, |i, cx| i.set_value(draft.custom_command, window, cx));
-        binding
-            .setup
-            .update(cx, |i, cx| i.set_value(draft.setup, window, cx));
-        binding.preview(cx);
+        binding.set_setup(draft.setup, window, cx);
+        binding.read(cx);
         binding
     }
     pub(super) fn bind(
@@ -136,58 +133,78 @@ impl Binding {
         (self.checkout, self.reference) = initial_ref(project.as_deref(), cx);
         self.default_reference.clone_from(&self.reference);
         let setup = remembered_setup(project.as_deref(), cx);
-        self.setup
-            .update(cx, |input, cx| input.set_value(setup, window, cx));
+        self.set_setup(setup, window, cx);
         self.project = project;
         self.ref_input = None;
         self.branch = WorkBranch::Unchosen;
         self.check = Check::Suggested;
-        self.preview(cx);
+        self.read(cx);
+    }
+    pub(super) fn branch_menu_open(&self) -> bool {
+        self.branch_open
     }
     /// The branch the lane commits to, once the user has chosen or named one.
     pub(super) fn branch_name(&self) -> Option<&str> {
         self.branch.name()
     }
-    pub(super) fn preview(&self, cx: &mut Context<LaunchForm>) {
-        if let Some(project) = &self.project {
-            AppState::get(cx).pipelines.clone().update(cx, |p, cx| {
-                p.preview(
-                    project.clone(),
-                    self.checkout.as_ref().unwrap_or(project).clone(),
-                    self.reference.clone(),
-                    cx,
-                )
-            });
+    /// What Git is asked about this repository, `None` until one is bound.
+    fn preview_key(&self) -> Option<PreviewKey> {
+        let project = self.project.as_ref()?;
+        Some(PreviewKey {
+            project: project.clone(),
+            checkout: self.checkout.as_ref().unwrap_or(project).clone(),
+            reference: self.reference.clone(),
+        })
+    }
+    /// Asks Git about the repository again: its base commit, branches and local changes.
+    pub(super) fn read(&self, cx: &mut Context<LaunchForm>) {
+        if let Some(key) = self.preview_key() {
+            let pipelines = AppState::get(cx).pipelines.clone();
+            pipelines.update(cx, |pipelines, cx| pipelines.refresh_preview(key, cx));
         }
     }
-    pub(super) fn base_preview<'a>(&self, cx: &'a App) -> Option<&'a Result<BasePreview, String>> {
-        let project = self.project.as_ref()?;
-        AppState::get(cx).pipelines.read(cx).previews.get(&(
-            project.clone(),
-            self.checkout.as_ref().unwrap_or(project).clone(),
-            self.reference.clone(),
-        ))
+    /// Where the read of the repository stands; reading until one is bound.
+    pub(super) fn base<'a>(&self, cx: &'a App) -> Preview<'a> {
+        match self.preview_key() {
+            Some(key) => AppState::get(cx).pipelines.read(cx).preview(&key),
+            None => Preview::Reading,
+        }
+    }
+    /// What Git answered, once the repository is read.
+    pub(super) fn ready<'a>(&self, cx: &'a App) -> Option<&'a BasePreview> {
+        match self.base(cx) {
+            Preview::Ready(preview) => Some(preview),
+            Preview::Reading | Preview::Failed(_) => None,
+        }
+    }
+    /// Whether an answer from Git is still on its way, also behind an earlier one.
+    pub(super) fn is_reading(&self, cx: &App) -> bool {
+        self.preview_key().is_some_and(|key| {
+            AppState::get(cx)
+                .pipelines
+                .read(cx)
+                .is_reading_preview(&key)
+        })
     }
     /// `None` for an optional lane the user left without a repository.
     pub(super) fn state(&self, cx: &App) -> Option<LaneState> {
         self.project.as_ref()?;
-        if self.ref_input.is_some() {
-            return Some(LaneState::EditingRef);
+        let missing_command = matches!(self.check, Check::Custom)
+            && self.custom_command.read(cx).value().trim().is_empty();
+        Some(lane_state(
+            self.ref_input.is_some(),
+            &self.branch,
+            self.base(cx),
+            missing_command,
+        ))
+    }
+    /// What this repository's card says that decides what the run does.
+    pub(super) fn shown(&self, preview: &BasePreview, cx: &App) -> Shown {
+        Shown {
+            // Only a new branch starts from the user's checkout; a chosen branch is not open.
+            local_changes: preview.dirty && matches!(self.branch, WorkBranch::New(_)),
+            check: self.command(preview, cx),
         }
-        if self.branch == WorkBranch::Unchosen {
-            return Some(LaneState::NoBranch);
-        }
-        Some(match self.base_preview(cx) {
-            None => LaneState::Reading,
-            Some(Err(_)) => LaneState::Failed,
-            Some(Ok(_))
-                if matches!(self.check, Check::Custom)
-                    && self.custom_command.read(cx).value().trim().is_empty() =>
-            {
-                LaneState::MissingCommand
-            }
-            Some(Ok(_)) => LaneState::Ready,
-        })
     }
     pub(super) fn command(&self, preview: &BasePreview, cx: &App) -> String {
         match &self.check {
@@ -215,9 +232,13 @@ impl Binding {
     ) {
         self.bind(Some(lane.project.clone()), window, cx);
         self.check = Check::Command(lane.command.clone());
-        self.setup.update(cx, |input, cx| {
-            input.set_value(lane.setup.clone(), window, cx)
-        });
+        self.set_setup(lane.setup.clone(), window, cx);
+    }
+    /// Replaces the setup command; its field stays in view exactly when there is one.
+    fn set_setup(&mut self, command: String, window: &mut Window, cx: &mut Context<LaunchForm>) {
+        self.setup_open = !command.trim().is_empty();
+        self.setup
+            .update(cx, |input, cx| input.set_value(command, window, cx));
     }
     /// The command to run once in the new worktree, empty for none.
     pub(super) fn setup_command(&self, cx: &App) -> String {
@@ -295,291 +316,6 @@ pub(super) fn dropdown(
                 .child(Icon::new(icon).size_3p5().flex_none())
                 .child(div().min_w_0().truncate().child(label)),
         )
-}
-
-/// A caption above a control; fields share a row and wrap below this width.
-fn labeled(caption: impl IntoElement, control: impl IntoElement) -> Div {
-    v_flex()
-        .flex_1()
-        .min_w(FIELD_MIN_WIDTH)
-        .gap_1()
-        .child(caption)
-        .child(control)
-}
-
-/// A caption whose field must be filled before planning can start.
-fn required(label: &'static str, cx: &App) -> Div {
-    h_flex()
-        .gap_0p5()
-        .child(subtle(label, cx))
-        .child(required_mark(cx))
-}
-
-/// What the repository is doing right now, under its fields.
-enum Notice {
-    Reading,
-    Dirty,
-    Failed(String),
-}
-
-fn notice(notice: Notice, cx: &App) -> Div {
-    let row = h_flex().gap_2().items_center().text_xs();
-    let (color, text) = match notice {
-        Notice::Reading => {
-            return row
-                .text_color(cx.theme().muted_foreground)
-                .child(Spinner::new().icon(Lucide::LoaderCircle).xsmall())
-                .child("Reading repository…");
-        }
-        Notice::Dirty => (
-            cx.theme().warning,
-            "This checkout has local changes. The run uses committed files only.".to_owned(),
-        ),
-        Notice::Failed(error) => (cx.theme().danger, error),
-    };
-    row.child(Icon::new(Lucide::CircleAlert).size_3p5().text_color(color))
-        .child(div().min_w_0().flex_1().text_color(color).child(text))
-}
-
-impl LaunchForm {
-    pub(super) fn repository_card(
-        &self,
-        i: usize,
-        projects: &[(PathBuf, String)],
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let b = &self.bindings[i];
-        let selected = projects
-            .iter()
-            .find(|(p, _)| Some(p) == b.project.as_ref())
-            .map(|(_, n)| n.as_str());
-        let choices = projects
-            .iter()
-            .map(|(p, n)| (n.clone(), Some(p) == b.project.as_ref(), p.clone()))
-            .collect();
-        let repo = options_menu(
-            dropdown(
-                ("bound-repo", i),
-                Lucide::Folder,
-                selected.unwrap_or("Choose repository").to_owned(),
-            )
-            .w_full(),
-            choices,
-            cx,
-            move |this, p, window, cx| this.bindings[i].bind(Some(p), window, cx),
-        );
-        let mut group = card(cx).w_full().gap_3();
-        if i < self.template.lanes.len() && self.template.lanes.len() > 1 {
-            group = group.child(
-                h_flex()
-                    .gap_1p5()
-                    .child(
-                        Icon::new(Lucide::GitFork)
-                            .size_3p5()
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .child(heading(b.preset.name.clone())),
-            );
-        }
-        if b.project.is_none() {
-            return group
-                .child(labeled(subtle("Repository", cx), repo))
-                .child(subtle("Optional lane. Leave it empty to skip it.", cx));
-        }
-        let preview = b.base_preview(cx);
-        let data = preview.and_then(|p| p.as_ref().ok()).cloned();
-        let message = match preview {
-            Some(Err(e)) => Some(Notice::Failed(e.clone())),
-            // Only a new branch starts from the user's checkout; a chosen branch is not open.
-            Some(Ok(p)) if p.dirty && matches!(b.branch, WorkBranch::New(_)) => Some(Notice::Dirty),
-            None => Some(Notice::Reading),
-            _ => None,
-        };
-        let mut fields = h_flex()
-            .w_full()
-            .flex_wrap()
-            .items_start()
-            .gap_3()
-            .child(labeled(required("Repository", cx), repo))
-            .child(labeled(required("Branch", cx), self.branch_field(i, cx)));
-        if matches!(b.branch, WorkBranch::New(_)) {
-            fields = fields.child(labeled(
-                subtle("From", cx),
-                self.ref_menu(i, data.as_ref(), cx),
-            ));
-        }
-        let fields = fields.child(labeled(
-            subtle("Check before acceptance", cx),
-            self.check_menu(i, data.as_ref(), cx),
-        ));
-        let remove = icon_action(
-            ("remove-repo", i),
-            "Remove from run",
-            Lucide::X,
-            window,
-            cx,
-            move |this, window, cx| this.remove_repository(i, window, cx),
-        );
-        group = group.child(
-            h_flex()
-                .w_full()
-                .items_end()
-                .gap_2()
-                .child(fields.flex_1().min_w_0())
-                .child(remove),
-        );
-        if let Some(ref_input) = &b.ref_input {
-            group = group.child(
-                h_flex()
-                    .gap_2()
-                    .child(div().min_w_0().flex_1().child(TextField::input(
-                        Input::new(ref_input),
-                        ref_input,
-                        cx,
-                    )))
-                    .child(button(
-                        ("apply-ref", i),
-                        "Use ref",
-                        ButtonLook::Outline,
-                        window,
-                        cx,
-                        move |this, _, cx| {
-                            let b = &mut this.bindings[i];
-                            if let Some(input) = b.ref_input.take() {
-                                let value = input.read(cx).value().trim().to_owned();
-                                if !value.is_empty() {
-                                    b.reference = value;
-                                }
-                                b.preview(cx);
-                                cx.notify();
-                            }
-                        },
-                    )),
-            );
-        }
-        if matches!(b.check, Check::Custom) {
-            group = group.child(field(
-                "Command that must pass before acceptance",
-                &b.custom_command,
-                cx,
-            ));
-        }
-        group = group.child(field(
-            "Worktree setup command (optional). Files listed in .worktreeinclude are copied first",
-            &b.setup,
-            cx,
-        ));
-        group.when_some(message, |el, m| el.child(notice(m, cx)))
-    }
-
-    fn ref_menu(&self, i: usize, data: Option<&BasePreview>, cx: &mut Context<Self>) -> AnyElement {
-        let b = &self.bindings[i];
-        let mut branches: Vec<_> = data
-            .into_iter()
-            .flat_map(|p| &p.branches)
-            .map(|branch| {
-                (
-                    branch.name.clone(),
-                    branch.reference == b.reference,
-                    Some(branch.reference.clone()),
-                )
-            })
-            .collect();
-        if !branches
-            .iter()
-            .any(|(_, _, v)| v.as_deref() == Some(&b.reference))
-        {
-            branches.insert(
-                0,
-                (
-                    short_name(&b.reference).to_owned(),
-                    true,
-                    Some(b.reference.clone()),
-                ),
-            );
-        }
-        branches.push(("Other branch, tag or commit…".into(), false, None));
-        options_menu(
-            dropdown(
-                ("pipeline-ref", i),
-                Lucide::GitBranch,
-                short_name(&b.reference).to_owned(),
-            )
-            .w_full(),
-            branches,
-            cx,
-            move |this, value, w, cx| {
-                let b = &mut this.bindings[i];
-                if let Some(value) = value {
-                    b.reference = value;
-                    b.ref_input = None;
-                    b.preview(cx);
-                } else {
-                    let editor = input(&b.reference, "Branch, tag or commit", w, cx);
-                    editor.focus_handle(cx).focus(w, cx);
-                    b.ref_input = Some(editor);
-                }
-            },
-        )
-    }
-
-    /// Until the commit is read there are no manifest checks to offer, so the slot stays
-    /// in place but disabled instead of making the row jump when it loads.
-    fn check_menu(
-        &self,
-        i: usize,
-        data: Option<&BasePreview>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let b = &self.bindings[i];
-        let Some(preview) = data else {
-            return dropdown(("pipeline-check", i), Lucide::ListChecks, "Agent review")
-                .w_full()
-                .disabled(true)
-                .into_any_element();
-        };
-        let command = b.command(preview, cx);
-        let label = if matches!(b.check, Check::Custom) {
-            "Custom command"
-        } else if command.is_empty() {
-            "Agent review"
-        } else {
-            &command
-        };
-        let mut commands = preview.checks.clone();
-        if !b.preset.command.trim().is_empty() && !commands.contains(&b.preset.command) {
-            commands.insert(0, b.preset.command.clone());
-        }
-        let mut checks: Vec<_> = commands
-            .into_iter()
-            .map(|s| (s.clone(), s == command, Check::Command(s)))
-            .collect();
-        checks.push((
-            "Agent review only".into(),
-            command.is_empty() && !matches!(b.check, Check::Custom),
-            Check::Command(String::new()),
-        ));
-        checks.push((
-            "Custom command…".into(),
-            matches!(b.check, Check::Custom),
-            Check::Custom,
-        ));
-        options_menu(
-            dropdown(("pipeline-check", i), Lucide::ListChecks, label.to_owned()).w_full(),
-            checks,
-            cx,
-            move |this, check, w, cx| {
-                if check == Check::Custom {
-                    this.bindings[i]
-                        .custom_command
-                        .focus_handle(cx)
-                        .focus(w, cx);
-                }
-                this.bindings[i].check = check;
-            },
-        )
-    }
 }
 
 #[cfg(test)]

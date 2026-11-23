@@ -26,12 +26,12 @@ pub(super) fn run_detail(
 }
 
 pub(super) fn run_row(
-    ix: usize,
     row: RunRow,
     window: &mut Window,
     cx: &mut Context<PipelinePanel>,
 ) -> AnyElement {
-    let hover = Hover::with_duration(("recent-run", ix), WIDE_HOVER_DURATION, window, cx);
+    // Keyed by the run, not by its place: the list draws only the rows in view.
+    let hover = Hover::with_duration(("recent-run", row.id), WIDE_HOVER_DURATION, window, cx);
     let color = status_color(row.status, cx);
     let focus = cx.theme().ring;
     let id = row.id;
@@ -41,7 +41,7 @@ pub(super) fn run_row(
     let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
         run_menu(menu, &panel, id, finished, &task)
     };
-    let more = Button::new(("recent-run-menu", ix))
+    let more = Button::new(("recent-run-menu", id))
         .cursor_pointer()
         .ghost()
         .xsmall()
@@ -50,7 +50,7 @@ pub(super) fn run_row(
         .tooltip("Run actions")
         .dropdown_menu(menu.clone());
     let row_element = h_flex()
-        .id(("recent-run", ix))
+        .id(("recent-run", id))
         .role(Role::Button)
         .aria_label(label)
         .tab_index(0)
@@ -96,7 +96,7 @@ pub(super) fn run_row(
                 .size_4()
                 .text_color(cx.theme().muted_foreground),
         );
-    on_activate(row_element, cx, move |p, w, cx| p.show_run(id, w, cx))
+    on_activate(row_element, cx, move |p, w, cx| p.show_run(id, None, w, cx))
         .hover_bg(&hover, cx.theme().background, cx.theme().muted)
         .context_menu(menu)
         .into_any_element()
@@ -132,21 +132,19 @@ fn run_menu(
 fn confirm_delete_run(id: u64, task: &str, window: &mut Window, cx: &mut App) {
     let title = format!("Delete “{}”?", run::task_title(task));
     window.open_alert_dialog(cx, move |alert, _, _| {
-        alert
+        let alert = alert
             .confirm()
             .title(title.clone())
             .description(
                 "This removes the run and its reports from Hive. Its worktrees, branches and changes stay on disk.",
-            )
-            .ok_text("Delete")
-            .ok_variant(ButtonVariant::Danger)
-            .on_ok(move |_, window, cx| {
-                let pipelines = AppState::get(cx).pipelines.clone();
-                if let Err(error) = pipelines.update(cx, |p, cx| p.delete_run(id, cx)) {
-                    window.push_notification(Notification::error(error), cx);
-                }
-                true
-            })
+            );
+        crate::ui::destructive::confirmation(alert, "Delete", move |window, cx| {
+            let pipelines = AppState::get(cx).pipelines.clone();
+            if let Err(error) = pipelines.update(cx, |p, cx| p.delete_run(id, cx)) {
+                window.push_notification(Notification::error(error), cx);
+            }
+            true
+        })
     });
 }
 

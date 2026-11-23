@@ -9,6 +9,8 @@ use hive_core::worktree::{self, Removal, WorktreeError};
 use super::store::Store;
 use hive_core::agent::launch::Launch;
 
+mod creating;
+
 pub(crate) use hive_core::state::workspace::Selection;
 
 /// Scanned projects (git worktrees etc.), the current selection and worktree lifecycle.
@@ -21,8 +23,8 @@ pub struct Projects {
     scan_generation: u64,
     /// Worktree paths with an open terminal: the sidebar lights their status dot.
     active: HashSet<(Host, PathBuf)>,
-    /// One entry per worktree being created, holding its project's path.
-    creating: Vec<(Host, PathBuf)>,
+    /// The worktrees being created.
+    creating: creating::Creations,
     store: Entity<Store>,
     _store_observer: Subscription,
 }
@@ -49,7 +51,7 @@ impl Projects {
             pending_selection: store.read(cx).state.workspace.selection.clone(),
             scan_generation: 0,
             active: HashSet::new(),
-            creating: Vec::new(),
+            creating: creating::Creations::default(),
             store: store.clone(),
             _store_observer: observer,
         };
@@ -152,10 +154,14 @@ impl Projects {
     }
 
     pub fn creating_count(&self, host: &Host, project: &Path) -> usize {
-        self.creating
-            .iter()
-            .filter(|(h, path)| h == host && path == project)
-            .count()
+        self.creating.count(host, project)
+    }
+
+    /// Ends Git for the worktrees `project` is creating. [`Self::create_worktree`] then
+    /// reports that the worktree may be partly there.
+    pub(crate) fn stop_creating(&self, host: &Host, project: &Path) {
+        tracing::info!(?project, "worktree creation stopped by the user");
+        self.creating.stop(host, project);
     }
 
     pub(crate) fn bases(
@@ -186,34 +192,27 @@ impl Projects {
         let Some(project) = self.project(host, project).cloned() else {
             return Task::ready(Err("Project is no longer available".into()));
         };
-        self.creating
-            .push((project.host.clone(), project.path.clone()));
+        let stop = self.creating.begin(&project.host, &project.path);
         cx.notify();
         cx.spawn(async move |this, cx| {
             let created = cx
                 .background_executor()
                 .spawn({
-                    let project = project.clone();
                     let launch = launch.clone();
+                    let stop = stop.clone();
                     async move {
                         if let Some(launch) = launch {
                             launch
                                 .check_executable(&project.host)
                                 .map_err(|error| error.to_string())?;
                         }
-                        worktree::create_from(&project, Some(&name), Some(&base))
-                            .map_err(|error| error.to_string())
+                        worktree::create(&project, Some(&name), Some(&base), &stop)
+                            .map_err(creating::failure)
                     }
                 })
                 .await;
             let rescan = this.update(cx, |this, cx| {
-                if let Some(ix) = this
-                    .creating
-                    .iter()
-                    .position(|(h, path)| *h == project.host && *path == project.path)
-                {
-                    this.creating.remove(ix);
-                }
+                this.creating.finish(&stop);
                 this.rescan(cx)
             });
             if let Ok(rescan) = rescan {
@@ -399,6 +398,7 @@ mod tests {
                     path: "/unused".into(),
                     source: std::io::Error::other("persistence disabled for test"),
                 }),
+                hive_core::state::Access::Held,
                 cx,
             )
         });

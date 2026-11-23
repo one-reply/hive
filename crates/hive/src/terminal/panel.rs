@@ -37,8 +37,12 @@ actions!(
 
 mod agent_draft;
 mod close_guard;
+mod focus;
 mod persistence;
 mod tiles;
+
+pub(crate) use close_guard::{Ending, all_running_agents, asks_before_stopping, confirm_stopping};
+pub(crate) use focus::Reveal;
 
 /// Gap between a pane's top-right corner and its hover close button.
 const PANE_CLOSE_INSET: Pixels = px(6.);
@@ -59,6 +63,9 @@ pub struct TerminalPanel {
     group: Option<WeakEntity<TabGroup>>,
     alone: bool,
     split_sizes: HashMap<SharedString, Vec<f32>>,
+    /// Why this tab comes to the front the next time the dock displays it. Whoever opens a
+    /// tab for the user says so here; it is spent on the first display.
+    reveal: Reveal,
 }
 
 impl TerminalPanel {
@@ -70,7 +77,7 @@ impl TerminalPanel {
         cx.defer(move |cx| area.update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged)));
     }
 
-    /// Open a panel immediately; its session starts the shell in the background.
+    /// Open a panel the user asked for; its session starts the shell in the background.
     pub fn open(
         host: &Host,
         cwd: Option<&Path>,
@@ -78,13 +85,16 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
-        Self::open_with_launch(host, cwd, None, area, window, cx)
+        Self::open_with_launch(host, cwd, None, Reveal::Requested, area, window, cx)
     }
 
+    /// `reveal` says whether the user asked for this tab, which decides if it takes the
+    /// keyboard once the dock displays it.
     pub(crate) fn open_with_launch(
         host: &Host,
         cwd: Option<&Path>,
         launch: Option<hive_core::agent::launch::Launch>,
+        reveal: Reveal,
         area: WeakEntity<DockArea>,
         window: &mut Window,
         cx: &mut App,
@@ -101,6 +111,7 @@ impl TerminalPanel {
                 group: None,
                 alone: false,
                 split_sizes: HashMap::new(),
+                reveal,
             };
             this.watch_pane(&view, window, cx);
             this
@@ -124,7 +135,7 @@ impl TerminalPanel {
                 TerminalViewEvent::DirectoryChanged => this.layout_changed(cx),
                 TerminalViewEvent::Exited => {
                     if this.host.is_local() {
-                        this.close_pane(view, window, cx);
+                        this.close_pane(view, Reveal::Unprompted, window, cx);
                     } else {
                         this.notify_group(cx);
                     }
@@ -267,40 +278,56 @@ impl TerminalPanel {
         self.layout_changed(cx);
     }
 
-    /// Close one pane; closing the last one closes the tab.
+    /// Close one pane; closing the last one closes the tab. `reveal` says whether the user
+    /// closed it: the pane that takes its place gets the keyboard then, or when the keyboard
+    /// was in the closed pane, and never from a field the user is typing in elsewhere.
     fn close_pane(
         &mut self,
         view: &Entity<TerminalView>,
+        reveal: Reveal,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if matches!(self.panes, PaneTree::Leaf(_)) {
-            self.close(window, cx);
+        if let PaneTree::Leaf(only) = &self.panes {
+            // A pane that ended while its close was being confirmed is already gone, and the
+            // pane left alone in the tab is not the one the user asked to close.
+            if only == view {
+                self.close(reveal, window, cx);
+            }
             return;
         }
+        let keyboard_was_here = view.read(cx).focus_handle().is_focused(window);
         let Some(neighbor) = self.panes.remove(view) else {
             return;
         };
         self.pane_subscriptions.remove(&view.entity_id());
         if self.active == *view {
             self.active = neighbor;
-            self.focus_active(window, cx);
+            if focus::takes_focus(reveal, keyboard_was_here) {
+                self.focus_active(window, cx);
+            }
         }
         self.notify_group(cx);
         self.layout_changed(cx);
     }
 
     /// Remove this tab. Goes through the dock, not the tab group, so the last
-    /// terminal can be closed too (the group refuses to empty itself).
-    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// terminal can be closed too (the group refuses to empty itself). The tab the group
+    /// shows next gets the keyboard by the same rule as a pane's neighbor.
+    fn close(&mut self, reveal: Reveal, window: &mut Window, cx: &mut Context<Self>) {
         let Some(area) = self.area.upgrade() else {
             return;
         };
         let me = cx.entity();
+        let group = self.group.clone();
+        let hands_keyboard_on = focus::takes_focus(reveal, self.holds_focus(window, cx));
         // We are inside our own `update` (click handler / event subscription); the dock
         // reads the panel while removing it, so run the removal after this update ends.
         window.defer(cx, move |window, cx| {
             area.update(cx, |area, cx| area.remove_panel(me, window, cx));
+            if hands_keyboard_on {
+                Self::focus_successor(group, window, cx);
+            }
         });
     }
 
@@ -341,8 +368,14 @@ impl BasePanel for TerminalPanel {
         "TerminalPanel"
     }
 
+    /// The dock reports every display of this tab, asked for or not: a tab closing on its
+    /// own displays its neighbor. A click on a tab needs nothing here, the dock focuses it.
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if active {
+        if !active {
+            return;
+        }
+        let reveal = std::mem::replace(&mut self.reveal, Reveal::Unprompted);
+        if focus::takes_focus(reveal, self.group_holds_focus(window, cx)) {
             self.select_workspace(cx);
             self.focus_active(window, cx);
         }

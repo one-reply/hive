@@ -1,7 +1,10 @@
 //! Branch discovery and conservative checkout operations.
-use super::{GitError, READ_LIMIT, bytes, conflicts, run, status, text};
+use super::{GitError, READ_LIMIT, bytes, conflicts, run, status};
+use crate::command::Cancellation;
 use crate::host::Host;
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// A local or remote-tracking branch with its worktree occupancy.
@@ -17,6 +20,21 @@ pub struct Branch {
     pub worktree: Option<PathBuf>,
 }
 
+impl Branch {
+    /// The name Git's branch commands take for a local branch. The display name differs next
+    /// to a tag of the same name, where Git shortens `refs/heads/develop` to `heads/develop`.
+    pub fn local_name(&self) -> Option<&str> {
+        if self.remote {
+            return None;
+        }
+        self.reference.strip_prefix("refs/heads/")
+    }
+}
+
+/// One record per ref: four fields, each ended by a NUL, then the line feed Git adds. The path
+/// of a checkout may hold a line feed itself, so only the NUL ends a field.
+const LIST_FORMAT: &str = "--format=%(refname)%00%(refname:short)%00%(worktreepath)%00%(symref)%00";
+
 /// Blocking: lists local and remote branches, most recently committed first (name as the
 /// tie-breaker), excluding remote HEAD aliases.
 pub fn list(host: &Host, cwd: &Path) -> Result<Vec<Branch>, GitError> {
@@ -28,7 +46,7 @@ pub fn list(host: &Host, cwd: &Path) -> Result<Vec<Branch>, GitError> {
             "for-each-ref",
             "--sort=refname",
             "--sort=-committerdate",
-            "--format=%(refname)%00%(refname:short)%00%(worktreepath)%00%(symref)",
+            LIST_FORMAT,
             "refs/heads",
             "refs/remotes",
         ],
@@ -36,25 +54,40 @@ pub fn list(host: &Host, cwd: &Path) -> Result<Vec<Branch>, GitError> {
         READ_LIMIT,
         false,
     )?;
-    text(&raw)?
-        .lines()
-        .map(|line| {
-            let fields: Vec<_> = line.split('\0').collect();
-            if fields.len() != 4 {
-                return Err(GitError::Invalid("Malformed branch list".into()));
-            }
-            if !fields[3].is_empty() {
-                return Ok(None);
-            }
-            Ok(Some(Branch {
-                reference: fields[0].into(),
-                name: fields[1].into(),
-                remote: fields[0].starts_with("refs/remotes/"),
-                worktree: (!fields[2].is_empty()).then(|| PathBuf::from(fields[2])),
-            }))
-        })
-        .filter_map(|r| r.transpose())
-        .collect()
+    parse_list(&raw)
+}
+
+/// Reads `for-each-ref` output in [`LIST_FORMAT`]. A ref name is text; where a branch is
+/// checked out is whatever bytes the file system holds, and costs the branch nothing.
+fn parse_list(raw: &[u8]) -> Result<Vec<Branch>, GitError> {
+    let mut fields: Vec<&[u8]> = raw.split(|byte| *byte == 0).collect();
+    // Every field ends with a NUL, so what follows the last one is only Git's line feed.
+    let tail = fields.pop().unwrap_or_default();
+    let (records, incomplete) = fields.as_chunks::<4>();
+    if !matches!(tail, b"" | b"\n") || !incomplete.is_empty() {
+        return Err(GitError::Invalid("Malformed branch list".into()));
+    }
+    let mut branches = Vec::with_capacity(records.len());
+    for &[reference, name, worktree, symref] in records {
+        // The line feed that ended the record before this one.
+        let reference = reference.strip_prefix(b"\n").unwrap_or(reference);
+        // A branch whose name is not UTF-8 cannot be named back to Git; it is left out, not
+        // the whole list.
+        let (Ok(reference), Ok(name)) = (std::str::from_utf8(reference), std::str::from_utf8(name))
+        else {
+            continue;
+        };
+        if !symref.is_empty() {
+            continue;
+        }
+        branches.push(Branch {
+            reference: reference.into(),
+            name: name.into(),
+            remote: reference.starts_with("refs/remotes/"),
+            worktree: (!worktree.is_empty()).then(|| PathBuf::from(OsStr::from_bytes(worktree))),
+        });
+    }
+    Ok(branches)
 }
 
 /// Display name of a full branch ref (`refs/remotes/origin/main` → `origin/main`); other
@@ -80,33 +113,73 @@ pub fn resolve(host: &Host, cwd: &Path, reference: &str) -> Result<String, GitEr
     )
 }
 
-/// Preferred review base; no implicit fetch is performed.
-pub fn default_base(
-    host: &Host,
-    cwd: &Path,
-    branches: &[Branch],
-) -> Result<Option<String>, GitError> {
+/// Where the default base is looked for when `origin/HEAD` does not name it, in this order.
+const BASE_FALLBACKS: [&str; 4] = [
+    "refs/remotes/origin/main",
+    "refs/remotes/origin/master",
+    "refs/heads/main",
+    "refs/heads/master",
+];
+
+/// The branch work is compared with and new work starts from unless the user picks another:
+/// the remote's default branch (`origin/HEAD`), else the first of `origin/main`,
+/// `origin/master`, `main` and `master`. Always a full ref, so a tag of the same name cannot
+/// stand in. `None` when the repository has none of them.
+///
+/// The one rule for the review base and for a new worktree's start. No fetch is performed.
+/// A candidate counts when it is a branch that names a commit: one that is missing, or that
+/// was pointed at another kind of object, is passed over for the next. A Git that could not
+/// answer is an error, so nothing is silently based on the wrong commit.
+pub fn default_base(host: &Host, cwd: &Path) -> Result<Option<String>, GitError> {
+    let mut candidates = Vec::with_capacity(BASE_FALLBACKS.len() + 1);
     match run(
         host,
         cwd,
         &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
     ) {
-        Ok(reference) if branches.iter().any(|b| b.reference == reference) => {
-            return Ok(Some(reference));
-        }
+        Ok(reference) if is_branch(&reference) => candidates.push(reference),
+        // No link, or a link to something that is not a branch.
         Ok(_) | Err(GitError::Failed { code: Some(1), .. }) => {}
         Err(error) => return Err(error),
     }
-    Ok(first_existing(
-        branches,
-        &[
-            "refs/remotes/origin/main",
-            "refs/remotes/origin/master",
-            "refs/heads/main",
-            "refs/heads/master",
-        ],
-    )
-    .map(|b| b.reference.clone()))
+    candidates.extend(BASE_FALLBACKS.map(String::from));
+    let usable = commit_branches(host, cwd, &candidates)?;
+    Ok(candidates
+        .into_iter()
+        .find(|candidate| usable.contains(candidate)))
+}
+
+/// Whether a full ref is a local or remote-tracking branch, the two kinds [`list`] reads.
+fn is_branch(reference: &str) -> bool {
+    reference.starts_with("refs/heads/") || reference.starts_with("refs/remotes/")
+}
+
+/// Those of `references` that exist, name a commit and are not aliases of another ref: what
+/// [`list`] would show of them. Asked of Git for these refs alone, so that nothing else in
+/// the repository (a branch nobody can name, where a worktree lives) decides the answer.
+fn commit_branches(
+    host: &Host,
+    cwd: &Path,
+    references: &[String],
+) -> Result<Vec<String>, GitError> {
+    let mut args = vec![
+        "for-each-ref",
+        "--format=%(refname)%00%(objecttype)%00%(symref)",
+    ];
+    args.extend(references.iter().map(String::as_str));
+    let listed = run(host, cwd, &args)?;
+    // A pattern also matches the refs below it (`refs/heads/main/x`): only a commit under
+    // the exact name is kept, and the caller looks its candidates up by that name.
+    Ok(listed
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\0');
+            match (fields.next()?, fields.next()?, fields.next()?) {
+                (reference, "commit", "") => Some(reference.to_owned()),
+                _ => None,
+            }
+        })
+        .collect())
 }
 
 /// Where a new branch starts unless the user picks otherwise: the git-flow integration branch
@@ -128,10 +201,10 @@ fn first_existing<'a>(branches: &'a [Branch], references: &[&str]) -> Option<&'a
         .find_map(|reference| branches.iter().find(|b| b.reference == *reference))
 }
 
-/// Refuse checkout and pull while changes or an unfinished operation exist.
+/// Refuse checkout, pull and rebase while changes or an unfinished operation exist.
 pub fn require_clean(host: &Host, cwd: &Path) -> Result<(), GitError> {
     if !status::read(host, cwd)?.is_clean() {
-        return Err(GitError::Invalid("Commit your staged, unstaged and untracked changes before switching branches or pulling.".into()));
+        return Err(GitError::Invalid("Commit your staged, unstaged and untracked changes before switching branches, pulling or rebasing.".into()));
     }
     if conflicts::operation(host, cwd)?.is_some() || conflicts::has_sequence(host, cwd)? {
         return Err(GitError::Invalid(
@@ -142,19 +215,22 @@ pub fn require_clean(host: &Host, cwd: &Path) -> Result<(), GitError> {
 }
 
 /// Switch an existing local branch. Git enforces worktree occupancy again at execution.
-pub fn switch(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {
+/// `stop` ends the checkout, which runs `post-checkout` and content filters.
+pub fn switch(host: &Host, cwd: &Path, name: &str, stop: &Cancellation) -> Result<(), GitError> {
     validate_name(host, cwd, name)?;
     require_clean(host, cwd)?;
-    super::run_mutation(host, cwd, &["switch", "--no-guess", name]).map(drop)
+    super::run_stoppable(host, cwd, &["switch", "--no-guess", name], stop).map(drop)
 }
 
-/// Create and switch to a branch, optionally tracking a selected remote ref.
+/// Create and switch to a branch, optionally tracking a selected remote ref. `stop` ends the
+/// checkout, as for [`switch`].
 pub fn create(
     host: &Host,
     cwd: &Path,
     name: &str,
     base: &str,
     track: bool,
+    stop: &Cancellation,
 ) -> Result<(), GitError> {
     validate_name(host, cwd, name)?;
     let oid = resolve(host, cwd, base)?;
@@ -168,17 +244,25 @@ pub fn create(
         ));
     }
     require_clean(host, cwd)?;
-    if track {
-        super::run_mutation(host, cwd, &["switch", "--track", "-c", name, base]).map(drop)
+    let args = if track {
+        ["switch", "--track", "-c", name, base]
     } else {
-        super::run_mutation(host, cwd, &["switch", "--no-track", "-c", name, &oid]).map(drop)
-    }
+        ["switch", "--no-track", "-c", name, &oid]
+    };
+    super::run_stoppable(host, cwd, &args, stop).map(drop)
 }
 
-/// Whether every commit of `name` is reachable from HEAD, as `git branch -d` requires.
+/// Whether every commit of the local branch `name` is reachable from HEAD, as `git branch -d`
+/// requires.
 pub fn is_merged(host: &Host, cwd: &Path, name: &str) -> Result<bool, GitError> {
     validate_name(host, cwd, name)?;
-    match run(host, cwd, &["merge-base", "--is-ancestor", name, "HEAD"]) {
+    // A bare name would resolve to a tag of the same name before the branch.
+    let reference = format!("refs/heads/{name}");
+    match run(
+        host,
+        cwd,
+        &["merge-base", "--is-ancestor", &reference, "HEAD"],
+    ) {
         Ok(_) => Ok(true),
         Err(GitError::Failed { code: Some(1), .. }) => Ok(false),
         Err(error) => Err(error),
@@ -191,7 +275,7 @@ pub fn delete(host: &Host, cwd: &Path, name: &str, force: bool) -> Result<(), Gi
     validate_name(host, cwd, name)?;
     let branch = list(host, cwd)?
         .into_iter()
-        .find(|b| !b.remote && b.name == name)
+        .find(|b| b.local_name() == Some(name))
         .ok_or_else(|| GitError::Invalid(format!("Branch {name} no longer exists.")))?;
     if let Some(worktree) = branch.worktree {
         return Err(GitError::Invalid(format!(
@@ -229,121 +313,4 @@ fn validate_name(host: &Host, cwd: &Path, name: &str) -> Result<(), GitError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Branch, default_start, is_valid_name, short_name};
-
-    #[test]
-    fn branch_names_follow_git_ref_rules() {
-        for name in [
-            "develop",
-            "feature/login",
-            "fix-1.2",
-            "user/v2_beta",
-            "ünïcode",
-        ] {
-            assert!(is_valid_name(name), "{name}");
-        }
-        for name in [
-            "", "@", "-flag", "a..b", "a b", "end.", "a//b", "/lead", "trail/", ".hidden",
-            "x/.dot", "ref.lock", "a@{1}", "a~1", "a^", "a:b", "a?", "a*", "a[", "a\\b", "tab\t",
-        ] {
-            assert!(!is_valid_name(name), "{name:?}");
-        }
-    }
-
-    fn branch(reference: &str) -> Branch {
-        Branch {
-            reference: reference.into(),
-            name: short_name(reference).into(),
-            remote: reference.starts_with("refs/remotes/"),
-            worktree: None,
-        }
-    }
-
-    fn start(references: &[&str], base: Option<&str>) -> Option<String> {
-        let branches: Vec<_> = references.iter().map(|r| branch(r)).collect();
-        default_start(&branches, base).map(|b| b.name.clone())
-    }
-
-    #[test]
-    fn default_start_prefers_local_then_remote_develop() {
-        let base = Some("refs/remotes/origin/main");
-        let all = [
-            "refs/remotes/origin/main",
-            "refs/remotes/origin/develop",
-            "refs/heads/develop",
-        ];
-        assert_eq!(start(&all, base).as_deref(), Some("develop"));
-        assert_eq!(start(&all[..2], base).as_deref(), Some("origin/develop"));
-    }
-
-    #[test]
-    fn default_start_finds_develop_that_git_displays_as_heads_develop() {
-        // What `%(refname:short)` prints for the branch when a tag is also named `develop`.
-        let mut local = branch("refs/heads/develop");
-        local.name = "heads/develop".into();
-        let branches = [branch("refs/remotes/origin/develop"), local];
-        let start = default_start(&branches, Some("refs/remotes/origin/develop"));
-        assert_eq!(
-            start.map(|b| b.reference.as_str()),
-            Some("refs/heads/develop")
-        );
-    }
-
-    #[test]
-    fn well_known_branches_are_found_beside_tags_of_the_same_name() {
-        use super::{default_base, list};
-        use crate::{git::run, host::Host};
-
-        let path = std::env::temp_dir().join(format!("hive-branches-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).unwrap();
-        for args in [
-            &["init", "-b", "develop"][..],
-            &["config", "user.name", "Hive Test"],
-            &["config", "user.email", "hive@example.invalid"],
-            &["config", "commit.gpgsign", "false"],
-            &["commit", "--allow-empty", "-m", "fixture"],
-            &["branch", "main"],
-            &["tag", "develop"],
-            &["tag", "main"],
-        ] {
-            run(&Host::Local, &path, args).unwrap();
-        }
-        let branches = list(&Host::Local, &path).unwrap();
-        let names: Vec<_> = branches.iter().map(|b| b.name.as_str()).collect();
-        assert!(names.contains(&"heads/develop"), "{names:?}");
-        assert_eq!(
-            default_start(&branches, None).map(|b| b.reference.as_str()),
-            Some("refs/heads/develop")
-        );
-        assert_eq!(
-            default_base(&Host::Local, &path, &branches)
-                .unwrap()
-                .as_deref(),
-            Some("refs/heads/main")
-        );
-        let _ = std::fs::remove_dir_all(&path);
-    }
-
-    #[test]
-    fn default_start_falls_back_to_review_base_then_head() {
-        let branches = ["refs/heads/feature", "refs/remotes/origin/main"];
-        assert_eq!(
-            start(&branches, Some("refs/remotes/origin/main")).as_deref(),
-            Some("origin/main")
-        );
-        assert_eq!(start(&branches, Some("refs/heads/gone")), None);
-        assert_eq!(start(&branches, None), None);
-        assert_eq!(start(&[], None), None);
-    }
-
-    #[test]
-    fn short_name_strips_branch_namespaces_only() {
-        assert_eq!(short_name("refs/remotes/origin/develop"), "origin/develop");
-        assert_eq!(short_name("refs/heads/feature/x"), "feature/x");
-        assert_eq!(short_name("refs/tags/v1"), "refs/tags/v1");
-        assert_eq!(short_name("main"), "main");
-        assert_eq!(short_name(""), "");
-    }
-}
+mod tests;
