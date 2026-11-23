@@ -336,6 +336,10 @@ fn subtle(text: impl Into<SharedString>, cx: &App) -> Div {
         .text_color(cx.theme().muted_foreground)
         .child(text.into())
 }
+/// Marks a field that must be filled before its form can be submitted.
+fn required_mark(cx: &App) -> Div {
+    div().text_xs().text_color(cx.theme().danger).child("*")
+}
 fn card(cx: &App) -> Div {
     v_flex()
         .flex_none()

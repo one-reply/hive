@@ -125,6 +125,41 @@ fn rejected_prompt_edit_changes_nothing_and_is_not_announced(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn moving_a_template_reorders_the_library_and_a_move_that_changes_nothing_is_not_announced(
+    cx: &mut TestAppContext,
+) {
+    let pipelines = recovering(cx);
+    let store = pipelines.read_with(cx, |p, _| p.store.clone());
+    let announced = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = announced.clone();
+    let _observer = cx.update(|cx| cx.observe(&store, move |_, _| counter.set(counter.get() + 1)));
+    let names = |p: &Pipelines, cx: &gpui::App| -> Vec<String> {
+        let templates = &p.store.read(cx).state.pipelines.templates;
+        templates.iter().map(|t| t.name.clone()).collect()
+    };
+    let before = pipelines.read_with(cx, |p, cx| names(p, cx));
+    let (first, last) = (before[0].clone(), before[before.len() - 1].clone());
+    assert_ne!(first, last, "the presets hold more than one template");
+
+    pipelines.update(cx, |p, cx| {
+        p.move_template(&first, &first, cx);
+        p.move_template(&first, "No such template", cx);
+        assert_eq!(names(p, cx), before);
+    });
+    cx.run_until_parked();
+    assert_eq!(announced.get(), 0);
+
+    pipelines.update(cx, |p, cx| {
+        p.move_template(&first, &last, cx);
+        let moved = names(p, cx);
+        assert_eq!(moved.last(), Some(&first));
+        assert_eq!(moved[..moved.len() - 1], before[1..]);
+    });
+    cx.run_until_parked();
+    assert_eq!(announced.get(), 1);
+}
+
+#[gpui::test]
 fn deleting_a_template_preserves_runs_and_rejects_stale_confirmations(cx: &mut TestAppContext) {
     let pipelines = recovering(cx);
     pipelines.update(cx, |p, cx| {

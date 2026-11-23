@@ -93,22 +93,35 @@ pub(super) fn report_body(
                             h_flex()
                                 .items_start()
                                 .gap_2()
-                                .child(Icon::new(Lucide::CircleAlert).size_3p5().text_color(
-                                    if f.severity.blocks() {
-                                        cx.theme().warning
-                                    } else {
-                                        cx.theme().muted_foreground
-                                    },
-                                ))
                                 .child(
+                                    Icon::new(Lucide::CircleAlert)
+                                        .flex_none()
+                                        .size_3p5()
+                                        .text_color(if f.severity.blocks() {
+                                            cx.theme().warning
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        }),
+                                )
+                                .child(
+                                    // Beside the icon the text is sized along the row, where
+                                    // it keeps its one-line width unless it may shrink; then
+                                    // it wraps.
                                     v_flex()
+                                        .flex_1()
+                                        .min_w_0()
                                         .gap_1()
                                         .child(heading(format!(
                                             "{} · {}",
                                             lane.name,
                                             f.severity.label()
                                         )))
-                                        .child(div().text_sm().child(f.description.clone())),
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "reported-finding".into())
+                                                .text_sm()
+                                                .child(f.description.clone()),
+                                        ),
                                 ),
                         );
                     }
@@ -121,4 +134,66 @@ pub(super) fn report_body(
         .max_h(rems(15.))
         .overflow_y_scroll()
         .child(body)
+}
+
+#[cfg(test)]
+mod tests {
+    // Not a glob import: the parent's `gpui_kit::*` brings in GPUI's `test` attribute.
+    use super::report_body;
+    use gpui_kit as gpui;
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Context, Pixels, TestAppContext, Window, div, px};
+    use hive_core::pipeline::{Finding, Lane, Report, Run, Severity, Template, Ticket};
+
+    const WIDTH: Pixels = px(320.);
+
+    /// A review report in a column `WIDTH` wide.
+    struct Column(Run, Report);
+    impl Render for Column {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let ticket = Ticket {
+                run: self.0.id(),
+                attempt: 1,
+                lane: None,
+            };
+            div()
+                .w(WIDTH)
+                .child(report_body(ticket, &self.1, &self.0, cx))
+        }
+    }
+
+    #[gpui::test]
+    fn a_long_finding_wraps_inside_the_report_instead_of_running_past_it(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let lane = Lane {
+            name: "Development".into(),
+            project: "/unused-report-test-project".into(),
+            base: "HEAD".into(),
+            ..Lane::default()
+        };
+        let run = Run::new(
+            7,
+            lane.project.clone(),
+            "Task".into(),
+            Template::default(),
+            vec![lane],
+        )
+        .expect("a run over one lane");
+        let report = Report::Review {
+            summary: "Summary".into(),
+            evidence: Vec::new(),
+            findings: vec![Finding {
+                lane: 0,
+                severity: Severity::Major,
+                description: "The check returns false for any address. ".repeat(12),
+            }],
+        };
+        let (_, cx) = cx.add_window_view(|_, _| Column(run, report));
+        cx.run_until_parked();
+
+        let finding = cx.debug_bounds("reported-finding").expect("the finding");
+        assert!(finding.right() <= WIDTH, "{finding:?}");
+        let one_line = cx.update(|window, _| window.line_height());
+        assert!(finding.size.height > one_line * 2., "{finding:?}");
+    }
 }
