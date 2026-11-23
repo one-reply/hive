@@ -573,7 +573,8 @@ impl Sidebar {
         } else {
             CARD_HEIGHT
         };
-        let pr = worktree.map(|worktree| self.pr_card(project, worktree, window, cx));
+        let pr =
+            worktree.map(|worktree| self.pr_card(project, worktree, card.is_selected, window, cx));
         let height = header_height
             + card.agents.height
             + if pr.is_some() {
