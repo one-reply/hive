@@ -117,6 +117,14 @@ pub enum Portrait {
     Panda,
     /// Robot with a visor.
     Robot,
+    /// Bear with round ears.
+    Bear,
+    /// Penguin with a pale face.
+    Penguin,
+    /// Rabbit with long ears.
+    Rabbit,
+    /// Octopus with curled tentacles.
+    Octopus,
     /// Frog, also used for an unrecognized portrait name.
     #[serde(other)]
     Frog,
@@ -209,6 +217,10 @@ mod tests {
         for badge in [
             Badge::Avatar,
             Badge::Portrait(Portrait::Owl),
+            Badge::Portrait(Portrait::Bear),
+            Badge::Portrait(Portrait::Penguin),
+            Badge::Portrait(Portrait::Rabbit),
+            Badge::Portrait(Portrait::Octopus),
             Badge::Emoji("🐝".into()),
             Badge::Icon(ProjectIcon::Rocket),
         ] {

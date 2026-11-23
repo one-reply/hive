@@ -80,6 +80,10 @@ pub(crate) fn portrait(preset: Portrait, size: Pixels) -> impl IntoElement {
         Portrait::Cat => include_bytes!("../../assets/avatars/cat.svg"),
         Portrait::Panda => include_bytes!("../../assets/avatars/panda.svg"),
         Portrait::Robot => include_bytes!("../../assets/avatars/robot.svg"),
+        Portrait::Bear => include_bytes!("../../assets/avatars/bear.svg"),
+        Portrait::Penguin => include_bytes!("../../assets/avatars/penguin.svg"),
+        Portrait::Rabbit => include_bytes!("../../assets/avatars/rabbit.svg"),
+        Portrait::Octopus => include_bytes!("../../assets/avatars/octopus.svg"),
         Portrait::Frog => include_bytes!("../../assets/avatars/frog.svg"),
     };
     img(Arc::new(Image::from_bytes(ImageFormat::Svg, svg.to_vec())))

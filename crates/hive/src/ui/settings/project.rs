@@ -386,6 +386,10 @@ impl ProjectPage {
             ("Cat", Some(Portrait::Cat)),
             ("Panda", Some(Portrait::Panda)),
             ("Robot", Some(Portrait::Robot)),
+            ("Bear", Some(Portrait::Bear)),
+            ("Penguin", Some(Portrait::Penguin)),
+            ("Rabbit", Some(Portrait::Rabbit)),
+            ("Octopus", Some(Portrait::Octopus)),
         ];
         let mut row = h_flex().flex_wrap().gap_1();
         for (name, preset) in presets {
