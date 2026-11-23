@@ -1,5 +1,7 @@
 //! One project's page (Orca's "Identity"): display name, color and badge shown in the sidebar.
 
+mod emoji;
+
 use hive_core::host::Host;
 use std::path::{Path, PathBuf};
 
@@ -9,10 +11,10 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use hive_core::identity::{Badge, PALETTE, ProjectIcon, ProjectIdentity};
+use hive_core::identity::{Badge, PALETTE, Portrait, ProjectIcon, ProjectIdentity};
 
 use crate::app::AppState;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
@@ -51,7 +53,7 @@ impl BadgeTab {
 impl From<&Badge> for BadgeTab {
     fn from(badge: &Badge) -> Self {
         match badge {
-            Badge::Avatar => BadgeTab::Avatar,
+            Badge::Avatar | Badge::Portrait(_) => BadgeTab::Avatar,
             Badge::Icon(_) => BadgeTab::Icon,
             Badge::Emoji(_) => BadgeTab::Emoji,
         }
@@ -254,6 +256,7 @@ impl ProjectPage {
             Badge::Icon(ProjectIcon::Folder) => "Folder icon with repo color",
             Badge::Icon(_) => "Icon with repo color",
             Badge::Avatar => "Initial on repo color",
+            Badge::Portrait(_) => "Project avatar",
             Badge::Emoji(_) => "Emoji",
         };
         let tile = div()
@@ -363,10 +366,7 @@ impl ProjectPage {
         let body = match self.tab {
             BadgeTab::Avatar => self.render_avatar(snapshot, window, cx).into_any_element(),
             BadgeTab::Icon => self.render_icons(snapshot, window, cx).into_any_element(),
-            BadgeTab::Emoji => {
-                TextField::input(Input::new(&self.emoji_input), &self.emoji_input, cx)
-                    .into_any_element()
-            }
+            BadgeTab::Emoji => self.render_emojis(snapshot, window, cx).into_any_element(),
         };
         v_flex().gap_3().child(tabs).child(body)
     }
@@ -378,16 +378,39 @@ impl ProjectPage {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let color = project_badge::color(&snapshot.identity, snapshot.ix);
-        let chosen = *snapshot.identity.badge() == Badge::Avatar;
-        tile("avatar", chosen, window, cx)
-            .child(project_badge::avatar(
-                &snapshot.name,
-                color,
-                AVATAR_TILE * 0.7,
-            ))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.update_identity(cx, |identity| identity.set_badge(Badge::Avatar));
-            }))
+        let presets = [
+            ("Initial", None),
+            ("Fox", Some(Portrait::Fox)),
+            ("Owl", Some(Portrait::Owl)),
+            ("Frog", Some(Portrait::Frog)),
+            ("Cat", Some(Portrait::Cat)),
+            ("Panda", Some(Portrait::Panda)),
+            ("Robot", Some(Portrait::Robot)),
+            ("Bear", Some(Portrait::Bear)),
+            ("Penguin", Some(Portrait::Penguin)),
+            ("Rabbit", Some(Portrait::Rabbit)),
+            ("Octopus", Some(Portrait::Octopus)),
+        ];
+        let mut row = h_flex().flex_wrap().gap_1();
+        for (name, preset) in presets {
+            let badge = preset.map_or(Badge::Avatar, Badge::Portrait);
+            let chosen = snapshot.identity.badge() == &badge;
+            let size = AVATAR_TILE * 0.7;
+            let content = match preset {
+                Some(portrait) => project_badge::portrait(portrait, size).into_any_element(),
+                None => project_badge::avatar(&snapshot.name, color, size).into_any_element(),
+            };
+            let hover = Hover::new(name, window, cx);
+            row = row.child(
+                badge_button(name, name, AVATAR_TILE, chosen)
+                    .child(content)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.update_identity(cx, |identity| identity.set_badge(badge.clone()));
+                    }))
+                    .smooth_hover(badge_look(chosen), &hover, cx),
+            );
+        }
+        row
     }
 
     fn render_icons(
@@ -454,6 +477,24 @@ impl Render for ProjectPage {
 }
 
 /// A square picker cell, highlighted when `chosen`.
+fn badge_button(id: &'static str, name: &'static str, size: Pixels, chosen: bool) -> Button {
+    Button::new(id)
+        .size(size)
+        .px_0()
+        .cursor_pointer()
+        .accessibility_label(name)
+        .selected(chosen)
+        .toggled(chosen)
+}
+
+fn badge_look(chosen: bool) -> ButtonLook {
+    if chosen {
+        ButtonLook::Outline
+    } else {
+        ButtonLook::Ghost
+    }
+}
+
 fn tile(
     id: impl Into<ElementId>,
     chosen: bool,

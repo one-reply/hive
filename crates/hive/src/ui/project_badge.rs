@@ -4,7 +4,8 @@
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::Icon;
 use gpui_kit::*;
-use hive_core::identity::{Badge, ProjectIcon, ProjectIdentity};
+use hive_core::identity::{Badge, Portrait, ProjectIcon, ProjectIdentity};
+use std::sync::Arc;
 /// Initial letter relative to the badge size.
 const AVATAR_TEXT_SCALE: f32 = 0.62;
 const AVATAR_TEXT_COLOR: u32 = 0xffffff;
@@ -59,6 +60,7 @@ pub(crate) fn render(
             .text_color(color)
             .into_any_element(),
         Badge::Avatar => avatar(name, color, size).into_any_element(),
+        Badge::Portrait(preset) => portrait(*preset, size).into_any_element(),
         Badge::Emoji(emoji) => div()
             .size(size)
             .flex()
@@ -69,6 +71,24 @@ pub(crate) fn render(
             .child(emoji.clone())
             .into_any_element(),
     }
+}
+
+pub(crate) fn portrait(preset: Portrait, size: Pixels) -> impl IntoElement {
+    let svg: &[u8] = match preset {
+        Portrait::Fox => include_bytes!("../../assets/avatars/fox.svg"),
+        Portrait::Owl => include_bytes!("../../assets/avatars/owl.svg"),
+        Portrait::Cat => include_bytes!("../../assets/avatars/cat.svg"),
+        Portrait::Panda => include_bytes!("../../assets/avatars/panda.svg"),
+        Portrait::Robot => include_bytes!("../../assets/avatars/robot.svg"),
+        Portrait::Bear => include_bytes!("../../assets/avatars/bear.svg"),
+        Portrait::Penguin => include_bytes!("../../assets/avatars/penguin.svg"),
+        Portrait::Rabbit => include_bytes!("../../assets/avatars/rabbit.svg"),
+        Portrait::Octopus => include_bytes!("../../assets/avatars/octopus.svg"),
+        Portrait::Frog => include_bytes!("../../assets/avatars/frog.svg"),
+    };
+    img(Arc::new(Image::from_bytes(ImageFormat::Svg, svg.to_vec())))
+        .size(size)
+        .flex_none()
 }
 
 /// The first letter of `name` on `color`.
