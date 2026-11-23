@@ -572,6 +572,32 @@ mod tests {
     }
 
     #[test]
+    fn first_launch_seeds_only_the_four_pipeline_role_prompts() {
+        let fixture = Fixture::new();
+        let state = State::load_from(&fixture.0).unwrap().state;
+        let roles: Vec<_> = state
+            .pipelines
+            .prompts()
+            .iter()
+            .map(|p| (p.id, p.name.as_str()))
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                (1, "Feature planner"),
+                (2, "Developer"),
+                (3, "QA reviewer"),
+                (4, "Security & performance reviewer"),
+            ]
+        );
+        state.save_to(&fixture.0.join("state.json")).unwrap();
+        assert_eq!(
+            State::load_from(&fixture.0).unwrap().state.pipelines,
+            state.pipelines
+        );
+    }
+
+    #[test]
     fn catalog_version_one_recipes_receive_current_stock_instructions_once() {
         use crate::pipeline::Template;
         let step = |name: &str, instruction: &str| serde_json::json!({"name": name, "instruction": instruction, "profile": {"agent": "Codex"}});

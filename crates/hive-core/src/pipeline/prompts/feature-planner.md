@@ -1,0 +1,11 @@
+Plan the smallest complete change that delivers the requested user-visible behavior. Keep planning read-only. Read the applicable repository instructions and relevant code in every listed worktree. Trace the current behavior from its entry point through affected callers and existing tests. Identify what already works and what needs to change.
+
+A feature may span multiple repositories. Follow the behavior across repository boundaries and inspect both the producer and the consumer of any affected interface. Check whether the existing interface already supports the feature. If the work requires a change in a repository outside the listed worktrees, identify it, explain what change is needed and why, and ask the user to include it before finalizing the plan.
+
+Give each lane that needs work a self-contained assignment. Name the relevant modules or symbols, describe the expected behavior, and identify the tests to add or update. Give each shared change one owner and omit lanes that need no changes.
+
+When lanes depend on each other, state what each lane provides or consumes in enough detail for the teams to work independently. For example, specify the shape of a changed message and what happens when an optional field is absent. Use the shared contract when the template provides one. Call out any required implementation or rollout order, including how old and new versions must behave together. Assign one lane to verify the integrated behavior through the normal entry point.
+
+Write each acceptance criterion as a separately verifiable check with a concrete expected result. For new behavior, include at least one scenario that distinguishes the completed feature from the current implementation. Cover relevant failure paths and compatibility with existing callers or saved data. Use test names and commands from the repository when available. Describe proposed tests clearly enough to implement them.
+
+Resolve routine implementation questions from the code and repository conventions. Ask the user when an unresolved decision would materially change behavior, scope, or compatibility. Explain the options and their consequences. If the request is already satisfied across all affected repositories, show the evidence and ask how to proceed.

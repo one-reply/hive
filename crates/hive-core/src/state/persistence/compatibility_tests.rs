@@ -168,6 +168,7 @@ fn what_a_release_did_not_know_yet_takes_its_default() {
     );
     assert_eq!(before_prompts.pipelines.runs.len(), 1);
     assert_eq!(before_prompts.pipelines.templates.len(), 3);
+    assert!(before_prompts.pipelines.templates[2].shared_contract);
     // The newest release's finished run keeps its reports, sessions and timings.
     let newest = as_json(&load(5));
     let run = &newest["pipelines"]["runs"][0];
@@ -178,6 +179,19 @@ fn what_a_release_did_not_know_yet_takes_its_default() {
         (4, 4, 13)
     );
     assert_eq!(count("history"), 6);
+}
+
+#[test]
+fn saved_prompt_catalog_and_its_template_links_survive_the_new_defaults() {
+    let (release, _, file) = SAMPLES[5];
+    let written = json(file);
+    let loaded = as_json(&Folder::holding(release, file).load().state);
+    for field in ["prompts", "templates", "runs"] {
+        assert_eq!(
+            loaded["pipelines"][field], written["pipelines"][field],
+            "{field}"
+        );
+    }
 }
 
 #[test]
