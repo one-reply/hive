@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit::component::Selectable as _;
 
 const EMOJIS: &[(&str, &str)] = &[
     ("🚀", "Rocket"),
@@ -32,27 +31,14 @@ impl ProjectPage {
             let selected =
                 matches!(snapshot.identity.badge(), Badge::Emoji(value) if value == emoji);
             let hover = Hover::new(emoji, window, cx);
-            let button = Button::new(emoji)
-                .cursor_pointer()
-                .label(emoji)
-                .accessibility_label(name)
-                .size(ICON_TILE)
-                .selected(selected)
-                .toggled(selected)
+            let button = badge_button(emoji, name, ICON_TILE, selected)
+                .child(div().flex_none().text_size(ICON_SIZE).child(emoji))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.emoji_input
                         .update(cx, |input, cx| input.set_value(emoji, window, cx));
                     this.update_identity(cx, |identity| identity.set_emoji(emoji));
                 }))
-                .smooth_hover(
-                    if selected {
-                        ButtonLook::Outline
-                    } else {
-                        ButtonLook::Ghost
-                    },
-                    &hover,
-                    cx,
-                );
+                .smooth_hover(badge_look(selected), &hover, cx);
             choices = choices.child(button);
         }
         v_flex().gap_2().child(choices).child(TextField::input(

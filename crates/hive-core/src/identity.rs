@@ -98,7 +98,28 @@ pub enum Badge {
     Icon(ProjectIcon),
     /// The first letter of the display name on the project's color.
     Avatar,
+    /// A built-in illustrated project avatar.
+    Portrait(Portrait),
     Emoji(String),
+}
+
+/// Built-in project portraits, stored by name so the picker can be reordered.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Portrait {
+    /// Fox with pointed ears.
+    Fox,
+    /// Owl with round spectacles.
+    Owl,
+    /// Cat with whiskers.
+    Cat,
+    /// Panda with dark eye patches.
+    Panda,
+    /// Robot with a visor.
+    Robot,
+    /// Frog, also used for an unrecognized portrait name.
+    #[serde(other)]
+    Frog,
 }
 
 impl Default for Badge {
@@ -187,6 +208,7 @@ mod tests {
     fn badges_round_trip() {
         for badge in [
             Badge::Avatar,
+            Badge::Portrait(Portrait::Owl),
             Badge::Emoji("🐝".into()),
             Badge::Icon(ProjectIcon::Rocket),
         ] {
@@ -195,6 +217,20 @@ mod tests {
             let json = serde_json::to_string(&identity).expect("serializable");
             let back: ProjectIdentity = serde_json::from_str(&json).expect("valid json");
             assert_eq!(back.badge(), &badge);
+        }
+    }
+
+    #[test]
+    fn legacy_initial_and_unrecognized_portraits_load() {
+        for (json, badge) in [
+            (r#"{"badge":{"kind":"avatar"}}"#, Badge::Avatar),
+            (
+                r#"{"badge":{"kind":"portrait","value":"future"}}"#,
+                Badge::Portrait(Portrait::Frog),
+            ),
+        ] {
+            let identity: ProjectIdentity = serde_json::from_str(json).expect("valid identity");
+            assert_eq!(identity.badge(), &badge);
         }
     }
 
