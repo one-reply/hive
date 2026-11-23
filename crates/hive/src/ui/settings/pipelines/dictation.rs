@@ -331,6 +331,10 @@ impl Render for DictationCard {
         let model = saved
             .provider()
             .map(|provider| self.model_control(provider, saved.model(), cx));
+        let file_transcription = saved
+            .provider()
+            .zip(saved.model())
+            .is_some_and(|(provider, model)| provider.uses_file_transcription(model));
         let theme = cx.theme();
         v_flex()
             .gap_4()
@@ -343,9 +347,8 @@ impl Render for DictationCard {
                     .gap_1()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Dictation"))
                     .child(div().text_sm().text_color(muted).child(
-                        "Record a task with the microphone of the New run form. The recording \
-                         goes to the model chosen here, which writes it down following the \
-                         prompt below.",
+                        "Record a task with the microphone in New run. The selected model \
+                         transcribes the recording into the Task field.",
                     )),
             )
             .child(
@@ -402,6 +405,11 @@ impl Render for DictationCard {
                 &self.prompt,
                 cx,
             ))
+            .when(file_transcription, |card| {
+                card.child(div().text_xs().text_color(muted).child(
+                    "Use the prompt to give context, such as project names and technical terms you expect to say.",
+                ))
+            })
             .when_some(self.error.clone(), |card, error| {
                 card.child(div().text_sm().text_color(theme.danger).child(error))
             })

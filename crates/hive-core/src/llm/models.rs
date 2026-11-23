@@ -152,12 +152,6 @@ fn model(provider: Provider, entry: Entry) -> Option<Model> {
     if provider == Provider::GoogleAi && !entry.methods.iter().any(|m| m == "generateContent") {
         return None;
     }
-    if let Some(architecture) = &entry.architecture
-        && (!architecture.input_modalities.iter().any(|m| m == "text")
-            || !architecture.output_modalities.iter().any(|m| m == "text"))
-    {
-        return None;
-    }
     let id = if provider == Provider::GoogleAi {
         entry.name.trim_start_matches("models/").to_owned()
     } else {
@@ -186,6 +180,15 @@ fn capability(
     id: &str,
     architecture: Option<&Architecture>,
 ) -> Option<Capability> {
+    if provider.uses_file_transcription(id) {
+        return Some(Capability::Audio);
+    }
+    if let Some(architecture) = architecture
+        && (!architecture.input_modalities.iter().any(|m| m == "text")
+            || !architecture.output_modalities.iter().any(|m| m == "text"))
+    {
+        return None;
+    }
     let listens =
         |architecture: &Architecture| architecture.input_modalities.iter().any(|m| m == "audio");
     Some(match provider {

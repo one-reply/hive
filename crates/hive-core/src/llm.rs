@@ -7,6 +7,7 @@ use crate::keychain;
 mod completion;
 mod models;
 mod request;
+pub(crate) use completion::transcribe_in_language;
 pub use completion::{generate, transcribe};
 pub use models::{Capability, Model, list_models};
 pub use request::RequestError;
@@ -46,6 +47,11 @@ impl Provider {
             Self::OpenRouter => "OpenRouter",
             Self::Anthropic => "Anthropic",
         }
+    }
+
+    /// Whether dictation sends the recording to the dedicated file transcription API.
+    pub fn uses_file_transcription(self, model: &str) -> bool {
+        self == Self::OpenAi && model == "gpt-transcribe"
     }
 
     pub(crate) fn account(self) -> &'static str {

@@ -50,34 +50,27 @@ fn run_detail(
         .join(DETAIL_SEPARATOR)
 }
 
-pub(super) fn run_row(
-    row: RunRow,
-    window: &mut Window,
-    cx: &mut Context<PipelinePanel>,
-) -> AnyElement {
-    // Keyed by the run, not by its place: the list draws only the rows in view.
-    let hover = Hover::with_duration(("recent-run", row.id), WIDE_HOVER_DURATION, window, cx);
-    let color = status_color(row.status, cx);
+/// What a library row shows: the icon and its color, two lines of text and a status pill.
+pub(super) struct RowFace {
+    pub(super) icon: Lucide,
+    pub(super) color: Hsla,
+    pub(super) title: String,
+    pub(super) detail: String,
+    pub(super) pill: &'static str,
+}
+
+/// The bordered, focusable row a run or the draft is listed as; the caller adds the click.
+pub(super) fn row_frame(
+    id: ElementId,
+    face: RowFace,
+    more: Option<AnyElement>,
+    cx: &App,
+) -> Stateful<Div> {
     let focus = cx.theme().ring;
-    let id = row.id;
-    let label = format!("{}, {}", row.task, row.status.label());
-    let panel = cx.entity();
-    let (finished, task) = (row.finished, row.task.clone());
-    let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
-        run_menu(menu, &panel, id, finished, &task)
-    };
-    let more = Button::new(("recent-run-menu", id))
-        .cursor_pointer()
-        .ghost()
-        .xsmall()
-        .icon(Lucide::Ellipsis)
-        .accessibility_label(format!("Actions for {}", row.task))
-        .tooltip("Run actions")
-        .dropdown_menu(menu.clone());
-    let row_element = h_flex()
-        .id(("recent-run", id))
+    h_flex()
+        .id(id)
         .role(Role::Button)
-        .aria_label(label)
+        .aria_label(format!("{}, {}", face.title, face.pill))
         .tab_index(0)
         .gap_3()
         .px_3()
@@ -93,12 +86,8 @@ pub(super) fn run_row(
                 .flex_none()
                 .justify_center()
                 .rounded_md()
-                .bg(color.opacity(STATUS_TINT_OPACITY))
-                .child(
-                    Icon::new(status_icon(row.status))
-                        .size_4()
-                        .text_color(color),
-                ),
+                .bg(face.color.opacity(STATUS_TINT_OPACITY))
+                .child(Icon::new(face.icon).size_4().text_color(face.color)),
         )
         .child(
             v_flex()
@@ -110,17 +99,54 @@ pub(super) fn run_row(
                         .truncate()
                         .text_sm()
                         .font_weight(FontWeight::MEDIUM)
-                        .child(row.task),
+                        .child(face.title),
                 )
-                .child(subtle(row.detail, cx).truncate()),
+                .child(subtle(face.detail, cx).truncate()),
         )
-        .child(status_pill(row.status.label(), color))
-        .child(more)
+        .child(status_pill(face.pill, face.color))
+        .children(more)
         .child(
             Icon::new(Lucide::ChevronRight)
                 .size_4()
                 .text_color(cx.theme().muted_foreground),
-        );
+        )
+}
+
+pub(super) fn run_row(
+    row: RunRow,
+    window: &mut Window,
+    cx: &mut Context<PipelinePanel>,
+) -> AnyElement {
+    // Keyed by the run, not by its place: the list draws only the rows in view.
+    let hover = Hover::with_duration(("recent-run", row.id), WIDE_HOVER_DURATION, window, cx);
+    let color = status_color(row.status, cx);
+    let id = row.id;
+    let panel = cx.entity();
+    let (finished, task) = (row.finished, row.task.clone());
+    let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+        run_menu(menu, &panel, id, finished, &task)
+    };
+    let more = Button::new(("recent-run-menu", id))
+        .cursor_pointer()
+        .ghost()
+        .xsmall()
+        .icon(Lucide::Ellipsis)
+        .accessibility_label(format!("Actions for {}", row.task))
+        .tooltip("Run actions")
+        .dropdown_menu(menu.clone());
+    let face = RowFace {
+        icon: status_icon(row.status),
+        color,
+        title: row.task,
+        detail: row.detail,
+        pill: row.status.label(),
+    };
+    let row_element = row_frame(
+        ("recent-run", id).into(),
+        face,
+        Some(more.into_any_element()),
+        cx,
+    );
     on_activate(row_element, cx, move |p, w, cx| p.show_run(id, None, w, cx))
         .hover_bg(&hover, cx.theme().background, cx.theme().muted)
         .context_menu(menu)

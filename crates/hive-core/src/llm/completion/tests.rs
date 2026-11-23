@@ -101,11 +101,11 @@ fn audio_requests_carry_the_prompt_as_the_system_instruction_and_the_wav_as_base
     let wav = b"RIFF\x00\xffWAVE recording";
     let audio = STANDARD.encode(wav);
     for provider in AUDIO_PROVIDERS {
-        let (url, body, reply) =
-            audio_request(provider, "fixture-model", "Transcribe.", wav).unwrap();
+        let (url, request) =
+            audio_request(provider, "fixture-model", "Transcribe.", None, wav).unwrap();
         let (origin, server) = server(vec![(200, transcript_sample(provider))], Duration::ZERO);
         assert_eq!(
-            transcription(&client(provider), &origin, &body, reply).unwrap(),
+            request.send(&client(provider), &origin).unwrap(),
             "open `main.rs`",
             "{provider}"
         );
@@ -167,11 +167,125 @@ fn providers_without_audio_input_are_refused_before_any_request() {
     ));
     for provider in Provider::ALL {
         assert_eq!(
-            audio_request(provider, "fixture-model", "Transcribe.", b"wav").is_ok(),
+            audio_request(provider, "fixture-model", "Transcribe.", None, b"wav").is_ok(),
             AUDIO_PROVIDERS.contains(&provider),
             "{provider}"
         );
     }
+}
+
+#[test]
+fn file_transcription_posts_the_original_wav_and_uses_the_prompt_as_context() {
+    let wav = b"RIFF\x00\x80\xffWAVE\r\n";
+    let prompt = "Hive, GPUI.\nПроєкт «Вулик».";
+    let provider = Provider::OpenAi;
+    for language in [Some(("Ukrainian", "uk")), None] {
+        let (url, request) =
+            audio_request(provider, "gpt-transcribe", prompt, language, wav).unwrap();
+        let path = url.strip_prefix("https://api.openai.com").unwrap();
+        let (origin, server) = crate::llm::test_server::capture_requests(
+            vec![(
+                200,
+                r#"{"text":"  Привіт!  ","languages":[{"code":"uk"}]}"#.into(),
+            )],
+            Duration::ZERO,
+            std::convert::identity,
+        );
+        assert_eq!(
+            request
+                .send(&client(provider), &format!("{origin}{path}"))
+                .unwrap(),
+            "Привіт!"
+        );
+        let sent = server.join().unwrap().remove(0);
+        let end = sent.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let headers = std::str::from_utf8(&sent[..end]).unwrap();
+        assert!(headers.starts_with("POST /v1/audio/transcriptions HTTP/1.1\r\n"));
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture-secret")
+        );
+        let boundary = headers
+            .lines()
+            .find_map(|header| {
+                header
+                    .split_once("multipart/form-data; boundary=")
+                    .map(|(_, value)| value)
+            })
+            .unwrap();
+        let mut expected = format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"dictation.wav\"\r\nContent-Type: audio/wav\r\n\r\n").into_bytes();
+        expected.extend_from_slice(wav);
+        let mut fields = vec![("model", "gpt-transcribe"), ("prompt", prompt)];
+        if language.is_some() {
+            fields.push(("languages[]", "uk"));
+        }
+        for (field, value) in fields {
+            expected.extend(format!("\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"\r\n\r\n{value}").bytes());
+        }
+        expected.extend(format!("\r\n--{boundary}--\r\n").bytes());
+        assert_eq!(&sent[end + 4..], expected);
+    }
+}
+
+#[test]
+fn chat_models_keep_the_language_in_the_system_instructions() {
+    let language = Some(("Ukrainian", "uk"));
+    for (provider, model) in [
+        (Provider::OpenAi, "gpt-audio"),
+        (Provider::GoogleAi, "gemini-flash"),
+        (Provider::OpenRouter, "openai/gpt-transcribe"),
+    ] {
+        let (_, request) = audio_request(provider, model, "Terms.", language, b"wav").unwrap();
+        let AudioRequest::Chat(body, _) = request else {
+            panic!("expected a chat request")
+        };
+        let instructions = if provider == Provider::GoogleAi {
+            &body["systemInstruction"]["parts"][0]["text"]
+        } else {
+            &body["messages"][0]["content"]
+        };
+        let instructions = instructions.as_str().unwrap();
+        assert!(instructions.starts_with("Terms.\n\nThe recording is in Ukrainian."));
+        assert!(instructions.contains("Write the transcription in Ukrainian;"));
+    }
+}
+
+#[test]
+fn file_transcription_rejects_empty_replies_and_reports_http_failures_safely() {
+    let provider = Provider::OpenAi;
+    let (origin, server) = server(
+        vec![
+            (401, "private".into()),
+            (429, "private".into()),
+            (200, "{}".into()),
+            (200, r#"{"text":" \n "}"#.into()),
+            (200, r#"{"text":"Retry worked"}"#.into()),
+        ],
+        Duration::ZERO,
+    );
+    let client = client(provider);
+    let send = || {
+        audio_request(provider, "gpt-transcribe", "Terms.", None, b"wav")
+            .unwrap()
+            .1
+            .send(&client, &origin)
+    };
+    for expected in [401, 429] {
+        let error = send().unwrap_err();
+        assert!(matches!(error, RequestError::Http { status, .. } if status == expected));
+        assert!(!error.to_string().contains("private"));
+    }
+    for _ in 0..2 {
+        assert!(
+            send()
+                .unwrap_err()
+                .to_string()
+                .contains("No transcription was returned")
+        );
+    }
+    assert_eq!(send().unwrap(), "Retry worked");
+    assert_eq!(server.join().unwrap().len(), 5);
 }
 
 #[test]
@@ -190,10 +304,10 @@ fn an_unfinished_or_empty_transcription_is_an_error_about_the_recording() {
             .replace("STOP", "MAX_TOKENS");
         let silent = sample.replace("open `main.rs`", r" \n");
         for body in [cut_off, silent, "{}".to_owned()] {
-            let (_, request, reply) =
-                audio_request(provider, "fixture-model", "Transcribe.", b"wav").unwrap();
+            let (_, request) =
+                audio_request(provider, "fixture-model", "Transcribe.", None, b"wav").unwrap();
             let (origin, server) = server(vec![(200, body)], Duration::ZERO);
-            let error = transcription(&client(provider), &origin, &request, reply).unwrap_err();
+            let error = request.send(&client(provider), &origin).unwrap_err();
             assert!(
                 error.to_string().contains("No transcription was returned"),
                 "{provider}: {error}"
@@ -205,13 +319,21 @@ fn an_unfinished_or_empty_transcription_is_an_error_about_the_recording() {
 
 #[test]
 fn a_rejected_audio_request_reports_the_status_without_the_remote_body() {
-    let (_, request, reply) =
-        audio_request(Provider::OpenAi, "fixture-model", "Transcribe.", b"wav").unwrap();
+    let (_, request) = audio_request(
+        Provider::OpenAi,
+        "fixture-model",
+        "Transcribe.",
+        None,
+        b"wav",
+    )
+    .unwrap();
     let (origin, server) = server(
         vec![(400, "fixture-secret and the recording".into())],
         Duration::ZERO,
     );
-    let error = transcription(&client(Provider::OpenAi), &origin, &request, reply).unwrap_err();
+    let error = request
+        .send(&client(Provider::OpenAi), &origin)
+        .unwrap_err();
     assert!(matches!(error, RequestError::Http { status: 400, .. }));
     let printed = format!("{error} {error:?}");
     assert!(printed.contains("Check the selected model and request size in Settings."));

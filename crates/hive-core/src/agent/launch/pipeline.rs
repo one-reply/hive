@@ -182,6 +182,10 @@ impl PipelineLaunch {
                 _ => {}
             }
         }
+        // `--add-dir` takes any number of values: whatever follows it up to the next option
+        // joins the list, so Claude Code read the prompt after it as one more folder. The
+        // folders therefore come last, where an option or the end of the command closes them.
+        let mut folders = Vec::new();
         for directory in &self.directories {
             let path = directory
                 .to_str()
@@ -194,7 +198,7 @@ impl PipelineLaunch {
             // Codex --add-dir enables writes. Its read-only sandbox can already read these
             // paths; OpenCode's plan agent can request external-directory read permission.
             if matches!(agent, AgentKind::ClaudeCode | AgentKind::Antigravity) {
-                args.extend(["--add-dir".into(), path.into()]);
+                folders.extend(["--add-dir".to_owned(), path.to_owned()]);
             }
         }
         if let Some(directory) = &self.image_directory
@@ -208,7 +212,7 @@ impl PipelineLaunch {
                         "Agents need an absolute UTF-8 path for the task images".into(),
                     )
                 })?;
-            args.extend(["--add-dir".into(), path.into()]);
+            folders.extend(["--add-dir".to_owned(), path.to_owned()]);
         }
         let mode = self.profile.mode.unwrap_or(self.role.default_mode());
         let flags = mode_arguments(agent, mode).ok_or(LaunchError::Unsupported)?;
@@ -235,6 +239,7 @@ impl PipelineLaunch {
             }
             args.push(prompt);
         }
+        args.extend(folders);
         Ok(args)
     }
 }
@@ -290,6 +295,51 @@ mod tests {
                 );
                 // The folder is not a worktree the agent takes part in.
                 assert!(!args.iter().any(|a| a.contains("participating worktree")));
+            }
+        }
+    }
+
+    #[test]
+    fn no_folder_list_swallows_the_prompt_or_another_argument() {
+        let modes = [
+            None,
+            Some(PermissionMode::CliDefault),
+            Some(PermissionMode::Plan),
+            Some(PermissionMode::Bypass),
+        ];
+        for role in [
+            PipelineRole::Plan,
+            PipelineRole::Review,
+            PipelineRole::Develop,
+        ] {
+            for mode in modes {
+                for agent in [AgentKind::ClaudeCode, AgentKind::Antigravity] {
+                    let mut pipeline = launch(agent, role);
+                    pipeline.profile.mode = mode;
+                    pipeline.image_directory = Some("/data/task-images".into());
+                    if role != PipelineRole::Develop {
+                        pipeline.directories.push("/repo/another worktree".into());
+                    }
+                    let args = Launch::Pipeline(pipeline)
+                        .with_known_session()
+                        .local_arguments(Some("{}"))
+                        .unwrap();
+                    // Each folder is followed by an option or ends the command; the prompt is
+                    // never the argument after one.
+                    for (ix, arg) in args.iter().enumerate() {
+                        if arg != "--add-dir" {
+                            continue;
+                        }
+                        let next = args.get(ix + 2);
+                        assert!(
+                            next.is_none_or(|next| next.starts_with('-')),
+                            "{agent:?} {role:?} {mode:?}: {next:?} follows a folder"
+                        );
+                    }
+                    let prompt = args.iter().position(|a| a.contains("hive agent report"));
+                    let first_folder = args.iter().position(|a| a == "--add-dir");
+                    assert!(prompt < first_folder, "{agent:?} {role:?} {mode:?}");
+                }
             }
         }
     }

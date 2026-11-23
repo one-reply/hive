@@ -7,10 +7,14 @@ use gpui_kit::component::{
     button::ButtonVariants as _,
     menu::{ContextMenuExt as _, PopupMenu},
 };
+use hive_core::pipeline::draft::LaunchDraft;
 
+mod draft;
 mod entries;
 mod reorder;
 mod runs;
+use draft::draft_row;
+pub(super) use draft::draft_title;
 pub(super) use entries::Entry;
 use entries::entries;
 use runs::run_row;
@@ -49,7 +53,8 @@ impl PipelinePanel {
             .filter(|(_, owner, _)| owner != &self.project)
             .map(|(id, ..)| id)
             .collect();
-        let entries: Rc<[Entry]> = entries(&runs, &elsewhere).into();
+        let has_draft = self.saved_draft(cx).is_some();
+        let entries: Rc<[Entry]> = entries(&runs, has_draft, &elsewhere).into();
         if *self.entries != *entries {
             replace_rows(&self.history, &self.entries, &entries);
             self.entries = entries.clone();
@@ -99,6 +104,10 @@ impl PipelinePanel {
             Entry::Workflows => self.workflows(window, cx).into_any_element(),
             Entry::Section(title) => heading(title).into_any_element(),
             Entry::Run(id) => self.run_entry(id, window, cx),
+            Entry::Draft => match self.saved_draft(cx).cloned() {
+                Some(draft) => draft_row(&draft, window, cx),
+                None => div().into_any_element(),
+            },
             Entry::Elsewhere(id) => self.elsewhere_entry(id, window, cx),
             Entry::NoRuns => h_flex()
                 .gap_2()
@@ -124,6 +133,12 @@ impl PipelinePanel {
             .pb(below)
             .child(body)
             .into_any_element()
+    }
+
+    /// The project's draft as it was last saved; the row reads its task from here.
+    fn saved_draft<'a>(&self, cx: &'a App) -> Option<&'a LaunchDraft> {
+        let drafts = &AppState::get(cx).store.read(cx).state.pipelines.drafts;
+        drafts.iter().find(|draft| draft.owner == self.project)
     }
 
     fn run_entry(&self, id: u64, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

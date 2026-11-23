@@ -1,12 +1,10 @@
 //! What the overview's card says of each run and draft, read out of the store and the
 //! project list before anything is drawn.
-use super::super::library::RunRow;
+use super::super::library::{RunRow, draft_title};
 use super::*;
 use crate::state::pipelines::{Entry, ListedRun};
 use hive_core::identity::ProjectIdentity;
 use hive_core::pipeline::draft::LaunchDraft;
-
-const UNTITLED_DRAFT: &str = "Untitled draft";
 
 /// Where a click on a line leads.
 #[derive(Clone)]
@@ -88,16 +86,6 @@ fn draft_line(draft: &LaunchDraft, project: ProjectMark) -> Line {
     }
 }
 
-/// A draft is named by its task, and one whose task is still empty by what it is.
-fn draft_title(task: &str) -> String {
-    let title = run::task_title(task);
-    if title.is_empty() {
-        UNTITLED_DRAFT.into()
-    } else {
-        title
-    }
-}
-
 /// The overview's groups with each entry read out of the store. An entry that vanished
 /// between the overview and this read is skipped.
 pub(super) fn read(overview: &Overview, cx: &App) -> Vec<(&'static str, Vec<Line>)> {
@@ -126,7 +114,7 @@ pub(super) fn read(overview: &Overview, cx: &App) -> Vec<(&'static str, Vec<Line
 #[cfg(test)]
 mod tests {
     // Not a glob import: the parent's `gpui_kit::*` brings in GPUI's `test` attribute.
-    use super::{UNTITLED_DRAFT, draft_title, project_mark};
+    use super::project_mark;
     use crate::ui::project_badge;
     use hive_core::host::Host;
     use hive_core::identity::ProjectIdentity;
@@ -165,12 +153,5 @@ mod tests {
         let gone = project_mark(&projects, Path::new("/work/gone"));
         assert_eq!(gone.name, "gone");
         assert!(gone.badge.is_none());
-    }
-
-    #[test]
-    fn a_draft_is_named_by_the_first_line_of_its_task() {
-        assert_eq!(draft_title("  Add login\nwith details"), "Add login");
-        assert_eq!(draft_title(""), UNTITLED_DRAFT);
-        assert_eq!(draft_title(" \n "), UNTITLED_DRAFT);
     }
 }

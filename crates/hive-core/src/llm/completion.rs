@@ -3,6 +3,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
+use ureq::unversioned::multipart::{Form, Part};
 
 /// A recording is uploaded whole and read in one pass, which is slower than a text prompt.
 const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -14,7 +15,7 @@ const TRANSCRIPT_TOKENS: u32 = 8192;
 const TRANSCRIBE_REQUEST: &str = "Transcribe this recording.";
 
 /// Reply envelopes of the provider APIs. OpenAI answers `generate` through Responses and
-/// `transcribe` through Chat Completions, so the provider alone does not name the parser.
+/// chat audio models through Chat Completions.
 #[derive(Clone, Copy)]
 enum Reply {
     Responses,
@@ -92,61 +93,117 @@ pub fn generate(provider: Provider, model: &str, prompt: &str) -> Result<String,
     extract(provider, Reply::for_text(provider), response)
 }
 
-/// Blocking: turns a WAV recording into text in one request. `prompt` is the system
-/// instruction the model follows while it transcribes.
+/// Blocking: turns a WAV recording into text in one request with automatic language detection.
 pub fn transcribe(
     provider: Provider,
     model: &str,
     prompt: &str,
     wav: &[u8],
 ) -> Result<String, RequestError> {
-    // Built before the key is read: a provider or model that cannot answer costs no Keychain
-    // access and no request.
-    let (url, body, reply) = audio_request(provider, model, prompt, wav)?;
-    let client = Client::new(provider, TRANSCRIBE_TIMEOUT)?;
-    transcription(&client, &url, &body, reply)
+    transcribe_in_language(provider, model, prompt, None, wav)
 }
 
-fn transcription(
-    client: &Client,
-    url: &str,
-    body: &serde_json::Value,
-    reply: Reply,
-) -> Result<String, RequestError> {
-    let response: Response = client.post(url, body)?;
-    // `extract` fails only on an unfinished or empty reply. For a recording that means silence
-    // or a cut-off transcript, so `generate`'s advice to shorten the prompt would mislead.
-    extract(client.provider, reply, response).map_err(|_| RequestError::Response {
-        provider: client.provider,
-        message: "No transcription was returned. Check the selected model or record again.",
-    })
-}
-
-fn audio_request(
+pub(crate) fn transcribe_in_language(
     provider: Provider,
     model: &str,
     prompt: &str,
+    language: Option<(&str, &str)>,
     wav: &[u8],
-) -> Result<(String, serde_json::Value, Reply), RequestError> {
+) -> Result<String, RequestError> {
+    // Built before the key is read: a provider or model that cannot answer costs no Keychain
+    // access and no request.
+    let (url, request) = audio_request(provider, model, prompt, language, wav)?;
+    let client = Client::new(provider, TRANSCRIBE_TIMEOUT)?;
+    request.send(&client, &url)
+}
+
+enum AudioRequest<'a> {
+    File(Form<'a>),
+    Chat(serde_json::Value, Reply),
+}
+
+impl AudioRequest<'_> {
+    fn send(self, client: &Client, url: &str) -> Result<String, RequestError> {
+        let no_transcript = || {
+            client
+                .invalid("No transcription was returned. Check the selected model or record again.")
+        };
+        match self {
+            Self::File(form) => {
+                #[derive(Deserialize)]
+                struct Transcript {
+                    #[serde(default)]
+                    text: String,
+                }
+                let reply: Transcript = client.post_form(url, form)?;
+                let text = reply.text.trim();
+                if text.is_empty() {
+                    return Err(no_transcript());
+                }
+                Ok(text.to_owned())
+            }
+            Self::Chat(body, reply) => {
+                let response = client.post(url, &body)?;
+                extract(client.provider, reply, response).map_err(|_| no_transcript())
+            }
+        }
+    }
+}
+
+fn audio_request<'a>(
+    provider: Provider,
+    model: &'a str,
+    prompt: &'a str,
+    language: Option<(&str, &'a str)>,
+    wav: &'a [u8],
+) -> Result<(String, AudioRequest<'a>), RequestError> {
     if !AUDIO_PROVIDERS.contains(&provider) {
         return Err(RequestError::Response {
             provider,
             message: "This provider does not accept audio.",
         });
     }
+    if provider.uses_file_transcription(model) {
+        let file = Part::bytes(wav)
+            .file_name("dictation.wav")
+            .mime_str("audio/wav")
+            .expect("audio/wav is a valid MIME type");
+        let mut form = Form::new()
+            .part("file", file)
+            .text("model", model)
+            .text("prompt", prompt);
+        if let Some((_, code)) = language {
+            form = form.text("languages[]", code);
+        }
+        return Ok((
+            "https://api.openai.com/v1/audio/transcriptions".into(),
+            AudioRequest::File(form),
+        ));
+    }
+    let instructions;
+    let prompt = if let Some((name, _)) = language {
+        instructions = format!(
+            "{prompt}\n\nThe recording is in {name}. Write the transcription in {name}; keep words of another language, such as English technical terms, as they are said."
+        );
+        &instructions
+    } else {
+        prompt
+    };
     let audio = STANDARD.encode(wav);
     if provider == Provider::GoogleAi {
         return Ok((
             google_url(model)?,
-            json!({
-                "systemInstruction":{"parts":[{"text":prompt}]},
-                "contents":[{"role":"user","parts":[
-                    {"text":TRANSCRIBE_REQUEST},
-                    {"inlineData":{"mimeType":"audio/wav","data":audio}},
-                ]}],
-                "generationConfig":{"maxOutputTokens":TRANSCRIPT_TOKENS},
-            }),
-            Reply::GenerateContent,
+            AudioRequest::Chat(
+                json!({
+                    "systemInstruction":{"parts":[{"text":prompt}]},
+                    "contents":[{"role":"user","parts":[
+                        {"text":TRANSCRIBE_REQUEST},
+                        {"inlineData":{"mimeType":"audio/wav","data":audio}},
+                    ]}],
+                    "generationConfig":{"maxOutputTokens":TRANSCRIPT_TOKENS},
+                }),
+                Reply::GenerateContent,
+            ),
         ));
     }
     let messages = json!([
@@ -169,7 +226,7 @@ fn audio_request(
             json!({"model":model,"messages":messages,"max_tokens":TRANSCRIPT_TOKENS}),
         )
     };
-    Ok((url.into(), body, Reply::ChatCompletion))
+    Ok((url.into(), AudioRequest::Chat(body, Reply::ChatCompletion)))
 }
 
 /// The id becomes a path segment, so anything that could alter the path or query is refused.

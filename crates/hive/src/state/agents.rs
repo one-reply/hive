@@ -26,6 +26,7 @@ mod conversations;
 mod endpoint;
 mod history;
 mod installed;
+mod startup;
 
 pub(crate) use api::SpawnRequest;
 pub(crate) use endpoint::{Endpoint, PaneEndpoint};
@@ -159,6 +160,7 @@ impl Agents {
                     .update(cx, |this, cx| {
                         this.refresh_reports(cx);
                         this.settle_turns(Instant::now(), cx);
+                        this.settle_starts(Instant::now(), cx);
                         this.apply(sightings, read_at, cx);
                         this.settle_calls(cx);
                     })

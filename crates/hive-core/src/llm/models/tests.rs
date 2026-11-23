@@ -127,7 +127,12 @@ fn gemini_models_accept_audio_and_gemma_does_not() {
 
 #[test]
 fn openai_audio_models_accept_audio_and_stay_out_of_text_generation() {
-    for id in ["gpt-audio", "gpt-audio-mini", "gpt-4o-audio-preview"] {
+    for id in [
+        "gpt-audio",
+        "gpt-audio-mini",
+        "gpt-4o-audio-preview",
+        "gpt-transcribe",
+    ] {
         let model = named(Provider::OpenAi, id).unwrap();
         assert_eq!(model.capability, Capability::Audio, "{id}");
         assert!(model.accepts_audio() && !model.generates_text(), "{id}");

@@ -3017,7 +3017,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hive"
-version = "1.0.35"
+version = "1.0.36"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -3042,7 +3042,7 @@ dependencies = [
 
 [[package]]
 name = "hive-core"
-version = "1.0.35"
+version = "1.0.36"
 dependencies = [
  "alacritty_terminal",
  "async-channel",
@@ -7705,7 +7705,9 @@ checksum = "3ac5cecf619ca81f66a96482db09687c9f7465af65f4300a8c30cca05bd5a59d"
 dependencies = [
  "base64 0.23.1",
  "flate2",
+ "getrandom 0.4.3",
  "log",
+ "mime_guess",
  "percent-encoding",
  "rustls",
  "rustls-pki-types",

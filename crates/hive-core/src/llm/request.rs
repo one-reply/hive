@@ -91,16 +91,28 @@ impl Client {
     ) -> Result<T, RequestError> {
         let body =
             serde_json::to_vec(body).map_err(|_| self.invalid("Could not encode the request."))?;
+        self.decode(
+            self.post_request(url)
+                .header("content-type", "application/json")
+                .send(body.as_slice()),
+        )
+    }
+
+    pub(super) fn post_form<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        form: ureq::unversioned::multipart::Form<'_>,
+    ) -> Result<T, RequestError> {
+        self.decode(self.post_request(url).send(form))
+    }
+
+    fn post_request(&self, url: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
         let (name, value) = authentication(self.provider, &self.key);
-        let mut request = self
-            .agent
-            .post(url)
-            .header(name, value)
-            .header("content-type", "application/json");
+        let mut request = self.agent.post(url).header(name, value);
         if self.provider == Provider::Anthropic {
             request = request.header("anthropic-version", "2026-10-21");
         }
-        self.decode(request.send(body.as_slice()))
+        request
     }
 
     fn decode<T: DeserializeOwned>(

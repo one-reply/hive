@@ -59,6 +59,18 @@ impl Activity {
         )
     }
 
+    /// How long the program has printed nothing at all, echoes included; `None` before its
+    /// first output, when it has not shown anything that could wait for the user.
+    pub fn quiet_for(&self, now: Instant) -> Option<Duration> {
+        match self.0.last_output.load(Ordering::Relaxed) {
+            NEVER => None,
+            millis => Some(
+                now.saturating_duration_since(self.0.origin)
+                    .saturating_sub(Duration::from_millis(millis - 1)),
+            ),
+        }
+    }
+
     /// Whether the terminal received input (keystrokes, pastes, resizes) within `window`.
     pub fn had_input_within(&self, window: Duration, now: Instant) -> bool {
         match self.0.last_input.load(Ordering::Relaxed) {
@@ -126,6 +138,20 @@ mod tests {
     fn output_long_after_the_last_keystroke_is_work() {
         // The user pressed Enter, the agent keeps printing its spinner.
         assert!(is_streaming(Some(ms(4_900)), Some(ms(2_000)), ms(5_000)));
+    }
+
+    #[test]
+    fn quiet_counts_from_the_last_output_and_not_before_the_first() {
+        let activity = Activity::default();
+        let now = Instant::now();
+        assert_eq!(activity.quiet_for(now), None);
+        activity.record_output();
+        let later = Instant::now() + ms(5_000);
+        let quiet = activity.quiet_for(later).expect("output was recorded");
+        // The stamp keeps whole milliseconds, so the reading may run a moment long.
+        assert!(quiet >= ms(5_000) && quiet < ms(6_000), "{quiet:?}");
+        // Time before the output never counts as quiet.
+        assert_eq!(activity.quiet_for(activity.0.origin), Some(Duration::ZERO));
     }
 
     #[test]
