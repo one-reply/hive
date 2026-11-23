@@ -1,8 +1,8 @@
 // Not a glob import: it would bring in GPUI's `test` attribute in place of std's.
-use super::{AgentSession, Ending, agent_line, agents_in, ask, prompt_text};
+use super::{AgentSession, Ending, agent_line, agents_in, ask, confirm_stopping, prompt_text};
 use crate::ui::destructive::testing::{is_open, press, settle, window};
 use gpui_kit as gpui;
-use gpui_kit::{EntityId, SharedString, TestAppContext, VisualTestContext};
+use gpui_kit::{AppContext as _, EntityId, SharedString, TestAppContext, VisualTestContext};
 use hive_core::agent::{AgentKind, AgentStatus};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -160,4 +160,28 @@ fn dismissing_the_question_cancels_what_waited_for_it(cx: &mut TestAppContext) {
         outcome.dropped.get(),
         "a quit request dropped unanswered is a cancelled quit"
     );
+}
+
+/// Stands in for the terminal panel: whatever asks is inside its own update.
+struct Panel {
+    closed: bool,
+}
+
+/// A tab's close button asks from inside the panel's update, and what it hands over closes
+/// the panel, which updates it again: with nothing to ask, that may run only once the update
+/// that asked is over.
+#[gpui::test]
+fn with_nothing_to_ask_the_close_runs_after_the_update_that_asked(cx: &mut TestAppContext) {
+    let cx = window(cx);
+    let panel = cx.update(|_, cx| cx.new(|_| Panel { closed: false }));
+    cx.update(|window, cx| {
+        panel.update(cx, |_, cx| {
+            let asked_from = cx.entity();
+            confirm_stopping(Ending::Tab, Vec::new(), window, cx, move |_, cx| {
+                asked_from.update(cx, |panel, _| panel.closed = true);
+            });
+        })
+    });
+    cx.run_until_parked();
+    assert!(cx.read(|cx| panel.read(cx).closed));
 }

@@ -114,8 +114,12 @@ pub(crate) fn asks_before_stopping(agents: &[SharedString], cx: &App) -> bool {
             .confirm_close_running_agent
 }
 
-/// Runs `proceed` once the user agrees to stop `agents`, or at once when there is nothing to
-/// ask. A dismissed question drops `proceed` uncalled, which is how a quit learns "no".
+/// Runs `proceed` once the user agrees to stop `agents`, or once the caller's update is over
+/// when there is nothing to ask. A dismissed question drops `proceed` uncalled, which is how a
+/// quit learns "no".
+///
+/// Never on the caller's stack: a tab's close button asks from inside the panel's update, and
+/// `proceed` closes the panel, which would update it a second time.
 pub(crate) fn confirm_stopping(
     ending: Ending,
     agents: Vec<SharedString>,
@@ -124,7 +128,7 @@ pub(crate) fn confirm_stopping(
     proceed: impl FnOnce(&mut Window, &mut App) + 'static,
 ) {
     if !asks_before_stopping(&agents, cx) {
-        proceed(window, cx);
+        window.defer(cx, proceed);
         return;
     }
     let store = AppState::get(cx).store.clone();
