@@ -13,6 +13,7 @@ use std::path::Path;
 mod editor;
 mod inspector;
 mod launch;
+pub(crate) use launch::task_key_bindings;
 mod library;
 mod map;
 mod run;

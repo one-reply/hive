@@ -75,3 +75,28 @@ fn a_file_that_read_cleanly_or_is_not_this_sessions_to_write_is_left_alone(
         assert_eq!(saved.lock().unwrap().len(), usize::from(writes));
     }
 }
+
+#[gpui::test]
+fn a_dictation_edit_is_saved_only_when_it_changes_the_recipe(cx: &mut TestAppContext) {
+    use hive_core::llm::Provider;
+    let (store, saved) = store(None, Access::Unguarded, cx);
+    let edit = |cx: &mut TestAppContext, provider| {
+        let result = store.update(cx, |store, cx| {
+            store.edit_dictation(cx, |recipe| recipe.set_provider(Some(provider)))
+        });
+        cx.run_until_parked();
+        result
+    };
+    assert!(edit(cx, Provider::OpenRouter).is_ok());
+    assert_eq!(saved.lock().unwrap().len(), 1);
+    assert_eq!(
+        saved.lock().unwrap()[0].settings.dictation.provider(),
+        Some(Provider::OpenRouter)
+    );
+    // The same choice again, and one the recipe refuses, leave the file alone.
+    assert!(edit(cx, Provider::OpenRouter).is_ok());
+    assert!(edit(cx, Provider::Anthropic).is_err());
+    assert_eq!(saved.lock().unwrap().len(), 1);
+    let provider = store.read_with(cx, |store, _| store.state.settings.dictation.provider());
+    assert_eq!(provider, Some(Provider::OpenRouter));
+}

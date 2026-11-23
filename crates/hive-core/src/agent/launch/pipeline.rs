@@ -32,6 +32,9 @@ pub struct PipelineLaunch {
     /// Whether a developer edits files in its worktree without asking; other roles are
     /// read-only whatever this says.
     pub edits: EditApproval,
+    /// Folder of the images pasted into the task, when it refers to any. It lies outside
+    /// the worktrees, so a CLI that reads only the folders it was given needs it named.
+    pub image_directory: Option<PathBuf>,
 }
 
 /// The arguments that let `agent` edit files in its worktree without a prompt while it still
@@ -165,6 +168,19 @@ impl PipelineLaunch {
                 args.extend(["--add-dir".into(), path.into()]);
             }
         }
+        if let Some(directory) = &self.image_directory
+            && matches!(agent, AgentKind::ClaudeCode | AgentKind::Antigravity)
+        {
+            let path = directory
+                .to_str()
+                .filter(|_| directory.is_absolute())
+                .ok_or_else(|| {
+                    LaunchError::Pipeline(
+                        "Agents need an absolute UTF-8 path for the task images".into(),
+                    )
+                })?;
+            args.extend(["--add-dir".into(), path.into()]);
+        }
         if read_only {
             let (flag, value) = match agent {
                 AgentKind::ClaudeCode => ("--permission-mode", "plan"),
@@ -231,7 +247,45 @@ mod tests {
             },
             resume: None,
             edits: EditApproval::CliDefault,
+            image_directory: None,
         }
+    }
+
+    #[test]
+    fn task_images_are_readable_by_clis_that_read_only_named_folders() {
+        for role in [PipelineRole::Plan, PipelineRole::Develop] {
+            for agent in AGENTS {
+                let mut pipeline = launch(agent, role);
+                pipeline.image_directory = Some("/data/task-images".into());
+                let args = Launch::Pipeline(pipeline)
+                    .with_known_session()
+                    .local_arguments(None)
+                    .unwrap();
+                let named = args
+                    .windows(2)
+                    .any(|pair| pair[0] == "--add-dir" && pair[1] == "/data/task-images");
+                // Codex --add-dir would grant writes, and its sandbox reads any path already.
+                assert_eq!(
+                    named,
+                    matches!(agent, AgentKind::ClaudeCode | AgentKind::Antigravity),
+                    "{agent:?} {role:?}"
+                );
+                // The folder is not a worktree the agent takes part in.
+                assert!(!args.iter().any(|a| a.contains("participating worktree")));
+            }
+        }
+    }
+
+    #[test]
+    fn a_relative_image_folder_is_refused() {
+        let mut pipeline = launch(AgentKind::ClaudeCode, PipelineRole::Plan);
+        pipeline.image_directory = Some("task-images".into());
+        assert!(
+            Launch::Pipeline(pipeline)
+                .with_known_session()
+                .local_arguments(None)
+                .is_err()
+        );
     }
 
     #[test]

@@ -264,6 +264,23 @@ impl Store {
         self.commit(cx);
         Ok(())
     }
+
+    /// Applies `edit` to the dictation recipe and saves only if it changed the recipe, so a
+    /// refused or repeated edit costs no write.
+    pub(crate) fn edit_dictation<T>(
+        &mut self,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut hive_core::dictation::Recipe) -> T,
+    ) -> T {
+        let recipe = &mut self.state.settings.dictation;
+        let before = recipe.clone();
+        let result = edit(recipe);
+        if *recipe != before {
+            self.commit(cx);
+        }
+        result
+    }
+
     pub(crate) fn set_git_panel_width(&mut self, width: f32, cx: &mut Context<Self>) {
         self.state.settings.set_git_panel_width(width);
         self.commit(cx);

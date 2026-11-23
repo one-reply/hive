@@ -11,6 +11,8 @@ pub mod symbols;
 
 #[cfg(feature = "desktop")]
 pub mod commit_message;
+#[cfg(feature = "desktop")]
+pub mod dictation;
 pub mod files;
 pub mod formatting;
 pub mod git;

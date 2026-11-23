@@ -50,6 +50,7 @@ pub(crate) mod switcher;
 use crate::state::store::SaveError;
 pub(crate) use git::right_sidebar_toggle;
 use gpui_kit::component::{WindowExt as _, notification::Notification};
+pub(crate) use pipelines::task_key_bindings;
 use project_center::ProjectCenter;
 use right_tab::{RightTab, RightTabs};
 

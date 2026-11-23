@@ -426,6 +426,7 @@ pub fn init(cx: &mut App) {
         Some("FileSearch > Input"),
     )]);
     cx.bind_keys(content_results_bindings());
+    cx.bind_keys(crate::ui::workspace::task_key_bindings());
     let store = AppState::get(cx).store.clone();
     let mut installed = store.read(cx).state.settings.keybindings().clone();
     install(cx);

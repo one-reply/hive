@@ -84,6 +84,7 @@ impl PipelinesPage {
         };
         v_flex()
             .gap_4()
+            .child(self.dictation.clone())
             .child(header)
             .when_some(self.error.clone(), |page, error| {
                 page.child(error_line(error, cx))

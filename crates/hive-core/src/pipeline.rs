@@ -10,6 +10,7 @@ mod delivery;
 pub mod draft;
 mod feedback;
 mod handoff;
+pub mod images;
 mod outcome;
 mod presets;
 pub(crate) mod prompts;

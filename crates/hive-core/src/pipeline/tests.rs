@@ -1266,3 +1266,25 @@ fn evidence_closes_only_the_criterion_of_the_lane_it_names() {
     assert!(!run.criterion_source(1, "Build and tests pass").closes());
     assert!(run.can_accept().is_err());
 }
+
+#[test]
+fn an_agent_prompt_names_pasted_images_by_their_files() {
+    let mut run = run_with(&["/api"], 1);
+    run.task = "Match ![image](task-images/shot-1.png)".into();
+    let prompt = run.prompt(&run.pending()[0]).unwrap();
+    let file = images::directory().join("shot-1.png");
+    assert!(
+        prompt.contains(&format!("Match ![image]({})", file.display())),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Open each of them"), "{prompt}");
+    // The saved task keeps the portable reference.
+    assert_eq!(run.task(), "Match ![image](task-images/shot-1.png)");
+}
+
+#[test]
+fn a_prompt_without_images_is_left_as_written() {
+    let run = run_with(&["/api"], 1);
+    let prompt = run.prompt(&run.pending()[0]).unwrap();
+    assert!(!prompt.contains("image files"), "{prompt}");
+}

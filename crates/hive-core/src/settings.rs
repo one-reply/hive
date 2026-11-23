@@ -110,6 +110,8 @@ pub struct Settings {
     default_cli_agent: crate::agent::AgentKind,
     /// Global recipe for generating a staged commit message; never contains API keys.
     pub commit_message: crate::commit_message::Recipe,
+    /// Global recipe for turning a voice recording into text; never contains API keys.
+    pub dictation: crate::dictation::Recipe,
     pub theme: ThemeChoice,
     #[serde(deserialize_with = "themes::deserialize_theme")]
     light_theme: LightTheme,
@@ -155,6 +157,7 @@ impl Default for Settings {
             files: FilesSettings::default(),
             default_cli_agent: crate::agent::AgentKind::Codex,
             commit_message: Default::default(),
+            dictation: Default::default(),
             hosting_servers: Default::default(),
             theme: ThemeChoice::default(),
             light_theme: LightTheme::default(),
@@ -532,6 +535,42 @@ mod tests {
         settings.set_ui_font_family(Some(""));
         assert_eq!(settings.code_font_family(), None);
         assert_eq!(settings.ui_font_family(), None);
+    }
+
+    #[test]
+    fn dictation_defaults_to_unconfigured_and_round_trips() {
+        use crate::llm::Provider;
+        // A settings object as 1.0.33 wrote it: the field is absent.
+        let mut settings: Settings =
+            serde_json::from_str(r#"{"theme":"dark","commit_message":{}}"#).expect("valid json");
+        assert_eq!(settings.dictation, crate::dictation::Recipe::default());
+        assert!(!settings.dictation.is_configured());
+        assert_eq!(
+            settings.dictation.prompt(),
+            crate::dictation::DEFAULT_PROMPT
+        );
+
+        settings
+            .dictation
+            .set_provider(Some(Provider::OpenAi))
+            .expect("an audio provider");
+        settings.dictation.set_model(Some("gpt-audio".into()));
+        settings
+            .dictation
+            .set_prompt("Transcribe.".into())
+            .expect("a valid prompt");
+        let saved = serde_json::to_string(&settings).expect("serializable");
+        let reloaded: Settings = serde_json::from_str(&saved).expect("valid json");
+        assert_eq!(reloaded.dictation, settings.dictation);
+        assert!(reloaded.dictation.is_configured());
+
+        // A provider this build cannot use costs the selection, not the other settings.
+        let foreign = saved.replace(r#""provider":"open-ai""#, r#""provider":"future-ai""#);
+        assert_ne!(foreign, saved);
+        let reloaded: Settings = serde_json::from_str(&foreign).expect("valid json");
+        assert_eq!(reloaded.dictation.provider(), None);
+        assert_eq!(reloaded.dictation.prompt(), "Transcribe.");
+        assert_eq!(reloaded.theme, ThemeChoice::Dark);
     }
 
     #[test]

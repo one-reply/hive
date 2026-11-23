@@ -69,3 +69,24 @@ fn remote_errors_malformed_json_redirect_and_timeout_are_safe() {
     );
     task.join().unwrap();
 }
+
+#[test]
+fn a_multi_megabyte_body_is_posted_whole() {
+    // A five-minute recording is this order of size once base64-encoded.
+    let audio = "QUJD".repeat(1024 * 1024);
+    let (url, server) = server(vec![(200, "{}".into())], Duration::ZERO);
+    let _: serde_json::Value = client(Provider::GoogleAi, Duration::from_secs(10))
+        .post(&url, &serde_json::json!({"data": audio}))
+        .unwrap();
+    let request = server.join().unwrap().remove(0);
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(
+        headers
+            .to_lowercase()
+            .contains(&format!("content-length: {}", body.len()))
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["data"],
+        audio
+    );
+}

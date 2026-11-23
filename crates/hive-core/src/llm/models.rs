@@ -2,14 +2,56 @@ use super::{Provider, RequestError, request::Client};
 use serde::Deserialize;
 use std::{collections::HashSet, time::Duration};
 
-/// A text model offered by a provider. IDs are opaque outside its API adapter.
+/// A model offered by a provider. IDs are opaque outside its API adapter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Model {
     /// Stable identifier passed back to the provider.
     pub id: String,
     /// Human-readable name, falling back to the identifier.
     pub name: String,
+    /// What the model can be asked to do.
+    pub capability: Capability,
 }
+
+impl Model {
+    /// Whether `generate` can use it: a plain text prompt in, text out.
+    pub fn generates_text(&self) -> bool {
+        self.capability != Capability::Audio
+    }
+
+    /// Whether `transcribe` can use it: a recording in, text out.
+    pub fn accepts_audio(&self) -> bool {
+        self.capability != Capability::Text
+    }
+}
+
+/// What a listed model can be asked to do. A model fit for neither use is not listed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Capability {
+    /// Text generation only.
+    Text,
+    /// Takes a recording, and is not offered for text generation: an audio-only family.
+    Audio,
+    /// Text generation that also takes a recording.
+    TextAndAudio,
+}
+
+/// Families of the catalogs filtered by name that neither generate text nor take a recording
+/// in a chat request.
+const SPECIALIZED: [&str; 12] = [
+    "embedding",
+    "whisper",
+    "tts",
+    "realtime",
+    "transcribe",
+    "moderation",
+    "dall-e",
+    "image",
+    "sora",
+    "veo",
+    "imagen",
+    "aqa",
+];
 
 #[derive(Default, Deserialize)]
 #[serde(default)]
@@ -124,28 +166,7 @@ fn model(provider: Provider, entry: Entry) -> Option<Model> {
     if id.is_empty() || id.chars().any(char::is_control) {
         return None;
     }
-    // shortcut: OpenAI exposes no modality metadata; exclude known specialized model families until it does.
-    if matches!(provider, Provider::OpenAi | Provider::GoogleAi)
-        && [
-            "embedding",
-            "whisper",
-            "tts",
-            "realtime",
-            "transcribe",
-            "audio",
-            "moderation",
-            "dall-e",
-            "image",
-            "sora",
-            "veo",
-            "imagen",
-            "aqa",
-        ]
-        .iter()
-        .any(|s| id.contains(s))
-    {
-        return None;
-    }
+    let capability = capability(provider, &id, entry.architecture.as_ref())?;
     let name = if !entry.display_name.is_empty() {
         entry.display_name
     } else if provider == Provider::OpenRouter && !entry.name.is_empty() {
@@ -153,7 +174,38 @@ fn model(provider: Provider, entry: Entry) -> Option<Model> {
     } else {
         id.clone()
     };
-    Some(Model { id, name })
+    Some(Model {
+        id,
+        name,
+        capability,
+    })
+}
+
+fn capability(
+    provider: Provider,
+    id: &str,
+    architecture: Option<&Architecture>,
+) -> Option<Capability> {
+    let listens =
+        |architecture: &Architecture| architecture.input_modalities.iter().any(|m| m == "audio");
+    Some(match provider {
+        Provider::OpenRouter if architecture.is_some_and(listens) => Capability::TextAndAudio,
+        Provider::OpenRouter | Provider::Anthropic => Capability::Text,
+        // ponytail: neither OpenAI nor Google reports modalities, so names decide from here on
+        // ("audio" in an OpenAI id, a `gemini-` prefix at Google) and a family named otherwise
+        // is misfiled. Read the modalities from the catalog once these APIs return them.
+        Provider::OpenAi | Provider::GoogleAi if SPECIALIZED.iter().any(|s| id.contains(s)) => {
+            return None;
+        }
+        // `gpt-audio`, `gpt-4o-audio-preview`: chat models that answer a recording.
+        Provider::OpenAi if id.contains("audio") => Capability::Audio,
+        Provider::OpenAi => Capability::Text,
+        // Native-audio Gemini models hold live conversations instead of answering a request.
+        Provider::GoogleAi if id.contains("audio") => return None,
+        // Gemma lists `generateContent` too, but takes no audio.
+        Provider::GoogleAi if id.starts_with("gemini-") => Capability::TextAndAudio,
+        Provider::GoogleAi => Capability::Text,
+    })
 }
 
 #[cfg(test)]

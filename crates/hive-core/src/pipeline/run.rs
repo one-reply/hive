@@ -291,7 +291,18 @@ impl Run {
     }
 
     /// Prompt for an invocation, including the current plan and cross-repository context.
+    /// Images pasted into the task are named by their files on this machine.
     pub fn prompt(&self, ticket: &Ticket) -> Result<String, Error> {
+        let prompt = self.stage_prompt(ticket)?;
+        Ok(
+            match super::images::for_agent(&prompt, &super::images::directory()) {
+                std::borrow::Cow::Owned(expanded) => expanded,
+                std::borrow::Cow::Borrowed(_) => prompt,
+            },
+        )
+    }
+
+    fn stage_prompt(&self, ticket: &Ticket) -> Result<String, Error> {
         let step = self.step(ticket).ok_or(Error::InactiveAttempt)?;
         if self.phase == Phase::Regression(RegressionStep::Author) {
             return self.regression_prompt();

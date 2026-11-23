@@ -38,6 +38,18 @@ pub(crate) enum Models {
     Failed(SharedString),
 }
 
+impl Models {
+    /// The loaded models that generate plain text, or `None` while there is no catalog. The
+    /// catalog also holds the audio-only models dictation offers; those cannot write a commit
+    /// message.
+    pub(crate) fn text(&self) -> Option<Vec<&llm::Model>> {
+        match self {
+            Self::Ready(models) => Some(models.iter().filter(|m| m.generates_text()).collect()),
+            _ => None,
+        }
+    }
+}
+
 enum Operation {
     Check,
     Save(ApiKey),
@@ -229,5 +241,37 @@ impl AiProviders {
             });
         }));
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Models;
+    use hive_core::llm::{Capability, Model};
+
+    #[test]
+    fn text_models_leave_out_audio_only_ones_and_wait_for_the_catalog() {
+        let model = |id: &str, capability| Model {
+            id: id.into(),
+            name: id.into(),
+            capability,
+        };
+        let ready = Models::Ready(vec![
+            model("gpt-5", Capability::Text),
+            model("gpt-audio", Capability::Audio),
+            model("gemini-flash", Capability::TextAndAudio),
+        ]);
+        let listed = ready.text().expect("a loaded catalog");
+        assert_eq!(
+            listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["gpt-5", "gemini-flash"]
+        );
+        for pending in [
+            Models::NotLoaded,
+            Models::Loading,
+            Models::Failed("offline".into()),
+        ] {
+            assert!(pending.text().is_none());
+        }
     }
 }

@@ -45,8 +45,16 @@ impl Run {
     /// gave no work.
     pub fn pull_request_text(&self, lane: usize) -> Option<(String, String)> {
         self.lanes.get(lane).filter(|lane| lane.is_assigned())?;
-        let task = self.task.trim();
-        let line = task.lines().next().unwrap_or_default().trim_end();
+        // The pull request is read where this machine's image files cannot be reached.
+        let task = super::images::without(&self.task);
+        let task = task.trim();
+        // A line that holds nothing but an image names nothing.
+        let line = task
+            .lines()
+            .map(|line| line.replace(super::images::PLACEHOLDER, ""))
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default();
+        let line = line.trim();
         let mut title: String = line.chars().take(TITLE_CHARS).collect();
         if title.len() < line.len() {
             title.push('…');
@@ -122,6 +130,37 @@ mod tests {
             project: std::path::Path::new("/").join(name),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_pull_request_names_pasted_images_without_their_files() {
+        let task = "![image](task-images/a-1.png)\nFix the layout of ![image](task-images/a-2.png)";
+        let mut run = Run::new(
+            1,
+            "/api".into(),
+            task.into(),
+            Template::default(),
+            vec![lane("api")],
+        )
+        .unwrap();
+        let ticket = run.pending()[0];
+        let assignments = vec![Assignment {
+            lane: 0,
+            task: "Fix it".into(),
+            criteria: "Tests pass".into(),
+        }];
+        run.report(
+            &ticket,
+            Report::Plan {
+                assignments,
+                contract: String::new(),
+            },
+        )
+        .unwrap();
+        let (title, body) = run.pull_request_text(0).unwrap();
+        assert_eq!(title, "Fix the layout of");
+        assert!(body.contains("Fix the layout of [image]"), "{body}");
+        assert!(!body.contains("task-images"), "{body}");
     }
 
     #[test]

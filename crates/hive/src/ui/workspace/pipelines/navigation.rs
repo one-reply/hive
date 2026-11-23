@@ -88,6 +88,14 @@ impl PipelinePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A form left on screen keeps living as the project's draft, so its microphone
+        // would stay open. Deferred: the form itself may be what navigates away.
+        if let Screen::Launch(form) = &self.screen {
+            let form = form.downgrade();
+            cx.defer(move |cx| {
+                let _ = form.update(cx, |form, cx| form.stop_dictation(cx));
+            });
+        }
         match destination {
             Destination::Library => {
                 self.screen = Screen::Library;

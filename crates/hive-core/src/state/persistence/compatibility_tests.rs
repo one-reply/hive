@@ -160,6 +160,13 @@ fn what_a_release_did_not_know_yet_takes_its_default() {
         crate::pipeline::Library::default()
     );
     assert!(!before_pipelines.settings.option_as_meta);
+    // Before dictation, which is every release so far: unconfigured, with the stock prompt.
+    for index in 0..SAMPLES.len() {
+        assert_eq!(
+            load(index).settings.dictation,
+            crate::dictation::Recipe::default()
+        );
+    }
     // Before the prompt library: its stock prompts, with the saved run kept.
     let before_prompts = load(1);
     assert_eq!(

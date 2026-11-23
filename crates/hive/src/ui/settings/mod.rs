@@ -75,6 +75,16 @@ pub(crate) fn open_pipelines(cx: &mut App) {
     open_at(Target::Page(Page::Pipelines), cx);
 }
 
+/// Opens the AI page, where the provider keys are.
+pub(crate) fn open_ai(cx: &mut App) {
+    open_at(Target::Page(Page::Ai), cx);
+}
+
+/// Opens the Pipelines page on its dictation settings.
+pub(crate) fn open_dictation(cx: &mut App) {
+    open_at(Target::Dictation, cx);
+}
+
 /// Opens the Pipelines page with the library prompt `id` ready to edit.
 pub(crate) fn open_prompt(id: u64, cx: &mut App) {
     open_at(Target::Prompt(id), cx);
@@ -87,6 +97,7 @@ enum Target {
     Project(Host, PathBuf),
     Page(Page),
     Prompt(u64),
+    Dictation,
 }
 
 fn open_at(target: Target, cx: &mut App) {
@@ -189,7 +200,9 @@ impl Page {
             }
             Page::Terminal => "Terminal appearance and the default CLI agent.",
             Page::Git => "Hosting accounts and commit generation.",
-            Page::Pipelines => "Reusable prompts for the stages of your pipeline templates.",
+            Page::Pipelines => {
+                "Dictation of tasks, and reusable prompts for the stages of your templates."
+            }
             Page::Files => "File appearance and navigation for every local worktree.",
             Page::Updates => "Your version of Hive and software updates.",
             Page::Ai => {
@@ -270,6 +283,11 @@ impl SettingsWindow {
                 self.pipelines
                     .update(cx, |page, cx| page.edit(id, window, cx));
             }
+            Target::Dictation => {
+                self.show_page(Page::Pipelines, window, cx);
+                self.pipelines
+                    .update(cx, |page, cx| page.show_dictation(cx));
+            }
         }
     }
 
@@ -289,6 +307,9 @@ impl SettingsWindow {
                 ai.refresh(cx);
             }
         });
+        if page == Page::Pipelines {
+            self.pipelines.update(cx, |page, cx| page.refresh(cx));
+        }
         self.view = View::Page(page);
         cx.notify();
     }

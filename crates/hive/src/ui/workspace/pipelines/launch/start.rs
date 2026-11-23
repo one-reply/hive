@@ -107,6 +107,7 @@ impl LaunchForm {
         if self.starting.is_some() || self.blocked_by(cx).is_some() {
             return;
         }
+        self.stop_dictation(cx);
         let shown = self
             .bindings
             .iter()

@@ -1,6 +1,7 @@
 mod app;
 mod cli;
 mod mcp;
+mod microphone;
 mod notify;
 mod quit;
 mod state;
@@ -190,8 +191,9 @@ fn main() -> std::process::ExitCode {
                     let access = hive_core::state::Access::acquire();
                     let loaded = hive_core::state::State::load();
                     // After the read, so the copy a recovery reports is among those kept.
-                    if loaded.is_ok() {
+                    if let Ok(loaded) = &loaded {
                         hive_core::state::tidy(&access);
+                        hive_core::pipeline::images::tidy(&access, &loaded.state.pipelines);
                     }
                     // Recovery must be available before any restored buffer becomes editable.
                     let recovery = state::store::load_drafts(&access);

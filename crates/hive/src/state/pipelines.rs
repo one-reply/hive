@@ -15,6 +15,7 @@ use hive_core::pipeline::{Lane, Phase, Report, Run, Template, Ticket, now_ms, wo
 
 mod delivery;
 mod execution;
+mod images;
 mod models;
 mod previews;
 mod prompts;
@@ -28,6 +29,7 @@ mod templates;
 mod watch;
 
 pub(crate) use delivery::Delivery;
+pub(crate) use images::save_task_image;
 pub(crate) use previews::{Failure, Preview, PreviewKey};
 pub(crate) use status::{RunStatus, Waiting};
 pub(crate) use workspace::ReviewRepo;

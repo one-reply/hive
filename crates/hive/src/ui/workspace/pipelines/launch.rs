@@ -6,27 +6,30 @@ use hive_core::pipeline::{Lane, LanePreset, workspace::BasePreview};
 
 mod actions;
 mod again;
+mod dictation;
 mod draft;
+mod format;
 mod mode;
 mod readiness;
 mod repository;
 mod route;
 mod start;
+mod task;
 use readiness::{Blocker, LaneState, blocker, lane_state};
 use repository::{Binding, dropdown, repositories};
 use start::Shown;
+pub(crate) use task::key_bindings as task_key_bindings;
 
 const COMPOSER_WIDTH: Pixels = px(800.);
-/// Tall enough for a few sentences of intent and acceptance criteria without scrolling.
-const TASK_ROWS: usize = 8;
 
 pub(super) struct LaunchForm {
     project: PathBuf,
     template: Template,
     parent: WeakEntity<PipelinePanel>,
-    task: Entity<TextareaState>,
+    task: Entity<gpui_kit::component::input::EditorState>,
     bindings: Vec<Binding>,
     criteria: Entity<TextareaState>,
+    dictation: Entity<crate::state::dictation::Dictation>,
     regression: bool,
     direct: bool,
     frozen: bool,
@@ -52,14 +55,26 @@ impl LaunchForm {
         let app = AppState::get(cx);
         let projects = app.projects.clone();
         let pipelines = app.pipelines.clone();
-        let task = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .rows(TASK_ROWS)
-                .placeholder("What should the agents build or fix? Include what “done” looks like.")
-        });
+        let providers = app.ai_providers.clone();
+        let dictating_with = app.store.read(cx).state.settings.dictation.provider();
+        let task = task::editor(window, cx);
         let criteria = area("", "What should QA verify?", window, cx);
+        let dictation = cx.new(|_| crate::state::dictation::Dictation::new());
+        // The microphone explains a missing key, which only a check of the Keychain shows.
+        if let Some(provider) = dictating_with {
+            providers.update(cx, |providers, cx| providers.check(provider, cx));
+        }
         let subscriptions = vec![
             cx.observe_self(|form: &mut Self, cx| form.schedule_draft_save(cx)),
+            cx.observe(&dictation, |_, _, cx| cx.notify()),
+            cx.observe(&providers, |_, _, cx| cx.notify()),
+            cx.subscribe_in(
+                &dictation,
+                window,
+                |form, _, text: &crate::state::dictation::Transcribed, window, cx| {
+                    form.insert_dictated(&text.0, window, cx)
+                },
+            ),
             cx.observe(&criteria, |_, _, cx| cx.notify()),
             cx.observe(&projects, |_, _, cx| cx.notify()),
             cx.observe_in(&pipelines, window, |form, _, window, cx| {
@@ -90,6 +105,7 @@ impl LaunchForm {
             task,
             bindings: Vec::new(),
             criteria,
+            dictation,
             regression: false,
             direct: false,
             frozen: false,
@@ -328,22 +344,7 @@ impl LaunchForm {
 
 impl Render for LaunchForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let task = v_flex()
-            .gap_2()
-            .child(section(
-                required_heading("Task", cx),
-                if self.is_direct() {
-                    "Describe the change for the developer."
-                } else {
-                    "Plain language is fine. The planner asks if something is unclear."
-                },
-                cx,
-            ))
-            .child(TextField::textarea(
-                Textarea::new(&self.task),
-                &self.task,
-                cx,
-            ));
+        let task = self.task_field(window, cx);
         let body = v_flex()
             .w_full()
             .max_w(COMPOSER_WIDTH)
