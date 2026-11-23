@@ -1,5 +1,6 @@
 use super::{SessionEvent, TerminalSession};
 use gpui_kit::{ClipboardEntry, ClipboardItem, Context};
+use hive_core::agent::reference::CodeReference;
 use hive_core::terminal::paste;
 use hive_core::{host::Host, projects::Target};
 use std::collections::VecDeque;
@@ -17,7 +18,15 @@ impl TerminalSession {
     }
 
     pub(crate) fn paste(&mut self, cx: &mut Context<Self>) {
-        if let Some(input) = cx.read_from_clipboard().and_then(clipboard_input) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        let directory = self.directory.as_deref();
+        let input = match reference_text(&item, &self.host, self.worktree.as_deref(), directory) {
+            Some(text) => Some(Input::Text(text)),
+            None => clipboard_input(item),
+        };
+        if let Some(input) = input {
             self.enqueue_input(input, cx);
         }
     }
@@ -148,6 +157,22 @@ fn same_worktree(host: &Host, target: &Target, worktree: Option<&Path>) -> bool 
     target.host == *host && worktree == Some(target.path.as_path())
 }
 
+/// Lines copied with "Copy lines for agent", named for a terminal of `worktree` in
+/// `directory`: relative to the directory when the lines are in the same worktree.
+fn reference_text(
+    item: &ClipboardItem,
+    host: &Host,
+    worktree: Option<&Path>,
+    directory: Option<&Path>,
+) -> Option<String> {
+    let [ClipboardEntry::String(string)] = item.entries() else {
+        return None;
+    };
+    let reference: CodeReference = string.metadata_json()?;
+    let worktree = worktree?;
+    Some(reference.to_text_in(host, worktree, directory.unwrap_or(worktree)))
+}
+
 fn clipboard_input(item: ClipboardItem) -> Option<Input> {
     if item
         .entries()
@@ -172,6 +197,7 @@ fn discard_submissions(pending: &mut VecDeque<Input>) {
 mod tests {
     use super::*;
     use gpui_kit::{Image, ImageFormat};
+    use hive_core::agent::reference::Version;
 
     #[test]
     fn file_drops_only_target_the_same_local_worktree() {
@@ -192,6 +218,50 @@ mod tests {
             target: "remote".into(),
         };
         assert!(!same_worktree(&Host::Local, &target, Some(&target.path)));
+    }
+
+    #[test]
+    fn copied_lines_are_relative_to_a_terminal_of_their_worktree() {
+        let reference = CodeReference::new(
+            Host::Local,
+            Path::new("/repo"),
+            Path::new("src/app.js"),
+            3..=4,
+            Version::Worktree,
+        )
+        .unwrap();
+        let item = ClipboardItem::new_string_with_metadata(
+            reference.to_text(),
+            serde_json::to_string(&reference).unwrap(),
+        );
+        let paste = |worktree: &str, directory: Option<&str>| {
+            reference_text(
+                &item,
+                &Host::Local,
+                Some(Path::new(worktree)),
+                directory.map(Path::new),
+            )
+        };
+        assert_eq!(paste("/repo", None).as_deref(), Some("@src/app.js#L3-4 "));
+        assert_eq!(
+            paste("/repo", Some("/repo/src")).as_deref(),
+            Some("@app.js#L3-4 ")
+        );
+        assert_eq!(
+            paste("/other", None).as_deref(),
+            Some("@/repo/src/app.js#L3-4 ")
+        );
+    }
+
+    #[test]
+    fn other_clipboards_paste_as_they_are() {
+        let host = Host::Local;
+        let worktree = Some(Path::new("/repo"));
+        let text = ClipboardItem::new_string("@src/app.js#L3".into());
+        assert_eq!(reference_text(&text, &host, worktree, None), None);
+        // Zed-based editors write their own metadata under the same pasteboard type.
+        let zed = ClipboardItem::new_string_with_metadata("x".into(), "[{\"len\":1}]".into());
+        assert_eq!(reference_text(&zed, &host, worktree, None), None);
     }
 
     #[test]

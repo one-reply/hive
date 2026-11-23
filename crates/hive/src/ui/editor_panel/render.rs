@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::code_reference::{self, CopyCodeReference};
 use crate::ui::key_hint;
 
 impl Render for EditorPanel {
@@ -107,6 +108,10 @@ impl Render for EditorPanel {
             .min_h_0()
             .on_action(cx.listener(|this, _: &SelectionToAgent, window, cx| {
                 agent_context::open(&this.document, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CopyCodeReference, window, cx| {
+                let reference = this.document.read(cx).code_reference(cx);
+                code_reference::copy(reference, "This file has no lines to copy.", window, cx)
             }))
             .on_action(cx.listener(|this, _: &FormatDocument, window, cx| {
                 this.document.update(cx, |d, cx| d.format(window, cx))

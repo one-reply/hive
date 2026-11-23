@@ -13,6 +13,7 @@ use crate::terminal::panel::{
 };
 use crate::terminal::view::{Copy, Paste};
 use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
+use crate::ui::code_reference::CopyCodeReference;
 use crate::ui::editor_panel::{
     CloseFile, EDITOR_PANEL_CONTEXT, GoToSymbol, OpenFileSearch, SaveFile, SearchInFiles,
 };
@@ -119,7 +120,7 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 39] = [
+pub(crate) static SHORTCUTS: [Shortcut; 40] = [
     Shortcut {
         label: "Find references",
         default: "shift-f12",
@@ -198,6 +199,13 @@ pub(crate) static SHORTCUTS: [Shortcut; 39] = [
         category: Category::Workspace,
         context: CODE_EDITOR_CONTEXT,
         action: || Box::new(gpui_kit::component::input::ShowCompletions),
+    },
+    Shortcut {
+        label: "Copy lines for agent",
+        default: "cmd-shift-c",
+        category: Category::Workspace,
+        context: FILE_TAB_CONTEXT,
+        action: || Box::new(CopyCodeReference),
     },
     Shortcut {
         label: "Close file",

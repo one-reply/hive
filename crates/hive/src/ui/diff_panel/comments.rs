@@ -9,7 +9,7 @@ use gpui_kit::component::{
     searchable_list::SearchableVec,
     select::{Select, SelectState},
 };
-use hive_core::git::review_notes::{self, Line, Note};
+use hive_core::git::review_notes::{self, Note};
 use std::cell::Cell;
 
 const WIDTH: Pixels = px(640.);
@@ -52,13 +52,6 @@ impl DiffPanel {
                             if text.trim().is_empty() {
                                 return false;
                             }
-                            let line = |side, number| {
-                                if side == DiffSide::Original {
-                                    Line::Original(number)
-                                } else {
-                                    Line::Modified(number)
-                                }
-                            };
                             git.update(cx, |git, cx| {
                                 git.add_note(
                                     request.target.clone(),

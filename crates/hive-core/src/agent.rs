@@ -12,6 +12,7 @@ pub mod draft;
 pub mod hooks;
 pub mod launch;
 mod process_table;
+pub mod reference;
 
 pub use process_table::{AgentError, ProcessTable};
 

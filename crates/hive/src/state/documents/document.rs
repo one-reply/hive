@@ -1,6 +1,7 @@
 use super::completions::Completions;
 use super::*;
 use gpui_kit::component::input::{EditorState, InputEditsEvent, InputEvent, Position};
+use hive_core::agent::reference::{self, CodeReference, Version};
 use hive_core::code_navigation::Navigator;
 use hive_core::files::recovery::Draft;
 use hive_core::files::{self, Snapshot};
@@ -260,6 +261,24 @@ impl Document {
             editor.selected_range(),
             self.dirty,
         )
+    }
+
+    /// The selected lines, or the cursor's line, as a reference for an agent's prompt.
+    pub(crate) fn code_reference(&self, cx: &App) -> Option<CodeReference> {
+        if self.content.is_raster() {
+            return None;
+        }
+        let editor = self.editor.read(cx);
+        let lines = reference::selected_lines(&editor.text().to_string(), editor.selected_range())?;
+        CodeReference::new(
+            self.target.host.clone(),
+            &self.target.path,
+            &self.path,
+            lines,
+            Version::Worktree,
+        )
+        .inspect_err(|error| tracing::warn!(%error, "no code reference for this file"))
+        .ok()
     }
 
     pub fn saved_position(&self, cx: &App) -> ([u32; 2], [f32; 2]) {

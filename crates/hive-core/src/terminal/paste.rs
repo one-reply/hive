@@ -129,6 +129,22 @@ pub fn quoted_path(path: &Path) -> Result<String, PasteError> {
 /// `root` and `directory` must be absolute without parent components; `path` must contain
 /// only normal relative components. This is lexical and performs no filesystem access.
 pub fn file_reference(root: &Path, path: &Path, directory: &Path) -> Result<String, PasteError> {
+    let relative = relative_path(root, path, directory)?;
+    let text = path_text(&relative)?;
+    Ok(quote(&if text.starts_with('-') {
+        format!("./{text}")
+    } else {
+        text.to_owned()
+    }))
+}
+
+/// The worktree-relative `path` as seen from `directory`, under the rules of
+/// [`file_reference`], unquoted.
+pub(crate) fn relative_path(
+    root: &Path,
+    path: &Path,
+    directory: &Path,
+) -> Result<PathBuf, PasteError> {
     for absolute in [root, directory] {
         path_text(absolute)?;
         if !absolute.is_absolute()
@@ -165,12 +181,7 @@ pub fn file_reference(root: &Path, path: &Path, directory: &Path) -> Result<Stri
     if relative.as_os_str().is_empty() {
         relative.push(".");
     }
-    let text = path_text(&relative)?;
-    Ok(quote(&if text.starts_with('-') {
-        format!("./{text}")
-    } else {
-        text.to_owned()
-    }))
+    Ok(relative)
 }
 
 /// Build one paste block in input order, quoting every path and adding a trailing space.
@@ -191,7 +202,7 @@ pub fn file_references(
     Ok(format!("{} ", references.join(" ")))
 }
 
-fn path_text(path: &Path) -> Result<&str, PasteError> {
+pub(crate) fn path_text(path: &Path) -> Result<&str, PasteError> {
     path.to_str()
         .filter(|text| !text.chars().any(char::is_control))
         .ok_or_else(|| PasteError::InvalidPath(path.to_path_buf()))
