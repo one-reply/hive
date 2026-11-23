@@ -36,7 +36,10 @@ pub enum Error {
     /// Pipe or process IO failed after the process started.
     #[error("{0}")]
     Io(#[from] io::Error),
-    /// The owner cancelled this command.
+    /// The owner cancelled this command before its process was started, so nothing of it ran.
+    #[error("Command cancelled before it started")]
+    CancelledBeforeStart,
+    /// The owner cancelled this command while its process ran; the process was ended.
     #[error("Command cancelled")]
     Cancelled,
     /// The deadline elapsed while the process still ran.
@@ -45,6 +48,17 @@ pub enum Error {
     /// A stream exceeded its memory budget.
     #[error("Command output exceeds {0} bytes")]
     TooLarge(usize),
+}
+
+impl Error {
+    /// Whether the process was never started, so that nothing of the command ran. Any other
+    /// failure ended a process that may already have acted.
+    pub fn never_started(&self) -> bool {
+        match self {
+            Self::Spawn(_) | Self::CancelledBeforeStart => true,
+            Self::Io(_) | Self::Cancelled | Self::TimedOut | Self::TooLarge(_) => false,
+        }
+    }
 }
 
 /// Completed process output. A signal termination has no exit code.
@@ -439,8 +453,10 @@ fn supervise(
     mut progress: impl FnMut(&[u8], &[u8]),
 ) -> Result<Log, Error> {
     let io_error = Error::Io;
+    // The one look before the process exists. A caller that looked for itself first would
+    // only move the moment a cancellation can arrive unseen, not remove it.
     if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
+        return Err(Error::CancelledBeforeStart);
     }
     command
         .process_group(0)
@@ -732,18 +748,41 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_command_never_spawns() {
+    fn a_command_cancelled_before_its_process_exists_says_that_it_never_started() {
         let cancellation = Cancellation::default();
         cancellation.cancel();
-        let result = run(
+        // Every entry point shares the one look; a program by this name would fail to spawn.
+        let never_spawned = || std::process::Command::new("hive-must-not-spawn");
+        let exact = run(never_spawned(), &[], &cancellation, Duration::ZERO, 1).err();
+        let tail = run_keeping_tail(never_spawned(), &[], &cancellation, Duration::ZERO, 1).err();
+        for error in [exact, tail].map(|error| error.expect("nothing ran")) {
+            assert!(matches!(error, Error::CancelledBeforeStart), "{error:?}");
+            assert!(error.never_started());
+        }
+        assert!(cancellation.group.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn only_a_process_that_was_never_started_is_known_to_have_done_nothing() {
+        let missing = run(
             std::process::Command::new("hive-must-not-spawn"),
             &[],
-            &cancellation,
+            &Cancellation::default(),
             Duration::ZERO,
             1,
-        );
-        assert!(matches!(result, Err(Error::Cancelled)));
-        assert!(cancellation.group.lock().unwrap().is_none());
+        )
+        .err()
+        .expect("nothing by that name runs");
+        assert!(matches!(missing, Error::Spawn(_)), "{missing:?}");
+        assert!(missing.never_started());
+        for started in [
+            Error::Io(io::Error::other("pipe")),
+            Error::Cancelled,
+            Error::TimedOut,
+            Error::TooLarge(1),
+        ] {
+            assert!(!started.never_started(), "{started:?}");
+        }
     }
 
     #[test]

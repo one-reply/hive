@@ -2,7 +2,7 @@
 //! free to refuse: one that failed is asked less often, and one that said how long to wait
 //! is left alone for that long.
 
-use super::{Provider, UsageError, Vendor};
+use super::{Answer, UsageError, Vendor};
 use std::time::{Duration, Instant};
 
 /// How often every vendor is asked while it answers. Anthropic's usage endpoint rate-limits
@@ -39,11 +39,12 @@ impl Schedule {
         }
     }
 
-    /// Records what `provider`'s vendor answered when it was asked at `asked`.
+    /// Records what a vendor answered in the poll that began at `polled`.
     ///
     /// Only a failed request holds a vendor back. Missing or expired credentials are found
     /// without a request, and are looked at again on every poll so that signing in shows at once.
-    pub fn record(&mut self, provider: &Provider, asked: Instant) {
+    pub fn record(&mut self, answer: &Answer, polled: Instant) {
+        let provider = &answer.provider;
         let failures = self.wait(provider.vendor).map_or(0, |wait| wait.failures) + 1;
         self.waits.retain(|(vendor, _)| *vendor != provider.vendor);
         let (retry_after, rate_limited) = match &provider.error {
@@ -51,9 +52,19 @@ impl Schedule {
             Some(UsageError::RateLimited { retry_after }) => (*retry_after, true),
             Some(UsageError::Http(_) | UsageError::Json(_)) => (None, false),
         };
-        let wait = backoff(failures).max(retry_after.unwrap_or_default().min(LONGEST_RETRY_AFTER));
+        // The wait a server named runs from its answer. The vendors are asked one after
+        // another, so counted from the start of the poll it would end early by as long as
+        // the vendors before this one took.
+        let named = retry_after.map(|wait| {
+            let answered_after = answer.received.saturating_duration_since(polled);
+            answered_after.saturating_add(wait.min(LONGEST_RETRY_AFTER))
+        });
+        // Our own backoff runs from the start of the poll, which is a tick of the timer.
+        // Counted from the answer it would end just after the tick it was meant to end on,
+        // and the vendor would go unasked for one interval more.
+        let wait = backoff(failures).max(named.unwrap_or_default());
         // A wait too long for the clock to hold is no wait: the next poll simply asks.
-        if let Some(until) = asked.checked_add(wait) {
+        if let Some(until) = polled.checked_add(wait) {
             self.waits.push((
                 provider.vendor,
                 Wait {
@@ -84,17 +95,35 @@ fn backoff(failures: u32) -> Duration {
 mod tests {
     use super::*;
     use crate::keychain::CredentialError;
+    use crate::usage::Provider;
 
-    fn answered(vendor: Vendor, error: Option<UsageError>) -> Provider {
-        Provider {
-            vendor,
-            windows: vec![],
-            error,
+    /// What `vendor` answered `after` the poll that began at `polled` did.
+    fn answered_after(
+        vendor: Vendor,
+        error: Option<UsageError>,
+        polled: Instant,
+        after: Duration,
+    ) -> Answer {
+        Answer {
+            provider: Provider {
+                vendor,
+                windows: vec![],
+                error,
+            },
+            received: polled + after,
         }
     }
 
-    fn failed(vendor: Vendor) -> Provider {
-        answered(vendor, Some(UsageError::Http("HTTP 503".into())))
+    /// Records an answer that came as soon as the poll began.
+    fn record(schedule: &mut Schedule, vendor: Vendor, error: Option<UsageError>, polled: Instant) {
+        schedule.record(
+            &answered_after(vendor, error, polled, Duration::ZERO),
+            polled,
+        );
+    }
+
+    fn failure() -> Option<UsageError> {
+        Some(UsageError::Http("HTTP 503".into()))
     }
 
     /// The first scheduled poll, counted in poll intervals from `start`, that asks `vendor`.
@@ -112,7 +141,7 @@ mod tests {
         let mut asked = start;
         let mut skipped = Vec::new();
         for _ in 0..6 {
-            schedule.record(&failed(Vendor::Claude), asked);
+            record(&mut schedule, Vendor::Claude, failure(), asked);
             let ticks = next_poll(&schedule, Vendor::Claude, asked);
             skipped.push(ticks);
             asked += POLL_INTERVAL * ticks;
@@ -122,9 +151,9 @@ mod tests {
         // The others are asked on every poll all along.
         assert!(schedule.allows(Vendor::Codex, false, start));
 
-        schedule.record(&answered(Vendor::Claude, None), asked);
+        record(&mut schedule, Vendor::Claude, None, asked);
         assert!(schedule.allows(Vendor::Claude, false, asked));
-        schedule.record(&failed(Vendor::Claude), asked);
+        record(&mut schedule, Vendor::Claude, failure(), asked);
         assert_eq!(next_poll(&schedule, Vendor::Claude, asked), 2);
     }
 
@@ -134,7 +163,7 @@ mod tests {
         let limited = |retry_after| {
             let mut schedule = Schedule::default();
             let error = UsageError::RateLimited { retry_after };
-            schedule.record(&answered(Vendor::Claude, Some(error)), start);
+            record(&mut schedule, Vendor::Claude, Some(error), start);
             schedule
         };
         let hour = Duration::from_secs(60 * 60);
@@ -155,10 +184,62 @@ mod tests {
     }
 
     #[test]
+    fn a_wait_the_server_named_runs_from_its_answer_not_from_the_start_of_the_poll() {
+        let start = Instant::now();
+        // The vendors asked before this one took this long to answer.
+        let late = Duration::from_secs(25);
+        let hour = Duration::from_secs(60 * 60);
+        let second = Duration::from_secs(1);
+        let limited = |retry_after| {
+            let mut schedule = Schedule::default();
+            let error = Some(UsageError::RateLimited { retry_after });
+            schedule.record(&answered_after(Vendor::Cursor, error, start, late), start);
+            schedule
+        };
+        let schedule = limited(Some(hour));
+        // An hour after the poll began is not yet an hour after the server asked for one.
+        assert!(!schedule.allows(Vendor::Cursor, false, start + hour));
+        assert!(!schedule.allows(Vendor::Cursor, true, start + hour + late - second));
+        assert!(schedule.allows(Vendor::Cursor, false, start + hour + late));
+        // A day is the most a server is believed about, from its answer too.
+        let forever = limited(Some(Duration::MAX));
+        assert!(!forever.allows(Vendor::Cursor, false, start + LONGEST_RETRY_AFTER));
+        assert!(forever.allows(Vendor::Cursor, false, start + LONGEST_RETRY_AFTER + late));
+    }
+
+    #[test]
+    fn a_backoff_ends_on_the_tick_it_was_meant_to_however_late_in_the_poll_the_vendor_failed() {
+        let start = Instant::now();
+        let late = Duration::from_secs(25);
+        for error in [
+            failure(),
+            Some(UsageError::RateLimited { retry_after: None }),
+            // Named, and shorter than the backoff: the backoff decides.
+            Some(UsageError::RateLimited {
+                retry_after: Some(Duration::from_secs(5)),
+            }),
+        ] {
+            let mut schedule = Schedule::default();
+            schedule.record(&answered_after(Vendor::Cursor, error, start, late), start);
+            // Ten minutes: the second tick, not the third it would be if counted from the answer.
+            assert!(schedule.allows(Vendor::Cursor, false, start + POLL_INTERVAL * 2));
+            assert_eq!(next_poll(&schedule, Vendor::Cursor, start), 2);
+        }
+        // An answer stamped before its poll began (two clocks, a stale value) adds nothing.
+        let mut schedule = Schedule::default();
+        let early = Answer {
+            received: start,
+            ..answered_after(Vendor::Cursor, failure(), start, Duration::ZERO)
+        };
+        schedule.record(&early, start + late);
+        assert_eq!(next_poll(&schedule, Vendor::Cursor, start + late), 2);
+    }
+
+    #[test]
     fn a_refresh_the_user_asked_for_does_not_wait_out_a_plain_failure() {
         let start = Instant::now();
         let mut schedule = Schedule::default();
-        schedule.record(&failed(Vendor::Codex), start);
+        record(&mut schedule, Vendor::Codex, failure(), start);
         assert!(!schedule.allows(Vendor::Codex, false, start + POLL_INTERVAL));
         assert!(schedule.allows(Vendor::Codex, true, start));
     }
@@ -172,15 +253,15 @@ mod tests {
             CredentialError::Expired("claude"),
             CredentialError::Unavailable("keychain".into()),
         ] {
-            let provider = answered(Vendor::Claude, Some(UsageError::Credentials(error)));
-            schedule.record(&provider, start);
+            let signed_out = Some(UsageError::Credentials(error));
+            record(&mut schedule, Vendor::Claude, signed_out, start);
             assert!(schedule.allows(Vendor::Claude, false, start));
         }
         // And it ends a wait an earlier failure began: the request that failed is not the
         // one that would be made now.
-        schedule.record(&failed(Vendor::Claude), start);
+        record(&mut schedule, Vendor::Claude, failure(), start);
         let signed_out = UsageError::Credentials(CredentialError::NotLoggedIn("claude login"));
-        schedule.record(&answered(Vendor::Claude, Some(signed_out)), start);
+        record(&mut schedule, Vendor::Claude, Some(signed_out), start);
         assert!(schedule.allows(Vendor::Claude, false, start));
     }
 
@@ -189,7 +270,7 @@ mod tests {
         let start = Instant::now();
         let mut schedule = Schedule::default();
         let garbled = UsageError::Json("expected value".into());
-        schedule.record(&answered(Vendor::Cursor, Some(garbled)), start);
+        record(&mut schedule, Vendor::Cursor, Some(garbled), start);
         assert_eq!(next_poll(&schedule, Vendor::Cursor, start), 2);
     }
 }

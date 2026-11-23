@@ -195,7 +195,7 @@ impl State {
 /// Variable that moves a debug build's data folder, so smoke tests stay out of `~/.hive`.
 const DEV_DATA_DIR: &str = "HIVE_DEV_DATA_DIR";
 
-/// Why [`DEV_DATA_DIR`] cannot name the data folder. Whoever set it asked for a folder other
+/// Why `HIVE_DEV_DATA_DIR` cannot name the data folder. Whoever set it asked for a folder other
 /// than `~/.hive`, so an unusable value stops the application instead of being ignored.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DataFolderError {

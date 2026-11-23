@@ -100,7 +100,8 @@ pub(crate) fn path_argument(path: &Path) -> Result<&str, WorktreeError> {
 
 /// Blocking: creates a worktree on a new branch. `name` becomes both the folder and the
 /// branch name; `None` or a blank name picks a free generated one. The branch starts at `base`,
-/// a commit or ref, or without one at the repository's default base (see [`default_base`]).
+/// a commit or ref, or without one at the branch [`git::branches::default_base`] names, else
+/// at `HEAD`.
 ///
 /// `stop` ends `git worktree add`, whose checkout runs `post-checkout` and content filters;
 /// the error then says the outcome is unknown, because the folder, its registration or the
@@ -196,8 +197,7 @@ fn needs_force(stderr: &str) -> bool {
 /// stand in for the branch when Git creates the worktree.
 fn default_base(project: &Project) -> Result<String, GitError> {
     let (host, path) = (&project.host, project.path.as_path());
-    let branches = git::branches::list(host, path)?;
-    let reference = git::branches::default_base(host, path, &branches)?;
+    let reference = git::branches::default_base(host, path)?;
     git::branches::resolve(host, path, reference.as_deref().unwrap_or("HEAD"))
 }
 
@@ -432,6 +432,70 @@ mod tests {
         fixture.commit("local only");
         let created = fixture.create(Some("task"), None).unwrap();
         assert_eq!(fixture.head_of(&created), published);
+    }
+
+    #[test]
+    fn a_line_feed_in_another_worktrees_path_does_not_fail_the_new_worktree() {
+        let fixture = Fixture::new("line-feed");
+        let head = fixture.commit("on main");
+        let elsewhere = fixture.root.join("line\nfeed");
+        testing::run(
+            &fixture.repo,
+            &["worktree", "add", "-q", "-b", "other", path_arg(&elsewhere)],
+        );
+        let created = fixture.create(Some("task"), None).expect("created");
+        assert_eq!(fixture.head_of(&created), head);
+    }
+
+    #[test]
+    fn a_worktree_path_that_is_not_utf8_does_not_move_the_default_base() {
+        let fixture = Fixture::new("byte-path");
+        let main = testing::run(&fixture.repo, &["rev-parse", "HEAD"]);
+        testing::run(&fixture.repo, &["switch", "-q", "-c", "work"]);
+        fixture.commit("on work");
+        let elsewhere = fixture.root.join("elsewhere");
+        testing::run(
+            &fixture.repo,
+            &["worktree", "add", "-q", path_arg(&elsewhere), "main"],
+        );
+        register_at_byte_path(&fixture, "elsewhere");
+        // `main` is checked out where no text can name: it is still the default base.
+        let created = fixture.create(Some("task"), None).expect("created");
+        assert_eq!(fixture.head_of(&created), main);
+    }
+
+    #[test]
+    fn a_remote_main_that_is_not_a_commit_is_passed_over_for_the_next_candidate() {
+        let fixture = Fixture::new("blob-base");
+        let head = fixture.commit("on main");
+        // Nothing stops a remote-tracking ref from naming an object that is not a commit.
+        std::fs::write(fixture.repo.join("note"), "not a commit\n").unwrap();
+        let blob = testing::run(&fixture.repo, &["hash-object", "-w", "note"]);
+        testing::run(
+            &fixture.repo,
+            &["update-ref", "refs/remotes/origin/main", &blob],
+        );
+        let created = fixture.create(Some("task"), None).expect("starts at main");
+        assert_eq!(fixture.head_of(&created), head);
+    }
+
+    fn path_arg(path: &Path) -> &str {
+        path.to_str().expect("the fixture path is text")
+    }
+
+    /// Makes Git report the linked worktree `name` at a path that is not UTF-8. The folder
+    /// itself keeps its name, because APFS refuses such a one; where Git says a worktree is
+    /// comes from its registration, which is a file of bytes.
+    fn register_at_byte_path(fixture: &Fixture, name: &str) {
+        use std::os::unix::ffi::OsStrExt;
+        let mut registration = fixture.root.as_os_str().as_bytes().to_vec();
+        registration.extend_from_slice(b"/caf\xe9/.git\n");
+        let gitdir = fixture
+            .repo
+            .join(".git/worktrees")
+            .join(name)
+            .join("gitdir");
+        std::fs::write(gitdir, registration).expect("registration rewritten");
     }
 
     #[test]

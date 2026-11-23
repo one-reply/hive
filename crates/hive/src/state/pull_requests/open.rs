@@ -52,18 +52,27 @@ fn request(target: &Target, draft: &Draft) -> Result<Opened, String> {
             &source.branch,
             draft,
         )
-        .map_err(|error| match error {
-            // The CLI was cut short; whether the service acted is not known.
-            pull_request::Error::Command(_) => format!(
-                "{error}\nThe request may have been created anyway; Create PR again finds it instead of opening a second one."
-            ),
-            error => error.to_string(),
-        })?,
+        .map_err(|error| creation_failure(&error))?,
     };
     Ok(Opened {
         branch: source.branch,
         url,
     })
+}
+
+/// What to tell the user when the hosting CLI did not open the request.
+fn creation_failure(error: &pull_request::Error) -> String {
+    match error {
+        // The CLI never ran, so the service was never asked.
+        pull_request::Error::Command(command) if command.never_started() => {
+            format!("{error}\nThe hosting CLI did not start, so no request was created.")
+        }
+        // The CLI was cut short; whether the service acted is not known.
+        pull_request::Error::Command(_) => format!(
+            "{error}\nThe request may have been created anyway; Create PR again finds it instead of opening a second one."
+        ),
+        error => error.to_string(),
+    }
 }
 
 impl PullRequests {

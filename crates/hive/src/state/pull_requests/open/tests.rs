@@ -1,4 +1,4 @@
-use super::{Opened, PullRequestEvent, PullRequests, key};
+use super::{Opened, PullRequestEvent, PullRequests, creation_failure, key};
 use crate::state::{git::Git, projects::Projects, store::Store};
 use gpui_kit as gpui;
 use gpui_kit::{AppContext as _, Entity, TestAppContext};
@@ -236,4 +236,37 @@ fn a_request_waits_for_its_push_and_is_dropped_when_the_push_fails(cx: &mut Test
         // What the user wrote survives the failed push.
         assert!(requests.drafts.contains_key(&key(&target)));
     });
+}
+
+#[test]
+fn only_a_cli_that_ran_may_have_opened_the_request_anyway() {
+    use hive_core::command;
+    use hive_core::git::pull_request::Error;
+
+    let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+    for never_started in [
+        command::Error::Spawn(missing),
+        command::Error::CancelledBeforeStart,
+    ] {
+        let message = creation_failure(&Error::Command(never_started));
+        assert!(!message.contains("may have been created"), "{message}");
+        assert!(message.contains("no request was created"), "{message}");
+    }
+    for cut_short in [
+        command::Error::TimedOut,
+        command::Error::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe)),
+        command::Error::TooLarge(1),
+    ] {
+        let message = creation_failure(&Error::Command(cut_short));
+        assert!(
+            message.contains("may have been created anyway"),
+            "{message}"
+        );
+    }
+    // The service answered: what it said is the whole message.
+    let refused = Error::Response("gh: a pull request already exists".into());
+    assert_eq!(
+        creation_failure(&refused),
+        "gh: a pull request already exists"
+    );
 }

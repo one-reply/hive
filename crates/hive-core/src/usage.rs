@@ -11,7 +11,7 @@ pub use schedule::{POLL_INTERVAL, Schedule};
 use crate::command;
 use crate::keychain::{self, CredentialError};
 use serde_json::Value;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UsageWindow {
@@ -92,27 +92,54 @@ pub struct Provider {
     pub error: Option<UsageError>,
 }
 
-/// Blocking: every vendor whose CLI is installed, with its limits when it is one of `ask`
+/// What one vendor answered in a poll, and when its answer came.
+#[derive(Clone, Debug)]
+pub struct Answer {
+    pub provider: Provider,
+    /// A wait the vendor's server named runs from here. The vendors are asked one after
+    /// another, so this is later than the start of the poll by as long as the others took.
+    pub received: Instant,
+}
+
+/// Blocking: every vendor whose CLI is installed, with its answer when it is one of `ask`
 /// and `None` when it is not asked this time. A CLI that is installed but signed out still
 /// shows, with the command that signs in; one that is missing is left out.
-pub fn poll(ask: &[Vendor]) -> Vec<(Vendor, Option<Provider>)> {
-    Vendor::ALL
+pub fn poll(ask: &[Vendor]) -> Vec<(Vendor, Option<Answer>)> {
+    let installed = Vendor::ALL
         .into_iter()
-        .filter(|vendor| command::executable(vendor.executable()).is_some())
+        .filter(|vendor| command::executable(vendor.executable()).is_some());
+    answers(installed, ask, Vendor::fetch, Instant::now)
+}
+
+/// [`poll`] over `vendors`, with the request and the clock given by the caller.
+fn answers(
+    vendors: impl Iterator<Item = Vendor>,
+    ask: &[Vendor],
+    fetch: impl Fn(Vendor) -> Result<Vec<UsageWindow>, UsageError>,
+    now: impl Fn() -> Instant,
+) -> Vec<(Vendor, Option<Answer>)> {
+    vendors
         .map(|vendor| {
-            let asked = ask.contains(&vendor);
-            (vendor, asked.then(|| provider(vendor, vendor.fetch())))
+            let answer = ask.contains(&vendor).then(|| {
+                let provider = provider(vendor, fetch(vendor));
+                // Read once the vendor has answered, not once for the whole poll.
+                let received = now();
+                Answer { provider, received }
+            });
+            (vendor, answer)
         })
         .collect()
 }
 
 /// What to show after a poll: the fresh answer of each vendor that was asked, and what was
 /// last known of one that was not. A vendor missing from `polled` is no longer installed.
-pub fn merge(previous: &[Provider], polled: Vec<(Vendor, Option<Provider>)>) -> Vec<Provider> {
+pub fn merge(previous: &[Provider], polled: Vec<(Vendor, Option<Answer>)>) -> Vec<Provider> {
     polled
         .into_iter()
         .filter_map(|(vendor, fresh)| {
-            fresh.or_else(|| previous.iter().find(|p| p.vendor == vendor).cloned())
+            fresh
+                .map(|answer| answer.provider)
+                .or_else(|| previous.iter().find(|p| p.vendor == vendor).cloned())
         })
         .collect()
 }
@@ -148,20 +175,27 @@ fn get_json_with_timeout(
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    let answer = response_text(req.call())?;
-    json_of(&answer, SystemTime::now())
+    let mut response = req.call().map_err(|e| UsageError::Http(e.to_string()))?;
+    let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok());
+    // Before the body is read: a refusal is its status line and headers. A body that never
+    // arrives must not turn a rate limit into a failed request and lose the wait it named.
+    if let Err(refusal) = accepted(status, retry_after, SystemTime::now()) {
+        tracing::debug!(status, "usage request refused");
+        return Err(refusal);
+    }
+    let text = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| UsageError::Http(e.to_string()))?;
+    tracing::debug!(status, response_bytes = text.len(), "usage response");
+    serde_json::from_str(&text).map_err(|e| UsageError::Json(e.to_string()))
 }
 
-/// What a usage endpoint answered. The body of an error may name the account, so it never
-/// leaves this module.
-struct Answer {
-    status: u16,
-    /// The `Retry-After` header, as sent.
-    retry_after: Option<String>,
-    text: String,
-}
-
-/// Non-2xx statuses come back as responses, so a caller can tell them apart by their body.
+/// Non-2xx statuses come back as responses, so that their status and headers can be read.
 fn agent(timeout: Duration) -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .http_status_as_error(false)
@@ -171,55 +205,44 @@ fn agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::new_with_config(config)
 }
 
-fn response_text(
-    response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
-) -> Result<Answer, UsageError> {
-    let mut res = response.map_err(|e| UsageError::Http(e.to_string()))?;
-    let status = res.status().as_u16();
-    let retry_after = res
-        .headers()
-        .get("retry-after")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let text = res
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| UsageError::Http(e.to_string()))?;
-    tracing::debug!(status, response_bytes = text.len(), "usage response");
-    Ok(Answer {
-        status,
-        retry_after,
-        text,
-    })
-}
-
-/// The body of a 2xx response as JSON. Error bodies may name the account, so only the status
-/// reaches the message; a 429 also says how long the server asked to be left alone.
-fn json_of(answer: &Answer, now: SystemTime) -> Result<Value, UsageError> {
-    if answer.status == 429 {
+/// Whether a response with this status is an answer worth reading. The body of a refusal may
+/// name the account, so it is neither read nor quoted: only the status reaches the message,
+/// and a 429 also says how long the server asked to be left alone.
+fn accepted(status: u16, retry_after: Option<&str>, now: SystemTime) -> Result<(), UsageError> {
+    if status == 429 {
         return Err(UsageError::RateLimited {
-            retry_after: answer
-                .retry_after
-                .as_deref()
-                .and_then(|value| retry_after(value, now)),
+            retry_after: retry_after.and_then(|value| wait_of(value, now)),
         });
     }
-    if !(200..300).contains(&answer.status) {
-        return Err(UsageError::Http(format!("HTTP {}", answer.status)));
+    if !(200..300).contains(&status) {
+        return Err(UsageError::Http(format!("HTTP {status}")));
     }
-    serde_json::from_str(&answer.text).map_err(|e| UsageError::Json(e.to_string()))
+    Ok(())
 }
 
 /// The wait a `Retry-After` header asks for: a number of seconds, or a date to wait until.
 /// The value comes from a server, so one that is unreadable or already past is no wait at all.
-fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
+fn wait_of(value: &str, now: SystemTime) -> Option<Duration> {
     let value = value.trim();
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds));
     }
-    let until = chrono::DateTime::parse_from_rfc2822(value).ok()?;
-    let until = UNIX_EPOCH.checked_add(Duration::from_secs(until.timestamp().try_into().ok()?))?;
+    let until = UNIX_EPOCH.checked_add(Duration::from_secs(http_date(value)?.try_into().ok()?))?;
     until.duration_since(now).ok()
+}
+
+/// Unix seconds of a date in any of the three forms HTTP allows (RFC 9110, 5.6.7): the
+/// current one, and the RFC 850 and `asctime` ones a recipient must still accept. The last
+/// two carry no zone and are in GMT by definition.
+fn http_date(value: &str) -> Option<i64> {
+    const OBSOLETE: [&str; 2] = ["%A, %d-%b-%y %H:%M:%S GMT", "%a %b %e %H:%M:%S %Y"];
+    if let Ok(date) = chrono::DateTime::parse_from_rfc2822(value) {
+        return Some(date.timestamp());
+    }
+    OBSOLETE
+        .iter()
+        .find_map(|format| chrono::NaiveDateTime::parse_from_str(value, format).ok())
+        .map(|date| date.and_utc().timestamp())
 }
 
 fn claude() -> Result<Vec<UsageWindow>, UsageError> {
@@ -576,32 +599,26 @@ mod tests {
         }
     }
 
-    fn answer(status: u16, retry_after: Option<&str>, text: &str) -> Answer {
-        Answer {
-            status,
-            retry_after: retry_after.map(str::to_owned),
-            text: text.into(),
-        }
-    }
-
     #[test]
-    fn error_statuses_never_carry_the_body() {
+    fn only_a_2xx_status_is_an_answer() {
         let now = UNIX_EPOCH;
-        let private = r#"{"email":"private-account-marker"}"#;
-        let error = json_of(&answer(403, None, private), now).unwrap_err();
-        assert_eq!(error, UsageError::Http("HTTP 403".into()));
-        let limited = json_of(&answer(429, Some("120"), private), now).unwrap_err();
-        assert!(!limited.to_string().contains("private"), "{limited}");
         assert_eq!(
-            json_of(&answer(200, None, r#"{"ok":1}"#), now).unwrap(),
-            json!({"ok": 1})
+            accepted(403, None, now),
+            Err(UsageError::Http("HTTP 403".into()))
         );
+        assert_eq!(
+            accepted(500, Some("120"), now),
+            Err(UsageError::Http("HTTP 500".into()))
+        );
+        for status in [200, 204, 299] {
+            assert_eq!(accepted(status, None, now), Ok(()));
+        }
     }
 
     #[test]
     fn a_429_is_rate_limiting_with_the_wait_the_server_asked_for() {
         let now = UNIX_EPOCH + Duration::from_secs(1_762_000_000);
-        let limited = |header| json_of(&answer(429, header, ""), now).unwrap_err();
+        let limited = |header| accepted(429, header, now).unwrap_err();
         assert_eq!(
             limited(Some("120")),
             UsageError::RateLimited {
@@ -626,15 +643,40 @@ mod tests {
         // 2025-11-01T12:26:40Z.
         let now = UNIX_EPOCH + Duration::from_secs(1_762_000_000);
         let seconds = |secs| Some(Duration::from_secs(secs));
-        assert_eq!(retry_after("0", now), seconds(0));
-        assert_eq!(retry_after(" 90 ", now), seconds(90));
-        assert_eq!(
-            retry_after("Sat, 01 Nov 2025 12:36:40 GMT", now),
-            seconds(600)
-        );
-        assert_eq!(retry_after("Sat, 01 Nov 2025 12:00:00 GMT", now), None);
+        assert_eq!(wait_of("0", now), seconds(0));
+        assert_eq!(wait_of(" 90 ", now), seconds(90));
+        assert_eq!(wait_of("Sat, 01 Nov 2025 12:36:40 GMT", now), seconds(600));
+        assert_eq!(wait_of("Sat, 01 Nov 2025 12:00:00 GMT", now), None);
         for unreadable in ["", "soon", "-5", "1.5", "Sat, 99 Nov 2025 12:36:40 GMT"] {
-            assert_eq!(retry_after(unreadable, now), None, "{unreadable:?}");
+            assert_eq!(wait_of(unreadable, now), None, "{unreadable:?}");
+        }
+    }
+
+    #[test]
+    fn a_retry_after_date_is_read_in_every_form_http_allows() {
+        // 2025-11-01T12:26:40Z, a Saturday; each date below is ten minutes later.
+        let now = UNIX_EPOCH + Duration::from_secs(1_762_000_000);
+        for date in [
+            "Sat, 01 Nov 2025 12:36:40 GMT",
+            "Saturday, 01-Nov-25 12:36:40 GMT",
+            "Sat Nov  1 12:36:40 2025",
+        ] {
+            assert_eq!(wait_of(date, now), Some(Duration::from_secs(600)), "{date}");
+        }
+        // A two-digit day in the form that pads a one-digit one with a space.
+        assert_eq!(
+            wait_of("Mon Nov 10 12:26:40 2025", now),
+            Some(Duration::from_secs(9 * 24 * 60 * 60))
+        );
+        for unreadable in [
+            // No such day, a weekday the date does not fall on, a zone the form does not have.
+            "Saturday, 31-Nov-25 12:36:40 GMT",
+            "Monday, 01-Nov-25 12:36:40 GMT",
+            "Saturday, 01-Nov-25 12:36:40 PST",
+            "Sat Nov  1 12:36:40 2025 GMT",
+            "Sat Nov  1 2025",
+        ] {
+            assert_eq!(wait_of(unreadable, now), None, "{unreadable:?}");
         }
     }
 
@@ -670,6 +712,71 @@ mod tests {
         server.join().unwrap();
     }
 
+    /// A server on this machine that answers its one request with `response` and hangs up.
+    fn answering(response: &'static [u8]) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/usage", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = [0; 2048];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            stream.write_all(response).unwrap();
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn a_refusal_whose_body_never_arrives_is_still_read_from_its_status_and_headers() {
+        let _requests = one_request_at_a_time();
+
+        // Each promises a body of 4096 bytes and hangs up after the first one.
+        let (url, server) = answering(
+            b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 900\r\n\
+              Content-Length: 4096\r\nConnection: close\r\n\r\n{",
+        );
+        assert_eq!(
+            get_json(&url, &[]).unwrap_err(),
+            UsageError::RateLimited {
+                retry_after: Some(Duration::from_secs(900))
+            }
+        );
+        server.join().unwrap();
+
+        let (url, server) = answering(
+            b"HTTP/1.1 503 Service Unavailable\r\n\
+              Content-Length: 4096\r\nConnection: close\r\n\r\n{",
+        );
+        assert_eq!(
+            get_json(&url, &[]).unwrap_err(),
+            UsageError::Http("HTTP 503".into())
+        );
+        server.join().unwrap();
+
+        // A refusal that arrives whole is not quoted either: its body may name the account.
+        let (url, server) = answering(
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 34\r\nConnection: close\r\n\r\n\
+              {\"email\":\"private-account-marker\"}",
+        );
+        assert_eq!(
+            get_json(&url, &[]).unwrap_err(),
+            UsageError::Http("HTTP 403".into())
+        );
+        server.join().unwrap();
+
+        // An answer is its body: one cut short is a failed request, not a malformed answer.
+        let (url, server) =
+            answering(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n{");
+        let cut_short = get_json(&url, &[]).unwrap_err();
+        assert!(matches!(cut_short, UsageError::Http(_)), "{cut_short}");
+        server.join().unwrap();
+    }
+
     #[test]
     fn a_vendor_that_was_not_asked_keeps_what_was_last_known_of_it() {
         let shown = |vendor, percent| Provider {
@@ -688,12 +795,16 @@ mod tests {
             shown(Vendor::Codex, 20.),
             shown(Vendor::Cursor, 30.),
         ];
+        let fresh = Answer {
+            provider: shown(Vendor::Codex, 25.),
+            received: Instant::now(),
+        };
         let merged = merge(
             &previous,
             vec![
                 // Held back by its schedule: last known.
                 (Vendor::Claude, None),
-                (Vendor::Codex, Some(shown(Vendor::Codex, 25.))),
+                (Vendor::Codex, Some(fresh)),
                 // Cursor's CLI is gone; Antigravity's is new and was not asked yet.
                 (Vendor::Antigravity, None),
             ],
@@ -702,6 +813,49 @@ mod tests {
             percents(&merged),
             [(Vendor::Claude, 10.), (Vendor::Codex, 25.)]
         );
+    }
+
+    #[test]
+    fn each_answer_of_a_poll_is_timed_when_its_own_vendor_answered() {
+        use std::cell::Cell;
+
+        // A clock that moves only while a vendor is being asked: half a minute each.
+        let start = Instant::now();
+        let asked = Cell::new(0u32);
+        let fetch = |vendor| {
+            asked.set(asked.get() + 1);
+            match vendor {
+                Vendor::Cursor => Err(UsageError::RateLimited { retry_after: None }),
+                _ => Ok(vec![]),
+            }
+        };
+        let now = || start + Duration::from_secs(30) * asked.get();
+        let installed = [Vendor::Claude, Vendor::Codex, Vendor::Cursor];
+        let polled = answers(
+            installed.into_iter(),
+            &[Vendor::Claude, Vendor::Cursor],
+            fetch,
+            now,
+        );
+        let received: Vec<_> = polled
+            .iter()
+            .map(|(vendor, answer)| {
+                let waited = answer.as_ref().map(|a| a.received.duration_since(start));
+                (*vendor, waited.map(|waited| waited.as_secs()))
+            })
+            .collect();
+        assert_eq!(
+            received,
+            [
+                (Vendor::Claude, Some(30)),
+                // Installed and not asked this time: no request, no answer.
+                (Vendor::Codex, None),
+                (Vendor::Cursor, Some(60)),
+            ]
+        );
+        assert_eq!(asked.get(), 2);
+        let refused = polled[2].1.as_ref().and_then(|a| a.provider.error.clone());
+        assert_eq!(refused, Some(UsageError::RateLimited { retry_after: None }));
     }
 
     #[test]

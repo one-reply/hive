@@ -132,7 +132,7 @@ impl Drop for Server {
 }
 
 /// Blocking hook entrypoint: stream bounded stdin, discard sensitive fields, then send one
-/// report. Input past [`MAX_INPUT`] fails as truncated JSON.
+/// report. Input past 64 MiB fails as truncated JSON.
 pub fn forward(path: &Path, terminal: u64, input: impl Read) -> io::Result<()> {
     let input = io::BufReader::new(input.take(MAX_INPUT));
     let event: Input = serde_json::from_reader(input).map_err(io::Error::other)?;

@@ -484,7 +484,7 @@ impl Git {
                                 status.upstream.clone(),
                             )) {
                         let branches = git::branches::list(&t.host, &t.path)?;
-                        let base = git::branches::default_base(&t.host, &t.path, &branches)?;
+                        let base = git::branches::default_base(&t.host, &t.path)?;
                         let remotes = git::changes::remotes(&t.host, &t.path)?;
                         let upstream = status
                             .branch

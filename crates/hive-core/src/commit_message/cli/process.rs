@@ -52,7 +52,9 @@ pub(super) fn run(
         crate::command::Error::Spawn(source) | crate::command::Error::Io(source) => {
             Error::CliIo { agent, source }
         }
-        crate::command::Error::Cancelled => Error::Invalid("Generation cancelled."),
+        crate::command::Error::CancelledBeforeStart | crate::command::Error::Cancelled => {
+            Error::Invalid("Generation cancelled.")
+        }
         crate::command::Error::TimedOut => Error::Invalid("CLI generation timed out. Try again."),
         crate::command::Error::TooLarge(_) => Error::Invalid("CLI output exceeds 1 MiB"),
     })?;

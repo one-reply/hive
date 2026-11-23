@@ -55,7 +55,8 @@ pub enum GitError {
         code: Option<i32>,
         stderr: String,
     },
-    /// A deadline or pipe failure interrupted Git; writes may already have taken effect.
+    /// A stop, a deadline or a pipe failure ended the command; unless it was stopped before
+    /// Git started, writes may already have taken effect.
     #[error("`git {command}` interrupted on {host:?} in {cwd}: {source}. {guidance}")]
     Interrupted {
         /// Arguments identifying the interrupted operation.
@@ -251,6 +252,16 @@ fn unfinished(
             host: host.clone(),
             source,
         },
+        // Stopped before the first command of an action, or between two of them. What ran
+        // before has its own result; this one did not run, so it leaves nothing to verify.
+        source @ command::Error::CancelledBeforeStart => GitError::Interrupted {
+            command: args.join(" "),
+            host: host.clone(),
+            cwd: cwd.to_owned(),
+            source,
+            mutation: false,
+            guidance: "It changed nothing.",
+        },
         command::Error::TooLarge(limit) => GitError::TooLarge(limit),
         source => GitError::Interrupted {
             command: args.join(" "),
@@ -279,19 +290,9 @@ fn invoke(
 ) -> Result<Vec<u8>, GitError> {
     let command = environment(host, cwd, "git", args);
     let input = input.unwrap_or_default();
+    // Whether a stop came before Git started is the supervisor's to say: it takes the last
+    // look before the process exists, and `unfinished` reads its answer.
     let output = match stop {
-        Some(stop) if stop.is_cancelled() => {
-            // Stopped between two commands of one action. What ran before has its own
-            // result; this one did not run, so it leaves nothing to verify.
-            return Err(GitError::Interrupted {
-                command: args.join(" "),
-                host: host.clone(),
-                cwd: cwd.to_owned(),
-                source: command::Error::Cancelled,
-                mutation: false,
-                guidance: "Stopped before this command started; it changed nothing.",
-            });
-        }
         // A hook prints as much as it likes. Ending Git for that would stop it halfway through
         // the change, so the command runs on and only the end of its output is kept.
         Some(stop) => command::run_keeping_tail(command, input, stop, MUTATION_TIMEOUT, limit),
@@ -388,6 +389,27 @@ mod transport_tests {
             }
         }
         assert!(!GitError::Invalid("not a git repository".into()).is_not_repository());
+    }
+
+    #[test]
+    fn a_mutation_the_supervisor_never_started_leaves_nothing_to_verify() {
+        // A Stop can land after the last look a caller took at its switch. Whatever the
+        // supervisor then answers for the process it did not start is not an unknown outcome.
+        let stop = Cancellation::default();
+        stop.cancel();
+        let never_started = |stop: &Cancellation| {
+            let program = std::process::Command::new("hive-must-not-spawn");
+            let source = command::run_keeping_tail(program, &[], stop, MUTATION_TIMEOUT, 1)
+                .err()
+                .expect("nothing by that name runs");
+            unfinished(&Host::Local, Path::new("/repo"), &["commit"], source, true)
+        };
+        let stopped = never_started(&stop);
+        assert!(!stopped.outcome_unknown(), "{stopped}");
+        assert!(stopped.to_string().contains("changed nothing"), "{stopped}");
+        let missing = never_started(&Cancellation::default());
+        assert!(matches!(missing, GitError::Spawn { .. }), "{missing:?}");
+        assert!(!missing.outcome_unknown());
     }
 
     #[test]
