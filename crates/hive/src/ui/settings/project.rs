@@ -1,5 +1,7 @@
 //! One project's page (Orca's "Identity"): display name, color and badge shown in the sidebar.
 
+mod emoji;
+
 use hive_core::host::Host;
 use std::path::{Path, PathBuf};
 
@@ -363,10 +365,7 @@ impl ProjectPage {
         let body = match self.tab {
             BadgeTab::Avatar => self.render_avatar(snapshot, window, cx).into_any_element(),
             BadgeTab::Icon => self.render_icons(snapshot, window, cx).into_any_element(),
-            BadgeTab::Emoji => {
-                TextField::input(Input::new(&self.emoji_input), &self.emoji_input, cx)
-                    .into_any_element()
-            }
+            BadgeTab::Emoji => self.render_emojis(snapshot, window, cx).into_any_element(),
         };
         v_flex().gap_3().child(tabs).child(body)
     }
