@@ -30,102 +30,33 @@ impl Stock {
 pub(super) const FEATURE_PLANNER: Stock = Stock {
     id: 1,
     name: "Feature planner",
-    text: "Read the code the task touches in every listed worktree before planning; do not edit files. Give each lane that needs work a self-contained assignment: the modules to change, the expected behavior, and the tests to add or update. Write acceptance criteria as observable checks (a test, a command, a reproducible behavior), not intentions. Leave out lanes that need no changes. Ask the user when the requirements are ambiguous or a decision has real trade-offs instead of guessing.",
+    text: include_str!("prompts/feature-planner.md").trim_ascii_end(),
 };
 
 pub(super) const DEVELOPER: Stock = Stock {
     id: 2,
     name: "Developer",
-    text: "Read the code your assignment touches and follow the repository's conventions and agent instructions (AGENTS.md, CLAUDE.md, CONTRIBUTING). Implement the smallest complete change that meets every acceptance criterion and fix root causes, not symptoms. Add or update tests for the new behavior, then run the project's formatter, linter and tests. If the handoff lists findings for your lane, resolve each one and say how. Do not push or switch branches. Report what changed, the commands you ran with their results, and what you could not verify.",
+    text: include_str!("prompts/developer.md").trim_ascii_end(),
 };
 
 pub(super) const QA_REVIEWER: Stock = Stock {
     id: 3,
     name: "QA reviewer",
-    text: "Verify, do not fix. In each worktree inspect the actual changes (git status, git diff, the branch's commits) and check every acceptance criterion against the code and tests, not against the developer's summary. Look for unhandled edge cases and error paths, broken callers of changed code, and missing or weak tests. Your sandbox is read-only, so you may be unable to build; Hive runs each lane's configured checks itself. Report only concrete defects, each with its location, a reproduction or failing case, and the expected behavior; skip style preferences.",
+    text: include_str!("prompts/qa-reviewer.md").trim_ascii_end(),
 };
 
 pub(super) const SECURITY_AND_PERFORMANCE_REVIEWER: Stock = Stock {
     id: 4,
     name: "Security & performance reviewer",
-    text: "Review only the changed code and the paths it affects. Security: untrusted input reaching shell commands, queries, file paths or HTML; missing authentication or authorization checks; secrets in code, logs or errors; unsafe deserialization; risky new dependencies. Performance: extra work on hot paths, I/O or queries inside loops, unbounded memory or result sizes, blocking calls on async or UI threads. Report only issues with a concrete exploit or a measurable cost, each with its location and a fix; skip theoretical concerns and code the change does not touch.",
+    text: include_str!("prompts/security-and-performance-reviewer.md").trim_ascii_end(),
 };
 
-pub(super) const FIX_PLANNER: Stock = Stock {
-    id: 5,
-    name: "Bug-fix planner",
-    text: "Locate the bug by reading the code; do not edit files. Identify the root cause and every caller that shares the faulty path, then assign the smallest complete fix to the lane that owns it. Acceptance criteria must include the original symptom gone and a regression test that fails before the fix and passes after it. Ask the user when you cannot tell what the correct behavior is.",
-};
-
-pub(super) const FIX_DEVELOPER: Stock = Stock {
-    id: 6,
-    name: "Bug-fix developer",
-    text: "Fix the root cause in the shared code path, not only the reported call site. First write a regression test that fails without the fix, then make it pass. Keep the diff focused: no refactoring or unrelated changes. Run the project's formatter, linter and tests. Do not push or switch branches. Report the root cause, the fix, and the test evidence.",
-};
-
-pub(super) const FIX_QA_REVIEWER: Stock = Stock {
-    id: 7,
-    name: "Bug-fix QA reviewer",
-    text: "Verify, do not fix. Confirm the change removes the root cause rather than masking the symptom: it covers every caller of the faulty path, and the regression test would fail without the fix. Check that it changes no behavior beyond the fix. Your sandbox is read-only; Hive runs each lane's configured checks itself. Report only concrete defects, each with its location, a reproduction and the expected behavior.",
-};
-
-pub(super) const CONTRACT_PLANNER: Stock = Stock {
-    id: 8,
-    name: "Contract planner",
-    text: "Read the code on both sides of the boundary in every worktree; do not edit files. Define the shared contract first: endpoints or messages, field names and types, optionality, errors and status values. Follow the shared contract format supplied by Hive, and state which side stays backward compatible while the other is deployed. Give each lane criteria that verify its side of the contract. Ask the user when the contract involves a product decision.",
-};
-
-pub(super) const CONTRACT_DEVELOPER: Stock = Stock {
-    id: 9,
-    name: "Contract developer",
-    text: "Implement your side of the contract exactly as the assignment states it. If the contract is wrong or incomplete, stop and report the problem instead of inventing a variant. Keep the backward compatibility the plan requires. Add tests for your side of the contract, including error cases, then run the project's formatter, linter and tests. Do not push or switch branches. Report what changed and how you verified it.",
-};
-
-pub(super) const CONTRACT_QA_REVIEWER: Stock = Stock {
-    id: 10,
-    name: "Contract QA reviewer",
-    text: "Verify, do not fix. Check that every lane implements the same contract: compare names, types, optionality, error codes and status values on both sides, then trace one complete request through the changed code from client to server and back. Your sandbox is read-only; Hive runs each lane's configured checks itself. Report each mismatch against the lane that deviates from the planned contract, with the location on both sides.",
-};
-
-pub(super) const CODE_REVIEWER: Stock = Stock {
-    id: 11,
-    name: "Code reviewer",
-    text: "Review the changed code for correctness and maintainability: logic errors, unhandled edge cases and error paths, broken callers of changed functions, logic that duplicates code already in the repository, and missing or weak tests. Report only actionable defects, each with its location, the problem and the expected fix; skip style that the formatter or linter already enforces.",
-};
-
-pub(super) const SECURITY_REVIEWER: Stock = Stock {
-    id: 12,
-    name: "Security reviewer",
-    text: "Review the changed code and the paths it touches for vulnerabilities: untrusted input reaching shell commands, queries, file paths or HTML; missing authentication or authorization checks; secrets in code, logs or errors; unsafe deserialization; risky new dependencies. Report each issue with its location, how it can be exploited and a defensive fix; skip theoretical concerns and code the change does not touch.",
-};
-
-pub(super) const PERFORMANCE_REVIEWER: Stock = Stock {
-    id: 13,
-    name: "Performance reviewer",
-    text: "Inspect the changed paths for performance regressions: extra work on hot paths, I/O or queries inside loops, unbounded memory or result sizes, blocking calls on async or UI threads, missing limits or pagination. Report each issue with its location, its expected cost at realistic input sizes and a fix; do not flag micro-optimizations without evidence.",
-};
-
-pub(super) const ACCEPTANCE_REVIEWER: Stock = Stock {
-    id: 14,
-    name: "Acceptance reviewer",
-    text: "Check the changes against every approved acceptance criterion in each worktree, using the code and tests rather than the developers' summaries. Report each unmet criterion with its evidence and the expected behavior.",
-};
-
-const STOCK: [&Stock; 14] = [
+// IDs 5–14 belonged to retired prompts and remain reserved for saved libraries.
+const STOCK: [&Stock; 4] = [
     &FEATURE_PLANNER,
     &DEVELOPER,
     &QA_REVIEWER,
     &SECURITY_AND_PERFORMANCE_REVIEWER,
-    &FIX_PLANNER,
-    &FIX_DEVELOPER,
-    &FIX_QA_REVIEWER,
-    &CONTRACT_PLANNER,
-    &CONTRACT_DEVELOPER,
-    &CONTRACT_QA_REVIEWER,
-    &CODE_REVIEWER,
-    &SECURITY_REVIEWER,
-    &PERFORMANCE_REVIEWER,
-    &ACCEPTANCE_REVIEWER,
 ];
 
 /// Review stages the template editor offers to add.
@@ -159,23 +90,19 @@ impl ReviewKind {
             Self::Acceptance => "Custom review",
         }
     }
-
-    fn stock(self) -> &'static Stock {
-        match self {
-            Self::Code => &CODE_REVIEWER,
-            Self::Security => &SECURITY_REVIEWER,
-            Self::Performance => &PERFORMANCE_REVIEWER,
-            Self::Acceptance => &ACCEPTANCE_REVIEWER,
-        }
-    }
 }
 
 impl Library {
-    /// A new review stage of `kind`: following its built-in prompt while the library still has
-    /// it, otherwise carrying the built-in text as the stage's own instructions.
+    /// A new review stage following its library prompt, or using the built-in text if deleted.
     pub fn review_step(&self, kind: ReviewKind) -> Step {
-        let stock = kind.stock();
-        match self.prompt(stock.id) {
+        // Older libraries may still have a customized prompt dedicated to this menu entry.
+        let (legacy_id, stock) = match kind {
+            ReviewKind::Code => (11, &QA_REVIEWER),
+            ReviewKind::Security => (12, &SECURITY_AND_PERFORMANCE_REVIEWER),
+            ReviewKind::Performance => (13, &SECURITY_AND_PERFORMANCE_REVIEWER),
+            ReviewKind::Acceptance => (14, &QA_REVIEWER),
+        };
+        match self.prompt(legacy_id).or_else(|| self.prompt(stock.id)) {
             Some(prompt) => Step::linked(kind.stage_name(), prompt),
             None => Step::new(kind.stage_name(), stock.text),
         }
@@ -205,13 +132,17 @@ pub(crate) fn link_stock_prompts(templates: &mut [Template]) {
 
 impl Library {
     pub(crate) fn upgrade_shared_contract(&mut self) {
+        const CONTRACT_PLANNER_ID: u64 = 8;
+        const SHARED_CONTRACT_TEXT: &str = "Read the code on both sides of the boundary in every worktree; do not edit files. Define the shared contract first: endpoints or messages, field names and types, optionality, errors and status values. Follow the shared contract format supplied by Hive, and state which side stays backward compatible while the other is deployed. Give each lane criteria that verify its side of the contract. Ask the user when the contract involves a product decision.";
         const PREVIOUS: &str = "Read the code on both sides of the boundary in every worktree; do not edit files. Define the shared contract first: endpoints or messages, field names and types, optionality, errors and status values. Repeat it verbatim in every affected assignment so the lanes cannot drift, and state which side stays backward compatible while the other is deployed. Give each lane criteria that verify its side of the contract. Ask the user when the contract involves a product decision.";
         for template in &mut self.templates {
             if template.planner.instruction == PREVIOUS && template.planner.prompt.is_none() {
-                template.planner.prompt = Some(CONTRACT_PLANNER.id);
+                template.planner.prompt = Some(CONTRACT_PLANNER_ID);
             }
             if template.name == "Cross-repository"
-                && template.planner.prompt == Some(CONTRACT_PLANNER.id)
+                && (template.planner.prompt == Some(CONTRACT_PLANNER_ID)
+                    || (template.planner.prompt == Some(FEATURE_PLANNER.id)
+                        && template.planner.instruction == FEATURE_PLANNER.text))
             {
                 template.shared_contract = true;
             }
@@ -219,9 +150,9 @@ impl Library {
         if let Some(prompt) = self
             .prompts
             .iter_mut()
-            .find(|p| p.id == CONTRACT_PLANNER.id && p.text == PREVIOUS)
+            .find(|p| p.id == CONTRACT_PLANNER_ID && p.text == PREVIOUS)
         {
-            prompt.text = CONTRACT_PLANNER.text.into();
+            prompt.text = SHARED_CONTRACT_TEXT.into();
         }
     }
 }
@@ -262,13 +193,18 @@ mod tests {
     #[test]
     fn review_step_links_only_while_the_library_has_the_prompt() {
         let mut library = Library::default();
-        for kind in ReviewKind::ALL {
+        for (kind, stock) in ReviewKind::ALL.into_iter().zip([
+            QA_REVIEWER,
+            SECURITY_AND_PERFORMANCE_REVIEWER,
+            SECURITY_AND_PERFORMANCE_REVIEWER,
+            QA_REVIEWER,
+        ]) {
             let step = library.review_step(kind);
             assert_eq!(step.name, kind.stage_name());
-            assert_eq!(step.prompt, Some(kind.stock().id));
-            assert_eq!(step.instruction, kind.stock().text);
+            assert_eq!(step.prompt, Some(stock.id));
+            assert_eq!(step.instruction, stock.text);
         }
-        let id = CODE_REVIEWER.id;
+        let id = QA_REVIEWER.id;
         library
             .save_prompt(Some(id), "Code reviewer", "House rules")
             .unwrap();
@@ -279,7 +215,20 @@ mod tests {
         library.delete_prompt(id).unwrap();
         let step = library.review_step(ReviewKind::Code);
         assert_eq!(step.prompt, None);
-        assert_eq!(step.instruction, CODE_REVIEWER.text);
+        assert_eq!(step.instruction, QA_REVIEWER.text);
+    }
+
+    #[test]
+    fn adding_a_review_keeps_the_saved_specialized_prompt_when_present() {
+        let mut library = Library::default();
+        library.prompts.push(Prompt {
+            id: 12,
+            name: "Security reviewer".into(),
+            text: "House security review".into(),
+        });
+        let step = library.review_step(ReviewKind::Security);
+        assert_eq!(step.prompt, Some(12));
+        assert_eq!(step.instruction, "House security review");
     }
 
     #[test]

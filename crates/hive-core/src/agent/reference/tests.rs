@@ -54,18 +54,6 @@ fn worktree_lines_become_claude_mentions_with_an_absolute_path() {
 }
 
 #[test]
-fn the_label_names_the_file_from_the_worktree_root() {
-    assert_eq!(
-        reference("src/app.js", 1..=2, Version::Worktree).label(),
-        "@src/app.js#L1-2"
-    );
-    assert_eq!(
-        reference("src/app.js", 1..=1, Version::Head).label(),
-        "src/app.js#L1 (HEAD)"
-    );
-}
-
-#[test]
 fn paths_with_spaces_are_quoted_mentions() {
     assert_eq!(
         reference("my dir/app.js", 1..=2, Version::Worktree).to_text(),

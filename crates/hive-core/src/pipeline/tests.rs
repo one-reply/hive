@@ -1121,8 +1121,12 @@ fn an_unreproducible_regression_test_is_left_behind_only_with_a_reason() {
     assert_eq!(run.phase(), Phase::Regression(RegressionStep::Choose));
     run.skip_regression("No criterion suits a test").unwrap();
     assert_eq!(run.phase(), Phase::Development);
-    let prompt = run.prompt(&run.pending()[0]).unwrap();
-    assert!(!prompt.contains("regression test"));
+    let mut direct = run_with(&["/api"], 3);
+    direct.start_direct("Returns two\nRestores draft").unwrap();
+    assert_eq!(
+        run.prompt(&run.pending()[0]).unwrap(),
+        direct.prompt(&direct.pending()[0]).unwrap()
+    );
 }
 
 #[test]

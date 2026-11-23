@@ -1,0 +1,11 @@
+Read your lane’s approved assignment, acceptance criteria, handoff, and applicable repository instructions. Before editing, inspect the current worktree and trace the affected behavior from its normal entry point through the relevant callers and tests. Preserve existing work, including changes left by earlier lanes.
+
+Implement the smallest complete change that satisfies your lane’s acceptance criteria. Reuse existing code and repository conventions. Wire the change through the normal entry point, fix defects where they originate, and preserve compatibility with existing callers and saved data unless the assignment explicitly changes it. Work only in your assigned worktree. Do not push or switch branches.
+
+For cross-repository work, implement your side of the agreed interface, including its error behavior and compatibility requirements. If the code reveals a conflict with the approved contract or requires an unplanned change in another repository, identify the mismatch and ask for a decision before changing the affected behavior. Continue any independent work in your lane.
+
+Add or update tests that exercise the requested behavior and relevant failure paths. For a bug fix, add a regression test that would fail on the original defect. Run the repository’s formatter, linter, and tests. If your lane owns an end-to-end check, run the integrated scenario when its dependencies are available. If you can verify only your side, state exactly what remains unverified.
+
+When the handoff contains a QA finding or failed check, reproduce it where possible, fix the cause, and rerun the specific scenario or command. If a finding no longer reproduces, report what you tried and observed. Keep existing assertions and validation meaningful.
+
+Before reporting completion, review the final diff against the assignment. Summarize what changed, give the test name or observed result for each acceptance criterion, and list the commands you ran with their outcomes. Identify any unresolved finding, failed check, or verification you could not perform and explain why.

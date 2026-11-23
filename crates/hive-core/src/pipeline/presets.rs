@@ -1,8 +1,5 @@
 //! Starter recipes, and the upgrade of the ones saved with retired stock instructions.
-use super::stock::{
-    CONTRACT_DEVELOPER, CONTRACT_PLANNER, CONTRACT_QA_REVIEWER, DEVELOPER, FEATURE_PLANNER,
-    FIX_DEVELOPER, FIX_PLANNER, FIX_QA_REVIEWER, QA_REVIEWER, SECURITY_AND_PERFORMANCE_REVIEWER,
-};
+use super::stock::{DEVELOPER, FEATURE_PLANNER, QA_REVIEWER, SECURITY_AND_PERFORMANCE_REVIEWER};
 use super::{LanePreset, Template};
 
 /// Stock instructions shipped before catalog version 2, by stage name. A saved starter recipe
@@ -59,9 +56,7 @@ impl Template {
         let feature = Self::default();
         let fix = Self {
             name: "Quick fix".into(),
-            planner: FIX_PLANNER.stage("Plan"),
-            development: FIX_DEVELOPER.stage("Development"),
-            reviews: vec![FIX_QA_REVIEWER.stage("QA")],
+            reviews: vec![QA_REVIEWER.stage("QA")],
             ..feature.clone()
         };
         let cross = Self {
@@ -73,12 +68,7 @@ impl Template {
                     ..Default::default()
                 })
                 .into(),
-            planner: CONTRACT_PLANNER.stage("Plan"),
-            development: CONTRACT_DEVELOPER.stage("Development"),
-            reviews: vec![
-                CONTRACT_QA_REVIEWER.stage("QA"),
-                SECURITY_AND_PERFORMANCE_REVIEWER.stage("Security & performance"),
-            ],
+            ..feature.clone()
         };
         vec![feature, fix, cross]
     }
@@ -156,15 +146,15 @@ mod tests {
     }
 
     #[test]
-    fn refresh_uses_the_matching_recipe_for_shared_retired_texts() {
+    fn refresh_links_quick_fix_to_the_shared_role_prompts() {
         let mut fix = unlinked(Template::presets().remove(1));
         fix.planner.instruction = RETIRED[1].1.into();
         fix.development.instruction = RETIRED[3].1.into();
         fix.reviews[0].instruction = RETIRED[4].1.into();
         let mut templates = [fix];
         refresh_stock_instructions(&mut templates);
-        assert_eq!(templates[0].development.instruction, FIX_DEVELOPER.text);
-        assert_eq!(templates[0].reviews[0].instruction, FIX_QA_REVIEWER.text);
+        assert_eq!(templates[0].development.instruction, DEVELOPER.text);
+        assert_eq!(templates[0].reviews[0].instruction, QA_REVIEWER.text);
         link_stock_prompts(&mut templates);
         assert_eq!(templates[0], Template::presets()[1]);
     }
