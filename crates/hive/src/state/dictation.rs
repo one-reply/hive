@@ -1,6 +1,7 @@
 //! Dictating a task: one recording, then one request that turns it into text. Each form owns
 //! its own, so closing the form ends whatever was under way.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,9 +13,11 @@ use super::ai_providers::KeyStatus;
 use crate::app::AppState;
 use crate::microphone::{self, Permission, Recording};
 
-/// How often the level and the clock of a recording are read. Ten times a second reads as
-/// live without redrawing on every frame.
-const LEVEL_TICK: Duration = Duration::from_millis(100);
+/// How often the level and the clock of a recording are read. Twenty times a second moves
+/// the waveform with the voice without redrawing on every frame.
+const LEVEL_TICK: Duration = Duration::from_millis(50);
+/// How many readings the waveform shows: the last two and a half seconds.
+pub(crate) const LEVELS: usize = 50;
 
 pub(crate) enum Phase {
     Idle,
@@ -22,8 +25,8 @@ pub(crate) enum Phase {
     Starting,
     Recording {
         recording: Recording,
-        /// Loudness at the last tick, from 0 to 1.
-        level: f32,
+        /// Loudness at each of the latest ticks, from 0 to 1, the newest last.
+        levels: VecDeque<f32>,
         elapsed: Duration,
     },
     Transcribing,
@@ -64,6 +67,14 @@ pub(crate) fn availability(recipe: &Recipe, key: KeyStatus, bundled: bool) -> Av
         return Availability::Unbundled;
     }
     Availability::Ready
+}
+
+/// Adds the newest reading, dropping the oldest once the waveform is full.
+fn remember(levels: &mut VecDeque<f32>, level: f32) {
+    if levels.len() == LEVELS {
+        levels.pop_front();
+    }
+    levels.push_back(level);
 }
 
 pub(crate) struct Dictation {
@@ -136,7 +147,7 @@ impl Dictation {
                 Ok(recording) => {
                     let phase = Phase::Recording {
                         recording,
-                        level: 0.,
+                        levels: VecDeque::with_capacity(LEVELS),
                         elapsed: Duration::ZERO,
                     };
                     this.enter(phase, cx);
@@ -165,7 +176,7 @@ impl Dictation {
     fn tick(&mut self, cx: &mut Context<Self>) -> bool {
         let Phase::Recording {
             recording,
-            level,
+            levels,
             elapsed,
         } = &mut self.phase
         else {
@@ -175,7 +186,7 @@ impl Dictation {
             self.finish(cx);
             return false;
         }
-        *level = recording.level();
+        remember(levels, recording.level());
         *elapsed = recording.elapsed();
         cx.notify();
         true
@@ -293,7 +304,9 @@ mod tests {
     use hive_core::dictation::Recipe;
     use hive_core::llm::Provider;
 
-    use super::{Availability, Dictation, KeyStatus, Phase, Transcribed, availability};
+    use super::{
+        Availability, Dictation, KeyStatus, LEVELS, Phase, Transcribed, availability, remember,
+    };
 
     fn configured() -> Recipe {
         let mut recipe = Recipe::default();
@@ -348,6 +361,17 @@ mod tests {
             availability(&recipe, KeyStatus::Configured, true),
             Availability::Ready
         );
+    }
+
+    #[test]
+    fn the_waveform_keeps_only_its_newest_readings() {
+        let mut levels = std::collections::VecDeque::new();
+        for reading in 0..LEVELS + 3 {
+            remember(&mut levels, reading as f32);
+        }
+        assert_eq!(levels.len(), LEVELS);
+        assert_eq!(levels.front(), Some(&3.));
+        assert_eq!(levels.back(), Some(&((LEVELS + 2) as f32)));
     }
 
     #[test]

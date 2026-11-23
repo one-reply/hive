@@ -24,8 +24,10 @@ const LINEAR_PCM: u32 = u32::from_be_bytes(*b"lpcm");
 /// Speech models work at 16 kHz mono; more only makes the upload larger.
 const SAMPLE_RATE: f64 = 16_000.;
 const BIT_DEPTH: u32 = 16;
-/// What the meter reports for silence, in decibels below full scale.
-const SILENCE_DECIBELS: f32 = -60.;
+/// The span of the meter that speech moves in, in decibels below full scale: room noise sits
+/// under the floor and a raised voice reaches the ceiling, so a waveform uses its whole height.
+const QUIET_DECIBELS: f32 = -50.;
+const LOUD_DECIBELS: f32 = -5.;
 
 static NEXT_RECORDING: AtomicU64 = AtomicU64::new(0);
 
@@ -203,7 +205,7 @@ fn level(decibels: f32) -> f32 {
     if !decibels.is_finite() {
         return 0.;
     }
-    (1. - decibels / SILENCE_DECIBELS).clamp(0., 1.)
+    ((decibels - QUIET_DECIBELS) / (LOUD_DECIBELS - QUIET_DECIBELS)).clamp(0., 1.)
 }
 
 #[cfg(test)]
@@ -234,9 +236,9 @@ mod tests {
     #[test]
     fn decibels_map_to_a_level_between_zero_and_one() {
         assert_eq!(level(-160.), 0.);
-        assert_eq!(level(-60.), 0.);
-        assert_eq!(level(-30.), 0.5);
-        assert_eq!(level(0.), 1.);
+        assert_eq!(level(-50.), 0.);
+        assert_eq!(level(-27.5), 0.5);
+        assert_eq!(level(-5.), 1.);
         assert_eq!(level(3.), 1.);
         assert_eq!(level(f32::NAN), 0.);
         assert_eq!(level(f32::NEG_INFINITY), 0.);

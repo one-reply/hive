@@ -1,7 +1,7 @@
 //! Dictating the task: the microphone button of the Task toolbar and the panel that slides up
 //! from the bottom of the field while a dictation is under way.
 use super::*;
-use crate::state::dictation::{Availability, Phase};
+use crate::state::dictation::{Availability, LEVELS, Phase};
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::spinner::Spinner;
@@ -10,9 +10,15 @@ use std::time::Duration;
 
 /// How long the panel takes to slide over the bottom of the field.
 const PANEL_SLIDE: Duration = Duration::from_millis(180);
-const PANEL_HEIGHT: Pixels = px(44.);
-const METER_WIDTH: Pixels = px(96.);
-const METER_HEIGHT: Pixels = px(4.);
+const PANEL_HEIGHT: Pixels = px(52.);
+/// The waveform of a recording: one bar per reading, as tall as the voice was loud.
+const WAVE_HEIGHT: Pixels = px(28.);
+const BAR_WIDTH: Pixels = px(3.);
+const BAR_GAP: Pixels = px(2.);
+/// A bar of silence is a dot, so the waveform keeps its shape between words.
+const BAR_MIN_HEIGHT: Pixels = px(3.);
+/// How much of its color the oldest bar keeps; the bars fade towards it as they age.
+const OLDEST_BAR_OPACITY: f32 = 0.3;
 /// Wide enough for the reason on two lines above its button.
 const SETUP_CARD_WIDTH: Pixels = px(240.);
 
@@ -30,6 +36,35 @@ fn dictated(text: &str, before: Option<char>) -> String {
         Some(previous) if !previous.is_whitespace() => format!(" {text}"),
         _ => text.to_owned(),
     }
+}
+
+/// Height of the bar for a loudness between 0 and 1.
+fn bar_height(level: f32) -> Pixels {
+    BAR_MIN_HEIGHT + (WAVE_HEIGHT - BAR_MIN_HEIGHT) * level.clamp(0., 1.)
+}
+
+/// Opacity of the bar at `index` of the waveform, where the last one is the newest.
+fn bar_opacity(index: usize) -> f32 {
+    let age = 1. - index as f32 / (LEVELS - 1) as f32;
+    1. - (1. - OLDEST_BAR_OPACITY) * age
+}
+
+/// The recent loudness as bars centered on one line, the newest on the right. Readings not
+/// taken yet are bars of silence, so the waveform has its full width from the start.
+fn waveform(levels: &std::collections::VecDeque<f32>, color: Hsla) -> Div {
+    let silent = LEVELS.saturating_sub(levels.len());
+    let readings = std::iter::repeat_n(0., silent).chain(levels.iter().copied());
+    h_flex()
+        .flex_none()
+        .h(WAVE_HEIGHT)
+        .gap(BAR_GAP)
+        .children(readings.enumerate().map(|(index, level)| {
+            div()
+                .w(BAR_WIDTH)
+                .h(bar_height(level))
+                .rounded_full()
+                .bg(color.opacity(bar_opacity(index)))
+        }))
 }
 
 impl LaunchForm {
@@ -53,8 +88,9 @@ impl LaunchForm {
         self.insert_into_task(&dictated(text, before), window, cx);
     }
 
-    /// The microphone of the toolbar. What keeps it from recording is explained on hover,
-    /// with the way to fix it where there is one.
+    /// The microphone of the toolbar, outlined so it stands apart from the formatting icons.
+    /// What keeps it from recording is explained on hover, with the way to fix it where
+    /// there is one.
     pub(super) fn dictation_button(
         &self,
         window: &mut Window,
@@ -79,13 +115,13 @@ impl LaunchForm {
                         form.dictation
                             .update(cx, |dictation, cx| dictation.start(cx))
                     }))
-                    .smooth_hover(ButtonLook::Ghost, &hover, cx)
+                    .smooth_hover(ButtonLook::Outline, &hover, cx)
                     .into_any_element();
             }
             Availability::Unbundled => {
                 return button
                     .tooltip("Dictation records only in the Hive app, not under cargo run.")
-                    .smooth_hover(ButtonLook::Ghost, &hover, cx)
+                    .smooth_hover(ButtonLook::Outline, &hover, cx)
                     .into_any_element();
             }
             Availability::Unconfigured => (
@@ -101,7 +137,7 @@ impl LaunchForm {
         };
         // A tooltip cannot hold a button; a hover card stays open while the pointer is on it.
         HoverCard::new("task-dictate-setup")
-            .trigger(button.smooth_hover(ButtonLook::Ghost, &hover, cx))
+            .trigger(button.smooth_hover(ButtonLook::Outline, &hover, cx))
             .content(move |_, window, cx| {
                 let hover = Hover::new("task-dictate-configure", window, cx);
                 v_flex()
@@ -177,7 +213,7 @@ impl LaunchForm {
                 )
             };
         let theme = cx.theme();
-        let (muted, danger, track) = (theme.muted_foreground, theme.danger, theme.muted);
+        let (muted, danger) = (theme.muted_foreground, theme.danger);
         let bar = h_flex()
             .h(PANEL_HEIGHT)
             .px_3()
@@ -194,16 +230,12 @@ impl LaunchForm {
                 .child(Spinner::new().small())
                 .child(status("Opening the microphone…".into()).text_color(muted))
                 .child(cancel("dictation-cancel", "Cancel", window, cx)),
-            Phase::Recording { level, elapsed, .. } => {
+            Phase::Recording {
+                levels, elapsed, ..
+            } => {
                 let time = format!("{} / {}", clock(*elapsed), clock(MAX_RECORDING));
-                let meter = div()
-                    .w(METER_WIDTH)
-                    .h(METER_HEIGHT)
-                    .rounded_full()
-                    .bg(track)
-                    .child(div().h_full().w(relative(*level)).rounded_full().bg(danger));
                 bar.child(Icon::new(Lucide::Mic).small().text_color(danger))
-                    .child(meter)
+                    .child(waveform(levels, danger))
                     .child(status(time.into()).text_color(muted))
                     .child(cancel("dictation-cancel", "Cancel", window, cx))
                     .child(button(
@@ -257,7 +289,10 @@ impl LaunchForm {
 
 #[cfg(test)]
 mod tests {
-    use super::{clock, dictated};
+    use super::{
+        BAR_MIN_HEIGHT, LEVELS, OLDEST_BAR_OPACITY, WAVE_HEIGHT, bar_height, bar_opacity, clock,
+        dictated,
+    };
     use std::time::Duration;
 
     #[test]
@@ -266,6 +301,23 @@ mod tests {
         assert_eq!(clock(Duration::from_millis(9_900)), "0:09");
         assert_eq!(clock(Duration::from_secs(75)), "1:15");
         assert_eq!(clock(Duration::from_secs(300)), "5:00");
+    }
+
+    #[test]
+    fn a_bar_grows_from_a_dot_to_the_full_height_with_the_voice() {
+        assert_eq!(bar_height(0.), BAR_MIN_HEIGHT);
+        assert_eq!(bar_height(1.), WAVE_HEIGHT);
+        assert!(bar_height(0.5) > BAR_MIN_HEIGHT && bar_height(0.5) < WAVE_HEIGHT);
+        // A reading outside the scale never leaves the panel.
+        assert_eq!(bar_height(7.), WAVE_HEIGHT);
+        assert_eq!(bar_height(-1.), BAR_MIN_HEIGHT);
+    }
+
+    #[test]
+    fn bars_fade_from_the_newest_to_the_oldest() {
+        assert_eq!(bar_opacity(LEVELS - 1), 1.);
+        assert!((bar_opacity(0) - OLDEST_BAR_OPACITY).abs() < f32::EPSILON);
+        assert!(bar_opacity(LEVELS / 2) > bar_opacity(0));
     }
 
     #[test]
