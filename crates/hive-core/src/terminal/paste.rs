@@ -56,7 +56,8 @@ pub fn save_image(bytes: &[u8]) -> Result<PathBuf, PasteError> {
     save_image_in(bytes, &std::env::temp_dir())
 }
 
-fn save_image_in(bytes: &[u8], directory: &Path) -> Result<PathBuf, PasteError> {
+/// [`save_image`] into a folder of the caller's choosing, which must exist.
+pub(crate) fn save_image_in(bytes: &[u8], directory: &Path) -> Result<PathBuf, PasteError> {
     let format = image::guess_format(bytes)?;
     if !matches!(
         format,

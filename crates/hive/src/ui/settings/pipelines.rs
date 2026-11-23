@@ -17,6 +17,7 @@ use gpui_kit::{
 };
 use hive_core::pipeline::Prompt;
 
+mod dictation;
 mod view;
 
 /// Enough of a prompt is visible to edit it without scrolling the field.
@@ -32,6 +33,7 @@ enum Screen {
 
 pub(super) struct PipelinesPage {
     screen: Screen,
+    dictation: Entity<dictation::DictationCard>,
     name: Entity<InputState>,
     text: Entity<TextareaState>,
     error: Option<SharedString>,
@@ -43,6 +45,7 @@ impl PipelinesPage {
         let store = AppState::get(cx).store.clone();
         Self {
             screen: Screen::List,
+            dictation: cx.new(|cx| dictation::DictationCard::new(window, cx)),
             name: cx.new(|cx| InputState::new(window, cx).placeholder("Prompt name")),
             text: cx.new(|cx| TextareaState::new(window, cx).rows(PROMPT_ROWS)),
             error: None,
@@ -50,6 +53,19 @@ impl PipelinesPage {
                 this.leave_deleted_prompt(cx);
                 cx.notify();
             })],
+        }
+    }
+
+    /// Re-reads what the page shows of other pages: which providers have a key.
+    pub(super) fn refresh(&self, cx: &mut Context<Self>) {
+        self.dictation.update(cx, |card, cx| card.refresh(cx));
+    }
+
+    /// Brings the dictation settings into view, unless that would throw away a prompt
+    /// draft with changes. They head the library, so showing it is enough.
+    pub(super) fn show_dictation(&mut self, cx: &mut Context<Self>) {
+        if self.screen != Screen::List && !self.is_dirty(cx) {
+            self.show_list(cx);
         }
     }
 

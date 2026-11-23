@@ -12,6 +12,9 @@ import subprocess
 import tempfile
 import time
 
+ENTITLEMENTS = Path(__file__).resolve().parent.parent / "packaging/macos/Hive.entitlements"
+MICROPHONE = "com.apple.security.device.audio-input"
+
 
 def prepare_archive(app, team, directory):
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
@@ -28,7 +31,9 @@ def prepare_archive(app, team, directory):
     # Xcode needs platform metadata even for a non-Xcode build.
     info.update(CFBundleSupportedPlatforms=["MacOSX"], DTPlatformName="macosx")
     (copied_app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
-    subprocess.run(["codesign", "--force", "--sign", "-", "--options", "runtime", str(copied_app)], check=True)
+    # The hardened runtime silences the microphone unless the signature asks for it.
+    subprocess.run(["codesign", "--force", "--sign", "-", "--options", "runtime",
+        "--entitlements", str(ENTITLEMENTS), str(copied_app)], check=True)
     (archive / "Info.plist").write_bytes(plistlib.dumps({
         "ArchiveVersion": 2, "CreationDate": datetime.now(timezone.utc).replace(tzinfo=None),
         "Name": "Hive", "SchemeName": "Hive", "ApplicationProperties": {
@@ -40,6 +45,15 @@ def prepare_archive(app, team, directory):
     options.write_bytes(plistlib.dumps({"method": "developer-id", "destination": "upload",
         "teamID": team, "signingStyle": "automatic", "manageAppVersionAndBuildNumber": False}))
     return archive, options
+
+
+def require_microphone_entitlement(app):
+    """Xcode signs the archive again; dictation records silence if it dropped the entitlement."""
+    result = subprocess.run(["codesign", "-d", "--entitlements", "-", "--xml", str(app)],
+        check=True, stdout=subprocess.PIPE)
+    entitlements = plistlib.loads(result.stdout) if result.stdout.strip() else {}
+    if not entitlements.get(MICROPHONE):
+        raise ValueError(f"The signed app lost the {MICROPHONE} entitlement")
 
 
 def export_notarized(archive, destination, authentication, timeout=1800):
@@ -85,6 +99,7 @@ def sign_and_notarize(app, team, key=None, key_id=None, issuer=None):
         signed_app = destination / "Hive.app"
         subprocess.run(["xcrun", "stapler", "validate", str(signed_app)], check=True)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(signed_app)], check=True)
+        require_microphone_entitlement(signed_app)
         subprocess.run(["spctl", "--assess", "--type", "execute", "--verbose=2", str(signed_app)], check=True)
         subprocess.run(["ditto", str(signed_app), str(app)], check=True)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)

@@ -1,6 +1,6 @@
 //! Role-specific arguments for interactive local pipeline sessions.
 use super::{AgentKind, LaunchError, ResumeSession, valid_session_id};
-use crate::pipeline::{EditApproval, Profile, Ticket};
+use crate::pipeline::{PermissionMode, Profile, Ticket};
 use std::path::PathBuf;
 
 /// Access and handoff expected from this session.
@@ -12,6 +12,16 @@ pub enum PipelineRole {
     Develop,
     /// Inspect work across repositories and return findings.
     Review,
+}
+
+impl PipelineRole {
+    /// Mode for a stage whose recipe chose none: only a developer may change files.
+    pub fn default_mode(self) -> PermissionMode {
+        match self {
+            Self::Develop => PermissionMode::CliDefault,
+            Self::Plan | Self::Review => PermissionMode::Plan,
+        }
+    }
 }
 
 /// A live agent bound to one pipeline attempt.
@@ -29,31 +39,46 @@ pub struct PipelineLaunch {
     pub ticket: Ticket,
     /// Exact conversation for an explicit resume, or a preallocated OpenCode session.
     pub resume: Option<ResumeSession>,
-    /// Whether a developer edits files in its worktree without asking; other roles are
-    /// read-only whatever this says.
-    pub edits: EditApproval,
+    /// Folder of the images pasted into the task, when it refers to any. It lies outside
+    /// the worktrees, so a CLI that reads only the folders it was given needs it named.
+    pub image_directory: Option<PathBuf>,
 }
 
-/// The arguments that let `agent` edit files in its worktree without a prompt while it still
-/// asks for anything beyond that. `None` when the CLI has no such setting: OpenCode offers
-/// only `--auto`, which approves every permission, and Hive never passes a blanket approval.
-fn accept_edits_arguments(agent: AgentKind) -> Option<&'static [&'static str]> {
-    match agent {
-        AgentKind::ClaudeCode => Some(&["--permission-mode", "acceptEdits"]),
-        AgentKind::Codex => Some(&[
+/// The arguments that put `agent` in `mode`, as each CLI's `--help` names them (checked
+/// 2026-11-23: claude 2.1.330, codex 0.171.0, agy 1.5.15, opencode 2.4.0). `None` when the
+/// CLI has no such mode: `opencode mini` takes only `--agent`, so OpenCode offers just Plan.
+fn mode_arguments(agent: AgentKind, mode: PermissionMode) -> Option<&'static [&'static str]> {
+    use PermissionMode::*;
+    match (agent, mode) {
+        (_, CliDefault) => Some(&[]),
+        (AgentKind::ClaudeCode, Plan) => Some(&["--permission-mode", "plan"]),
+        (AgentKind::ClaudeCode, AcceptEdits) => Some(&["--permission-mode", "acceptEdits"]),
+        (AgentKind::ClaudeCode, Auto) => Some(&["--permission-mode", "auto"]),
+        (AgentKind::ClaudeCode, Bypass) => Some(&["--permission-mode", "bypassPermissions"]),
+        (AgentKind::Codex, Plan) => Some(&["--sandbox", "read-only"]),
+        (AgentKind::Codex, AcceptEdits) => Some(&[
             "--sandbox",
             "workspace-write",
             "--ask-for-approval",
             "on-request",
         ]),
-        AgentKind::Antigravity => Some(&["--mode", "accept-edits"]),
+        (AgentKind::Codex, Auto) => Some(&["--approve-for-me"]),
+        (AgentKind::Codex, Bypass) => Some(&["--dangerously-bypass-approvals-and-sandbox"]),
+        (AgentKind::Antigravity, Plan) => Some(&["--mode", "plan"]),
+        (AgentKind::Antigravity, AcceptEdits) => Some(&["--mode", "accept-edits"]),
+        (AgentKind::Antigravity, Auto) => Some(&["--mode", "auto"]),
+        (AgentKind::Antigravity, Bypass) => Some(&["--dangerously-skip-permissions"]),
+        (AgentKind::OpenCode, Plan) => Some(&["--agent", "plan"]),
         _ => None,
     }
 }
 
-/// Whether [`EditApproval::AcceptEdits`] changes how `agent` is launched.
-pub fn supports_accept_edits(agent: AgentKind) -> bool {
-    accept_edits_arguments(agent).is_some()
+/// Modes `agent` can be launched in, in [`PermissionMode::ALL`] order.
+pub fn pipeline_modes(agent: AgentKind) -> Vec<PermissionMode> {
+    PermissionMode::ALL
+        .into_iter()
+        .filter(|&mode| mode_arguments(agent, mode).is_some())
+        .collect()
 }
 
 /// Choices offered by the adapter. An empty entry selects the provider default.
@@ -77,6 +102,14 @@ pub fn validate_pipeline_profile(profile: &Profile) -> Result<(), LaunchError> {
     if !pipeline_efforts(profile.agent).contains(&profile.effort.as_str()) {
         return Err(LaunchError::Pipeline(format!(
             "Unsupported reasoning effort for {}",
+            profile.agent.name()
+        )));
+    }
+    if let Some(mode) = profile.mode
+        && mode_arguments(profile.agent, mode).is_none()
+    {
+        return Err(LaunchError::Pipeline(format!(
+            "Unsupported permission mode for {}",
             profile.agent.name()
         )));
     }
@@ -112,7 +145,6 @@ impl PipelineLaunch {
             return Err(LaunchError::Pipeline("A new attempt needs a task".into()));
         }
         let agent = self.profile.agent;
-        let read_only = self.role != PipelineRole::Develop;
         let mut args = Vec::new();
         if agent == AgentKind::OpenCode {
             args.push("mini".into());
@@ -165,20 +197,22 @@ impl PipelineLaunch {
                 args.extend(["--add-dir".into(), path.into()]);
             }
         }
-        if read_only {
-            let (flag, value) = match agent {
-                AgentKind::ClaudeCode => ("--permission-mode", "plan"),
-                AgentKind::Codex => ("--sandbox", "read-only"),
-                AgentKind::OpenCode => ("--agent", "plan"),
-                AgentKind::Antigravity => ("--mode", "plan"),
-                _ => return Err(LaunchError::Unsupported),
-            };
-            args.extend([flag.into(), value.into()]);
-        } else if self.edits == EditApproval::AcceptEdits
-            && let Some(flags) = accept_edits_arguments(agent)
+        if let Some(directory) = &self.image_directory
+            && matches!(agent, AgentKind::ClaudeCode | AgentKind::Antigravity)
         {
-            args.extend(flags.iter().map(|flag| (*flag).to_owned()));
+            let path = directory
+                .to_str()
+                .filter(|_| directory.is_absolute())
+                .ok_or_else(|| {
+                    LaunchError::Pipeline(
+                        "Agents need an absolute UTF-8 path for the task images".into(),
+                    )
+                })?;
+            args.extend(["--add-dir".into(), path.into()]);
         }
+        let mode = self.profile.mode.unwrap_or(self.role.default_mode());
+        let flags = mode_arguments(agent, mode).ok_or(LaunchError::Unsupported)?;
+        args.extend(flags.iter().map(|flag| (*flag).to_owned()));
         if !self.prompt.is_empty() {
             let ticket = serde_json::to_string(&self.ticket)
                 .map_err(|e| LaunchError::Pipeline(e.to_string()))?;
@@ -221,6 +255,7 @@ mod tests {
                     "model".into()
                 },
                 effort: "high".into(),
+                mode: None,
             },
             directories: vec![],
             prompt: "Inspect this change".into(),
@@ -230,8 +265,45 @@ mod tests {
                 lane: None,
             },
             resume: None,
-            edits: EditApproval::CliDefault,
+            image_directory: None,
         }
+    }
+
+    #[test]
+    fn task_images_are_readable_by_clis_that_read_only_named_folders() {
+        for role in [PipelineRole::Plan, PipelineRole::Develop] {
+            for agent in AGENTS {
+                let mut pipeline = launch(agent, role);
+                pipeline.image_directory = Some("/data/task-images".into());
+                let args = Launch::Pipeline(pipeline)
+                    .with_known_session()
+                    .local_arguments(None)
+                    .unwrap();
+                let named = args
+                    .windows(2)
+                    .any(|pair| pair[0] == "--add-dir" && pair[1] == "/data/task-images");
+                // Codex --add-dir would grant writes, and its sandbox reads any path already.
+                assert_eq!(
+                    named,
+                    matches!(agent, AgentKind::ClaudeCode | AgentKind::Antigravity),
+                    "{agent:?} {role:?}"
+                );
+                // The folder is not a worktree the agent takes part in.
+                assert!(!args.iter().any(|a| a.contains("participating worktree")));
+            }
+        }
+    }
+
+    #[test]
+    fn a_relative_image_folder_is_refused() {
+        let mut pipeline = launch(AgentKind::ClaudeCode, PipelineRole::Plan);
+        pipeline.image_directory = Some("task-images".into());
+        assert!(
+            Launch::Pipeline(pipeline)
+                .with_known_session()
+                .local_arguments(None)
+                .is_err()
+        );
     }
 
     #[test]
@@ -315,54 +387,141 @@ mod tests {
             );
         }
     }
+    /// The flags `mode` adds to `agent`'s launch in `role`, without the task prompt.
+    fn mode_flags(agent: AgentKind, role: PipelineRole, mode: PermissionMode) -> Vec<String> {
+        let mut pipeline = launch(agent, role);
+        pipeline.profile.mode = Some(mode);
+        let mut with_mode = pipeline.arguments().unwrap();
+        pipeline.profile.mode = Some(PermissionMode::CliDefault);
+        let without = pipeline.arguments().unwrap();
+        // The prompt quotes the ticket; only the flags before it are of interest.
+        with_mode.retain(|arg| !without.contains(arg));
+        with_mode
+    }
+
     #[test]
-    fn accepting_edits_is_opt_in_for_developers_only_and_never_a_blanket_approval() {
+    fn each_mode_passes_exactly_the_flags_its_cli_names() {
+        use PermissionMode::*;
+        let expected: [(AgentKind, PermissionMode, &[&str]); 13] = [
+            (AgentKind::ClaudeCode, Plan, &["--permission-mode", "plan"]),
+            (
+                AgentKind::ClaudeCode,
+                AcceptEdits,
+                &["--permission-mode", "acceptEdits"],
+            ),
+            (AgentKind::ClaudeCode, Auto, &["--permission-mode", "auto"]),
+            (
+                AgentKind::ClaudeCode,
+                Bypass,
+                &["--permission-mode", "bypassPermissions"],
+            ),
+            (AgentKind::Codex, Plan, &["--sandbox", "read-only"]),
+            (
+                AgentKind::Codex,
+                AcceptEdits,
+                &[
+                    "--sandbox",
+                    "workspace-write",
+                    "--ask-for-approval",
+                    "on-request",
+                ],
+            ),
+            (AgentKind::Codex, Auto, &["--approve-for-me"]),
+            (
+                AgentKind::Codex,
+                Bypass,
+                &["--dangerously-bypass-approvals-and-sandbox"],
+            ),
+            (AgentKind::Antigravity, Plan, &["--mode", "plan"]),
+            (
+                AgentKind::Antigravity,
+                AcceptEdits,
+                &["--mode", "accept-edits"],
+            ),
+            (AgentKind::Antigravity, Auto, &["--mode", "auto"]),
+            (
+                AgentKind::Antigravity,
+                Bypass,
+                &["--dangerously-skip-permissions"],
+            ),
+            (AgentKind::OpenCode, Plan, &["--agent", "plan"]),
+        ];
         for agent in AGENTS {
-            let flags = |role, edits| {
-                let mut pipeline = launch(agent, role);
-                pipeline.edits = edits;
-                let prompt = pipeline.prompt.clone();
-                let mut args = pipeline.arguments().unwrap();
-                // The prompt quotes the ticket; only the flags before it are of interest.
-                args.retain(|arg| !arg.contains(&prompt));
-                args
-            };
-            let ask = flags(PipelineRole::Develop, EditApproval::CliDefault);
-            let accept = flags(PipelineRole::Develop, EditApproval::AcceptEdits);
-            let added: Vec<_> = accept.iter().filter(|arg| !ask.contains(arg)).collect();
-            match agent {
-                AgentKind::ClaudeCode => assert_eq!(added, ["--permission-mode", "acceptEdits"]),
-                AgentKind::Codex => assert_eq!(
-                    added,
-                    [
-                        "--sandbox",
-                        "workspace-write",
-                        "--ask-for-approval",
-                        "on-request"
-                    ]
-                ),
-                AgentKind::Antigravity => assert_eq!(added, ["--mode", "accept-edits"]),
-                AgentKind::OpenCode => assert!(added.is_empty()),
-                _ => unreachable!(),
-            }
-            assert_eq!(supports_accept_edits(agent), !added.is_empty());
-            for arg in &accept {
-                assert!(
-                    !arg.contains("bypass")
-                        && !arg.contains("dangerously")
-                        && !arg.contains("danger-full-access")
-                        && arg != "--auto"
-                        && arg != "never",
-                    "{agent:?}: {arg}"
+            let offered = pipeline_modes(agent);
+            assert_eq!(offered[0], CliDefault, "{agent:?}");
+            assert!(offered.contains(&Plan), "{agent:?}");
+            for mode in PermissionMode::ALL.into_iter().skip(1) {
+                let flags = expected
+                    .iter()
+                    .find(|(a, m, _)| *a == agent && *m == mode)
+                    .map(|(_, _, flags)| *flags);
+                assert_eq!(
+                    offered.contains(&mode),
+                    flags.is_some(),
+                    "{agent:?} {mode:?}"
                 );
+                let Some(flags) = flags else {
+                    // OpenCode's `mini` has no setting beyond its plan agent.
+                    let mut pipeline = launch(agent, PipelineRole::Develop);
+                    pipeline.profile.mode = Some(mode);
+                    assert!(pipeline.arguments().is_err(), "{agent:?} {mode:?}");
+                    continue;
+                };
+                for role in [
+                    PipelineRole::Plan,
+                    PipelineRole::Develop,
+                    PipelineRole::Review,
+                ] {
+                    let added = mode_flags(agent, role, mode);
+                    assert_eq!(added, flags, "{agent:?} {mode:?} {role:?}");
+                    // Only the mode named for it turns every check off.
+                    let wide = added.iter().any(|arg| {
+                        arg.contains("bypass")
+                            || arg.contains("dangerously")
+                            || arg.contains("danger-full-access")
+                            || arg == "--auto"
+                    });
+                    assert_eq!(wide, mode == Bypass, "{agent:?} {mode:?}");
+                }
             }
-            // A reviewer stays read-only even if a lane's setting leaks into its launch.
-            let review = flags(PipelineRole::Review, EditApproval::AcceptEdits);
-            assert_eq!(
-                review,
-                flags(PipelineRole::Review, EditApproval::CliDefault)
-            );
         }
+    }
+
+    #[test]
+    fn a_stage_without_a_saved_mode_keeps_its_roles_own() {
+        for agent in AGENTS {
+            for (role, mode) in [
+                (PipelineRole::Plan, PermissionMode::Plan),
+                (PipelineRole::Review, PermissionMode::Plan),
+                (PipelineRole::Develop, PermissionMode::CliDefault),
+            ] {
+                assert_eq!(role.default_mode(), mode);
+                let saved = launch(agent, role).arguments().unwrap();
+                let mut chosen = launch(agent, role);
+                chosen.profile.mode = Some(mode);
+                assert_eq!(saved, chosen.arguments().unwrap(), "{agent:?} {role:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_chosen_mode_replaces_the_roles_own() {
+        let planner = mode_flags(
+            AgentKind::ClaudeCode,
+            PipelineRole::Plan,
+            PermissionMode::AcceptEdits,
+        );
+        assert_eq!(planner, ["--permission-mode", "acceptEdits"]);
+        let mut planner = launch(AgentKind::ClaudeCode, PipelineRole::Plan);
+        planner.profile.mode = Some(PermissionMode::CliDefault);
+        assert!(!planner.arguments().unwrap().iter().any(|a| a == "plan"));
+        let mut developer = launch(AgentKind::Codex, PipelineRole::Develop);
+        developer.profile.mode = Some(PermissionMode::Plan);
+        let args = developer.arguments().unwrap();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--sandbox", "read-only"])
+        );
     }
     #[test]
     fn developer_stays_in_one_worktree_and_invalid_profiles_are_refused() {
@@ -388,8 +547,15 @@ mod tests {
                 agent: AgentKind::OpenCode,
                 model: model.into(),
                 effort: effort.into(),
+                mode: None,
             };
             assert!(validate_pipeline_profile(&profile).is_err());
         }
+        let auto = Profile {
+            agent: AgentKind::OpenCode,
+            mode: Some(PermissionMode::Auto),
+            ..Profile::default()
+        };
+        assert!(validate_pipeline_profile(&auto).is_err());
     }
 }

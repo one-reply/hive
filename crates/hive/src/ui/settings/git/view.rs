@@ -28,10 +28,10 @@ impl GitPage {
                 let provider = *provider;
                 let state = self.providers.read(cx).provider(provider);
                 let loading = matches!(state.models, Models::Loading) || state.status.is_busy();
-                let error = match &state.models {
-                    Models::Failed(error) => Some(error.clone()),
-                    Models::Ready(models) if models.is_empty() => Some("No text models are available for this provider.".into()),
-                    Models::Ready(models) if model.as_ref().is_some_and(|id| !models.iter().any(|m| &m.id == id)) => Some("Saved model is no longer listed. Select another model if generation fails.".into()),
+                let error = match (&state.models, state.models.text()) {
+                    (Models::Failed(error), _) => Some(error.clone()),
+                    (_, Some(models)) if models.is_empty() => Some("No text models are available for this provider.".into()),
+                    (_, Some(models)) if model.as_ref().is_some_and(|id| !models.iter().any(|m| &m.id == id)) => Some("Saved model is no longer listed. Select another model if generation fails.".into()),
                     _ => None,
                 };
                 v_flex()

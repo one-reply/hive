@@ -1,4 +1,4 @@
-use crate::state::ai_providers::{AiProviders, KeyStatus};
+use crate::state::ai_providers::AiProviders;
 use crate::ui::agent_logo;
 use gpui_kit::{
     component::{ActiveTheme as _, Icon, h_flex, searchable_list::SearchableListItem},
@@ -94,8 +94,8 @@ pub(super) fn sources(providers: &AiProviders, selected: Option<&Generator>) -> 
         }
     }
     for provider in Provider::ALL {
-        let status = providers.provider(provider).status;
-        let available = status == KeyStatus::Configured;
+        let (available, status) =
+            super::super::ai::availability(providers.provider(provider).status);
         let saved =
             selected.filter(|s| matches!(s, Generator::Api { provider: p, .. } if *p == provider));
         if available || saved.is_some() {
@@ -104,13 +104,7 @@ pub(super) fn sources(providers: &AiProviders, selected: Option<&Generator>) -> 
                     provider,
                     model: None,
                 }),
-                status: if available {
-                    ""
-                } else if status.is_busy() {
-                    " · checking"
-                } else {
-                    " · unavailable"
-                },
+                status,
                 available,
             });
         }

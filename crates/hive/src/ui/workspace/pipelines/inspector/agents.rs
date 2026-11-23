@@ -14,6 +14,13 @@ impl TemplateEditor {
                     if s.inspector.agent != agent {
                         s.inspector.agent = agent;
                         s.inspector.effort.clear();
+                        // A mode the new CLI lacks falls back to the role's own.
+                        if s.inspector
+                            .mode
+                            .is_some_and(|mode| !pipeline_modes(agent).contains(&mode))
+                        {
+                            s.inspector.mode = None;
+                        }
                         s.inspector.custom_model = false;
                         s.inspector.model.update(cx, |m, cx| m.set_value("", w, cx));
                         ensure_models(agent, cx);
@@ -64,7 +71,10 @@ impl TemplateEditor {
             .options
             .get(&agent);
         let load_error = loaded.and_then(|r| r.as_ref().err()).cloned();
+        // The name's underline above already divides this block, a gap away.
         let mut config = section(cx)
+            .border_t_0()
+            .pt_0()
             .child(section_title(Lucide::Bot, "Agent", cx))
             .child(provider)
             .child(setting("Model", form.picker.render(), cx));
@@ -106,7 +116,7 @@ impl TemplateEditor {
                 )
             })
             .collect();
-        config = config.child(setting(
+        let reasoning = setting(
             "Reasoning",
             choice(
                 "stage-effort",
@@ -116,7 +126,15 @@ impl TemplateEditor {
                 |s: &mut Self, e, _, _| s.inspector.effort = e,
             ),
             cx,
-        ));
+        );
         config
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .child(reasoning.flex_1().min_w_0())
+                    .child(self.mode_setting(cx).flex_1().min_w_0()),
+            )
+            .child(self.mode_note(cx))
     }
 }

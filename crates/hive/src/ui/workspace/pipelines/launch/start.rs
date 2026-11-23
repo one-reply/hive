@@ -107,6 +107,7 @@ impl LaunchForm {
         if self.starting.is_some() || self.blocked_by(cx).is_some() {
             return;
         }
+        self.stop_dictation(cx);
         let shown = self
             .bindings
             .iter()
@@ -176,7 +177,6 @@ impl LaunchForm {
                 command: b.command(preview, cx),
                 setup: b.setup_command(cx),
                 profile: b.preset.profile.clone(),
-                edits: b.preset.edits,
                 ..Default::default()
             });
         }

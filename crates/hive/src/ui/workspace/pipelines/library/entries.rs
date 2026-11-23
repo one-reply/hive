@@ -1,6 +1,6 @@
 //! What the library page lists, top to bottom. The page is a virtual list, so this order is
 //! decided for every run while only the rows in view are drawn.
-use crate::state::pipelines::RunStatus;
+use crate::state::pipelines::{Group, RunStatus};
 
 pub(super) const ELSEWHERE: &str = "Needs you in other projects";
 
@@ -23,13 +23,13 @@ pub(super) fn entries(runs: &[(u64, RunStatus)], elsewhere: &[u64]) -> Vec<Entry
     let mut entries = vec![Entry::Workflows];
     let mut sorted = runs.to_vec();
     // The sort is stable, so each section keeps the newest run first.
-    sorted.sort_by_key(|(_, status)| history_section(*status).0);
+    sorted.sort_by_key(|(_, status)| Group::of(*status));
     let mut previous = None;
     for (id, status) in sorted {
-        let (_, section) = history_section(status);
-        if previous != Some(section) {
-            entries.push(Entry::Section(section));
-            previous = Some(section);
+        let group = Group::of(status);
+        if previous != Some(group) {
+            entries.push(Entry::Section(group.label()));
+            previous = Some(group);
         }
         entries.push(Entry::Run(id));
     }
@@ -43,19 +43,9 @@ pub(super) fn entries(runs: &[(u64, RunStatus)], elsewhere: &[u64]) -> Vec<Entry
     entries
 }
 
-/// Where a run is listed in the history, in display order: what waits for the user comes
-/// before what is working, and finished runs come last.
-fn history_section(status: RunStatus) -> (u8, &'static str) {
-    match status {
-        RunStatus::NeedsYou | RunStatus::Failed => (0, "Needs you"),
-        RunStatus::Running => (1, "Running"),
-        RunStatus::Completed | RunStatus::Cancelled => (2, "Recent"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ELSEWHERE, Entry, RunStatus, entries, history_section};
+    use super::{ELSEWHERE, Entry, RunStatus, entries};
 
     #[test]
     fn the_page_lists_each_section_under_its_heading_newest_run_first() {
@@ -98,15 +88,5 @@ mod tests {
                 Entry::NoRuns,
             ]
         );
-    }
-
-    #[test]
-    fn runs_that_wait_for_the_user_are_listed_before_working_and_finished_ones() {
-        use RunStatus::*;
-        let mut runs = [Completed, Running, Failed, Cancelled, NeedsYou];
-        runs.sort_by_key(|status| history_section(*status).0);
-        assert_eq!(runs, [Failed, NeedsYou, Running, Completed, Cancelled]);
-        assert_eq!(history_section(Failed).1, history_section(NeedsYou).1);
-        assert_eq!(history_section(Completed).1, history_section(Cancelled).1);
     }
 }

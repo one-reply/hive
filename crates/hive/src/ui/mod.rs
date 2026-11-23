@@ -12,6 +12,7 @@ pub(crate) mod files_panel;
 mod git_controls;
 pub(crate) mod git_panel;
 pub(crate) mod hover;
+pub(crate) mod hover_card;
 pub(crate) mod key_hint;
 pub mod keymap;
 pub(crate) mod list_scroll;

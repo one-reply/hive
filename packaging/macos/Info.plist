@@ -13,6 +13,7 @@
     <key>CFBundleIconName</key><string>Hive</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>Hive records your voice only while you dictate a task and sends the recording to the AI provider you chose in Settings.</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <key>NSUserNotificationAlertStyle</key><string>alert</string>
     <key>SUFeedURL</key><string>https://one-reply.github.io/hive/appcast.xml</string>

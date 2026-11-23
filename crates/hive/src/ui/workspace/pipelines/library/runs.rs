@@ -1,18 +1,43 @@
 //! The project's runs as the library lists them, and what can be done with one from there.
 use super::*;
 
-/// What the run list shows of one run, read out of the store before rendering.
-pub(super) struct RunRow {
-    pub(super) id: u64,
-    pub(super) task: String,
-    pub(super) detail: String,
-    pub(super) status: RunStatus,
-    pub(super) finished: bool,
+/// Between the facts of a row's second line.
+pub(in crate::ui::workspace::pipelines) const DETAIL_SEPARATOR: &str = "  ·  ";
+
+/// What a list of runs shows of one run, read out of the store before rendering.
+pub(in crate::ui::workspace::pipelines) struct RunRow {
+    pub(in crate::ui::workspace::pipelines) id: u64,
+    pub(in crate::ui::workspace::pipelines) task: String,
+    pub(in crate::ui::workspace::pipelines) detail: String,
+    pub(in crate::ui::workspace::pipelines) status: RunStatus,
+    pub(in crate::ui::workspace::pipelines) finished: bool,
+}
+
+impl RunRow {
+    /// What a list says about `run` at `now` (Unix milliseconds).
+    pub(in crate::ui::workspace::pipelines) fn of(run: &Run, status: RunStatus, now: u64) -> Self {
+        let finished = matches!(status, RunStatus::Completed | RunStatus::Cancelled);
+        // A finished run's phase repeats its status, and a live one's length is still
+        // growing, so each row shows only the one that says something.
+        let detail = run_detail(
+            &run.template().name,
+            (!finished).then(|| phase_label(run)).as_deref(),
+            run.age(now).as_deref(),
+            finished.then(|| run::length(run, now)).flatten().as_deref(),
+        );
+        Self {
+            id: run.id(),
+            task: run.task().to_owned(),
+            detail,
+            status,
+            finished,
+        }
+    }
 }
 
 /// The second line of a run row: its recipe, the stage a live run is in, when it started and
 /// how long a finished one took. Parts that are unknown are left out.
-pub(super) fn run_detail(
+fn run_detail(
     template: &str,
     phase: Option<&str>,
     age: Option<&str>,
@@ -22,7 +47,7 @@ pub(super) fn run_detail(
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
-        .join("  ·  ")
+        .join(DETAIL_SEPARATOR)
 }
 
 pub(super) fn run_row(

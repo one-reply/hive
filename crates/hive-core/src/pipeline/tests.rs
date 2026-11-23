@@ -788,26 +788,36 @@ fn another_round_continues_the_lanes_conversation_and_a_retry_starts_fresh() {
 }
 
 #[test]
-fn edit_approval_is_a_lanes_own_choice_and_an_unknown_saved_value_asks() {
-    let mut run = run_with(&["/api", "/web"], 3);
-    run.lanes[1].edits = EditApproval::AcceptEdits;
-    let planner = run.pending()[0];
-    assert_eq!(run.edit_approval(&planner), EditApproval::CliDefault);
-    plan(&mut run);
-    let developers = run.pending();
-    assert_eq!(run.edit_approval(&developers[0]), EditApproval::CliDefault);
-    assert_eq!(run.edit_approval(&developers[1]), EditApproval::AcceptEdits);
+fn a_saved_mode_reads_back_and_one_from_a_newer_build_is_read_only() {
+    let mut profile = Profile {
+        mode: Some(PermissionMode::AcceptEdits),
+        ..Profile::default()
+    };
+    let saved = serde_json::to_value(&profile).unwrap();
+    assert_eq!(saved["mode"], "accept_edits");
+    assert_eq!(serde_json::from_value::<Profile>(saved).unwrap(), profile);
+    // A stage that never chose keeps not writing one, so it still follows its role.
+    profile.mode = None;
+    let saved = serde_json::to_value(&profile).unwrap();
+    assert!(saved.get("mode").is_none());
+    assert_eq!(serde_json::from_value::<Profile>(saved).unwrap(), profile);
+    let newer: Profile =
+        serde_json::from_value(serde_json::json!({"agent": "ClaudeCode", "mode": "everything"}))
+            .unwrap();
+    assert_eq!(newer.mode, Some(PermissionMode::Plan));
+}
 
-    let mut saved = serde_json::to_value(&run).unwrap();
-    assert_eq!(saved["lanes"][1]["edits"], "accept_edits");
-    // A lane saved before the setting existed, and one saved by a build with a wider choice.
-    saved["lanes"][0].as_object_mut().unwrap().remove("edits");
-    saved["lanes"][1]["edits"] = "everything".into();
-    let loaded: Run = serde_json::from_value(saved).unwrap();
-    assert!(loaded.valid_snapshot());
-    for ticket in &developers {
-        assert_eq!(loaded.edit_approval(ticket), EditApproval::CliDefault);
-    }
+#[test]
+fn a_lanes_mode_reaches_its_developer_and_follows_the_development_stage() {
+    let mut template = run_with(&["/api", "/web"], 3).template().clone();
+    template.lanes[1].profile.model = "own".into();
+    let auto = Profile {
+        mode: Some(PermissionMode::Auto),
+        ..Profile::default()
+    };
+    template.set_development_profile(auto.clone());
+    assert_eq!(template.lanes[0].profile, auto);
+    assert_eq!(template.lanes[1].profile.mode, None);
 }
 
 #[test]
@@ -1265,4 +1275,26 @@ fn evidence_closes_only_the_criterion_of_the_lane_it_names() {
     .unwrap();
     assert!(!run.criterion_source(1, "Build and tests pass").closes());
     assert!(run.can_accept().is_err());
+}
+
+#[test]
+fn an_agent_prompt_names_pasted_images_by_their_files() {
+    let mut run = run_with(&["/api"], 1);
+    run.task = "Match ![image](task-images/shot-1.png)".into();
+    let prompt = run.prompt(&run.pending()[0]).unwrap();
+    let file = images::directory().join("shot-1.png");
+    assert!(
+        prompt.contains(&format!("Match ![image]({})", file.display())),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Open each of them"), "{prompt}");
+    // The saved task keeps the portable reference.
+    assert_eq!(run.task(), "Match ![image](task-images/shot-1.png)");
+}
+
+#[test]
+fn a_prompt_without_images_is_left_as_written() {
+    let run = run_with(&["/api"], 1);
+    let prompt = run.prompt(&run.pending()[0]).unwrap();
+    assert!(!prompt.contains("image files"), "{prompt}");
 }

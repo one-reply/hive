@@ -7,8 +7,8 @@ use crate::keychain;
 mod completion;
 mod models;
 mod request;
-pub use completion::generate;
-pub use models::{Model, list_models};
+pub use completion::{generate, transcribe};
+pub use models::{Capability, Model, list_models};
 pub use request::RequestError;
 
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -66,6 +66,11 @@ impl Provider {
         }
     }
 }
+
+/// Providers `transcribe` can send a recording to, in the order dictation settings offer
+/// them. Anthropic's API takes no audio.
+pub const AUDIO_PROVIDERS: [Provider; 3] =
+    [Provider::GoogleAi, Provider::OpenRouter, Provider::OpenAi];
 
 impl fmt::Display for Provider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

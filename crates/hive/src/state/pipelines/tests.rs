@@ -1245,3 +1245,95 @@ fn a_repository_removed_from_hive_fails_its_read_instead_of_staying_unread(
         assert!(!p.is_reading_preview(&key));
     });
 }
+
+fn launch_draft(owner: &str) -> hive_core::pipeline::draft::LaunchDraft {
+    hive_core::pipeline::draft::LaunchDraft {
+        owner: owner.into(),
+        template: Template::default(),
+        original: None,
+        frozen: false,
+        task: "Add login".into(),
+        regression: false,
+        direct: false,
+        criteria: String::new(),
+        lanes: Vec::new(),
+    }
+}
+
+#[gpui::test]
+fn the_overview_covers_every_project_and_marks_what_a_removed_one_left_behind(
+    cx: &mut TestAppContext,
+) {
+    use super::{Entry, Group, ListedRun, RunStatus};
+    let pipelines = recovering(cx);
+    pipelines.update(cx, |p, cx| {
+        p.store.update(cx, |s, _| {
+            let lane = Lane {
+                name: "Web".into(),
+                project: "/removed-project".into(),
+                base: "HEAD".into(),
+                ..Lane::default()
+            };
+            let orphan = Run::new(
+                7,
+                "/removed-project".into(),
+                "Task".into(),
+                Template::default(),
+                vec![lane],
+            )
+            .unwrap();
+            let library = &mut s.state.pipelines;
+            library.runs.push(orphan);
+            library.drafts = vec![
+                launch_draft("/removed-project"),
+                launch_draft("/unused-pipeline-test-project"),
+            ];
+        });
+    });
+    pipelines.read_with(cx, |p, cx| {
+        let overview = p.overview(cx);
+        assert_eq!(
+            overview.groups,
+            [
+                // Run 42 was interrupted by the restart, so it waits for a retry.
+                (
+                    Group::NeedsYou,
+                    vec![Entry::Run(ListedRun {
+                        id: 42,
+                        status: RunStatus::Failed,
+                        reachable: true,
+                    })]
+                ),
+                (
+                    Group::Running,
+                    vec![Entry::Run(ListedRun {
+                        id: 7,
+                        status: RunStatus::Running,
+                        reachable: false,
+                    })]
+                ),
+                // Nothing could open the draft of the removed project.
+                (
+                    Group::Drafts,
+                    vec![Entry::Draft("/unused-pipeline-test-project".into())]
+                ),
+            ]
+        );
+        assert_eq!((overview.needs_you, overview.running), (1, 0));
+    });
+}
+
+#[gpui::test]
+fn revealing_a_draft_names_its_project_to_the_windows(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&pipelines, move |_, event: &super::RevealDraft, _| {
+            sink.borrow_mut().push(event.0.clone())
+        })
+    });
+    pipelines.update(cx, |p, cx| p.reveal_draft("/api".into(), cx));
+    cx.run_until_parked();
+    assert_eq!(*seen.borrow(), [PathBuf::from("/api")]);
+}

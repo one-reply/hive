@@ -3,6 +3,7 @@
 
 pub(crate) mod agents;
 pub(crate) mod ai_providers;
+pub(crate) mod dictation;
 pub(crate) mod documents;
 pub(crate) mod excerpts;
 pub(crate) mod files;

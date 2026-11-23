@@ -100,6 +100,8 @@ assert tuple(map(int, info["LSMinimumSystemVersion"].split("."))) >= tuple(map(i
 assert info["SUFeedURL"].startswith("https://")
 assert info["SUVerifyUpdateBeforeExtraction"] and info["SURequireSignedFeed"]
 assert not info["SUAllowsAutomaticUpdates"]
+# Without the description macOS refuses the microphone without asking.
+assert info["NSMicrophoneUsageDescription"]
 for notice in ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LICENSES.html"]:
     assert (contents / "Resources" / notice).stat().st_size > 0, notice
 assert "gpui-kit" in (contents / "Resources/THIRD_PARTY_LICENSES.html").read_text()

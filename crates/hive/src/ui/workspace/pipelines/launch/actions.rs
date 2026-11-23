@@ -53,6 +53,14 @@ impl LaunchForm {
         });
     }
 
+    /// Leaves the form for later: writes what the delayed save still holds back, then
+    /// returns to the library, where **Resume draft** reopens it.
+    fn save_and_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft_save = None;
+        self.save_draft(cx);
+        let _ = self.parent.update(cx, |p, cx| p.home(window, cx));
+    }
+
     pub(super) fn action_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let blocked = self.blocked_by(cx);
         let starting = self.is_starting();
@@ -77,14 +85,24 @@ impl LaunchForm {
             .disabled(blocked.is_some() || starting)
             .on_click(cx.listener(|this, _, _, cx| this.request_start(cx)))
             .smooth_hover(ButtonLook::Primary, &hover, cx);
-        let discard = button_with_size(
+        let discard = bar_icon(
             "discard-launch-draft",
             "Discard draft",
-            ButtonLook::Ghost,
-            ButtonSize::Medium,
+            Lucide::Trash,
+            true,
             window,
             cx,
-            |v, w, cx| v.request_discard(w, cx),
+            |form, w, cx| form.request_discard(w, cx),
+        );
+        // A form left as it opened is not a draft, so there is nothing to save.
+        let save = bar_icon(
+            "save-launch-draft",
+            "Save draft and close",
+            Lucide::Save,
+            self.is_modified(cx),
+            window,
+            cx,
+            |form, w, cx| form.save_and_close(w, cx),
         );
         let status: SharedString = match blocked {
             Some(blocker) => self.blocker_message(blocker, cx),
@@ -97,6 +115,7 @@ impl LaunchForm {
             .gap_2()
             .child(div().flex_1().min_w_0().child(subtle(status, cx)))
             .child(discard)
+            .child(save)
             .child(submit);
         h_flex()
             .flex_none()
@@ -116,4 +135,26 @@ impl LaunchForm {
                     .child(row),
             )
     }
+}
+
+/// An icon-only action of the bar, as tall as the Start button beside it.
+fn bar_icon(
+    id: &'static str,
+    label: &'static str,
+    icon: Lucide,
+    enabled: bool,
+    window: &mut Window,
+    cx: &mut Context<LaunchForm>,
+    click: impl Fn(&mut LaunchForm, &mut Window, &mut Context<LaunchForm>) + 'static,
+) -> Stateful<Div> {
+    let hover = Hover::new(id, window, cx).enabled(enabled);
+    Button::new(id)
+        .cursor_pointer()
+        .with_size(ButtonSize::Medium)
+        .icon(icon)
+        .accessibility_label(label)
+        .tooltip(label)
+        .disabled(!enabled)
+        .on_click(cx.listener(move |form, _, w, cx| click(form, w, cx)))
+        .smooth_hover(ButtonLook::Ghost, &hover, cx)
 }

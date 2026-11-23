@@ -229,10 +229,13 @@ impl GitPage {
             }
         });
         if let Some(Generator::Api { provider, model }) = generator {
-            let mut items = match &self.providers.read(cx).provider(provider).models {
-                Models::Ready(models) => models.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
-                _ => Vec::new(),
-            };
+            let providers = self.providers.read(cx);
+            let listed = providers.provider(provider).models.text();
+            let mut items = listed
+                .iter()
+                .flatten()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>();
             // Keep a saved ID visible even when catalog loading fails or the model was retired.
             if let Some(model) = &model
                 && !items.contains(model)

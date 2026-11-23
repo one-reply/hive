@@ -3,8 +3,7 @@ mod catalog;
 pub use catalog::pipeline_models;
 mod pipeline;
 pub use pipeline::{
-    PipelineLaunch, PipelineRole, pipeline_efforts, supports_accept_edits,
-    validate_pipeline_profile,
+    PipelineLaunch, PipelineRole, pipeline_efforts, pipeline_modes, validate_pipeline_profile,
 };
 
 use super::AgentKind;

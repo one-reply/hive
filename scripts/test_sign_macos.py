@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from sign_macos import export_notarized, prepare_archive, sign_and_notarize
+from sign_macos import (ENTITLEMENTS, MICROPHONE, export_notarized, prepare_archive,
+    require_microphone_entitlement, sign_and_notarize)
 
 
 class DeveloperIDTests(unittest.TestCase):
@@ -44,6 +45,30 @@ class DeveloperIDTests(unittest.TestCase):
         self.assertEqual(policy["method"], "developer-id")
         self.assertEqual(policy["teamID"], "TEAM123456")
         self.assertFalse(policy["manageAppVersionAndBuildNumber"])
+
+    def test_archive_signature_carries_the_microphone_entitlement(self):
+        commands = []
+        def run(command, **kwargs):
+            commands.append(command)
+            if command[0] == "ditto":
+                shutil.copytree(command[1], command[2])
+        with patch("sign_macos.subprocess.run", side_effect=run):
+            prepare_archive(self.app, "TEAM123456", self.root / "export")
+        signing = next(c for c in commands if c[0] == "codesign" and "--force" in c)
+        self.assertEqual(signing[signing.index("--entitlements") + 1], str(ENTITLEMENTS))
+        self.assertTrue(plistlib.loads(ENTITLEMENTS.read_bytes())[MICROPHONE])
+
+    def test_signed_app_without_the_microphone_entitlement_is_refused(self):
+        for output, accepted in [(plistlib.dumps({MICROPHONE: True}), True),
+                                 (plistlib.dumps({MICROPHONE: False}), False),
+                                 (plistlib.dumps({}), False), (b"", False)]:
+            result = subprocess.CompletedProcess([], 0, output)
+            with patch("sign_macos.subprocess.run", return_value=result):
+                if accepted:
+                    require_microphone_entitlement(self.app)
+                else:
+                    with self.assertRaisesRegex(ValueError, "entitlement"):
+                        require_microphone_entitlement(self.app)
 
     def test_pending_export_retries_without_uploading_again(self):
         results = [subprocess.CompletedProcess([], 65, 'Archive "Hive.xcarchive" is processing and not ready for distribution.'),

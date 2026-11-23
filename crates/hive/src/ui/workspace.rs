@@ -50,6 +50,7 @@ pub(crate) mod switcher;
 use crate::state::store::SaveError;
 pub(crate) use git::right_sidebar_toggle;
 use gpui_kit::component::{WindowExt as _, notification::Notification};
+pub(crate) use pipelines::{PipelinesOverview, task_key_bindings};
 use project_center::ProjectCenter;
 use right_tab::{RightTab, RightTabs};
 
@@ -185,6 +186,13 @@ impl Workspace {
                 window,
                 |this, _, event: &crate::state::pipelines::RevealRun, window, cx| {
                     this.show_pipeline_run(event.0, None, window, cx)
+                },
+            ),
+            cx.subscribe_in(
+                &pipeline_runs,
+                window,
+                |this, _, event: &crate::state::pipelines::RevealDraft, window, cx| {
+                    this.show_pipeline_draft(&event.0, window, cx)
                 },
             ),
             cx.subscribe_in(

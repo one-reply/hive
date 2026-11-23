@@ -3,17 +3,18 @@ use super::*;
 use crate::ui::hover::SmoothHoverBg as _;
 use hive_core::agent::{
     AgentKind,
-    launch::{AGENTS, pipeline_efforts},
+    launch::{AGENTS, PipelineRole, pipeline_efforts, pipeline_modes},
 };
-use hive_core::pipeline::{EditApproval, Profile};
+use hive_core::pipeline::{PermissionMode, Profile};
 
 mod agents;
-mod edits;
 mod findings;
 mod instructions;
 mod models;
+mod modes;
 use instructions::PromptPicker;
 use models::ModelPicker;
+pub(super) use modes::mode_label;
 pub(super) struct Inspector {
     picker: ModelPicker,
     pub(super) name: Entity<InputState>,
@@ -30,8 +31,8 @@ pub(super) struct Inspector {
     prompt: Option<u64>,
     /// Absent for a lane, which has a QA command instead of instructions.
     prompt_picker: Option<PromptPicker>,
-    /// A lane's choice; unused for the read-only stages.
-    edits: EditApproval,
+    /// `None` follows the role's own mode, as a stage saved before modes existed does.
+    mode: Option<PermissionMode>,
 }
 impl Inspector {
     pub(super) fn new(
@@ -90,10 +91,7 @@ impl Inspector {
             route,
             prompt,
             prompt_picker: is_stage.then(|| PromptPicker::new(prompt, w, cx)),
-            edits: match item {
-                Item::Lane(i) => t.lanes[i].edits,
-                _ => EditApproval::default(),
-            },
+            mode: profile.mode,
         }
     }
     pub(super) fn apply(&self, item: Item, t: &mut Template, cx: &App) -> Result<(), String> {
@@ -106,6 +104,7 @@ impl Inspector {
             agent: self.agent,
             model: self.model.read(cx).value().trim().to_owned(),
             effort: self.effort.clone(),
+            mode: self.mode,
         };
         hive_core::agent::launch::validate_pipeline_profile(&profile).map_err(|e| e.to_string())?;
         if item == Item::Development {
@@ -123,7 +122,6 @@ impl Inspector {
                 let lane = &mut t.lanes[i];
                 lane.command = body;
                 lane.profile = profile;
-                lane.edits = self.edits;
                 return Ok(());
             }
         };
@@ -137,6 +135,15 @@ impl Inspector {
         step.profile = profile;
         Ok(())
     }
+}
+/// The mode a stage launches in when its recipe chose none: only developers may edit.
+fn role_mode(item: Item) -> PermissionMode {
+    let role = match item {
+        Item::Planner => PipelineRole::Plan,
+        Item::Review(_) => PipelineRole::Review,
+        Item::Development | Item::Lane(_) => PipelineRole::Develop,
+    };
+    role.default_mode()
 }
 fn ensure_models(agent: AgentKind, cx: &mut App) {
     let pipelines = AppState::get(cx).pipelines.clone();
@@ -159,9 +166,6 @@ impl TemplateEditor {
             .child(self.instructions(w, cx));
         if matches!(self.selected, Item::Review(_)) {
             fields = fields.child(self.review_routing(cx));
-        }
-        if matches!(self.selected, Item::Lane(_)) {
-            fields = fields.child(self.lane_edits(cx));
         }
         fields
     }
@@ -187,53 +191,62 @@ impl TemplateEditor {
                 )
                 .children(self.ordering(cx)),
         );
-        if form.rename {
-            identity = identity.child(
-                h_flex()
-                    .gap_1()
-                    .child(div().flex_1().min_w_0().child(TextField::input(
-                        Input::new(&form.name),
-                        &form.name,
-                        cx,
-                    )))
-                    .child(icon_action(
-                        "stage-name-done",
-                        "Finish editing name",
-                        Lucide::Check,
-                        w,
-                        cx,
-                        |s: &mut Self, _, cx| {
-                            s.inspector.rename = false;
-                            cx.notify()
-                        },
-                    )),
-            );
+        let editing = form.rename && form.name.read(cx).focus_handle(cx).is_focused(w);
+        let name = if form.rename {
+            // Edited in place, in the title's own type.
+            Input::new(&form.name)
+                .appearance(false)
+                .p_0()
+                .text_lg()
+                .font_weight(FontWeight::SEMIBOLD)
+                .into_any_element()
         } else {
-            identity = identity.child(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(title),
-                    )
-                    .child(icon_action(
-                        "edit-stage-name",
-                        "Rename stage",
-                        Lucide::Pencil,
-                        w,
-                        cx,
-                        |s: &mut Self, w, cx| {
-                            s.inspector.rename = true;
-                            s.inspector.name.read(cx).focus_handle(cx).focus(w, cx);
-                            cx.notify()
-                        },
-                    )),
-            );
-        }
+            div()
+                .text_lg()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title)
+                .into_any_element()
+        };
+        let action = if form.rename {
+            icon_action(
+                "stage-name-done",
+                "Finish editing name",
+                Lucide::Check,
+                w,
+                cx,
+                |s: &mut Self, _, cx| {
+                    s.inspector.rename = false;
+                    cx.notify()
+                },
+            )
+        } else {
+            icon_action(
+                "edit-stage-name",
+                "Rename stage",
+                Lucide::Pencil,
+                w,
+                cx,
+                |s: &mut Self, w, cx| {
+                    s.inspector.rename = true;
+                    s.inspector.name.read(cx).focus_handle(cx).focus(w, cx);
+                    cx.notify()
+                },
+            )
+        };
+        // The underline also divides the name from the Agent block below it.
+        identity = identity.child(
+            h_flex()
+                .gap_1()
+                .pb_1()
+                .border_b_1()
+                .border_color(if editing {
+                    cx.theme().ring
+                } else {
+                    cx.theme().border
+                })
+                .child(div().flex_1().min_w_0().child(name))
+                .child(action),
+        );
         identity
     }
 }

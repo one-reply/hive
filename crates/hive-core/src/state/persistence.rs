@@ -9,6 +9,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod edit_approval;
+
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
 /// A persistence failure. A failed load must not be followed by a default-state write.
@@ -239,9 +241,10 @@ fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::L
         refresh_stock_instructions, stock_prompts,
     };
     use std::collections::HashSet;
-    let Some(value) = value else {
+    let Some(mut value) = value else {
         return Library::default();
     };
+    edit_approval::fold(&mut value);
     let Some(object) = value.as_object() else {
         lost.push("pipelines".into());
         return Library::default();

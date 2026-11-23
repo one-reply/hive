@@ -160,6 +160,13 @@ fn what_a_release_did_not_know_yet_takes_its_default() {
         crate::pipeline::Library::default()
     );
     assert!(!before_pipelines.settings.option_as_meta);
+    // Before dictation, which is every release so far: unconfigured, with the stock prompt.
+    for index in 0..SAMPLES.len() {
+        assert_eq!(
+            load(index).settings.dictation,
+            crate::dictation::Recipe::default()
+        );
+    }
     // Before the prompt library: its stock prompts, with the saved run kept.
     let before_prompts = load(1);
     assert_eq!(
@@ -181,15 +188,61 @@ fn what_a_release_did_not_know_yet_takes_its_default() {
     assert_eq!(count("history"), 6);
 }
 
+/// Drops every `field` key, wherever it nests.
+fn without(value: &Value, field: &str) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .filter(|(name, _)| *name != field)
+                .map(|(name, inner)| (name.clone(), without(inner, field)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(|v| without(v, field)).collect()),
+        other => other.clone(),
+    }
+}
+
 #[test]
 fn saved_prompt_catalog_and_its_template_links_survive_the_new_defaults() {
     let (release, _, file) = SAMPLES[5];
     let written = json(file);
     let loaded = as_json(&Folder::holding(release, file).load().state);
     for field in ["prompts", "templates", "runs"] {
+        // A lane's `edits` is read into its profile's mode and no longer written.
         assert_eq!(
-            loaded["pipelines"][field], written["pipelines"][field],
+            loaded["pipelines"][field],
+            without(&written["pipelines"][field], "edits"),
             "{field}"
+        );
+    }
+}
+
+#[test]
+fn a_lane_that_accepted_edits_launches_in_that_mode_after_the_update() {
+    for (release, _, file) in &SAMPLES[3..] {
+        let mut written = json(file);
+        // The third template has two lanes; only the first accepted edits.
+        let template = &mut written["pipelines"]["templates"][2]["lanes"][0];
+        template["edits"] = "accept_edits".into();
+        let run = &mut written["pipelines"]["runs"][0]["lanes"][0];
+        run["edits"] = "accept_edits".into();
+        let loaded = Folder::holding(release, &written.to_string()).load();
+        assert!(loaded.recovery.is_none(), "{release}");
+        let pipelines = &loaded.state.pipelines;
+        let accepted = Some(crate::pipeline::PermissionMode::AcceptEdits);
+        let lanes = &pipelines.templates[2].lanes;
+        assert_eq!(lanes[0].profile.mode, accepted, "{release}");
+        assert_eq!(
+            pipelines.runs[0].lanes()[0].profile.mode,
+            accepted,
+            "{release}"
+        );
+        // The lanes that kept asking still follow their role.
+        assert_eq!(lanes[1].profile.mode, None, "{release}");
+        assert_eq!(
+            pipelines.templates[2].planner.profile.mode, None,
+            "{release}"
         );
     }
 }

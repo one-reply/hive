@@ -227,6 +227,16 @@ fn confirm_reset(
     });
 }
 
+/// Whether a provider can be chosen in a settings picker, and what the picker says after
+/// its name when it cannot: a provider is of use only once its key is known to be there.
+pub(super) fn availability(status: KeyStatus) -> (bool, &'static str) {
+    match status {
+        KeyStatus::Configured => (true, ""),
+        status if status.is_busy() => (false, " · checking"),
+        _ => (false, " · unavailable"),
+    }
+}
+
 pub(super) fn logo(provider: Provider) -> &'static [u8] {
     match provider {
         Provider::GoogleAi => include_bytes!("../../../assets/google-ai.svg"),

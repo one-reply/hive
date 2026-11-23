@@ -134,6 +134,39 @@ impl Workspace {
         else {
             return;
         };
+        let Some(panel) = self.reveal_pipeline_panel(&owner, window, cx) else {
+            tracing::warn!(
+                run = id,
+                ?owner,
+                "pipeline run belongs to a removed project"
+            );
+            return;
+        };
+        panel.update(cx, |view, cx| view.show_run(id, attempt, window, cx));
+    }
+
+    /// Shows the launch form of project `owner` with the draft saved for it.
+    pub(in crate::ui::workspace) fn show_pipeline_draft(
+        &mut self,
+        owner: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.reveal_pipeline_panel(owner, window, cx) else {
+            tracing::warn!(?owner, "pipeline draft belongs to a removed project");
+            return;
+        };
+        panel.update(cx, |view, cx| view.show_draft(window, cx));
+    }
+
+    /// Selects local project `owner` and opens its panel. `None` for a project that was
+    /// removed from Hive: showing its panel would leave the current project's on screen.
+    fn reveal_pipeline_panel(
+        &mut self,
+        owner: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<PipelinePanel>> {
         let registered = self
             .projects
             .read(cx)
@@ -141,24 +174,21 @@ impl Workspace {
             .iter()
             .any(|project| project.host == Host::Local && project.path == owner);
         if !registered {
-            // Showing it anyway would leave the current project's panel on screen.
-            tracing::warn!(
-                run = id,
-                ?owner,
-                "pipeline run belongs to a removed project"
-            );
-            return;
+            return None;
         }
         self.projects.update(cx, |projects, cx| {
-            projects.select_project(&Host::Local, &owner, cx)
+            projects.select_project(&Host::Local, owner, cx)
         });
         self.sync_selection(window, cx);
-        let cwd = self.last_selection.clone().unwrap_or_else(|| owner.clone());
-        let slot = self.pipeline_slot(owner, cx);
+        let cwd = self
+            .last_selection
+            .clone()
+            .unwrap_or_else(|| owner.to_owned());
+        let slot = self.pipeline_slot(owner.to_owned(), cx);
         slot.show(&cwd, window, cx);
-        slot.view
-            .update(cx, |view, cx| view.show_run(id, attempt, window, cx));
+        let panel = slot.view.clone();
         cx.notify();
+        Some(panel)
     }
 
     pub(in crate::ui::workspace) fn pipeline_overlay(

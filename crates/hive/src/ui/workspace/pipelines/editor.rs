@@ -7,6 +7,10 @@ mod nodes;
 mod structure;
 use structure::{StageChoice, move_item};
 
+/// Inspector width beside the canvas, in rems: wide enough for a mode's explanation to
+/// wrap in a few lines.
+const INSPECTOR_WIDTH: f32 = 20.;
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(super) enum Item {
     Planner,
@@ -349,7 +353,7 @@ impl Render for TemplateEditor {
                     .min_w_0()
                     .when(self.compact, |el| el.flex_1())
                     .when(!self.compact, |el| {
-                        el.w(rems(17.))
+                        el.w(rems(INSPECTOR_WIDTH))
                             .flex_none()
                             .border_l_1()
                             .border_color(cx.theme().border)

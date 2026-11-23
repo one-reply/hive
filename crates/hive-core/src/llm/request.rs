@@ -115,7 +115,7 @@ impl Client {
                 status,
                 guidance: match status {
                     401 | 403 => "Check your API key and model permissions in AI settings.",
-                    400 | 404 | 422 => "Check the selected model and prompt size in Git settings.",
+                    400 | 404 | 422 => "Check the selected model and request size in Settings.",
                     429 => "Rate or credit limit reached. Try again later.",
                     500..=599 => "The provider is unavailable. Try again later.",
                     _ => "Unexpected response. Try again later.",

@@ -3,18 +3,18 @@
 //! fades between the resting and the focused look. The resting border is pulled towards the
 //! foreground so it reads on both themes (lighter on dark, darker on light).
 //!
-//! A textarea's scrollbar is drawn by the frame at its right edge rather than by the editor,
-//! which clips it to its own box: a caller that reserves room for a trailing overlay (the
-//! commit message's AI button) would otherwise push the scrollbar in by that much.
+//! A multi-line field's scrollbar is drawn by the frame at its right edge rather than by the
+//! editor, which clips it to its own box: a caller that reserves room for a trailing overlay
+//! (the commit message's AI button) would otherwise push the scrollbar in by that much.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui_kit::base::input::EditorScrollbarContext;
+use gpui_kit::base::input::{EditorScrollbarContext, InputBaseState, InputModeKind};
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::base::{Scrollbar, ScrollbarHandle};
-use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Editor, EditorState, Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::{ActiveTheme as _, Colorize as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -26,12 +26,15 @@ const BORDER_CONTRAST: f32 = 0.12;
 const RING_WIDTH: Pixels = px(3.);
 const RING_OPACITY: f32 = 0.5;
 
+/// Builds the frame's scrollbar for the field keyed by the given id.
+type FrameScrollbar = Box<dyn FnOnce(EntityId, &mut Window, &mut App) -> Scrollbar>;
+
 /// A single- or multi-line text field inside the animated focus frame.
 #[derive(IntoElement)]
 pub(crate) struct TextField {
     field: AnyElement,
-    /// Set for a textarea, whose scrollbar the frame draws.
-    textarea: Option<Entity<TextareaState>>,
+    /// Set for a multi-line field, whose scrollbar the frame draws.
+    scrollbar: Option<FrameScrollbar>,
     focus: FocusHandle,
     /// Keys the focus transition; the state entity outlives re-renders, the element does not.
     key: EntityId,
@@ -43,7 +46,7 @@ impl TextField {
     pub(crate) fn input(input: Input, state: &Entity<InputState>, cx: &App) -> Self {
         Self {
             field: input.appearance(false).into_any_element(),
-            textarea: None,
+            scrollbar: None,
             focus: state.focus_handle(cx),
             key: state.entity_id(),
             invalid: false,
@@ -51,9 +54,25 @@ impl TextField {
     }
 
     pub(crate) fn textarea(textarea: Textarea, state: &Entity<TextareaState>, cx: &App) -> Self {
+        Self::multi_line(textarea.appearance(false).into_any_element(), state, cx)
+    }
+
+    /// A highlighted editor that looks like the other fields of its form.
+    pub(crate) fn editor(editor: Editor, state: &Entity<EditorState>, cx: &App) -> Self {
+        Self::multi_line(editor.appearance(false).into_any_element(), state, cx)
+    }
+
+    fn multi_line<M: InputModeKind>(
+        field: AnyElement,
+        state: &Entity<InputBaseState<M>>,
+        cx: &App,
+    ) -> Self {
+        let scrolled = state.clone();
         Self {
-            field: textarea.appearance(false).into_any_element(),
-            textarea: Some(state.clone()),
+            field,
+            scrollbar: Some(Box::new(move |key, window, cx| {
+                frame_scrollbar(&scrolled, key, window, cx)
+            })),
             focus: state.focus_handle(cx),
             key: state.entity_id(),
             invalid: false,
@@ -79,9 +98,7 @@ impl RenderOnce for TextField {
             window,
             cx,
         );
-        let scrollbar = self
-            .textarea
-            .map(|state| frame_scrollbar(&state, self.key, window, cx));
+        let scrollbar = self.scrollbar.map(|build| build(self.key, window, cx));
         let theme = cx.theme();
         let resting = theme.input.mix_oklab(theme.foreground, BORDER_CONTRAST);
         let accent = if self.invalid {
@@ -161,11 +178,11 @@ impl ScrollbarHandle for EditorScroll {
     }
 }
 
-/// A vertical scrollbar over the whole frame, driven by the textarea's own scroll state. The
+/// A vertical scrollbar over the whole frame, driven by the field's own scroll state. The
 /// frame is exactly as tall as the editor (its border is an overlay), so their scroll ranges
 /// match.
-fn frame_scrollbar(
-    state: &Entity<TextareaState>,
+fn frame_scrollbar<M: InputModeKind>(
+    state: &Entity<InputBaseState<M>>,
     key: EntityId,
     window: &mut Window,
     cx: &mut App,

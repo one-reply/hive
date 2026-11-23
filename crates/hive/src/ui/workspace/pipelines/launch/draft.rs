@@ -116,7 +116,7 @@ impl LaunchForm {
         }));
     }
 
-    fn save_draft(&self, cx: &mut Context<Self>) {
+    pub(super) fn save_draft(&self, cx: &mut Context<Self>) {
         if !self.keep_draft {
             return;
         }

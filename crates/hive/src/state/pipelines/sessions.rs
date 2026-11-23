@@ -4,6 +4,7 @@ use crate::state::agents::Agents;
 use crate::state::terminal_session::{SessionEvent, SessionStatus};
 use hive_core::agent::AgentStatus;
 use hive_core::agent::launch::{Launch, PipelineLaunch, PipelineRole};
+use hive_core::pipeline::images;
 
 /// What an agent's own report of its turn means for the step it runs.
 #[derive(Debug, PartialEq, Eq)]
@@ -176,7 +177,8 @@ impl Pipelines {
                 prompt,
                 ticket,
                 resume,
-                edits: run.edit_approval(&ticket),
+                image_directory: (!images::references(run.task()).is_empty())
+                    .then(images::directory),
             };
             let session = cx.new(|cx| {
                 TerminalSession::new(

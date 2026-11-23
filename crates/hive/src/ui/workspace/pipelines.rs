@@ -13,6 +13,7 @@ use std::path::Path;
 mod editor;
 mod inspector;
 mod launch;
+pub(crate) use launch::task_key_bindings;
 mod library;
 mod map;
 mod run;
@@ -21,6 +22,8 @@ mod drawer;
 pub(super) use drawer::PanelSlot;
 mod navigation;
 use navigation::{Destination, Unsaved};
+mod overview;
+pub(crate) use overview::PipelinesOverview;
 
 enum Screen {
     Library,
@@ -87,6 +90,10 @@ impl PipelinePanel {
         cx: &mut Context<Self>,
     ) {
         self.navigate(Destination::Run { id, attempt }, window, cx);
+    }
+    /// Shows the launch form with the draft saved for this project.
+    pub(super) fn show_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate(Destination::Draft, window, cx);
     }
     /// The launch form started run `id`. The form is finished, so nothing is asked.
     fn run_started(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
