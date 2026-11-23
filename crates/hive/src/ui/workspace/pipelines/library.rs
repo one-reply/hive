@@ -187,15 +187,27 @@ impl PipelinePanel {
             .iter()
             .position(|t| Some(&t.name) == self.selected_template.as_ref())
             .unwrap_or(0);
-        let mut actions = h_flex().gap_2().flex_wrap().child(button_with_size(
-            "new-template",
-            "New template",
-            ButtonLook::Outline,
-            ButtonSize::Medium,
-            window,
-            cx,
-            |p, w, cx| p.edit(None, w, cx),
-        ));
+        let mut actions = h_flex()
+            .gap_2()
+            .flex_wrap()
+            .child(button_with_size(
+                "pipeline-prompts",
+                "Prompts",
+                ButtonLook::Ghost,
+                ButtonSize::Medium,
+                window,
+                cx,
+                |_, _, cx| crate::ui::settings::open_pipelines(cx),
+            ))
+            .child(button_with_size(
+                "new-template",
+                "New template",
+                ButtonLook::Outline,
+                ButtonSize::Medium,
+                window,
+                cx,
+                |p, w, cx| p.edit(None, w, cx),
+            ));
         let has_draft = draft_template.is_some();
         if let Some(launch) = draft_template.or_else(|| templates.get(selected).cloned()) {
             actions = actions.child(button_with_size(

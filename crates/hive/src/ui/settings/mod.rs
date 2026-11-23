@@ -70,6 +70,11 @@ pub(crate) fn open_files(cx: &mut App) {
     open_at(Target::Page(Page::Files), cx);
 }
 
+/// Opens the Pipelines page: the prompt library of the pipeline stages.
+pub(crate) fn open_pipelines(cx: &mut App) {
+    open_at(Target::Page(Page::Pipelines), cx);
+}
+
 /// Opens the Pipelines page with the library prompt `id` ready to edit.
 pub(crate) fn open_prompt(id: u64, cx: &mut App) {
     open_at(Target::Prompt(id), cx);
