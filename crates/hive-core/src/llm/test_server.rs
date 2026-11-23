@@ -10,6 +10,14 @@ pub(super) fn server(
     responses: Vec<(u16, String)>,
     delay: Duration,
 ) -> (String, thread::JoinHandle<Vec<String>>) {
+    capture_requests(responses, delay, |bytes| String::from_utf8(bytes).unwrap())
+}
+
+pub(super) fn capture_requests<T: Send + 'static>(
+    responses: Vec<(u16, String)>,
+    delay: Duration,
+    capture: fn(Vec<u8>) -> T,
+) -> (String, thread::JoinHandle<Vec<T>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -50,7 +58,7 @@ pub(super) fn server(
                     }
                 }
             }
-            requests.push(String::from_utf8(bytes).unwrap());
+            requests.push(capture(bytes));
             thread::sleep(delay);
             let response = format!(
                 "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nContent-Type: application/json\r\nLocation: http://127.0.0.1:1/leak\r\nConnection: close\r\n\r\n{body}",
