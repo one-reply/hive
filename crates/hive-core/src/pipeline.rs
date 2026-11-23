@@ -32,7 +32,7 @@ pub use prompts::Prompt;
 pub use recipe::unique_name;
 pub use report::{Assignment, CommandResult, CriterionEvidence, Finding, Report, Severity};
 pub use run::{Phase, Run, StageTiming, Ticket};
-pub use stage::{Stage, StageStatus};
+pub use stage::{RunProgress, Stage, StageStatus};
 pub use stock::ReviewKind;
 pub(crate) use stock::{link_stock_prompts, stock_prompts};
 pub use timing::now_ms;

@@ -12,7 +12,8 @@ mod entries;
 mod runs;
 pub(super) use entries::Entry;
 use entries::entries;
-use runs::{RunRow, run_detail, run_row};
+use runs::run_row;
+pub(super) use runs::{DETAIL_SEPARATOR, RunRow};
 
 /// Strength of the selection accent a hovered, unselected template card's border eases to.
 const HOVER_BORDER_OPACITY: f32 = 0.6;
@@ -131,23 +132,7 @@ impl PipelinePanel {
             return div().into_any_element();
         };
         let status = state.pipelines.read(cx).status(run, cx);
-        let finished = matches!(status, RunStatus::Completed | RunStatus::Cancelled);
-        let now = hive_core::pipeline::now_ms();
-        // A finished run's phase repeats its status, and a live one's length is still
-        // growing, so each row shows only the one that says something.
-        let detail = run_detail(
-            &run.template().name,
-            (!finished).then(|| phase_label(run)).as_deref(),
-            run.age(now).as_deref(),
-            finished.then(|| run::length(run, now)).flatten().as_deref(),
-        );
-        let row = RunRow {
-            id,
-            task: run.task().to_owned(),
-            detail,
-            status,
-            finished,
-        };
+        let row = RunRow::of(run, status, hive_core::pipeline::now_ms());
         run_row(row, window, cx)
     }
 

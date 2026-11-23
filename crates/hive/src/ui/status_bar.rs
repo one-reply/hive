@@ -1,15 +1,13 @@
-//! Bottom bar with the Pipelines toggle, provider limits and workspace controls.
+//! Bottom bar with the Pipelines toggle, provider limits, the overview of every project's
+//! pipeline runs and workspace controls.
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::animation::Lerp as _;
-use gpui_kit::base::motion::{Presence, Transition, transition};
+use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::button::Button;
-use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, ThemeStyled as _, h_flex, v_flex,
-};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hive_core::usage::{self, Provider, UsageLevel, UsageWindow, Vendor};
@@ -20,7 +18,8 @@ use crate::state::keep_awake::KeepAwake;
 use crate::state::store::Store;
 use crate::state::usage::Usage;
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _};
-use crate::ui::workspace::{TogglePipelines, Workspace};
+use crate::ui::hover_card::hover_card;
+use crate::ui::workspace::{PipelinesOverview, TogglePipelines, Workspace};
 use crate::ui::{keymap, settings};
 
 /// Width of the per-provider bar in the status bar.
@@ -29,14 +28,6 @@ const BAR_HEIGHT: Pixels = px(4.);
 const INACTIVE_ICON_OPACITY: f32 = 0.5;
 /// Width of the details card shown on hover.
 const CARD_WIDTH: Pixels = px(240.);
-/// The card should feel like a tooltip, not a deliberate hover.
-const CARD_OPEN_DELAY: Duration = Duration::from_millis(150);
-/// How long the card takes to fade and rise in, and to sink and fade out.
-const CARD_TRANSITION: Duration = Duration::from_millis(180);
-/// Outlasts `CARD_TRANSITION`, so the card is removed only once it has faded out.
-const CARD_CLOSE_DELAY: Duration = Duration::from_millis(200);
-/// How far below its place the card starts rising from.
-const CARD_RISE: Pixels = px(6.);
 /// How long the keep-awake icon takes to change color between off, on and holding.
 const KEEP_AWAKE_TRANSITION: Duration = Duration::from_millis(180);
 
@@ -45,6 +36,7 @@ pub struct StatusBarView {
     usage: Entity<Usage>,
     store: Entity<Store>,
     keep_awake: Entity<KeepAwake>,
+    pipelines: Entity<PipelinesOverview>,
     _observers: [Subscription; 3],
 }
 
@@ -63,6 +55,7 @@ impl StatusBarView {
             usage,
             store,
             keep_awake,
+            pipelines: cx.new(PipelinesOverview::new),
             _observers: observers,
         }
     }
@@ -147,29 +140,6 @@ fn level_color(level: UsageLevel, cx: &App) -> Hsla {
     }
 }
 
-/// Whether the pointer is over a provider's bar or its card: the card shows while either is.
-#[derive(Clone, Copy, Default, PartialEq)]
-struct CardHover {
-    trigger: bool,
-    card: bool,
-}
-
-impl CardHover {
-    fn is_hovered(self) -> bool {
-        self.trigger || self.card
-    }
-}
-
-fn set_card_hover(hover: &Entity<CardHover>, cx: &mut App, change: impl FnOnce(&mut CardHover)) {
-    hover.update(cx, |hover, cx| {
-        let before = *hover;
-        change(hover);
-        if *hover != before {
-            cx.notify();
-        }
-    });
-}
-
 /// Logo and a bar of what is left of the limit that will stop work first; the provider's name
 /// and every window show on hover.
 fn provider_item(ix: usize, provider: &Provider, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -190,7 +160,6 @@ fn provider_item(ix: usize, provider: &Provider, window: &mut Window, cx: &mut A
             .bg(cx.theme().muted)
             .into_any_element()
     };
-    let hover = window.use_keyed_state(("usage-card-hover", ix), cx, |_, _| CardHover::default());
     let trigger = div()
         .id(("usage-trigger", ix))
         .role(Role::Group)
@@ -219,44 +188,16 @@ fn provider_item(ix: usize, provider: &Provider, window: &mut Window, cx: &mut A
                         }),
                 )
                 .child(summary),
-        )
-        .on_hover({
-            let hover = hover.clone();
-            move |hovered, _, cx| set_card_hover(&hover, cx, |h| h.trigger = *hovered)
-        });
+        );
     let provider = provider.clone();
-    // `HoverCard` drops its content the moment it closes, so the card plays its own exit while
-    // the pointer is away and the close delay outlasts it. Its presence state lives only while
-    // the card is rendered, so every open starts the entrance from the beginning.
-    let mut card = HoverCard::new(("usage-card", ix));
-    // The library clips its content box, which would cut the popover ring and shadow drawn just
-    // outside our card down to its rounded corners.
-    card.style().overflow.x = Some(Overflow::Visible);
-    card.style().overflow.y = Some(Overflow::Visible);
-    card.anchor(Anchor::BottomLeft)
-        .open_delay(CARD_OPEN_DELAY)
-        .close_delay(CARD_CLOSE_DELAY)
-        .appearance(false)
-        .trigger(trigger)
-        .content(move |_, window, cx| {
-            let shown = Presence::new(
-                ElementId::from(("usage-card-presence", ix)),
-                hover.read(cx).is_hovered(),
-            )
-            .transition(Transition::new(CARD_TRANSITION).ease(ease_in_out))
-            .sample(window, cx)
-            .progress;
-            let hover = hover.clone();
-            usage_card(&provider, cx)
-                .popover_style(cx)
-                .p_3()
-                .relative()
-                .opacity(shown)
-                .top(CARD_RISE * (1. - shown))
-                .id(("usage-card-body", ix))
-                .on_hover(move |hovered, _, cx| set_card_hover(&hover, cx, |h| h.card = *hovered))
-        })
-        .into_any_element()
+    hover_card(
+        ("usage-card", ix),
+        Anchor::BottomLeft,
+        trigger,
+        move |_, _, cx| usage_card(&provider, cx).p_3(),
+        window,
+        cx,
+    )
 }
 
 fn available_window(provider: &Provider) -> Option<&UsageWindow> {
@@ -368,15 +309,19 @@ impl Render for StatusBarView {
             )
             .left(h_flex().gap_6().children(providers))
             .right(
-                h_flex().gap_1().child(keep_awake).child(
-                    Button::new("settings")
-                        .cursor_pointer()
-                        .xsmall()
-                        .icon(IconName::Settings)
-                        .tooltip("Settings")
-                        .on_click(|_, _, cx| settings::open(cx))
-                        .smooth_hover(ButtonLook::Ghost, &settings_hover, cx),
-                ),
+                h_flex()
+                    .gap_1()
+                    .child(self.pipelines.clone())
+                    .child(keep_awake)
+                    .child(
+                        Button::new("settings")
+                            .cursor_pointer()
+                            .xsmall()
+                            .icon(IconName::Settings)
+                            .tooltip("Settings")
+                            .on_click(|_, _, cx| settings::open(cx))
+                            .smooth_hover(ButtonLook::Ghost, &settings_hover, cx),
+                    ),
             )
     }
 }

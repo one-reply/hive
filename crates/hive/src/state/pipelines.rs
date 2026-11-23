@@ -17,6 +17,7 @@ mod delivery;
 mod execution;
 mod images;
 mod models;
+mod overview;
 mod previews;
 mod prompts;
 mod reports;
@@ -30,6 +31,7 @@ mod watch;
 
 pub(crate) use delivery::Delivery;
 pub(crate) use images::save_task_image;
+pub(crate) use overview::{Entry, Group, ListedRun, Overview};
 pub(crate) use previews::{Failure, Preview, PreviewKey};
 pub(crate) use status::{RunStatus, Waiting};
 pub(crate) use workspace::ReviewRepo;
@@ -49,6 +51,10 @@ type PatchPreview = (
 
 pub(crate) struct RevealRun(pub u64);
 impl EventEmitter<RevealRun> for Pipelines {}
+
+/// Asks the windows to show the unsubmitted launch form of the project at this path.
+pub(crate) struct RevealDraft(pub PathBuf);
+impl EventEmitter<RevealDraft> for Pipelines {}
 
 /// A run stopped for the user while they may be elsewhere: an agent's report or a check
 /// brought it to a gate, or a step failed. Windows turn it into a notification.
@@ -188,6 +194,10 @@ impl Pipelines {
 
     pub(crate) fn reveal(&mut self, id: u64, cx: &mut Context<Self>) {
         cx.emit(RevealRun(id));
+    }
+
+    pub(crate) fn reveal_draft(&mut self, owner: PathBuf, cx: &mut Context<Self>) {
+        cx.emit(RevealDraft(owner));
     }
 
     pub(crate) fn error(&self, id: u64) -> Option<&str> {

@@ -73,6 +73,32 @@ impl std::fmt::Display for StageStatus {
     }
 }
 
+/// How far a run is through its recipe, for a summary that has no room for the timeline.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunProgress {
+    /// Stages that finished.
+    pub done: usize,
+    /// Stages the run has work in.
+    pub total: usize,
+}
+
+impl Run {
+    /// Finished stages out of the recipe's stages. A lane the plan gave no work is left out,
+    /// and a decision counts only once the run has reached it, so the total can grow.
+    pub fn progress(&self) -> RunProgress {
+        let mut progress = RunProgress::default();
+        for stage in Stage::recipe(self) {
+            match stage.status(self, &stage.observations(self)) {
+                StageStatus::Unassigned => continue,
+                StageStatus::Complete => progress.done += 1,
+                _ => {}
+            }
+            progress.total += 1;
+        }
+        progress
+    }
+}
+
 impl Stage {
     /// Stages in recipe order; a decision appears only once the run has reached it.
     pub fn recipe(run: &Run) -> Vec<Self> {
@@ -201,8 +227,17 @@ impl Stage {
 
 #[cfg(test)]
 mod tests {
-    use super::{Stage, StageStatus};
-    use crate::pipeline::{Lane, Phase, Run, StageTiming, Template};
+    use super::{RunProgress, Stage, StageStatus};
+    use crate::pipeline::{Assignment, Lane, Phase, Report, Run, StageTiming, Template};
+
+    fn lane(name: &str, project: &str) -> Lane {
+        Lane {
+            name: name.into(),
+            project: project.into(),
+            command: "cargo test".into(),
+            ..Default::default()
+        }
+    }
 
     fn sample() -> Run {
         Run::new(
@@ -210,14 +245,70 @@ mod tests {
             "/api".into(),
             "Task".into(),
             Template::default(),
-            vec![Lane {
-                name: "API".into(),
-                project: "/api".into(),
-                command: "cargo test".into(),
-                ..Default::default()
-            }],
+            vec![lane("API", "/api")],
         )
         .unwrap()
+    }
+
+    /// Applies a transition and records its stage interval, as the application does.
+    fn advance(run: &mut Run, at: u64, change: impl FnOnce(&mut Run)) {
+        let previous = run.phase;
+        change(run);
+        run.record_stage(Some(previous), at);
+    }
+
+    #[test]
+    fn a_run_that_just_started_has_finished_none_of_its_stages() {
+        let mut run = sample();
+        run.record_stage(None, 1);
+        assert_eq!(run.progress(), RunProgress { done: 0, total: 7 });
+    }
+
+    #[test]
+    fn progress_counts_finished_stages_and_leaves_out_a_lane_without_work() {
+        let mut run = Run::new(
+            1,
+            "/api".into(),
+            "Task".into(),
+            Template::default(),
+            vec![lane("API", "/api"), lane("Web", "/web")],
+        )
+        .unwrap();
+        run.record_stage(None, 1);
+        advance(&mut run, 2, |run| {
+            let planner = run.pending()[0];
+            let plan = Report::Plan {
+                assignments: vec![Assignment {
+                    lane: 0,
+                    task: "Add the endpoint".into(),
+                    criteria: "Tests pass".into(),
+                }],
+                contract: String::new(),
+            };
+            run.report(&planner, plan).unwrap();
+        });
+        advance(&mut run, 3, |run| run.approve().unwrap());
+        // Planner and approval are done; Web has no task, so six stages remain to count.
+        assert_eq!(run.progress(), RunProgress { done: 2, total: 7 });
+        assert_eq!(Stage::Develop(1).status(&run, &[]), StageStatus::Unassigned);
+    }
+
+    #[test]
+    fn an_accepted_run_has_finished_every_stage_it_had_work_in() {
+        let mut run = sample();
+        run.lanes[0].assignment = "Add the endpoint".into();
+        run.phase = Phase::Accepted;
+        assert_eq!(run.progress(), RunProgress { done: 7, total: 7 });
+    }
+
+    #[test]
+    fn a_cancelled_run_keeps_the_stages_it_never_finished() {
+        let mut run = sample();
+        run.record_stage(None, 1);
+        advance(&mut run, 2, |run| run.cancel().unwrap());
+        let progress = run.progress();
+        assert_eq!(progress.done, 0);
+        assert!(progress.total > 0);
     }
     #[test]
     fn generated_rows_follow_the_recipe_and_only_include_decisions_actually_reached() {

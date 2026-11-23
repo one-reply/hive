@@ -12,6 +12,16 @@ pub(super) enum Destination {
         id: u64,
         attempt: Option<Ticket>,
     },
+    /// The launch form with the project's draft.
+    Draft,
+}
+
+/// What of the screen in view decides whether a destination is already shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shown {
+    Run(u64),
+    Launch,
+    Other,
 }
 
 /// Text on the screen in view that exists nowhere else yet.
@@ -35,19 +45,17 @@ impl Unsaved {
 /// What a request to show `destination` does to the screen in view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Navigation {
-    /// The run is already on screen: its view stays, with everything typed into it.
+    /// The run or the launch form is already on screen: its view stays, with everything
+    /// typed into it.
     Stay,
     Go,
     Ask(Unsaved),
 }
 
-fn navigation(
-    shown_run: Option<u64>,
-    unsaved: Option<Unsaved>,
-    destination: Destination,
-) -> Navigation {
-    match destination {
-        Destination::Run { id, .. } if shown_run == Some(id) => Navigation::Stay,
+fn navigation(shown: Shown, unsaved: Option<Unsaved>, destination: Destination) -> Navigation {
+    match (shown, destination) {
+        (Shown::Run(shown), Destination::Run { id, .. }) if shown == id => Navigation::Stay,
+        (Shown::Launch, Destination::Draft) => Navigation::Stay,
         _ => unsaved.map_or(Navigation::Go, Navigation::Ask),
     }
 }
@@ -61,11 +69,12 @@ impl PipelinePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let shown_run = match &self.screen {
-            Screen::Run(view) => Some(view.read(cx).id()),
-            _ => None,
+        let shown = match &self.screen {
+            Screen::Run(view) => Shown::Run(view.read(cx).id()),
+            Screen::Launch(_) => Shown::Launch,
+            Screen::Library | Screen::Editor(_) => Shown::Other,
         };
-        match navigation(shown_run, self.unsaved(cx), destination) {
+        match navigation(shown, self.unsaved(cx), destination) {
             Navigation::Stay => self.show_attempt(destination, window, cx),
             Navigation::Go => self.go(destination, window, cx),
             Navigation::Ask(unsaved) => self.ask_to_leave(unsaved, destination, window, cx),
@@ -97,13 +106,22 @@ impl PipelinePanel {
             });
         }
         match destination {
-            Destination::Library => {
-                self.screen = Screen::Library;
-                self.focus.focus(window, cx);
-            }
             Destination::Run { id, .. } => {
                 self.screen = Screen::Run(cx.new(|cx| run::RunView::new(id, window, cx)));
                 self.show_attempt(destination, window, cx);
+            }
+            Destination::Draft | Destination::Library => {
+                // A draft started or discarded since it was asked for leaves the library.
+                let draft = (destination == Destination::Draft)
+                    .then(|| self.draft_template(cx))
+                    .flatten();
+                match draft {
+                    Some(template) => self.launch(template, window, cx),
+                    None => {
+                        self.screen = Screen::Library;
+                        self.focus.focus(window, cx);
+                    }
+                }
             }
         }
         cx.notify();
@@ -147,7 +165,7 @@ impl PipelinePanel {
 
 #[cfg(test)]
 mod tests {
-    use super::{Destination, Navigation, Unsaved, navigation};
+    use super::{Destination, Navigation, Shown, Unsaved, navigation};
 
     fn run(id: u64) -> Destination {
         Destination::Run { id, attempt: None }
@@ -156,27 +174,56 @@ mod tests {
     #[test]
     fn a_run_already_on_screen_keeps_its_view_and_what_was_typed_into_it() {
         assert_eq!(
-            navigation(Some(7), Some(Unsaved::Plan), run(7)),
+            navigation(Shown::Run(7), Some(Unsaved::Plan), run(7)),
             Navigation::Stay
         );
-        assert_eq!(navigation(Some(7), None, run(7)), Navigation::Stay);
+        assert_eq!(navigation(Shown::Run(7), None, run(7)), Navigation::Stay);
+    }
+
+    #[test]
+    fn a_draft_whose_form_is_already_on_screen_keeps_that_form() {
+        assert_eq!(
+            navigation(Shown::Launch, None, Destination::Draft),
+            Navigation::Stay
+        );
+    }
+
+    #[test]
+    fn a_draft_replaces_another_screen_like_any_other_destination() {
+        assert_eq!(
+            navigation(Shown::Other, None, Destination::Draft),
+            Navigation::Go
+        );
+        assert_eq!(
+            navigation(Shown::Run(7), None, Destination::Draft),
+            Navigation::Go
+        );
+        assert_eq!(
+            navigation(Shown::Other, Some(Unsaved::Template), Destination::Draft),
+            Navigation::Ask(Unsaved::Template)
+        );
+        // The form saves itself as the draft, so leaving it for a run asks nothing.
+        assert_eq!(navigation(Shown::Launch, None, run(7)), Navigation::Go);
     }
 
     #[test]
     fn leaving_unsaved_text_asks_first_and_a_clean_screen_just_goes() {
         assert_eq!(
-            navigation(Some(7), Some(Unsaved::Feedback), run(8)),
+            navigation(Shown::Run(7), Some(Unsaved::Feedback), run(8)),
             Navigation::Ask(Unsaved::Feedback)
         );
         assert_eq!(
-            navigation(Some(7), Some(Unsaved::Plan), Destination::Library),
+            navigation(Shown::Run(7), Some(Unsaved::Plan), Destination::Library),
             Navigation::Ask(Unsaved::Plan)
         );
         assert_eq!(
-            navigation(None, Some(Unsaved::Template), run(7)),
+            navigation(Shown::Other, Some(Unsaved::Template), run(7)),
             Navigation::Ask(Unsaved::Template)
         );
-        assert_eq!(navigation(Some(7), None, run(8)), Navigation::Go);
-        assert_eq!(navigation(None, None, Destination::Library), Navigation::Go);
+        assert_eq!(navigation(Shown::Run(7), None, run(8)), Navigation::Go);
+        assert_eq!(
+            navigation(Shown::Other, None, Destination::Library),
+            Navigation::Go
+        );
     }
 }
