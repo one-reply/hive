@@ -111,6 +111,10 @@ pub struct Profile {
     pub model: String,
     /// Empty uses the model's default effort.
     pub effort: String,
+    /// `None` uses the role's own: read-only for the planner and reviewers, the CLI's
+    /// configuration for developers. Recipes saved before modes existed have none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<PermissionMode>,
 }
 
 impl Default for Profile {
@@ -119,6 +123,7 @@ impl Default for Profile {
             agent: AgentKind::Codex,
             model: String::new(),
             effort: String::new(),
+            mode: None,
         }
     }
 }
@@ -142,18 +147,35 @@ impl Profile {
     }
 }
 
-/// Whether a developer's CLI asks before it changes files in its own worktree.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// How much a stage's CLI may do without asking. Each CLI offers a subset, listed by
+/// [`crate::agent::launch::pipeline_modes`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EditApproval {
+pub enum PermissionMode {
+    /// Hive passes nothing: the CLI's own configuration decides.
+    CliDefault,
     /// File edits inside the worktree go through without a prompt. Everything else the CLI
     /// guards (commands outside its sandbox, network, other folders) still asks.
     AcceptEdits,
-    /// Hive passes nothing: the CLI's own configuration decides. Also what an unknown saved
-    /// value means, so a newer build's choice never widens what an older one allows.
-    #[default]
+    /// The CLI's own automatic review approves or refuses each action instead of the user.
+    Auto,
+    /// No permission checks and no sandbox.
+    Bypass,
+    /// Reads and plans without changing files. Also what an unknown saved value means, so a
+    /// newer build's choice never widens what an older one allows; serde needs it last.
     #[serde(other)]
-    CliDefault,
+    Plan,
+}
+
+impl PermissionMode {
+    /// Every mode, from the CLI's own configuration to the widest.
+    pub const ALL: [Self; 5] = [
+        Self::CliDefault,
+        Self::Plan,
+        Self::AcceptEdits,
+        Self::Auto,
+        Self::Bypass,
+    ];
 }
 
 /// One stage's prompt and execution settings.
@@ -215,8 +237,6 @@ pub struct LanePreset {
     pub profile: Profile,
     /// User-configured mandatory QA command, empty when unused.
     pub command: String,
-    /// Whether the developer edits files in its worktree without asking.
-    pub edits: EditApproval,
 }
 
 /// Ordered stage recipe shared between projects.
@@ -324,8 +344,6 @@ pub struct Lane {
     pub criteria: String,
     /// Effective development profile.
     pub profile: Profile,
-    /// Whether the developer edits files in this worktree without asking.
-    pub edits: EditApproval,
 }
 
 impl Lane {

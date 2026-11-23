@@ -177,7 +177,6 @@ impl Pipelines {
                 prompt,
                 ticket,
                 resume,
-                edits: run.edit_approval(&ticket),
                 image_directory: (!images::references(run.task()).is_empty())
                     .then(images::directory),
             };

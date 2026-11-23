@@ -54,7 +54,6 @@ impl LaunchForm {
                     let preset = LanePreset {
                         name: lane.name.clone(),
                         profile: lane.profile.clone(),
-                        edits: lane.edits,
                         ..Default::default()
                     };
                     self.bindings.push(Binding::new(preset, None, window, cx));

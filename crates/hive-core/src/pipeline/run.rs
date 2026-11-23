@@ -275,16 +275,6 @@ impl Run {
         )
     }
 
-    /// Whether this attempt's CLI may edit files without asking: a lane's own setting for
-    /// its developer, never for the read-only planner and reviewers.
-    pub fn edit_approval(&self, ticket: &Ticket) -> EditApproval {
-        ticket
-            .lane
-            .and_then(|lane| self.lanes.get(lane))
-            .map(|lane| lane.edits)
-            .unwrap_or_default()
-    }
-
     /// Number of repair rounds already charged to this review.
     pub fn cycles(&self, review: usize) -> u8 {
         self.rounds.get(review).copied().unwrap_or_default()

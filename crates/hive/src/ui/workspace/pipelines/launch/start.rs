@@ -177,7 +177,6 @@ impl LaunchForm {
                 command: b.command(preview, cx),
                 setup: b.setup_command(cx),
                 profile: b.preset.profile.clone(),
-                edits: b.preset.edits,
                 ..Default::default()
             });
         }

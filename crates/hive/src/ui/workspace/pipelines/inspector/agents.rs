@@ -14,6 +14,13 @@ impl TemplateEditor {
                     if s.inspector.agent != agent {
                         s.inspector.agent = agent;
                         s.inspector.effort.clear();
+                        // A mode the new CLI lacks falls back to the role's own.
+                        if s.inspector
+                            .mode
+                            .is_some_and(|mode| !pipeline_modes(agent).contains(&mode))
+                        {
+                            s.inspector.mode = None;
+                        }
                         s.inspector.custom_model = false;
                         s.inspector.model.update(cx, |m, cx| m.set_value("", w, cx));
                         ensure_models(agent, cx);
@@ -117,6 +124,6 @@ impl TemplateEditor {
             ),
             cx,
         ));
-        config
+        config.child(self.mode_setting(cx))
     }
 }

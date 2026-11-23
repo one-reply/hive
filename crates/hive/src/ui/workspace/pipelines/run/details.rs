@@ -1,5 +1,6 @@
 //! The evidence and attempt controls revealed by selecting a stage.
 use super::*;
+use hive_core::agent::launch::PipelineRole;
 
 impl RunView {
     pub(super) fn stage_detail(
@@ -35,6 +36,14 @@ impl RunView {
             if !profile.effort.is_empty() {
                 meta.push(&profile.effort);
             }
+            let role = match stage {
+                Stage::Develop(_) => PipelineRole::Develop,
+                Stage::Review(_) => PipelineRole::Review,
+                _ => PipelineRole::Plan,
+            };
+            meta.push(super::super::inspector::mode_label(
+                profile.mode.unwrap_or(role.default_mode()),
+            ));
             detail = detail.child(subtle(meta.join(" · "), cx));
             if !step.instruction.trim().is_empty() {
                 detail = detail.child(div().text_sm().child(step.instruction.clone()));
