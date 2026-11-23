@@ -340,6 +340,9 @@ fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::L
     if catalog_version < 4 {
         library.upgrade_code_review();
     }
+    if catalog_version < 5 {
+        library.refresh_code_reviewer_text();
+    }
     let has_templates = object.contains_key("templates");
     if !has_templates || catalog_version == 0 {
         // Version zero had only Feature delivery. Keep existing templates in their saved order.
@@ -712,6 +715,61 @@ mod tests {
             upgraded.templates[0].reviews[0].instruction,
             "Our review instructions"
         );
+    }
+
+    #[test]
+    fn catalog_four_refreshes_only_the_original_code_reviewer_and_its_links() {
+        use crate::pipeline::{Lane, Library, Run};
+        let previous = include_str!("../pipeline/prompts/previous/code-reviewer-v4.md").trim_end();
+        let mut saved = Library {
+            catalog_version: 4,
+            ..Default::default()
+        };
+        saved
+            .save_prompt(Some(15), "Team reviewer", previous)
+            .unwrap();
+        let copy = saved.duplicate_prompt(15).unwrap();
+        saved.templates[2].reviews[0].prompt = None;
+        let run = Run::new(
+            1,
+            "/repo".into(),
+            "Task".into(),
+            saved.templates[0].clone(),
+            vec![Lane {
+                name: "Development".into(),
+                project: "/repo".into(),
+                ..Lane::default()
+            }],
+        )
+        .unwrap();
+        saved.runs.push(run.clone());
+        let load = |saved: &Library| {
+            let mut lost = vec![];
+            let library = pipelines(Some(serde_json::to_value(saved).unwrap()), &mut lost);
+            assert!(lost.is_empty(), "{lost:?}");
+            library
+        };
+        let updated = load(&saved);
+        let current = Library::default().prompt(15).unwrap().text.clone();
+        assert_ne!(previous, current);
+        let reviewer = updated.prompt(15).unwrap();
+        assert_eq!(reviewer.name, "Team reviewer");
+        assert_eq!(reviewer.text, current);
+        assert_eq!(updated.templates[0].reviews[0].instruction, current);
+        assert_eq!(updated.templates[2], saved.templates[2]);
+        assert_eq!(updated.prompt(copy), saved.prompt(copy));
+        assert_eq!(updated.runs, [run]);
+        assert_eq!(load(&updated), updated);
+
+        saved
+            .save_prompt(Some(15), "Team reviewer", "House rules")
+            .unwrap();
+        assert_eq!(
+            load(&saved).templates[0].reviews[0].instruction,
+            "House rules"
+        );
+        saved.delete_prompt(15).unwrap();
+        assert!(load(&saved).prompt(15).is_none());
     }
 
     #[test]

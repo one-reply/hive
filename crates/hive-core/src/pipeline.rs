@@ -70,8 +70,9 @@ impl From<Error> for String {
 }
 
 /// Version of the starter catalog: 1 added the extra starter recipes, 2 rewrote their stock
-/// instructions, 3 added the shared contract, 4 introduced code review before QA.
-pub(crate) const CATALOG_VERSION: u64 = 4;
+/// instructions, 3 added the shared contract, 4 introduced code review before QA, and 5
+/// updated the code reviewer's instructions.
+pub(crate) const CATALOG_VERSION: u64 = 5;
 
 /// Shared templates and independently resumable task runs on this installation.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

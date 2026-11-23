@@ -158,6 +158,19 @@ pub(crate) fn link_stock_prompts(templates: &mut [Template]) {
 }
 
 impl Library {
+    pub(crate) fn refresh_code_reviewer_text(&mut self) {
+        const PREVIOUS: &str =
+            include_str!("prompts/previous/code-reviewer-v4.md").trim_ascii_end();
+        const LEGACY: &str = "Review the changed code for correctness and maintainability: logic errors, unhandled edge cases and error paths, broken callers of changed functions, logic that duplicates code already in the repository, and missing or weak tests. Report only actionable defects, each with its location, the problem and the expected fix; skip style that the formatter or linter already enforces.";
+        for prompt in &mut self.prompts {
+            if (prompt.id == CODE_REVIEWER.id && prompt.text == PREVIOUS)
+                || (prompt.id == LEGACY_CODE_REVIEWER && prompt.text == LEGACY)
+            {
+                prompt.text = CODE_REVIEWER.text.into();
+            }
+        }
+    }
+
     pub(crate) fn upgrade_code_review(&mut self) {
         if !self.prompts.is_empty() && !self.prompts.iter().any(Prompt::is_code_reviewer) {
             let mut prompt = CODE_REVIEWER.prompt();
