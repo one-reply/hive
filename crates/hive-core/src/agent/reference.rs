@@ -131,11 +131,6 @@ impl CodeReference {
         }
     }
 
-    /// The reference with the worktree-relative path, for showing what was copied.
-    pub fn label(&self) -> String {
-        self.text(&self.path).trim_end().to_owned()
-    }
-
     fn text(&self, path: &str) -> String {
         let lines = if self.start == self.end {
             format!("L{}", self.start)
