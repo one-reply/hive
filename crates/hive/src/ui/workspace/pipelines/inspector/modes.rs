@@ -2,9 +2,14 @@
 use super::*;
 
 impl TemplateEditor {
+    /// The mode this stage launches in: its own choice, otherwise its role's.
+    fn mode(&self) -> PermissionMode {
+        self.inspector.mode.unwrap_or(role_mode(self.selected))
+    }
+
     pub(super) fn mode_setting(&self, cx: &mut Context<Self>) -> Div {
         let form = &self.inspector;
-        let mode = form.mode.unwrap_or(role_mode(self.selected));
+        let mode = self.mode();
         let options = pipeline_modes(form.agent)
             .into_iter()
             .map(|mode| (mode, mode_label(mode).to_owned()))
@@ -20,7 +25,11 @@ impl TemplateEditor {
             ),
             cx,
         )
-        .child(subtle(mode_summary(mode), cx))
+    }
+
+    /// What the chosen mode means, under the row it shares with Reasoning.
+    pub(super) fn mode_note(&self, cx: &App) -> Div {
+        subtle(mode_summary(self.mode()), cx)
     }
 }
 
