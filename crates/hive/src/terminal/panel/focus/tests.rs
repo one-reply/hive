@@ -273,3 +273,27 @@ fn a_pane_the_user_closes_from_outside_it_gives_the_keyboard_to_its_neighbor(
 
     assert!(is_focused(&handle_of(&panes[1], cx), cx));
 }
+
+/// "Stop this agent?" stays open while the pane it asks about may end on its own; by the
+/// answer the other pane has the tab to itself, and the answer must not close it.
+#[gpui::test]
+fn closing_a_pane_that_already_exited_leaves_the_pane_that_took_the_tab(cx: &mut TestAppContext) {
+    let (stage, cx) = stage(cx);
+    let (tab, panes) = open_tab(&stage, 2, Reveal::Requested, cx);
+    exit(&panes[0], cx);
+
+    cx.update(|window, cx| {
+        tab.update(cx, |tab, cx| {
+            tab.close_pane(&panes[0], Reveal::Requested, window, cx)
+        })
+    });
+    cx.run_until_parked();
+
+    let dock = cx.read(|cx| stage.read(cx).dock.clone());
+    let id = cx.read(|cx| panel_handle(tab.clone()).panel_id(cx));
+    assert!(
+        cx.read(|cx| dock.read(cx).panel(id).is_some()),
+        "the tab of the remaining pane stays open"
+    );
+    assert!(cx.read(|cx| matches!(&tab.read(cx).panes, PaneTree::Leaf(only) if *only == panes[1])));
+}

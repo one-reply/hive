@@ -328,9 +328,15 @@ pub struct Lane {
 }
 
 impl Lane {
+    /// Whether the approved plan gave this lane work. A task of only whitespace is no task:
+    /// the plan editor can leave one, and every rule about assigned lanes must agree on it.
+    pub fn is_assigned(&self) -> bool {
+        !self.assignment.trim().is_empty()
+    }
+
     /// Whether this assigned lane contributes a mandatory QA command.
     pub fn requires_check(&self) -> bool {
-        !self.assignment.trim().is_empty() && !self.command.trim().is_empty()
+        self.is_assigned() && !self.command.trim().is_empty()
     }
 }
 

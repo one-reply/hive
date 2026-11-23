@@ -24,6 +24,35 @@ impl LaunchForm {
         }
     }
 
+    /// A changed form holds what the user typed, so discarding it asks first, as replacing it
+    /// does; a form left as it opened has nothing to lose and just closes.
+    fn request_discard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_modified(cx) {
+            self.discard(window, cx);
+            return;
+        }
+        let form = cx.weak_entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let form = form.clone();
+            let alert = alert
+                .confirm()
+                .title("Discard this run draft?")
+                .description("The task, criteria and repositories you entered are removed.");
+            crate::ui::destructive::confirmation(alert, "Discard draft", move |window, cx| {
+                let _ = form.update(cx, |form, cx| form.discard(window, cx));
+                true
+            })
+        });
+    }
+
+    fn discard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.abandon();
+        let _ = self.parent.update(cx, |p, cx| {
+            p.discard_draft(cx);
+            p.home(window, cx);
+        });
+    }
+
     pub(super) fn action_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let blocked = self.blocked_by(cx);
         let starting = self.is_starting();
@@ -55,13 +84,7 @@ impl LaunchForm {
             ButtonSize::Medium,
             window,
             cx,
-            |v, w, cx| {
-                v.abandon();
-                let _ = v.parent.update(cx, |p, cx| {
-                    p.discard_draft(cx);
-                    p.home(w, cx);
-                });
-            },
+            |v, w, cx| v.request_discard(w, cx),
         );
         let status: SharedString = match blocked {
             Some(blocker) => self.blocker_message(blocker, cx),

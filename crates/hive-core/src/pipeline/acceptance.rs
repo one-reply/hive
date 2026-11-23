@@ -59,7 +59,7 @@ impl Run {
         self.lanes
             .iter()
             .enumerate()
-            .filter(|(_, l)| !l.assignment.is_empty())
+            .filter(|(_, l)| l.is_assigned())
             .flat_map(|(i, l)| {
                 l.criteria
                     .lines()

@@ -20,7 +20,7 @@ pub(super) fn published_remote(
     let lane = run
         .lanes()
         .get(index)
-        .filter(|l| run.phase() == Phase::Accepted && !l.assignment.is_empty())
+        .filter(|l| run.phase() == Phase::Accepted && l.is_assigned())
         .ok_or_else(|| GitError::Invalid("Accept this lane before opening a request.".into()))?;
     verify(run.id(), lane)?;
     let cwd = &lane.worktree;

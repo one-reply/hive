@@ -99,21 +99,9 @@ impl Palette {
                 if let Some(rgb) = colors.colors[i as usize] {
                     return to_hsla(rgb);
                 }
-                match i {
-                    0..=15 => self.ansi[i as usize],
-                    16..=231 => {
-                        let i = i - 16;
-                        let step = |v: u8| if v == 0 { 0 } else { 55 + 40 * v };
-                        to_hsla(Rgb {
-                            r: step(i / 36),
-                            g: step((i / 6) % 6),
-                            b: step(i % 6),
-                        })
-                    }
-                    _ => {
-                        let v = 8 + 10 * (i - 232);
-                        to_hsla(Rgb { r: v, g: v, b: v })
-                    }
+                match hive_core::terminal::indexed(i) {
+                    Some(rgb) => to_hsla(rgb),
+                    None => self.ansi.get(usize::from(i)).copied().unwrap_or(self.fg),
                 }
             }
         }

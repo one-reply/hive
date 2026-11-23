@@ -33,7 +33,7 @@ impl RunView {
             .lanes()
             .iter()
             .enumerate()
-            .filter(|(_, l)| l.worktree == binding.worktree && !l.assignment.is_empty())
+            .filter(|(_, l)| l.worktree == binding.worktree && l.is_assigned())
             .map(|(i, l)| (i, l.name.clone()))
             .collect();
         if choices.is_empty() {

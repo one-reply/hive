@@ -6,6 +6,9 @@ use crate::agent::launch::ResumeSession;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+/// Passing tests named per lane in a reviewer's prompt; a large suite would crowd out the task.
+const LISTED_TESTS: usize = 128;
+
 /// How a developer finishes a round, whether the round starts or continues a conversation.
 pub(super) const DEVELOPED_CONTRACT: &str = r#"Work only in your assigned worktree. Report {"kind":"developed","summary":"..."} with changes and verification evidence."#;
 
@@ -153,8 +156,21 @@ impl Run {
             }
         }
         for check in self.commands.iter().filter(|check| check.success) {
-            for name in check.passed.iter().take(128) {
+            for name in check.passed.iter().take(LISTED_TESTS) {
                 let _ = writeln!(prompt, "Lane {} passed test: {name}", check.lane);
+            }
+            // Without this line a reviewer reads a test past the list as one that did not run.
+            if let Some(more) = check
+                .passed
+                .len()
+                .checked_sub(LISTED_TESTS)
+                .filter(|n| *n > 0)
+            {
+                let _ = writeln!(
+                    prompt,
+                    "Lane {} also passed {more} tests not listed here; a test you cite by its exact name still counts.",
+                    check.lane
+                );
             }
         }
         let mut accepted = self

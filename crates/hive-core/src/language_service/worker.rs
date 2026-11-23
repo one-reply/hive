@@ -22,6 +22,7 @@ use std::{
 // Tests wait for a real deadline; the production value would make them minutes long.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 15 });
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
+const RESTART_RENEWED_AFTER: Duration = Duration::from_secs(10 * 60);
 const DIAGNOSTIC_MESSAGE_CHARS: usize = 2048;
 /// How soon input the pipe could not take is offered again. The queue gives no readiness
 /// signal, and a server that was busy writing reads again once its output is drained.
@@ -38,10 +39,13 @@ pub(super) fn run(
     stopped: Arc<AtomicBool>,
 ) {
     let physical = super::paths::physical_root(&host, &root);
-    for generation in 0..=1 {
+    let mut generation: u8 = 0;
+    let mut restart = Restart::default();
+    loop {
         if stopped.load(Ordering::Acquire) {
             break;
         }
+        let started = Instant::now();
         let result = Process::start(&host, &root, family, generation, sender.clone())
             .map_err(|error| (error, None))
             .and_then(|mut process| {
@@ -73,12 +77,39 @@ pub(super) fn run(
                     root: root.clone(),
                     message,
                 };
-                tracing::warn!(%error, attempt=generation+1,"language server stopped");
-                if super::events::send(&events, Event::Failed(error), &stopped).is_err() {
+                tracing::warn!(%error, generation, "language server stopped");
+                if super::events::send(&events, Event::Failed(error), &stopped).is_err()
+                    || !restart.after(started.elapsed())
+                {
                     break;
                 }
+                // Stamps the new process's output, so a late line of the old one is dropped.
+                generation = generation.wrapping_add(1);
             }
         }
+    }
+}
+
+/// One automatic restart, for a server that fails while starting or soon after. One that ran
+/// for [`RESTART_RENEWED_AFTER`] gets it back: its failure, such as a message it could not
+/// frame hours into the session, is new, and the user did not ask to retry.
+struct Restart {
+    left: bool,
+}
+
+impl Default for Restart {
+    fn default() -> Self {
+        Self { left: true }
+    }
+}
+
+impl Restart {
+    /// Whether a server that stopped after running `ran_for` starts again.
+    fn after(&mut self, ran_for: Duration) -> bool {
+        if ran_for >= RESTART_RENEWED_AFTER {
+            self.left = true;
+        }
+        std::mem::replace(&mut self.left, false)
     }
 }
 
@@ -266,6 +297,9 @@ fn serve(
                         }
                     }
                     Incoming::Call { .. } => {}
+                    Incoming::Ignored(reason) => {
+                        tracing::debug!(reason, "skipped a language-server message");
+                    }
                 }
             }
         }
@@ -366,5 +400,15 @@ mod tests {
             (2, (now + Duration::from_secs(1), sender)),
         ]);
         assert_eq!(expired(&pending, now), [1]);
+    }
+
+    #[test]
+    fn a_server_that_ran_long_before_failing_gets_its_restart_back() {
+        let soon = Duration::from_secs(5);
+        let mut restart = Restart::default();
+        assert!(restart.after(soon), "the first failure restarts");
+        assert!(!restart.after(soon), "a second early failure is final");
+        assert!(restart.after(RESTART_RENEWED_AFTER));
+        assert!(!restart.after(soon));
     }
 }

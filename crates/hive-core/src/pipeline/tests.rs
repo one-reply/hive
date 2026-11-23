@@ -1124,3 +1124,141 @@ fn an_unreproducible_regression_test_is_left_behind_only_with_a_reason() {
     let prompt = run.prompt(&run.pending()[0]).unwrap();
     assert!(!prompt.contains("regression test"));
 }
+
+#[test]
+fn a_blank_task_in_the_edited_plan_leaves_the_lane_out_of_acceptance() {
+    let mut run = run_with(&["/api", "/web"], 3);
+    let assignments = (0..2)
+        .map(|lane| Assignment {
+            lane,
+            task: format!("Task {lane}"),
+            criteria: "Build and tests pass".into(),
+        })
+        .collect();
+    report(
+        &mut run,
+        Report::Plan {
+            assignments,
+            contract: String::new(),
+        },
+    );
+    // The user cleared the web task in Edit plan but left a space and its criteria behind.
+    run.approve_with(vec![
+        ("Task 0".into(), "Build and tests pass".into()),
+        (" ".into(), "Web renders".into()),
+    ])
+    .unwrap();
+    assert_eq!(run.pending().len(), 1);
+    report(&mut run, developed());
+    run.record_review_revision("v1".into()).unwrap();
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase, Phase::Acceptance);
+    assert_eq!(
+        run.criteria().collect::<Vec<_>>(),
+        [(0, "Build and tests pass")]
+    );
+    assert_eq!(Stage::Develop(1).status(&run, &[]), StageStatus::Unassigned);
+    run.decide_criterion(
+        0,
+        "Build and tests pass",
+        "v1",
+        CriterionDecision::Manual("Verified".into()),
+    )
+    .unwrap();
+    run.accept().unwrap();
+}
+
+#[test]
+fn returning_a_criterion_to_qa_does_not_repeat_the_reviewers_notes() {
+    let mut run = run_with(&["/repo"], 3);
+    plan(&mut run);
+    report(&mut run, developed());
+    run.record_review_revision("v1".into()).unwrap();
+    report(&mut run, review(vec![note(0)]));
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase, Phase::Acceptance);
+    run.verify_criterion(0, "Build and tests pass", "v1")
+        .unwrap();
+    report(&mut run, review(vec![note(0), note(0)]));
+    assert_eq!(run.phase, Phase::Acceptance);
+    assert_eq!(run.notes(), [(0, note(0))]);
+    let (_, body) = run.pull_request_text(0).unwrap();
+    assert_eq!(body.matches("Rename the helper").count(), 1, "{body}");
+}
+
+#[test]
+fn a_reviewer_hears_how_many_passing_tests_the_prompt_leaves_out() {
+    let mut run = run_with(&["/repo"], 3);
+    run.lanes[0].command = "cargo test".into();
+    plan(&mut run);
+    report(&mut run, developed());
+    let mut result = check(true);
+    result.passed = (0..130).map(|i| format!("suite::case_{i:03}")).collect();
+    run.checked_at(vec![result], Some("v1".into())).unwrap();
+    let prompt = run.prompt(&run.pending()[0]).unwrap();
+    assert!(
+        prompt.contains("Lane 0 passed test: suite::case_127"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("suite::case_128"), "{prompt}");
+    assert!(
+        prompt.contains("Lane 0 also passed 2 tests not listed here"),
+        "{prompt}"
+    );
+    run.commands[0].passed.truncate(128);
+    let prompt = run.prompt(&run.pending()[0]).unwrap();
+    assert!(!prompt.contains("not listed here"), "{prompt}");
+}
+
+#[test]
+fn evidence_closes_only_the_criterion_of_the_lane_it_names() {
+    let mut run = run_with(&["/api", "/web"], 3);
+    for lane in &mut run.lanes {
+        lane.command = "cargo test".into();
+    }
+    plan(&mut run);
+    for ticket in run.pending() {
+        run.report(&ticket, developed()).unwrap();
+    }
+    assert_eq!(run.phase, Phase::Commands(0));
+    // Both repositories happen to have a passing test of the same name.
+    let results = (0..2)
+        .map(|lane| CommandResult {
+            lane,
+            passed: vec!["smoke".into()],
+            ..check(true)
+        })
+        .collect();
+    run.checked_at(results, Some("v1".into())).unwrap();
+    run.record_review_revision("v1".into()).unwrap();
+    report(
+        &mut run,
+        Report::Review {
+            summary: "Checked the API".into(),
+            findings: vec![],
+            evidence: vec![CriterionEvidence {
+                lane: 0,
+                criterion: "Build and tests pass".into(),
+                test: Some("smoke".into()),
+                evidence: "smoke passed".into(),
+            }],
+        },
+    );
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase, Phase::Acceptance);
+    assert!(matches!(
+        run.criterion_source(0, "Build and tests pass"),
+        EvidenceSource::Test("smoke")
+    ));
+    assert!(!run.criterion_source(1, "Build and tests pass").closes());
+    run.decide_criterion(
+        0,
+        "Build and tests pass",
+        "v1",
+        CriterionDecision::Manual("Observed".into()),
+    )
+    .unwrap();
+    assert!(!run.criterion_source(1, "Build and tests pass").closes());
+    assert!(run.can_accept().is_err());
+}

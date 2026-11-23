@@ -17,7 +17,7 @@ impl Fixture {
         ));
         let bin = path.join("node_modules/.bin/typescript-language-server");
         fs::create_dir_all(bin.parent().unwrap()).unwrap();
-        fs::write(&bin, FAKE).unwrap();
+        fs::write(&bin, fake_script()).unwrap();
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
         Self(path)
     }
@@ -65,6 +65,13 @@ impl lsp_types::request::Request for Crash {
     type Params = Value;
     type Result = Value;
     const METHOD: &'static str = "test/crash";
+}
+
+enum Ask {}
+impl lsp_types::request::Request for Ask {
+    type Params = Value;
+    type Result = Value;
+    const METHOD: &'static str = "test/ask";
 }
 
 enum Burst {}
@@ -129,17 +136,44 @@ fn diagnostic_events_are_bounded_and_sanitized_before_reaching_the_consumer() {
     while events.recv_blocking().is_ok() {}
 }
 
+/// Diagnostics the fake publishes for `test/burst`: more than the event queue holds.
+const BURST: usize = 100;
+
 #[test]
-fn a_diagnostics_burst_preserves_the_session_and_all_file_updates() {
+fn a_diagnostics_burst_the_app_reads_late_loses_no_file_update() {
     let fixture = Fixture::new();
     let (session, events) = Session::start(Host::Local, fixture.0.clone(), Family::TypeScript);
     ready(&events);
     let burst = session.request::<Burst>(Value::Null).unwrap();
-    for line in 0..100 {
-        let Event::Diagnostics(params) = events.recv_blocking().unwrap() else {
-            panic!("a healthy session must not restart during a diagnostics burst");
-        };
-        assert_eq!(params.uri.as_str(), format!("file:///file{line}.ts"));
+    // The app reads nothing until the server has sent it all: the worker must wait for room
+    // in the event queue, not drop what does not fit.
+    let sent = fixture.0.join("burst-sent");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !sent.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the fake never finished the burst"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Bounded: an update that was dropped would otherwise be waited for forever.
+    let mut line = 0;
+    while line < BURST {
+        match events.try_recv() {
+            Ok(Event::Diagnostics(params)) => {
+                assert_eq!(params.uri.as_str(), format!("file:///file{line}.ts"));
+                line += 1;
+            }
+            Ok(_) => panic!("a healthy session must not restart during a diagnostics burst"),
+            Err(async_channel::TryRecvError::Empty) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "only {line} of {BURST} file updates arrived"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(async_channel::TryRecvError::Closed) => panic!("the session ended"),
+        }
     }
     assert_eq!(receive(burst).unwrap(), Value::Bool(true));
     assert_eq!(
@@ -396,6 +430,54 @@ fn a_request_past_its_deadline_fails_alone_and_the_server_keeps_running() {
 }
 
 #[test]
+fn requests_from_the_server_get_the_answers_hive_gives_them() {
+    let fixture = Fixture::new();
+    let (session, events) = Session::start(Host::Local, fixture.0.clone(), Family::TypeScript);
+    ready(&events);
+    let ask = |method: &str, params: Value| {
+        let relayed = serde_json::json!({"method": method, "params": params});
+        receive(session.request::<Ask>(relayed).unwrap()).unwrap()
+    };
+    let section = serde_json::json!({"section": "typescript"});
+    assert_eq!(
+        ask(
+            "workspace/configuration",
+            serde_json::json!({"items": [section, section]})
+        ),
+        serde_json::json!({"result": [null, null]})
+    );
+    assert_eq!(
+        ask(
+            "workspace/configuration",
+            serde_json::json!({"items": vec![section; 257]})
+        ),
+        serde_json::json!({"error": -32602})
+    );
+    let folders = ask("workspace/workspaceFolders", Value::Null);
+    assert_eq!(folders["result"][0]["name"], "workspace", "{folders}");
+    let folder = fixture.0.file_name().unwrap().to_str().unwrap();
+    let uri = folders["result"][0]["uri"].as_str().unwrap();
+    assert!(uri.trim_end_matches('/').ends_with(folder), "{folders}");
+    assert_eq!(
+        ask("workspace/applyEdit", serde_json::json!({"edit": {}}))["result"]["applied"],
+        false
+    );
+    assert_eq!(
+        ask(
+            "window/showMessageRequest",
+            serde_json::json!({"type": 1, "message": "Pick"})
+        ),
+        serde_json::json!({"result": null})
+    );
+    assert_eq!(
+        ask("workspace/unknown", Value::Null),
+        serde_json::json!({"error": -32601})
+    );
+    drop(session);
+    while events.recv_blocking().is_ok() {}
+}
+
+#[test]
 fn a_full_queue_is_busy_and_only_a_stopped_worker_is_unavailable() {
     let (sender, receiver) = mpsc::sync_channel(1);
     let session = Session(Arc::new(Client {
@@ -481,41 +563,147 @@ fn a_server_that_cannot_start_reports_what_it_printed_and_parents_are_not_search
     assert!(!nested.join("ran-from-parent").exists());
 }
 
-// Python is only the fake stdio peer; it reads/writes this test's temporary directory.
-const FAKE: &str = r#"#!/usr/bin/python3
-import sys, json, os, signal
-with open('starts','a') as f: f.write('start\n')
-with open('pid','w') as f: f.write(str(os.getpid()))
-source = ''
-def send(value):
-    body=json.dumps(value,ensure_ascii=False).encode()
-    sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n'%len(body)).encode()+body)
-    sys.stdout.buffer.flush()
-while True:
-    length=None
-    while True:
-        line=sys.stdin.buffer.readline()
-        if not line: sys.exit(0)
-        if line==b'\r\n': break
-        if line.lower().startswith(b'content-length:'): length=int(line.split(b':')[1])
-    request=json.loads(sys.stdin.buffer.read(length))
-    method=request.get('method','')
-    with open('messages','a') as f: f.write(method+'\n')
-    if method=='initialize': result={'capabilities':{'textDocumentSync':1,'hoverProvider':True}}
-    elif method=='textDocument/didOpen': source=request['params']['textDocument']['text']; uri=request['params']['textDocument']['uri']; continue
-    elif method=='textDocument/hover': result={'contents':{'kind':'plaintext','value':source}}
-    elif method=='test/never': send({'jsonrpc':'2.0','method':'textDocument/publishDiagnostics','params':{'uri':uri,'version':1,'diagnostics':[]}}); continue
-    elif method=='test/burst':
-        for i in range(100): send({'jsonrpc':'2.0','method':'textDocument/publishDiagnostics','params':{'uri':'file:///file%d.ts'%i,'diagnostics':[]}})
-        result=True
-    elif method=='test/flood':
-        for i in range(400): send({'jsonrpc':'2.0','method':'textDocument/publishDiagnostics','params':{'uri':'file:///flood%d.ts'%i,'diagnostics':[{'range':{'start':{'line':0,'character':0},'end':{'line':0,'character':1}},'message':'x'*2000}]}})
-        result=True
-    elif method=='test/stall': signal.pause()
-    elif method=='test/diagnostics': send({'jsonrpc':'2.0','method':'textDocument/publishDiagnostics','params':request['params']}); result=True
-    elif method=='test/crash': sys.exit(0)
-    elif method=='shutdown': result=None
-    elif method=='exit': sys.exit(0)
-    else: continue
-    send({'jsonrpc':'2.0','id':request['id'],'result':result})
-"#;
+/// Set by the fixture's script for the test binary it runs as the fake server.
+const FAKE_SERVER: &str = "HIVE_FAKE_LANGUAGE_SERVER";
+
+/// The script the worker starts: this test binary with only [`fake_language_server`] selected.
+/// The harness prints its own lines to standard output, so the fake writes the protocol to
+/// descriptor 3, which the script makes the server's real output.
+fn fake_script() -> String {
+    let binary = std::env::current_exe().unwrap();
+    let binary = shlex::try_quote(binary.to_str().unwrap())
+        .unwrap()
+        .into_owned();
+    format!(
+        "#!/bin/sh\n{FAKE_SERVER}=1 exec {binary} language_service::tests::fake_language_server --exact --ignored --test-threads=1 3>&1 1>/dev/null\n"
+    )
+}
+
+/// Not a test of Hive: the stdio peer the other tests talk to. It records what it is sent in
+/// its working directory, the fixture's temporary one.
+#[test]
+#[ignore = "the fake language server of these tests, run by their fixture"]
+fn fake_language_server() {
+    if std::env::var_os(FAKE_SERVER).is_some() {
+        serve_as_fake();
+    }
+}
+
+fn serve_as_fake() -> ! {
+    use std::io::Write as _;
+    use std::os::fd::FromRawFd as _;
+    let append = |file: &str, line: &str| {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file)
+            .unwrap();
+        writeln!(file, "{line}").unwrap();
+    };
+    append("starts", "start");
+    fs::write("pid", std::process::id().to_string()).unwrap();
+    // SAFETY: the fixture's script opened descriptor 3 for this process alone.
+    let mut output = unsafe { fs::File::from_raw_fd(3) };
+    let mut send = move |value: Value| {
+        output.write_all(&wire::encode(&value).unwrap()).unwrap();
+    };
+    let publish = |uri: &str, diagnostics: Value| serde_json::json!({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":uri,"diagnostics":diagnostics}});
+    let mut input = std::io::BufReader::new(std::io::stdin().lock());
+    let (mut source, mut uri) = (String::new(), String::new());
+    // The `test/ask` request waiting for the client's answer to the request it relayed.
+    let mut asking = None;
+    loop {
+        let (id, method, params) = match wire::read(&mut input) {
+            Ok(Some(wire::Incoming::Call { id, method, params })) => (id, method, params),
+            Ok(Some(wire::Incoming::Response(_, answer))) => {
+                let answer = match answer {
+                    Ok(result) => serde_json::json!({"result": result}),
+                    Err(Error::Request { code, .. }) => serde_json::json!({"error": code}),
+                    Err(error) => panic!("{error}"),
+                };
+                send(serde_json::json!({"jsonrpc":"2.0","id":asking.take(),"result":answer}));
+                continue;
+            }
+            Ok(Some(wire::Incoming::Ignored(_))) => continue,
+            Ok(None) | Err(_) => std::process::exit(0),
+        };
+        append("messages", &method);
+        let result = match method.as_str() {
+            "initialize" => {
+                serde_json::json!({"capabilities":{"textDocumentSync":1,"hoverProvider":true}})
+            }
+            "textDocument/didOpen" => {
+                source = params["textDocument"]["text"].as_str().unwrap().to_owned();
+                uri = params["textDocument"]["uri"].as_str().unwrap().to_owned();
+                continue;
+            }
+            "textDocument/hover" => {
+                serde_json::json!({"contents":{"kind":"plaintext","value":source}})
+            }
+            "test/never" => {
+                send(publish(&uri, serde_json::json!([])));
+                continue;
+            }
+            "test/burst" => {
+                for file in 0..BURST {
+                    send(publish(
+                        &format!("file:///file{file}.ts"),
+                        serde_json::json!([]),
+                    ));
+                }
+                fs::write("burst-sent", "").unwrap();
+                Value::Bool(true)
+            }
+            "test/flood" => {
+                let diagnostic = serde_json::json!([{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"message":"x".repeat(2000)}]);
+                for file in 0..FLOOD {
+                    send(publish(
+                        &format!("file:///flood{file}.ts"),
+                        diagnostic.clone(),
+                    ));
+                }
+                Value::Bool(true)
+            }
+            "test/stall" => loop {
+                std::thread::park();
+            },
+            "test/diagnostics" => {
+                send(
+                    serde_json::json!({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":params}),
+                );
+                Value::Bool(true)
+            }
+            "test/ask" => {
+                asking = id;
+                send(
+                    serde_json::json!({"jsonrpc":"2.0","id":"ask","method":params["method"],"params":params["params"]}),
+                );
+                continue;
+            }
+            "test/crash" | "exit" => std::process::exit(0),
+            "shutdown" => Value::Null,
+            _ => continue,
+        };
+        if let Some(id) = id {
+            send(serde_json::json!({"jsonrpc":"2.0","id":id,"result":result}));
+        }
+    }
+}
+
+#[test]
+fn an_extension_in_capitals_names_the_same_language() {
+    use std::path::Path;
+    assert_eq!(
+        Family::for_path(Path::new("src/App.TSX")),
+        Some(Family::TypeScript)
+    );
+    assert_eq!(
+        Family::for_path(Path::new("src/main.RS")),
+        Some(Family::Rust)
+    );
+    assert_eq!(Family::language_id(Path::new("App.TSX")), "typescriptreact");
+    assert_eq!(Family::language_id(Path::new("Index.Js")), "javascript");
+    assert_eq!(Family::for_path(Path::new("README.MD")), None);
+    assert!(crate::formatting::supported(Path::new("App.TSX")));
+    assert!(crate::formatting::supported(Path::new("lib.Rs")));
+}

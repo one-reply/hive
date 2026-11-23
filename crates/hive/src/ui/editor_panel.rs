@@ -44,6 +44,9 @@ actions!(
     ]
 );
 
+/// The key context of a file tab, where its keymap bindings apply.
+pub(crate) const EDITOR_PANEL_CONTEXT: &str = "EditorPanel";
+
 /// What the saved workspace keeps of a file tab besides its cursor.
 #[derive(Debug, PartialEq)]
 struct SavedTab {

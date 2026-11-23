@@ -362,3 +362,33 @@ fn a_git_that_cannot_answer_is_an_error_not_a_repository_without_a_base() {
         );
     }
 }
+
+/// Each step of the rule may be the one Git cannot answer, with the other answering: a failure
+/// that is passed over for the next candidate would base new work on another commit unseen.
+#[test]
+fn a_ref_git_cannot_read_is_an_error_not_a_candidate_passed_over() {
+    let failed = |repo: &Repo| match default_base(&Host::Local, &repo.path) {
+        Err(GitError::Failed {
+            code: Some(128), ..
+        }) => {}
+        answer => panic!("{answer:?}"),
+    };
+    // Written as the files Git keeps loose refs in: Git itself refuses to write either.
+    let loose_ref = |repo: &Repo, name: &str, text: &str| {
+        let path = repo.path.join(".git/refs/remotes/origin").join(name);
+        std::fs::create_dir_all(path.parent().expect("a ref has a folder")).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+
+    // `symbolic-ref` cannot read the link (128), while every candidate lists fine.
+    let repo = Repo::new("unreadable-head");
+    repo.track("main");
+    loose_ref(&repo, "HEAD", "not a ref\n");
+    failed(&repo);
+
+    // A candidate names an object that is not there: `for-each-ref` fails (128), while
+    // `origin/HEAD` is simply missing.
+    let repo = Repo::new("missing-object");
+    loose_ref(&repo, "main", "1111111111111111111111111111111111111111\n");
+    failed(&repo);
+}

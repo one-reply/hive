@@ -4,7 +4,7 @@ use super::events::Publisher;
 use super::program_status::{self, ProgramStatus, Scanner};
 use alacritty_terminal::event::{OnResize, WindowSize};
 use alacritty_terminal::tty::{ChildEvent, EventedPty, EventedReadWrite};
-use polling::os::kqueue::{PollerKqueueExt, Process, ProcessOps};
+use polling::os::kqueue::{PollerKqueueExt, Process, ProcessOps, Timer};
 use polling::{Event, PollMode, Poller};
 use rustix::process::{self, Pid, Signal, WaitId, WaitIdOptions};
 use std::collections::HashSet;
@@ -16,6 +16,11 @@ use std::time::{Duration, Instant};
 // EventLoop in alacritty_terminal 0.26 dispatches these private Unix token values.
 const PTY_READ_WRITE_TOKEN: usize = 0;
 const PTY_CHILD_EVENT_TOKEN: usize = 1;
+/// Stands in for the exit note of a shell that was exiting before it could be watched.
+const EXITING: Timer = Timer {
+    id: PTY_CHILD_EVENT_TOKEN,
+    timeout: Duration::ZERO,
+};
 
 #[derive(Default)]
 pub(super) struct Completion {
@@ -74,11 +79,22 @@ impl Read for StatusReader {
     }
 }
 
+/// What tells the event loop that the shell is exiting.
+#[derive(Clone, Copy)]
+enum ExitWatch {
+    /// The kernel's exit note for the shell.
+    Process,
+    /// A timer that fires at once, for a shell that was already exiting at registration: the
+    /// kernel then refuses to watch it with `ESRCH`.
+    Timer,
+}
+
 pub(super) struct ManagedPty {
     child: std::process::Child,
     reader: StatusReader,
     completion: Arc<Completion>,
     events: Publisher,
+    exit_watch: ExitWatch,
 }
 
 impl ManagedPty {
@@ -100,6 +116,7 @@ impl ManagedPty {
             },
             completion,
             events,
+            exit_watch: ExitWatch::Process,
         }
     }
 
@@ -110,6 +127,13 @@ impl ManagedPty {
     fn process_filter(&self) -> Process<'_> {
         // EventLoop deregisters before dropping the PTY; we never reap the child here.
         unsafe { Process::new(&self.child, ProcessOps::Exit) }
+    }
+
+    fn delete_exit_watch(&self, poll: &Poller) -> io::Result<()> {
+        match self.exit_watch {
+            ExitWatch::Process => poll.delete_filter(self.process_filter()),
+            ExitWatch::Timer => poll.delete_filter(EXITING),
+        }
     }
 
     fn has_exited(&self) -> io::Result<bool> {
@@ -158,16 +182,24 @@ impl EventedReadWrite for ManagedPty {
         mode: PollMode,
     ) -> io::Result<()> {
         event.key = PTY_READ_WRITE_TOKEN;
-        // The file remains alive through EventLoop's deregistration.
-        unsafe {
-            poll.add_with_mode(&self.reader.file, event, mode)?;
-        }
-        if let Err(error) = poll.add_filter(
+        // The exit watch goes first, so a shell already exiting is seen exiting before its
+        // output is read, the same order as when the exit note overtakes the last read; the
+        // drain reads that output either way.
+        match poll.add_filter(
             self.process_filter(),
             PTY_CHILD_EVENT_TOKEN,
             PollMode::Oneshot,
         ) {
-            let _ = poll.delete(&self.reader.file);
+            // A quick command can be exiting already, held by output nobody has read yet.
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {
+                self.exit_watch = ExitWatch::Timer;
+                poll.add_filter(EXITING, PTY_CHILD_EVENT_TOKEN, PollMode::Oneshot)?;
+            }
+            watched => watched?,
+        }
+        // The file remains alive through EventLoop's deregistration.
+        if let Err(error) = unsafe { poll.add_with_mode(&self.reader.file, event, mode) } {
+            let _ = self.delete_exit_watch(poll);
             return Err(error);
         }
         Ok(())
@@ -185,8 +217,7 @@ impl EventedReadWrite for ManagedPty {
 
     fn deregister(&mut self, poll: &Arc<Poller>) -> io::Result<()> {
         let file_result = poll.delete(&self.reader.file);
-        let process_result = poll.delete_filter(self.process_filter());
-        file_result.and(process_result)
+        file_result.and(self.delete_exit_watch(poll))
     }
 
     fn reader(&mut self) -> &mut StatusReader {
@@ -198,15 +229,12 @@ impl EventedReadWrite for ManagedPty {
 }
 
 impl EventedPty for ManagedPty {
+    /// Only the exit watch calls this, and it fires once: the shell is exiting. It may not be
+    /// waitable yet, because Darwin holds an exiting process until its terminal output is
+    /// read, and that read is the drain the event loop does next. Waiting for the exit status
+    /// here instead left the exit unnoticed for good and the reader spinning on end-of-file.
     fn next_child_event(&mut self) -> Option<ChildEvent> {
-        match self.has_exited() {
-            Ok(true) => Some(ChildEvent::Exited(None)),
-            Ok(false) => None,
-            Err(error) => {
-                tracing::error!(%error, "failed to inspect PTY child exit");
-                None
-            }
-        }
+        Some(ChildEvent::Exited(None))
     }
 }
 

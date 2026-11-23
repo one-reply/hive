@@ -2,6 +2,7 @@
 //! Every connection gets its own thread, so a long `wait` never holds up another call.
 use super::{ApiError, Call, ErrorCode, Outcome};
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
@@ -188,7 +189,7 @@ fn serve(stream: &UnixStream, calls: &async_channel::Sender<Incoming>) -> io::Re
     let outcome = match read_line(stream, MAX_REQUEST)
         .and_then(|line| serde_json::from_slice::<Call>(&line).map_err(io::Error::other))
     {
-        Ok(call) => dispatch(call, calls),
+        Ok(call) => dispatch(call, stream, calls),
         Err(error) => Outcome::Error(ApiError::new(
             ErrorCode::InvalidRequest,
             format!("Not a Hive agent call: {error}"),
@@ -219,8 +220,8 @@ fn reply(stream: &UnixStream, outcome: &Outcome) -> io::Result<()> {
     writer.write_all(&line)
 }
 
-/// Blocks this connection's thread until the app answers.
-fn dispatch(call: Call, calls: &async_channel::Sender<Incoming>) -> Outcome {
+/// Blocks this connection's thread until the app answers or the caller hangs up.
+fn dispatch(call: Call, stream: &UnixStream, calls: &async_channel::Sender<Incoming>) -> Outcome {
     let unavailable = || {
         Outcome::Error(ApiError::new(
             ErrorCode::Unavailable,
@@ -231,7 +232,64 @@ fn dispatch(call: Call, calls: &async_channel::Sender<Incoming>) -> Outcome {
     if calls.send_blocking(Incoming { call, reply }).is_err() {
         return unavailable();
     }
+    let _hang_up = HangUp::watch(stream, answer.clone());
     answer.recv_blocking().unwrap_or_else(|_| unavailable())
+}
+
+/// Ends the wait for an answer when the caller hangs up. A `wait` can last ten minutes, and a
+/// tool that kills `hive agent` sooner (Claude Code's Bash tool does after two) would leave
+/// its thread and its place under [`MAX_CALLS`] taken until then. After its request line the
+/// caller sends nothing, so anything read, end of file included, means it has gone; a caller
+/// must keep its side open until the answer arrives.
+struct HangUp(Option<UnixStream>);
+
+impl HangUp {
+    fn watch(stream: &UnixStream, answer: async_channel::Receiver<Outcome>) -> Self {
+        let watcher = stream.try_clone().and_then(|watched| {
+            let released = watched.try_clone()?;
+            std::thread::Builder::new()
+                .name("hive-agent-call-watch".into())
+                .spawn(move || {
+                    wait_for_hang_up(&watched);
+                    answer.close();
+                })?;
+            Ok(released)
+        });
+        match watcher {
+            Ok(released) => Self(Some(released)),
+            Err(error) => {
+                // The call still ends at its own deadline, as it did before this watch.
+                tracing::debug!(%error, "cannot watch an agent API caller");
+                Self(None)
+            }
+        }
+    }
+}
+
+impl Drop for HangUp {
+    /// The answer came: shutting the read side ends the watcher's read.
+    fn drop(&mut self) {
+        if let Some(stream) = &self.0 {
+            let _ = stream.shutdown(Shutdown::Read);
+        }
+    }
+}
+
+/// Blocks until `stream` yields anything or fails; the request's read timeout only repeats it.
+fn wait_for_hang_up(mut stream: &UnixStream) {
+    let mut byte = [0];
+    loop {
+        match stream.read(&mut byte) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) => {}
+            _ => return,
+        }
+    }
 }
 
 /// One newline-terminated line, without the newline; EOF also ends it.
@@ -314,6 +372,31 @@ mod tests {
             Outcome::Result(Response::Agents { agents: Vec::new() })
         );
         app.join().unwrap();
+    }
+
+    #[test]
+    fn a_caller_that_hangs_up_frees_its_call_before_the_app_answers() {
+        let path = socket("hang-up");
+        let calls = listen(&path).unwrap();
+        let wait = Call {
+            from: None,
+            request: Request::List,
+        };
+        let mut line = serde_json::to_vec(&wait).unwrap();
+        line.push(b'\n');
+        let mut caller = UnixStream::connect(&path).unwrap();
+        caller.write_all(&line).unwrap();
+        let incoming = calls.recv_blocking().unwrap();
+        assert!(!incoming.reply.is_closed(), "the caller is still there");
+        drop(caller);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !incoming.reply.is_closed() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the call still waits for an answer nobody reads"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

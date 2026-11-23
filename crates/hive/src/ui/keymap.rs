@@ -13,7 +13,9 @@ use crate::terminal::panel::{
 };
 use crate::terminal::view::{Copy, Paste};
 use crate::ui::app_menu::{self, AddProject, CloseWindow, ToggleFullScreen};
-use crate::ui::editor_panel::{CloseFile, GoToSymbol, OpenFileSearch, SaveFile, SearchInFiles};
+use crate::ui::editor_panel::{
+    CloseFile, EDITOR_PANEL_CONTEXT, GoToSymbol, OpenFileSearch, SaveFile, SearchInFiles,
+};
 use crate::ui::files_panel::{
     CancelFileEdit, DeleteSelectedFile, OpenSelectedFile, PasteFiles, RenameSelectedFile,
 };
@@ -122,28 +124,28 @@ pub(crate) static SHORTCUTS: [Shortcut; 39] = [
         label: "Find references",
         default: "shift-f12",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(crate::ui::editor_panel::FindReferences),
     },
     Shortcut {
         label: "Show problems",
         default: "cmd-shift-m",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(crate::ui::editor_panel::ShowProblems),
     },
     Shortcut {
         label: "Peek definition",
         default: "alt-f12",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(crate::ui::editor_panel::PeekDefinition),
     },
     Shortcut {
         label: "Format document",
         default: "alt-shift-f",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(crate::ui::editor_panel::FormatDocument),
     },
     Shortcut {
@@ -165,7 +167,7 @@ pub(crate) static SHORTCUTS: [Shortcut; 39] = [
         label: "Go to symbol",
         default: "cmd-shift-o",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(GoToSymbol),
     },
     Shortcut {
@@ -186,7 +188,7 @@ pub(crate) static SHORTCUTS: [Shortcut; 39] = [
         label: "Save file",
         default: "cmd-s",
         category: Category::Workspace,
-        context: "EditorPanel",
+        context: EDITOR_PANEL_CONTEXT,
         action: || Box::new(SaveFile),
     },
     Shortcut {

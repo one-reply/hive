@@ -112,7 +112,7 @@ impl Run {
     ) -> Result<(), Error> {
         if self.phase != Phase::Acceptance
             || self.review_trees.get(lane) != Some(&tree)
-            || self.lanes.get(lane).is_none_or(|l| l.assignment.is_empty())
+            || self.lanes.get(lane).is_none_or(|l| !l.is_assigned())
             || note.text.trim().is_empty()
         {
             return Err(Error::InvalidInput(

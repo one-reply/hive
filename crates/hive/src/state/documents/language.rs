@@ -5,7 +5,7 @@ use lsp_types::{
     notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument},
     *,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 mod diagnostics;
 #[cfg(test)]
@@ -14,6 +14,8 @@ mod diagnostics_tests;
 mod relocation_tests;
 #[cfg(test)]
 mod trust_tests;
+#[cfg(test)]
+mod unsent_tests;
 
 /// How long a full queue to the server is given before documents send their text again.
 const RESYNC_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
@@ -21,6 +23,14 @@ const RESYNC_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 struct Synced {
     text: Rope,
     version: i32,
+}
+
+/// A notification about a whole document that a full queue refused. Unlike an edit, which the
+/// next sync sends again as the full text, nothing else would ever repeat it: the server would
+/// keep a closed document open, or never check a saved one.
+enum Unsent {
+    Close(Uri),
+    Save(Uri, Option<String>),
 }
 
 /// What language tools are doing for one document, or why they are not running.
@@ -68,12 +78,14 @@ pub(crate) struct LanguageSession {
     diagnostics_limited: bool,
     client: Session,
     documents: HashMap<Uri, Synced>,
+    /// Oldest first; sent before anything newer, so the server sees the editor's order.
+    unsent: VecDeque<Unsent>,
     _events: Option<Task<()>>,
     _resync: Option<Task<()>>,
 }
 
 impl LanguageSession {
-    fn saved(&self, uri: Uri, text: Option<String>) {
+    fn saved(&mut self, uri: Uri, text: Option<String>, cx: &mut Context<Self>) {
         let save = self
             .capabilities
             .as_ref()
@@ -89,14 +101,45 @@ impl LanguageSession {
             }
             _ => return,
         };
-        if let Err(error) = self
-            .client
-            .notify::<lsp_types::notification::DidSaveTextDocument>(DidSaveTextDocumentParams {
-                text_document: TextDocumentIdentifier { uri },
-                text: if include { text } else { None },
-            })
-        {
-            tracing::warn!(%error,"language-server save notification failed");
+        self.unsent
+            .push_back(Unsent::Save(uri, if include { text } else { None }));
+        self.send_unsent(cx);
+    }
+
+    /// Sends what a full queue refused earlier, oldest first; stops at the first refusal.
+    fn flush_unsent(&mut self) -> Result<(), language_service::Error> {
+        while let Some(unsent) = self.unsent.front() {
+            match unsent {
+                Unsent::Close(uri) => {
+                    self.client
+                        .notify::<DidCloseTextDocument>(DidCloseTextDocumentParams {
+                            text_document: TextDocumentIdentifier { uri: uri.clone() },
+                        })
+                }
+                Unsent::Save(uri, text) => self
+                    .client
+                    .notify::<lsp_types::notification::DidSaveTextDocument>(
+                        DidSaveTextDocumentParams {
+                            text_document: TextDocumentIdentifier { uri: uri.clone() },
+                            text: text.clone(),
+                        },
+                    ),
+            }?;
+            self.unsent.pop_front();
+        }
+        Ok(())
+    }
+
+    /// A busy server gets the rest after [`RESYNC_DELAY`]; a stopped one needs none of it,
+    /// since a new process starts with nothing open.
+    fn send_unsent(&mut self, cx: &mut Context<Self>) {
+        match self.flush_unsent() {
+            Ok(()) => {}
+            Err(language_service::Error::Busy) => self.resync_later(cx),
+            Err(error) => {
+                tracing::debug!(%error, "language document notification failed");
+                self.unsent.clear();
+            }
         }
     }
     fn new(
@@ -116,6 +159,7 @@ impl LanguageSession {
             diagnostics_limited: false,
             client,
             documents: HashMap::new(),
+            unsent: VecDeque::new(),
             _events: None,
             _resync: None,
         };
@@ -133,6 +177,7 @@ impl LanguageSession {
                                 this.capabilities = Some(*capabilities);
                                 this.error = None;
                                 this.documents.clear();
+                                this.unsent.clear();
                                 this.diagnostics.clear();
                                 this.diagnostics_limited = false;
                             }
@@ -140,6 +185,7 @@ impl LanguageSession {
                                 this.capabilities = None;
                                 this.error = Some(error.to_string());
                                 this.documents.clear();
+                                this.unsent.clear();
                                 this.diagnostics.clear();
                                 this.diagnostics_limited = false;
                             }
@@ -157,6 +203,7 @@ impl LanguageSession {
             let _ = this.update(cx, |this, cx| {
                 this.capabilities = None;
                 this.documents.clear();
+                this.unsent.clear();
                 this.diagnostics.clear();
                 this.diagnostics_limited = false;
                 if this.error.is_none() {
@@ -168,11 +215,15 @@ impl LanguageSession {
     }
 
     /// The queue to a healthy server was full. Documents observe the session, so one delayed
-    /// notification makes each of them send its unsynced text again.
+    /// notification makes each of them send its unsynced text again, after what the session
+    /// itself still owes the server.
     fn resync_later(&mut self, cx: &mut Context<Self>) {
         self._resync = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(RESYNC_DELAY).await;
-            let _ = this.update(cx, |_, cx| cx.notify());
+            let _ = this.update(cx, |this, cx| {
+                this.send_unsent(cx);
+                cx.notify();
+            });
         }));
     }
 
@@ -182,6 +233,7 @@ impl LanguageSession {
         self.capabilities = None;
         self.error = None;
         self.documents.clear();
+        self.unsent.clear();
         self.diagnostics.clear();
         self.listen(events, cx);
         cx.notify();
@@ -204,6 +256,8 @@ impl LanguageSession {
                 "server does not synchronize buffers",
             ));
         }
+        // A document closed and opened again must reach the server in that order.
+        self.flush_unsent()?;
         match self.documents.get(&uri) {
             Some(previous) if previous.text == *text => {}
             Some(previous) => {
@@ -259,17 +313,12 @@ impl LanguageSession {
         Ok(self.client.clone())
     }
 
-    pub(super) fn close(&mut self, uri: &Uri) {
-        if self.documents.remove(uri).is_some()
-            && let Err(error) =
-                self.client
-                    .notify::<DidCloseTextDocument>(DidCloseTextDocumentParams {
-                        text_document: TextDocumentIdentifier { uri: uri.clone() },
-                    })
-        {
-            tracing::debug!(%error,"language document close failed");
-        }
+    pub(super) fn close(&mut self, uri: &Uri, cx: &mut Context<Self>) {
         self.diagnostics.remove(uri.as_str());
+        if self.documents.remove(uri).is_some() {
+            self.unsent.push_back(Unsent::Close(uri.clone()));
+            self.send_unsent(cx);
+        }
     }
 }
 
@@ -352,14 +401,12 @@ impl Document {
         )
     }
 
-    pub(super) fn language_saved(&self, cx: &App) {
+    pub(super) fn language_saved(&self, cx: &mut App) {
         if let Some(session) = &self.language
             && let Some(uri) = position::uri(&self.target.path.join(&self.path))
         {
-            session.read(cx).saved(
-                uri,
-                self.base.as_ref().map(hive_core::files::Snapshot::text),
-            );
+            let text = self.base.as_ref().map(hive_core::files::Snapshot::text);
+            session.update(cx, |session, cx| session.saved(uri, text, cx));
         }
     }
 
@@ -489,7 +536,7 @@ impl Document {
         if let Some(session) = &self.language
             && let Some(uri) = position::uri(&self.target.path.join(&self.path))
         {
-            session.update(cx, |session, _| session.close(&uri));
+            session.update(cx, |session, cx| session.close(&uri, cx));
         }
     }
 }

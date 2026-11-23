@@ -125,21 +125,18 @@ impl PipelinePanel {
             let panel = cx.weak_entity();
             window.open_alert_dialog(cx, move |alert, _, _| {
                 let panel = panel.clone();
-                alert
-                    .confirm()
-                    .title("Replace the current run draft?")
-                    .ok_text("Replace draft")
-                    .on_ok(move |_, w, cx| {
-                        let _ = panel.update(cx, |p, cx| {
-                            // The replaced form must not write itself back afterwards.
-                            if let Some(form) = &p.draft {
-                                form.update(cx, |form, _| form.abandon());
-                            }
-                            p.discard_draft(cx);
-                            p.launch_again(id, w, cx);
-                        });
-                        true
-                    })
+                let alert = alert.confirm().title("Replace the current run draft?");
+                crate::ui::destructive::confirmation(alert, "Replace draft", move |w, cx| {
+                    let _ = panel.update(cx, |p, cx| {
+                        // The replaced form must not write itself back afterwards.
+                        if let Some(form) = &p.draft {
+                            form.update(cx, |form, _| form.abandon());
+                        }
+                        p.discard_draft(cx);
+                        p.launch_again(id, w, cx);
+                    });
+                    true
+                })
             });
             return;
         }

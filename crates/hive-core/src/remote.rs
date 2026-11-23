@@ -75,8 +75,36 @@ fn request_with(
 ) -> Result<Response, Error> {
     host.validate()
         .map_err(|e| Error::Connection(e.to_string()))?;
+    match request_once(host, &request, cancellation)? {
+        Sent::Answered(response) => Ok(response),
+        // The helper never ran, so even a mutation changed nothing: install it and send again.
+        Sent::HelperMissing => {
+            install::forget(host);
+            match request_once(host, &request, cancellation)? {
+                Sent::Answered(response) => Ok(response),
+                Sent::HelperMissing => Err(transport_error(
+                    host,
+                    &request,
+                    "the installed helper cannot be started".into(),
+                )),
+            }
+        }
+    }
+}
+
+/// How one attempt at a request went, when the helper was reached or found missing.
+enum Sent {
+    Answered(Response),
+    HelperMissing,
+}
+
+fn request_once(
+    host: &Host,
+    request: &Request,
+    cancellation: &command::Cancellation,
+) -> Result<Sent, Error> {
     install::ensure(host, cancellation)?;
-    let input = protocol::encode(&request)?;
+    let input = protocol::encode(request)?;
     let script = format!(
         "exec \"$HOME/.hive/bin/hive-remote-{}\"",
         env!("CARGO_PKG_VERSION")
@@ -88,26 +116,29 @@ fn request_with(
         TIMEOUT,
         MESSAGE_LIMIT + protocol::PREAMBLE_LIMIT + 32,
     )
-    .map_err(|error| unfinished(host, &request, &error))?;
+    .map_err(|error| unfinished(host, request, &error))?;
+    if install::helper_missing(output.code) {
+        return Ok(Sent::HelperMissing);
+    }
     if output.code != Some(0) {
         return Err(transport_error(
             host,
-            &request,
+            request,
             String::from_utf8_lossy(&output.stderr).trim().into(),
         ));
     }
     let response: Result<Response, protocol::Failure> =
         protocol::decode_response(&output.stdout)
-            .map_err(|error| transport_error(host, &request, error.to_string()))?;
+            .map_err(|error| transport_error(host, request, error.to_string()))?;
     let response = response.map_err(|failure| Error::File(failure.into_file_error(host)))?;
-    if !protocol::accepts(&request, &response) {
+    if !protocol::accepts(request, &response) {
         return Err(transport_error(
             host,
-            &request,
+            request,
             "unexpected or unsafe response".into(),
         ));
     }
-    Ok(response)
+    Ok(Sent::Answered(response))
 }
 
 /// A request whose `ssh` did not run to its end. One that never started was never sent, so

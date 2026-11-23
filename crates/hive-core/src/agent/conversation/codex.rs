@@ -43,10 +43,9 @@ pub(super) fn discover(pids: &[u32]) -> Option<ResumeSession> {
     latest_rollout(&home()?.join("sessions"), &directory, started)
 }
 
-/// Codex honours `CODEX_HOME`; shells started by Hive take it from the login shell.
+/// Codex honours `CODEX_HOME`, as a Hive terminal exports it.
 pub(super) fn home() -> Option<PathBuf> {
-    crate::host::environment::login()
-        .and_then(|environment| environment.get("CODEX_HOME"))
+    crate::host::environment::var("CODEX_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .or_else(|| crate::state::home_dir().map(|home| home.join(".codex")))

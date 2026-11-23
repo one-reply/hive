@@ -75,6 +75,7 @@ fn apply(appearance: &Appearance, window: Option<&mut Window>, cx: &mut App) {
     };
     let config = Rc::new(definition.config.clone());
     Theme::update(cx, |theme| theme.apply_config(&config));
+    hive_core::terminal::set_palette(reported_palette(&definition.terminal()));
     // A theme reload keeps the previous families, so the defaults are written back explicitly;
     // the theme then swaps an uninstalled default monospace family for an installed one.
     let defaults = Theme::default();
@@ -94,6 +95,26 @@ fn apply(appearance: &Appearance, window: Option<&mut Window>, cx: &mut App) {
         theme.mono_font_family = mono_font_family;
     });
     apply_scrollbars(appearance.scrollbars, cx);
+}
+
+/// What a terminal tells a program that asks for its colors: the colors it draws with.
+fn reported_palette(palette: &catalog::TerminalPalette) -> hive_core::terminal::Palette {
+    hive_core::terminal::Palette {
+        foreground: to_rgb(palette.foreground),
+        background: to_rgb(palette.background),
+        cursor: to_rgb(palette.cursor),
+        ansi: palette.ansi.map(to_rgb),
+    }
+}
+
+fn to_rgb(color: Hsla) -> hive_core::terminal::Rgb {
+    let color = Rgba::from(color);
+    let byte = |channel: f32| (channel.clamp(0., 1.) * 255.).round() as u8;
+    hive_core::terminal::Rgb {
+        r: byte(color.r),
+        g: byte(color.g),
+        b: byte(color.b),
+    }
 }
 
 fn apply_scrollbars(scrollbars: Scrollbars, cx: &mut App) {
@@ -136,7 +157,7 @@ pub(crate) fn terminal_palette(cx: &App) -> catalog::TerminalPalette {
 
 #[cfg(test)]
 mod tests {
-    use super::{Appearance, resolved_mode};
+    use super::{Appearance, catalog, reported_palette, resolved_mode};
     use gpui_kit::component::theme::ThemeMode;
     use hive_core::settings::{DarkTheme, LightTheme, Settings, ThemeChoice};
 
@@ -158,5 +179,15 @@ mod tests {
         settings.set_light_theme(LightTheme::Hive);
         settings.set_dark_theme(DarkTheme::Dracula);
         assert!(Appearance::from(&settings) != original);
+    }
+
+    #[test]
+    fn a_program_asking_for_terminal_colors_hears_the_theme_hex_values() {
+        let reported = reported_palette(&catalog::dark(DarkTheme::Hive).terminal());
+        let rgb = |r, g, b| hive_core::terminal::Rgb { r, g, b };
+        assert_eq!(reported.background, rgb(0x0a, 0x0a, 0x0a));
+        assert_eq!(reported.foreground, rgb(0xfa, 0xfa, 0xfa));
+        assert_eq!(reported.ansi[1], rgb(0xe0, 0x55, 0x61));
+        assert_eq!(reported.ansi[12], rgb(0x4d, 0xc4, 0xff));
     }
 }

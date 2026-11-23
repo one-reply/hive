@@ -32,7 +32,7 @@ impl Run {
             .iter()
             .enumerate()
             .filter(|(_, lane)| {
-                !lane.assignment.trim().is_empty()
+                lane.is_assigned()
                     && !lane.worktree.as_os_str().is_empty()
                     && seen.insert(&lane.worktree)
             })
@@ -44,9 +44,7 @@ impl Run {
     /// lane's last development report and the evidence QA left. `None` for a lane the plan
     /// gave no work.
     pub fn pull_request_text(&self, lane: usize) -> Option<(String, String)> {
-        self.lanes
-            .get(lane)
-            .filter(|lane| !lane.assignment.trim().is_empty())?;
+        self.lanes.get(lane).filter(|lane| lane.is_assigned())?;
         let task = self.task.trim();
         let line = task.lines().next().unwrap_or_default().trim_end();
         let mut title: String = line.chars().take(TITLE_CHARS).collect();
@@ -57,7 +55,7 @@ impl Run {
         let included = |index: usize| {
             index == lane
                 || self.lanes.get(index).is_some_and(|l| {
-                    !l.assignment.is_empty()
+                    l.is_assigned()
                         && !l.worktree.as_os_str().is_empty()
                         && l.worktree == self.lanes[lane].worktree
                 })

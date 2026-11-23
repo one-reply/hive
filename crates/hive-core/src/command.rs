@@ -26,6 +26,10 @@ const EXIT_RECHECK: Duration = Duration::from_millis(1);
 /// running, or on macOS a sibling spawned while the pipe was not yet close-on-exec. Neither
 /// may keep a finished command waiting for its deadline.
 const EXIT_GRACE: Duration = Duration::from_secs(1);
+/// A command allowed to run this long hides Hive's other descriptors from itself (see
+/// [`keep_only_standard_streams`]): it could hold one that long. Shorter ones, every read of
+/// Git among them, keep the faster `posix_spawn`.
+const LONG_LIVED: Duration = Duration::from_secs(60);
 
 /// Failure while supervising a command. Adapters add command, host and path context.
 #[derive(Debug, thiserror::Error)]
@@ -120,16 +124,18 @@ impl Log {
 #[derive(Default)]
 pub struct Cancellation {
     cancelled: AtomicBool,
-    group: Mutex<Option<Pid>>,
+    /// The process groups of the commands running under it: one operation may run several
+    /// at once, and stopping it stops them all.
+    groups: Mutex<Vec<Pid>>,
 }
 
 impl Cancellation {
-    /// Cancels this operation and terminates its CLI process group, if started.
+    /// Cancels this operation and terminates its CLI process groups, if started.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
-        let group = self.group.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(group) = *group {
-            kill(group, false);
+        let groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+        for group in groups.iter() {
+            kill(*group, false);
         }
     }
     /// Whether the owner has cancelled this operation.
@@ -153,16 +159,21 @@ struct Running<'a> {
     child: Child,
     cancellation: &'a Cancellation,
     exited: bool,
+    /// The command exited and its output ended: nothing of it holds the pipes, and what it
+    /// left in its process group was detached on purpose, such as a hook's `ctags >/dev/null &`.
+    settled: bool,
 }
 impl Drop for Running<'_> {
     fn drop(&mut self) {
-        // Keep the child unreaped until cancellation can no longer signal a reused PID.
-        let mut group = self
-            .cancellation
-            .group
+        let group = Pid::from_child(&self.child);
+        // Unregistered before the child is reaped, so cancellation cannot signal a reused
+        // PID; the lock is not held while reaping, so a cancel never waits for it.
+        self.cancellation
+            .groups
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(group) = group.take() {
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|registered| *registered != group);
+        if !self.settled {
             kill(group, self.exited);
         }
         if let Err(error) = self.child.wait() {
@@ -201,6 +212,27 @@ impl Capture {
             }
         }
     }
+}
+
+/// How a command is supervised besides its input: how long it may run, what of its output is
+/// kept, and what becomes of the jobs it leaves behind.
+#[derive(Clone, Copy)]
+struct Terms {
+    timeout: Duration,
+    capture: Capture,
+    leftovers: Leftovers,
+}
+
+/// What becomes of the rest of a command's process group once the command exits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Leftovers {
+    /// Left alone when they let go of its output, as a shell leaves them: a Git hook's
+    /// `ctags >/dev/null &` goes on after the commit.
+    Detached,
+    /// Ended with the command, as a CI step ends: a check must not leave a server holding a
+    /// port for the next one.
+    #[cfg(feature = "desktop")]
+    Ended,
 }
 
 /// Reads what `stream` has ready and closes it at end of file, so it stops being waited on.
@@ -267,7 +299,8 @@ impl Pipes {
 
 /// Blocking: service stdin and both output pipes until the process exits and its output ends,
 /// or until cancellation or the deadline. Output still open after the exit is read for at most
-/// `EXIT_GRACE`, then whatever still holds the pipe is terminated with the process group.
+/// `EXIT_GRACE`, then whatever still holds the pipe is terminated with the process group. A
+/// job the command started with its output elsewhere goes on, as it would from a shell.
 pub fn run(
     command: Command,
     input: &[u8],
@@ -292,8 +325,11 @@ pub fn run_with_progress(
         command,
         input,
         cancellation,
-        timeout,
-        Capture::Exact(limit),
+        Terms {
+            timeout,
+            capture: Capture::Exact(limit),
+            leftovers: Leftovers::Detached,
+        },
         |output, bytes| Capture::Exact(limit).append(output, bytes),
         progress,
     )
@@ -314,8 +350,11 @@ pub(crate) fn run_keeping_tail(
         command,
         input,
         cancellation,
-        timeout,
-        Capture::LogTail(limit),
+        Terms {
+            timeout,
+            capture: Capture::LogTail(limit),
+            leftovers: Leftovers::Detached,
+        },
         |output, bytes| Capture::LogTail(limit).append(output, bytes),
         |_, _| {},
     )
@@ -323,7 +362,8 @@ pub(crate) fn run_keeping_tail(
 }
 
 /// A test command can legitimately print megabytes. Retain its diagnostic tail without
-/// changing its exit status, and keep that tail when the command runs out of time.
+/// changing its exit status, and keep that tail when the command runs out of time. Like a CI
+/// step, it ends whatever the command left running in its process group.
 #[cfg(feature = "desktop")]
 pub(crate) fn run_with_log_tail(
     command: Command,
@@ -348,8 +388,11 @@ pub(crate) fn run_with_observed_log_tail(
         command,
         &[],
         cancellation,
-        timeout,
-        Capture::LogTail(limit),
+        Terms {
+            timeout,
+            capture: Capture::LogTail(limit),
+            leftovers: Leftovers::Ended,
+        },
         |output, bytes| {
             observe(bytes);
             Capture::LogTail(limit).append(output, bytes)
@@ -372,8 +415,11 @@ pub(crate) fn stream_stdout(
         command,
         &[],
         cancellation,
-        timeout,
-        Capture::LogTail(stderr_limit),
+        Terms {
+            timeout,
+            capture: Capture::LogTail(stderr_limit),
+            leftovers: Leftovers::Detached,
+        },
         |_, bytes| {
             sink(bytes);
             Ok(())
@@ -391,7 +437,6 @@ pub(crate) fn stream_stdout(
 /// for as long as it lives, and whoever reads the pipe waits out its whole deadline.
 ///
 /// Call it last: a `pre_exec` closure added afterwards could open a descriptor that stays.
-#[cfg(feature = "desktop")]
 pub(crate) fn keep_only_standard_streams(command: &mut Command) {
     let descriptors = descriptor_limit();
     // SAFETY: between fork and exec the closure only calls `fcntl`, which is
@@ -407,12 +452,10 @@ pub(crate) fn keep_only_standard_streams(command: &mut Command) {
 }
 
 /// macOS allows a process 61 440 descriptors by default (`kern.maxfilesperproc`).
-#[cfg(feature = "desktop")]
 const DESCRIPTOR_SCAN: libc::rlim_t = 65_536;
 
 /// One past the highest descriptor number this process can hold. Read before the fork:
 /// only the loop over it is async-signal-safe.
-#[cfg(feature = "desktop")]
 fn descriptor_limit() -> libc::c_int {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
@@ -447,11 +490,15 @@ fn supervise(
     mut command: Command,
     input: &[u8],
     cancellation: &Cancellation,
-    timeout: Duration,
-    capture: Capture,
+    terms: Terms,
     mut consume: impl FnMut(&mut Vec<u8>, &[u8]) -> Result<(), Error>,
     mut progress: impl FnMut(&[u8], &[u8]),
 ) -> Result<Log, Error> {
+    let Terms {
+        timeout,
+        capture,
+        leftovers,
+    } = terms;
     let io_error = Error::Io;
     // The one look before the process exists. A caller that looked for itself first would
     // only move the moment a cancellation can arrive unseen, not remove it.
@@ -463,11 +510,17 @@ fn supervise(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if timeout >= LONG_LIVED {
+        keep_only_standard_streams(&mut command);
+    }
     let child = command.spawn().map_err(Error::Spawn)?;
     let pid = Pid::from_child(&child);
     {
-        let mut group = cancellation.group.lock().unwrap_or_else(|e| e.into_inner());
-        *group = Some(pid);
+        let mut groups = cancellation
+            .groups
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        groups.push(pid);
         if cancellation.is_cancelled() {
             kill(pid, false);
         }
@@ -476,6 +529,7 @@ fn supervise(
         child,
         cancellation,
         exited: false,
+        settled: false,
     };
     let mut pipes = Pipes {
         stdin: running.child.stdin.take(),
@@ -544,6 +598,9 @@ fn supervise(
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
+            running.settled = leftovers == Leftovers::Detached
+                && matches!(end, End::Exited(_))
+                && pipes.output_closed();
             return Ok(Log {
                 end,
                 stdout: output,
@@ -644,7 +701,7 @@ mod tests {
         assert_eq!(log.stdout, b"started");
         assert_eq!(log.stderr, b"waiting");
         assert_eq!(log.text(), "started\nwaiting");
-        assert!(control.group.lock().unwrap().is_none());
+        assert!(control.groups.lock().unwrap().is_empty());
     }
 
     #[cfg(feature = "desktop")]
@@ -723,7 +780,7 @@ mod tests {
             |output, _| {
                 assert_eq!(output, b"ready");
                 seen = true;
-                let pid = cancellation.group.lock().unwrap().unwrap();
+                let pid = cancellation.groups.lock().unwrap()[0];
                 cancellation.cancel();
                 // Wait for our cancellation to take effect without reaping the child;
                 // run_with_progress remains its owner and can inspect the same status.
@@ -759,7 +816,7 @@ mod tests {
             assert!(matches!(error, Error::CancelledBeforeStart), "{error:?}");
             assert!(error.never_started());
         }
-        assert!(cancellation.group.lock().unwrap().is_none());
+        assert!(cancellation.groups.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -798,7 +855,7 @@ mod tests {
         );
         assert!(matches!(result, Err(Error::TimedOut)));
         assert!(began.elapsed() < Duration::from_secs(2));
-        assert!(control.group.lock().unwrap().is_none());
+        assert!(control.groups.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -817,7 +874,7 @@ mod tests {
         assert_eq!(output.stdout, b"done");
         // The grace is one second; the deadline and the holder both last far longer.
         assert!(began.elapsed() < Duration::from_secs(10));
-        assert!(control.group.lock().unwrap().is_none());
+        assert!(control.groups.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -894,13 +951,138 @@ mod tests {
                     1024,
                 )
             });
-            while control.group.lock().unwrap().is_none() {
+            while control.groups.lock().unwrap().is_empty() {
                 std::thread::yield_now();
             }
             control.cancel();
             running.join().unwrap()
         });
         assert!(matches!(result, Err(Error::Cancelled)));
-        assert!(control.group.lock().unwrap().is_none());
+        assert!(control.groups.lock().unwrap().is_empty());
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn only_a_command_that_may_run_long_hides_hives_other_descriptors() {
+        use std::os::fd::AsRawFd;
+        let descriptor = inheritable_descriptor();
+        let parked = descriptor.as_raw_fd();
+        let sees_it = |timeout| {
+            let script = format!("test -e /dev/fd/{parked}");
+            run(
+                Host::Local.command("/bin/sh", &["-c", &script], None),
+                b"",
+                &Cancellation::default(),
+                timeout,
+                64,
+            )
+            .unwrap()
+            .code
+                == Some(0)
+        };
+        assert!(
+            !sees_it(LONG_LIVED),
+            "a check or a hook would hold it for its whole run"
+        );
+        assert!(
+            sees_it(Duration::from_secs(5)),
+            "a short read keeps posix_spawn"
+        );
+    }
+
+    #[test]
+    fn a_finished_command_leaves_the_jobs_it_detached_running() {
+        let output = run(
+            Host::Local.command(
+                "/bin/sh",
+                &["-c", "sleep 30 </dev/null >/dev/null 2>&1 & printf %s $!"],
+                None,
+            ),
+            b"",
+            &Cancellation::default(),
+            Duration::from_secs(10),
+            64,
+        )
+        .unwrap();
+        let job = std::str::from_utf8(&output.stdout)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let job = Pid::from_raw(job).unwrap();
+        // A killed orphan is gone within milliseconds, once launchd reaps it; half a second of
+        // it still being there means nobody killed it.
+        let watched_until = Instant::now() + Duration::from_millis(500);
+        let mut running = true;
+        while running && Instant::now() < watched_until {
+            running = process::test_kill_process(job).is_ok();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = process::kill_process(job, Signal::KILL);
+        assert!(running, "a hook's background job outlives the hook");
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_check_ends_the_jobs_it_left_running_like_a_ci_step() {
+        let log = run_with_log_tail(
+            Host::Local.command(
+                "/bin/sh",
+                &["-c", "sleep 30 </dev/null >/dev/null 2>&1 & printf %s $!"],
+                None,
+            ),
+            &Cancellation::default(),
+            Duration::from_secs(10),
+            64,
+        )
+        .unwrap();
+        let job = std::str::from_utf8(&log.stdout).unwrap().parse().unwrap();
+        let job = Pid::from_raw(job).unwrap();
+        // Killed already; launchd reaps the orphan a moment later.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process::test_kill_process(job).is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "the server a check started outlives it"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn cancelling_stops_every_command_running_under_it() {
+        let control = Cancellation::default();
+        let results: (usize, Duration, Vec<_>) = std::thread::scope(|scope| {
+            let runs: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        run(
+                            Host::Local.command("/bin/sleep", &["30"], None),
+                            b"",
+                            &control,
+                            Duration::from_secs(30),
+                            1024,
+                        )
+                    })
+                })
+                .collect();
+            // Bounded: a cancellation that kept one group would never list two.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while control.groups.lock().unwrap().len() < 2 && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let registered = control.groups.lock().unwrap().len();
+            control.cancel();
+            let cancelled = Instant::now();
+            let results = runs.into_iter().map(|run| run.join().unwrap()).collect();
+            (registered, cancelled.elapsed(), results)
+        });
+        let (registered, took, results) = results;
+        assert_eq!(registered, 2);
+        // `sleep 30` that nobody killed ends only with its own sleep.
+        assert!(took < Duration::from_secs(10), "{took:?}");
+        for result in results {
+            assert!(matches!(result, Err(Error::Cancelled)));
+        }
+        assert!(control.groups.lock().unwrap().is_empty());
     }
 }

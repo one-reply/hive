@@ -66,7 +66,36 @@ impl Drop for Client {
 #[derive(Clone)]
 pub struct Session(Arc<Client>);
 
+/// What the server of a [`Session::detached`] session would have received, oldest first.
+#[cfg(any(test, feature = "test-support"))]
+pub struct Outbox(mpsc::Receiver<Message>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl Outbox {
+    /// The LSP method of the oldest message nobody took yet.
+    pub fn take(&self) -> Option<&'static str> {
+        match self.0.try_recv().ok()? {
+            Message::Request { method, .. } | Message::Notify { method, .. } => Some(method),
+            Message::Cancel(_) => Some("$/cancelRequest"),
+            Message::Incoming(..) => None,
+        }
+    }
+}
+
 impl Session {
+    /// A session without a server whose queue holds `capacity` messages until the test takes
+    /// them from the [`Outbox`]: a full queue is then [`Error::Busy`] on demand.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn detached(capacity: usize) -> (Self, Outbox) {
+        let (sender, receiver) = mpsc::sync_channel(capacity);
+        let client = Client {
+            sender,
+            next_id: AtomicI64::new(1),
+            stopped: Arc::new(AtomicBool::new(false)),
+        };
+        (Self(Arc::new(client)), Outbox(receiver))
+    }
+
     /// Starts an installed server off-thread; no process work happens on the caller thread.
     pub fn start(
         host: Host,
@@ -192,7 +221,7 @@ pub enum Family {
 impl Family {
     /// Chooses a supported language family from the source extension.
     pub fn for_path(path: &std::path::Path) -> Option<Self> {
-        match path.extension()?.to_str()? {
+        match crate::files::lowercase_extension(path)?.as_str() {
             "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" => Some(Self::TypeScript),
             "rs" => Some(Self::Rust),
             _ => None,
@@ -201,7 +230,7 @@ impl Family {
 
     /// The LSP document language identifier.
     pub fn language_id(path: &std::path::Path) -> &'static str {
-        match path.extension().and_then(|s| s.to_str()) {
+        match crate::files::lowercase_extension(path).as_deref() {
             Some("jsx") => "javascriptreact",
             Some("tsx") => "typescriptreact",
             Some("js" | "mjs" | "cjs") => "javascript",

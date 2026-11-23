@@ -15,8 +15,12 @@ pub(crate) struct DraggedFiles {
 }
 
 impl DraggedFiles {
+    /// One entry of this worktree, into a folder other than itself, its own subfolders and
+    /// the folder it is already in: a move there would change nothing.
     pub(super) fn can_move_to(&self, target: Option<&Target>, directory: &Path) -> bool {
-        matches!(self.paths.as_ref(), [path] if target == Some(&self.target) && !directory.starts_with(path))
+        matches!(self.paths.as_ref(), [path] if target == Some(&self.target)
+            && !directory.starts_with(path)
+            && path.parent() != Some(directory))
     }
 }
 
@@ -351,5 +355,23 @@ mod tests {
         assert!(drag.can_move_to(Some(&target), Path::new("destination")));
         assert!(!drag.can_move_to(Some(&target), Path::new("folder/child")));
         assert!(!drag.can_move_to(None, Path::new("destination")));
+    }
+
+    #[test]
+    fn an_entry_dropped_on_the_folder_it_is_in_is_no_move() {
+        let target = Target {
+            project: "/repo".into(),
+            path: "/repo".into(),
+            host: hive_core::host::Host::Local,
+        };
+        let mut drag = DraggedFiles {
+            target: target.clone(),
+            paths: std::sync::Arc::from(["src/lib.rs".into()]),
+        };
+        assert!(!drag.can_move_to(Some(&target), Path::new("src")));
+        assert!(drag.can_move_to(Some(&target), Path::new("")));
+        drag.paths = std::sync::Arc::from(["lib.rs".into()]);
+        assert!(!drag.can_move_to(Some(&target), Path::new("")));
+        assert!(drag.can_move_to(Some(&target), Path::new("src")));
     }
 }

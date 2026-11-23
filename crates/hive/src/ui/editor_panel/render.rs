@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::key_hint;
 
 impl Render for EditorPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -42,6 +43,7 @@ impl Render for EditorPanel {
             .or_else(|| document.format_error.clone());
         let conflict = document.conflict.is_some();
         let raster = document.content.is_raster();
+        let shows_image = document.content.shows_image();
         let svg_mode = match document.content {
             Content::Svg { mode, .. } => Some(mode),
             _ => None,
@@ -64,7 +66,7 @@ impl Render for EditorPanel {
             .id("file-content")
             .role(Role::Group)
             .aria_label(header.clone())
-            .key_context("EditorPanel")
+            .key_context(EDITOR_PANEL_CONTEXT)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && (this.peek.is_some() || this._peek.is_some())
                 {
@@ -97,7 +99,9 @@ impl Render for EditorPanel {
                     this.peek_definition(window, cx)
                 }),
             )
-            .track_focus(&self.image_focus)
+            // Only an image has no editor to hold the keyboard. Tracked for text too, a click on
+            // the toolbar's empty space would take the keyboard from the editor.
+            .when(shows_image, |panel| panel.track_focus(&self.image_focus))
             .size_full()
             .min_w_0()
             .min_h_0()
@@ -135,7 +139,12 @@ impl Render for EditorPanel {
                             .small()
                             .cursor_pointer()
                             .label("Problems")
-                            .tooltip("Problems in this worktree (⌘⇧M)")
+                            .tooltip(key_hint::tooltip(
+                                "Problems in this worktree",
+                                &ShowProblems,
+                                EDITOR_PANEL_CONTEXT,
+                                window,
+                            ))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let target = this.document.read(cx).target.clone();
                                 crate::ui::excerpts::open(
@@ -170,9 +179,15 @@ impl Render for EditorPanel {
                                 .cursor_pointer()
                                 .icon(Lucide::Code)
                                 .tooltip(if runs_tools {
-                                    "Format document (⌥⇧F)"
+                                    key_hint::tooltip(
+                                        "Format document",
+                                        &FormatDocument,
+                                        EDITOR_PANEL_CONTEXT,
+                                        window,
+                                    )
                                 } else {
                                     "Formatting is off with language tools (Settings → Files)"
+                                        .into()
                                 })
                                 .loading(formatting)
                                 .disabled(!ready || formatting || !runs_tools)

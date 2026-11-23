@@ -85,6 +85,8 @@ struct Watched {
     program: ProgramStatus,
     /// The agent's own last report, from hooks or OSC 7501; it beats the output estimate.
     reported: Option<AgentStatus>,
+    /// When the agent last reported a status.
+    reported_at: Option<Instant>,
     /// The agent reported `working` since it appeared here; see [`ended_turn`].
     worked: bool,
     /// Since when the agent's own last report is `idle`.
@@ -92,6 +94,8 @@ struct Watched {
     /// The agent the last poll saw here. Another one, or none, means `reported` and `helper`
     /// described an agent that is gone.
     sighted: Option<AgentKind>,
+    /// When the process table was read for the last poll that saw no agent here.
+    unsighted_at: Option<Instant>,
     unread: bool,
     helper: Option<Helper>,
 }
@@ -140,13 +144,14 @@ impl Agents {
                 let Ok(probes) = this.update(cx, |this, cx| this.probes(cx)) else {
                     return;
                 };
-                let sightings = cx
+                let (read_at, sightings) = cx
                     .background_executor()
                     .spawn(async move {
+                        let read_at = Instant::now();
                         if probes.is_empty() {
-                            Ok(Vec::new())
+                            (read_at, Ok(Vec::new()))
                         } else {
-                            look(&probes)
+                            (read_at, look(&probes))
                         }
                     })
                     .await;
@@ -154,7 +159,7 @@ impl Agents {
                     .update(cx, |this, cx| {
                         this.refresh_reports(cx);
                         this.settle_turns(Instant::now(), cx);
-                        this.apply(sightings, cx);
+                        this.apply(sightings, read_at, cx);
                         this.settle_calls(cx);
                     })
                     .is_err()
@@ -232,9 +237,11 @@ impl Agents {
         self.watched.push(Watched {
             program: terminal.program_status(),
             reported: None,
+            reported_at: None,
             worked: false,
             idle_since: None,
             sighted: None,
+            unsighted_at: None,
             unread: false,
             helper: None,
             session: session.downgrade(),
@@ -416,6 +423,7 @@ impl Agents {
         };
         let kind = watched.sighted.or(watched.probe.launched_agent);
         let status = recorded_status(step, kind, watched.reported, status);
+        watched.reported_at = Some(Instant::now());
         watched.worked |= status == AgentStatus::Working;
         if watched.reported != Some(status) {
             cx.notify();
@@ -478,19 +486,28 @@ impl Agents {
     }
 
     /// Drops what belonged to an agent that left its terminal: its reports and its parent.
+    /// `read_at` is when the poll read the process table that `seen` comes from.
     fn note_sightings(
         &mut self,
         seen: &HashMap<EntityId, (AgentKind, Option<ResumeSession>)>,
+        read_at: Instant,
         cx: &mut Context<Self>,
     ) {
         let mut gone = Vec::new();
         for watched in &mut self.watched {
             let kind = seen.get(&watched.id).map(|(kind, _)| *kind);
-            if watched.sighted.is_some() && watched.sighted != kind {
+            let left = watched.sighted.is_some() && watched.sighted != kind;
+            if left || kind.is_some() && reported_unseen(watched.reported_at, watched.unsighted_at)
+            {
                 watched.reported = None;
                 watched.worked = false;
                 watched.idle_since = None;
+            }
+            if left {
                 gone.extend(watched.helper.take());
+            }
+            if kind.is_none() {
+                watched.unsighted_at = Some(read_at);
             }
             watched.sighted = kind;
         }
@@ -499,7 +516,12 @@ impl Agents {
         }
     }
 
-    fn apply(&mut self, sightings: Result<Vec<Sighting>, String>, cx: &mut Context<Self>) {
+    fn apply(
+        &mut self,
+        sightings: Result<Vec<Sighting>, String>,
+        read_at: Instant,
+        cx: &mut Context<Self>,
+    ) {
         let sightings = match sightings {
             Ok(sightings) => {
                 self.last_error = None;
@@ -524,7 +546,7 @@ impl Agents {
             .map(|sighting| (sighting.id, (sighting.kind, sighting.conversation.clone())))
             .collect();
         self.track_conversations(&seen, cx);
-        self.note_sightings(&seen, cx);
+        self.note_sightings(&seen, read_at, cx);
         let mut by_worktree: HashMap<(Host, PathBuf), Vec<AgentSession>> = HashMap::new();
         for sighting in sightings {
             let session = self
@@ -653,6 +675,16 @@ const TURN_END_GRACE: Duration = Duration::from_secs(3);
 /// compaction in the middle of a turn.
 fn rests_silently(kind: Option<AgentKind>) -> bool {
     kind != Some(AgentKind::ClaudeCode)
+}
+
+/// Whether the last report came from an agent the poll cannot see, such as Codex behind
+/// `ssh`: a poll that read the process table after the report found no agent in the
+/// terminal. An agent that appears later did not make it. A report newer than that read may
+/// be the new agent's own first word, which often comes before the poll sees it.
+fn reported_unseen(reported_at: Option<Instant>, unsighted_at: Option<Instant>) -> bool {
+    reported_at
+        .zip(unsighted_at)
+        .is_some_and(|(reported, unsighted)| reported < unsighted)
 }
 
 /// Whether a pipeline step's agent ended its turn without saying so.
@@ -847,6 +879,22 @@ mod tests {
             })
         }
 
+        /// The poll found `seen` in the pane, from a process table read at `read_at`; returns
+        /// the agent's status.
+        fn sight(
+            &self,
+            seen: Option<AgentKind>,
+            read_at: Instant,
+            cx: &mut gpui::TestAppContext,
+        ) -> Option<AgentStatus> {
+            let id = self.session.entity_id();
+            self.agents.update(cx, |agents, cx| {
+                let seen = seen.map(|kind| (id, (kind, None))).into_iter().collect();
+                agents.note_sightings(&seen, read_at, cx);
+                agents.recipient(id).status
+            })
+        }
+
         /// The poll's look at the pane `after` its last report; returns the agent's status.
         fn poll(&self, after: Duration, cx: &mut gpui::TestAppContext) -> Option<AgentStatus> {
             let id = self.session.entity_id();
@@ -905,6 +953,39 @@ mod tests {
         assert_eq!(pane.report(Some(Idle), cx), Some(Idle));
         assert_eq!(pane.poll(quiet, cx), Some(Idle));
         assert_eq!(pane.attention.borrow().len(), 3);
+    }
+
+    /// Codex behind `ssh devbox` reports through the pane, but the poll sees only `ssh`. After
+    /// it, a local agent must not start out with Codex's last word.
+    #[gpui::test]
+    fn a_report_from_an_agent_the_poll_never_saw_is_not_passed_to_the_next_one(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use AgentStatus::{WaitingApproval, Working};
+        let later = || Instant::now() + Duration::from_millis(1);
+        let pane = Pane::new(AgentKind::Codex, false, cx);
+        assert_eq!(
+            pane.report(Some(WaitingApproval), cx),
+            Some(WaitingApproval)
+        );
+        assert_eq!(pane.sight(None, later(), cx), Some(WaitingApproval));
+        assert_eq!(pane.sight(Some(AgentKind::ClaudeCode), later(), cx), None);
+
+        // A new agent often speaks before the poll sees it: a read older than its report
+        // does not make the report a stranger's.
+        let pane = Pane::new(AgentKind::Codex, false, cx);
+        let before_the_report = Instant::now();
+        assert_eq!(pane.sight(None, before_the_report, cx), None);
+        assert_eq!(pane.report(Some(Working), cx), Some(Working));
+        assert_eq!(
+            pane.sight(Some(AgentKind::Codex), later(), cx),
+            Some(Working)
+        );
+        // An agent the poll keeps seeing keeps its own word.
+        assert_eq!(
+            pane.sight(Some(AgentKind::Codex), later(), cx),
+            Some(Working)
+        );
     }
 
     #[gpui::test]

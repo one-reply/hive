@@ -288,8 +288,12 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if matches!(self.panes, PaneTree::Leaf(_)) {
-            self.close(reveal, window, cx);
+        if let PaneTree::Leaf(only) = &self.panes {
+            // A pane that ended while its close was being confirmed is already gone, and the
+            // pane left alone in the tab is not the one the user asked to close.
+            if only == view {
+                self.close(reveal, window, cx);
+            }
             return;
         }
         let keyboard_was_here = view.read(cx).focus_handle().is_focused(window);

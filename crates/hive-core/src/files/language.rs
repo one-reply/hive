@@ -17,11 +17,7 @@ pub fn editor_language(path: &Path) -> String {
     if is_dockerfile_name(&name) {
         return "bash".to_owned();
     }
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let extension = lowercase_extension(path).unwrap_or_default();
     // The highlighter knows these grammars only by their main extension; the JavaScript
     // grammar parses JSX too.
     match extension.as_str() {
@@ -40,6 +36,14 @@ pub fn is_dockerfile(path: &Path) -> bool {
 
 fn is_dockerfile_name(lowercase_name: &str) -> bool {
     lowercase_name.starts_with("dockerfile") || lowercase_name.ends_with(".dockerfile")
+}
+
+/// The extension of `path` in lowercase: `App.TSX` is a TSX file like `App.tsx` for every
+/// tool that picks a language by extension.
+pub(crate) fn lowercase_extension(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
 }
 
 fn lowercase_name(path: &Path) -> String {

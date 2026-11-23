@@ -115,6 +115,7 @@ fn check_after_edit(cx: &mut TestAppContext, published: Published, edited: &str,
             diagnostics_limited: false,
             client,
             documents: HashMap::new(),
+            unsent: Default::default(),
             _events: None,
             _resync: None,
         });

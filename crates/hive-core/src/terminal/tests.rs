@@ -86,7 +86,10 @@ fn missing_shell_returns_a_launch_error() {
             Some("/nonexistent/hive-regression-shell"),
             TerminalSize::new(80, 24)
         ),
-        Err(TerminalError::Pty(_))
+        Err(TerminalError::Pty {
+            operation: "start the process",
+            ..
+        })
     ));
 }
 
@@ -306,4 +309,109 @@ fn program_status_reports_are_collected_and_the_support_query_is_answered() {
         terminal.program_status().drain(),
         vec![ProgramState::Blocked(Some(Blocker::Permission))]
     );
+}
+
+#[test]
+fn a_program_asking_for_the_background_hears_the_palette_the_app_set() {
+    set_palette(Palette {
+        foreground: Rgb {
+            r: 0xfa,
+            g: 0xfa,
+            b: 0xfa,
+        },
+        background: Rgb {
+            r: 0x12,
+            g: 0x34,
+            b: 0x56,
+        },
+        cursor: Rgb {
+            r: 0xfa,
+            g: 0xfa,
+            b: 0xfa,
+        },
+        ansi: [Rgb { r: 0, g: 0, b: 0 }; 16],
+    });
+    let mut command = std::process::Command::new("/bin/sh");
+    // As in the program status test: raw input without echo, the reply read by `head`.
+    command.args([
+        "-c",
+        r"stty -echo -icanon min 1; printf '\033]11;?\007'; head -c 24 | tr '\033\007' EB; echo; sleep 5",
+    ]);
+    let terminal = Terminal::spawn_command(command, None, TerminalSize::new(80, 24)).unwrap();
+    wait_for(|| screen_text(&terminal).contains("E]11;rgb:1212/3434/5656B"));
+}
+
+/// Starts `script` on a PTY and returns once the shell is exiting: Darwin then holds it until
+/// its output is read and no longer lets it be watched (`ESRCH`).
+fn exiting(script: &str) -> (std::process::Child, std::fs::File) {
+    use polling::os::kqueue::{PollerKqueueExt as _, Process, ProcessOps};
+    let mut command = std::process::Command::new("/bin/sh");
+    command.args(["-c", script]);
+    let (child, file) = process::spawn(command, TerminalSize::new(80, 24).window_size()).unwrap();
+    let poller = polling::Poller::new().unwrap();
+    wait_for(|| {
+        // SAFETY: the filter is gone before `child` is reaped, which only the terminal does.
+        let watch = || unsafe { Process::new(&child, ProcessOps::Exit) };
+        match poller.add_filter(watch(), 0, polling::PollMode::Oneshot) {
+            Ok(()) => {
+                poller.delete_filter(watch()).unwrap();
+                false
+            }
+            Err(error) => {
+                assert_eq!(error.raw_os_error(), Some(libc::ESRCH), "{error}");
+                true
+            }
+        }
+    });
+    (child, file)
+}
+
+#[test]
+fn a_command_already_exiting_when_its_terminal_starts_still_shows_its_last_output() {
+    let (child, file) = exiting(r"printf '\033]2;last-title\007'; printf 'hive-ok\n'");
+    let mut terminal = Terminal::start(child, file, None, TerminalSize::new(80, 24)).unwrap();
+    let events = terminal.events().unwrap();
+    assert!(
+        terminal
+            .control()
+            .wait_until(Instant::now() + Duration::from_secs(5)),
+        "the exit was noticed"
+    );
+    assert!(screen_text(&terminal).contains("hive-ok"));
+    let last = std::iter::from_fn(|| events.try_recv().ok())
+        .last()
+        .unwrap();
+    assert!(last.exited());
+    assert_eq!(last.title(), Some("last-title"));
+}
+
+#[test]
+fn the_exit_note_counts_while_darwin_still_holds_the_exiting_shell() {
+    use alacritty_terminal::tty::{ChildEvent, EventedPty as _, EventedReadWrite as _};
+    use std::io::Read as _;
+    let (child, file) = exiting(r"printf 'hive-ok\n'");
+    let (events, _updates) = Publisher::new();
+    let listener = Listener {
+        events: events.clone(),
+        activity: Activity::default(),
+        pty: Arc::default(),
+        size: Arc::new(std::sync::Mutex::new(
+            TerminalSize::new(80, 24).window_size(),
+        )),
+    };
+    let mut pty = ManagedPty::new(
+        child,
+        file,
+        Arc::default(),
+        events,
+        listener,
+        ProgramStatus::default(),
+    );
+    assert!(matches!(
+        pty.next_child_event(),
+        Some(ChildEvent::Exited(None))
+    ));
+    // Reading the output lets the shell finish, so dropping the PTY does not wait for it.
+    let mut output = [0; 64];
+    assert!(pty.reader().read(&mut output).unwrap() > 0);
 }

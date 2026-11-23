@@ -26,6 +26,7 @@ pub use mutations::{
 pub mod recovery;
 #[cfg(feature = "desktop")]
 pub mod search;
+pub(crate) use language::lowercase_extension;
 pub use language::{editor_language, is_dockerfile};
 pub use listing::{Entry, FileIndex, list_directory, list_files};
 

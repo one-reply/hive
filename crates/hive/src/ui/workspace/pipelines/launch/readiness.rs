@@ -301,6 +301,20 @@ mod tests {
     }
 
     #[test]
+    fn a_ref_still_being_typed_is_named_before_a_missing_command_or_a_read() {
+        let lanes = [
+            LaneState::Reading,
+            LaneState::MissingCommand,
+            LaneState::EditingRef,
+        ];
+        assert_eq!(blocker(true, &lanes, true), Some(Blocker::EditingRef));
+        assert_eq!(
+            Blocker::EditingRef.message(),
+            "Press Use ref to apply the branch, tag or commit."
+        );
+    }
+
+    #[test]
     fn a_lane_without_a_branch_blocks_planning_before_slower_reads() {
         let lanes = [LaneState::Reading, LaneState::NoBranch];
         assert_eq!(blocker(true, &lanes, false), Some(Blocker::Branch));

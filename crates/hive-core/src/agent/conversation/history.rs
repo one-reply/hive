@@ -18,8 +18,10 @@ use std::{
 pub(super) const SCAN_LIMIT: usize = 500;
 /// Conversations returned in all.
 const LIST_LIMIT: usize = 200;
-/// Every local transcript carried its title lines within its last 32 KiB.
-const CLAUDE_TAIL: u64 = 64 * 1024;
+/// Every local transcript carried its title lines within its last 32 KiB, unless one line
+/// after them is a tool result or an image of many megabytes: a window inside that line holds
+/// no line at all, so the next one is read.
+const CLAUDE_TAILS: [u64; 3] = [64 * 1024, 1024 * 1024, 16 * 1024 * 1024];
 const TITLE_LIMIT: usize = 200;
 
 /// Which client started a conversation.
@@ -213,7 +215,10 @@ struct ClaudeLine {
 
 fn claude_conversation(path: &Path, updated: SystemTime) -> Option<Conversation> {
     let session = ResumeSession::new(AgentKind::ClaudeCode, path.file_stem()?.to_str()?)?;
-    let tail = read_tail(path, CLAUDE_TAIL)?;
+    let tail = CLAUDE_TAILS
+        .iter()
+        .map(|&limit| read_tail(path, limit))
+        .find(|tail| tail.as_ref().is_none_or(|tail| !tail.is_empty()))??;
     let summary = summarize(&tail)?;
     Some(conversation(
         session,
@@ -388,6 +393,25 @@ pub(super) mod tests {
         let found = claude_conversations(&projects, directory);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].title(), Some("now run the tests and commit"));
+        std::fs::remove_dir_all(projects).unwrap();
+    }
+
+    #[test]
+    fn a_last_line_longer_than_the_tail_keeps_the_conversation_and_its_title() {
+        let projects = scratch("long-line");
+        let directory = Path::new("/Users/me/project");
+        let folder = projects.join(claude_project_folder(directory));
+        std::fs::create_dir_all(&folder).unwrap();
+        // A tool result of 100 KiB after the title, as a large file read leaves it.
+        let result = USER_LINE.replace("Fix the build", &"x".repeat(100 * 1024));
+        write(
+            &folder.join(format!("{ID}.jsonl")),
+            &[USER_LINE, CUSTOM_TITLE, &result],
+            SystemTime::now(),
+        );
+        let found = claude_conversations(&projects, directory);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title(), Some("Fix the release build"));
         std::fs::remove_dir_all(projects).unwrap();
     }
 

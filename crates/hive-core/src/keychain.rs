@@ -12,6 +12,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `security` may sit behind a Keychain prompt; the usage poll must not hang on it.
 const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(15);
+/// Apple's own tool, by its path: a `security` found first on some `PATH` would be handed the
+/// credentials it reads and the API keys Hive saves.
+const SECURITY: &str = "/usr/bin/security";
 /// A password is small; the bound only guards against unexpected output.
 const KEYCHAIN_OUTPUT_LIMIT: usize = 64 * 1024;
 /// Exit status of `security` for Apple's errSecItemNotFound.
@@ -150,7 +153,7 @@ fn cursor_session_from(
 /// Blocking: the password of a generic Keychain item, `None` when there is no such item or
 /// no `security` tool on this platform. A refused or stalled lookup is reported, not hidden.
 fn keychain_item(service: &str, account: Option<&str>) -> Result<Option<String>, CredentialError> {
-    let mut security = Command::new("security");
+    let mut security = Command::new(SECURITY);
     security.args(["find-generic-password", "-s", service]);
     if let Some(account) = account {
         security.args(["-a", account]);

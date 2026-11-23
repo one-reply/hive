@@ -6,6 +6,7 @@
 //! One process table snapshot serves every open terminal.
 
 pub mod api;
+mod claude_config;
 pub mod conversation;
 pub mod draft;
 pub mod hooks;
