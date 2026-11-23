@@ -1,5 +1,6 @@
-//! The status bar's Pipelines block: how many runs wait and work across every project, and
-//! on hover a card that lists them with the drafts. A click on a line goes to it.
+//! The status bar's Pipelines block, beside the panel's toggle: how many runs wait and work
+//! across every project, and on hover a card that lists them with the drafts. A click on a
+//! line goes to it. The block itself only shows; the toggle next to it opens the panel.
 use super::library::{DETAIL_SEPARATOR, RunRow};
 use super::*;
 use crate::state::pipelines::{Entry, ListedRun, Overview};
@@ -41,17 +42,14 @@ impl PipelinesOverview {
 impl Render for PipelinesOverview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let overview = AppState::get(cx).pipelines.read(cx).overview(cx);
-        let hover = Hover::new("pipelines-overview", window, cx);
-        let trigger = Button::new("pipelines-overview")
-            .cursor_pointer()
-            .xsmall()
-            .accessibility_label(summary(overview.needs_you, overview.running))
-            .child(counters(&overview, cx))
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(TogglePipelines), cx))
-            .smooth_hover(ButtonLook::Ghost, &hover, cx);
+        // Not a button: it does nothing on a click, like the limits next to it.
+        let trigger = counters(&overview, cx)
+            .id("pipelines-overview")
+            .role(Role::Group)
+            .aria_label(summary(overview.needs_you, overview.running));
         hover_card(
             "pipelines-overview-card",
-            Anchor::BottomRight,
+            Anchor::BottomLeft,
             trigger,
             // Read anew for every frame the card is open: a run can move while it is.
             |dismiss, window, cx| {
@@ -84,12 +82,16 @@ fn summary(needs_you: usize, running: usize) -> String {
 fn counters(overview: &Overview, cx: &App) -> Div {
     let theme = cx.theme();
     let idle = overview.needs_you + overview.running == 0;
+    // The color of the icon buttons on both sides, so the row reads as one set.
+    let icon = if idle {
+        theme.muted_foreground.opacity(IDLE_ICON_OPACITY)
+    } else {
+        theme.secondary_foreground
+    };
     h_flex()
         .gap_1p5()
         .items_center()
-        .child(Icon::new(Lucide::Workflow).when(idle, |icon| {
-            icon.text_color(theme.muted_foreground.opacity(IDLE_ICON_OPACITY))
-        }))
+        .child(Icon::new(Lucide::Workflow).text_color(icon))
         .children(counter(overview.needs_you, theme.warning))
         .children(counter(overview.running, theme.info))
 }

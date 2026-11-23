@@ -1,5 +1,5 @@
-//! Bottom bar with the Pipelines toggle, provider limits, the overview of every project's
-//! pipeline runs and workspace controls.
+//! Bottom bar with the Pipelines toggle, the overview of every project's pipeline runs,
+//! provider limits and workspace controls.
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::animation::Lerp as _;
@@ -28,6 +28,9 @@ const BAR_HEIGHT: Pixels = px(4.);
 const INACTIVE_ICON_OPACITY: f32 = 0.5;
 /// Width of the details card shown on hover.
 const CARD_WIDTH: Pixels = px(240.);
+/// Height of the line between the Pipelines controls and the limits: shorter than the icons,
+/// so it separates the groups without reading as a control.
+const DIVIDER_HEIGHT: Pixels = px(12.);
 /// How long the keep-awake icon takes to change color between off, on and holding.
 const KEEP_AWAKE_TRANSITION: Duration = Duration::from_millis(180);
 
@@ -112,6 +115,18 @@ fn keep_awake_tooltip(enabled: bool, holding: bool) -> &'static str {
         (true, false) => "Keep Mac awake while agents work: on",
         (true, true) => "Keeping this Mac awake while agents work",
     }
+}
+
+/// A thin vertical line between the Pipelines controls and the limits.
+fn divider(cx: &App) -> Div {
+    div()
+        .flex_none()
+        // The button after the line pads its icon; the counters before it end at their
+        // text, so the line would sit closer to them.
+        .ml_1()
+        .w_px()
+        .h(DIVIDER_HEIGHT)
+        .bg(cx.theme().border)
 }
 
 fn logo_svg(vendor: Vendor) -> &'static [u8] {
@@ -297,6 +312,8 @@ impl Render for StatusBarView {
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(TogglePipelines), cx))
                     .panel_toggle(pipelines_open, &pipelines_hover, cx),
             )
+            .left(self.pipelines.clone())
+            .left(divider(cx))
             .left(
                 Button::new("refresh-usage")
                     .cursor_pointer()
@@ -309,19 +326,15 @@ impl Render for StatusBarView {
             )
             .left(h_flex().gap_6().children(providers))
             .right(
-                h_flex()
-                    .gap_1()
-                    .child(self.pipelines.clone())
-                    .child(keep_awake)
-                    .child(
-                        Button::new("settings")
-                            .cursor_pointer()
-                            .xsmall()
-                            .icon(IconName::Settings)
-                            .tooltip("Settings")
-                            .on_click(|_, _, cx| settings::open(cx))
-                            .smooth_hover(ButtonLook::Ghost, &settings_hover, cx),
-                    ),
+                h_flex().gap_1().child(keep_awake).child(
+                    Button::new("settings")
+                        .cursor_pointer()
+                        .xsmall()
+                        .icon(IconName::Settings)
+                        .tooltip("Settings")
+                        .on_click(|_, _, cx| settings::open(cx))
+                        .smooth_hover(ButtonLook::Ghost, &settings_hover, cx),
+                ),
             )
     }
 }
