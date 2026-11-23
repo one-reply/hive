@@ -2,7 +2,7 @@
 //!
 //! Hive appends the task, the lane assignments, the handoff and the report contract to these
 //! texts, so they only describe how to do the stage's work well, not the output format.
-use super::{Library, Prompt, Step, Template};
+use super::{Library, Prompt, ReviewRole, Step, Template, unique_name};
 
 /// A built-in prompt. Saved links hold its id, so an id is never changed or reused; a new
 /// built-in takes the next free one below `prompts::FIRST_USER_ID`.
@@ -23,7 +23,15 @@ impl Stock {
 
     /// A starter stage following this prompt.
     pub(super) fn stage(&self, name: &str) -> Step {
-        Step::linked(name, &self.prompt())
+        let mut stage = Step::linked(name, &self.prompt());
+        stage.review_role = if self.id == CODE_REVIEWER.id {
+            ReviewRole::Code
+        } else if self.id == QA_REVIEWER.id {
+            ReviewRole::Qa
+        } else {
+            ReviewRole::Unspecified
+        };
+        stage
     }
 }
 
@@ -52,9 +60,17 @@ pub(super) const SECURITY_AND_PERFORMANCE_REVIEWER: Stock = Stock {
 };
 
 // IDs 5–14 belonged to retired prompts and remain reserved for saved libraries.
-const STOCK: [&Stock; 4] = [
+const LEGACY_CODE_REVIEWER: u64 = 11;
+pub(super) const CODE_REVIEWER: Stock = Stock {
+    id: 15,
+    name: "Code reviewer",
+    text: include_str!("prompts/code-reviewer.md").trim_ascii_end(),
+};
+
+const STOCK: [&Stock; 5] = [
     &FEATURE_PLANNER,
     &DEVELOPER,
+    &CODE_REVIEWER,
     &QA_REVIEWER,
     &SECURITY_AND_PERFORMANCE_REVIEWER,
 ];
@@ -97,15 +113,26 @@ impl Library {
     pub fn review_step(&self, kind: ReviewKind) -> Step {
         // Older libraries may still have a customized prompt dedicated to this menu entry.
         let (legacy_id, stock) = match kind {
-            ReviewKind::Code => (11, &QA_REVIEWER),
+            ReviewKind::Code => (LEGACY_CODE_REVIEWER, &CODE_REVIEWER),
             ReviewKind::Security => (12, &SECURITY_AND_PERFORMANCE_REVIEWER),
             ReviewKind::Performance => (13, &SECURITY_AND_PERFORMANCE_REVIEWER),
             ReviewKind::Acceptance => (14, &QA_REVIEWER),
         };
-        match self.prompt(legacy_id).or_else(|| self.prompt(stock.id)) {
+        let mut step = match self.prompt(legacy_id).or_else(|| self.prompt(stock.id)) {
             Some(prompt) => Step::linked(kind.stage_name(), prompt),
             None => Step::new(kind.stage_name(), stock.text),
+        };
+        if kind == ReviewKind::Code {
+            step.review_role = ReviewRole::Code;
         }
+        step
+    }
+}
+
+impl Prompt {
+    /// Whether this is the built-in code reviewer, including its original specialized version.
+    pub fn is_code_reviewer(&self) -> bool {
+        self.id == CODE_REVIEWER.id || self.id == LEGACY_CODE_REVIEWER
     }
 }
 
@@ -131,6 +158,31 @@ pub(crate) fn link_stock_prompts(templates: &mut [Template]) {
 }
 
 impl Library {
+    pub(crate) fn upgrade_code_review(&mut self) {
+        if !self.prompts.is_empty() && !self.prompts.iter().any(Prompt::is_code_reviewer) {
+            let mut prompt = CODE_REVIEWER.prompt();
+            prompt.name = unique_name(&prompt.name, self.prompts.iter().map(|p| p.name.as_str()));
+            let index = self
+                .prompts
+                .iter()
+                .position(|p| p.id == QA_REVIEWER.id)
+                .unwrap_or(self.prompts.len());
+            self.prompts.insert(index, prompt);
+        }
+        let code = self.review_step(ReviewKind::Code);
+        for template in &mut self.templates {
+            if ["Feature delivery", "Cross-repository"]
+                .iter()
+                .any(|n| template.name.eq_ignore_ascii_case(n))
+                && let [qa, security] = template.reviews.as_slice()
+                && qa.name.eq_ignore_ascii_case("QA")
+                && security.name.eq_ignore_ascii_case("Security & performance")
+            {
+                template.add_review(code.clone());
+            }
+        }
+    }
+
     pub(crate) fn upgrade_shared_contract(&mut self) {
         const CONTRACT_PLANNER_ID: u64 = 8;
         const SHARED_CONTRACT_TEXT: &str = "Read the code on both sides of the boundary in every worktree; do not edit files. Define the shared contract first: endpoints or messages, field names and types, optionality, errors and status values. Follow the shared contract format supplied by Hive, and state which side stays backward compatible while the other is deployed. Give each lane criteria that verify its side of the contract. Ask the user when the contract involves a product decision.";
@@ -194,7 +246,7 @@ mod tests {
     fn review_step_links_only_while_the_library_has_the_prompt() {
         let mut library = Library::default();
         for (kind, stock) in ReviewKind::ALL.into_iter().zip([
-            QA_REVIEWER,
+            CODE_REVIEWER,
             SECURITY_AND_PERFORMANCE_REVIEWER,
             SECURITY_AND_PERFORMANCE_REVIEWER,
             QA_REVIEWER,
@@ -204,7 +256,7 @@ mod tests {
             assert_eq!(step.prompt, Some(stock.id));
             assert_eq!(step.instruction, stock.text);
         }
-        let id = QA_REVIEWER.id;
+        let id = CODE_REVIEWER.id;
         library
             .save_prompt(Some(id), "Code reviewer", "House rules")
             .unwrap();
@@ -215,7 +267,7 @@ mod tests {
         library.delete_prompt(id).unwrap();
         let step = library.review_step(ReviewKind::Code);
         assert_eq!(step.prompt, None);
-        assert_eq!(step.instruction, QA_REVIEWER.text);
+        assert_eq!(step.instruction, CODE_REVIEWER.text);
     }
 
     #[test]

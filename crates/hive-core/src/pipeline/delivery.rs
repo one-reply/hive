@@ -216,6 +216,7 @@ mod tests {
             findings,
         };
         run.record_review_revision("verified".into()).unwrap();
+        report(&mut run, review(vec![]));
         report(&mut run, review(vec![note]));
         report(&mut run, review(vec![]));
         run.decide_criterion(
@@ -232,7 +233,7 @@ mod tests {
             sections,
             [
                 "Changes\n\nAdded POST /login and its tests.\n",
-                "Verification\n\n- `cargo test`: passed\n- QA: Criteria hold\n- Security & performance: Criteria hold\n",
+                "Verification\n\n- `cargo test`: passed\n- Code review: Criteria hold\n- QA: Criteria hold\n- Security & performance: Criteria hold\n",
                 "Acceptance criteria\n\n- Tests pass — Manually verified · Exercised login\n",
                 "Open reviewer notes\n\n- Rename the handler\n",
             ]

@@ -19,8 +19,8 @@ pub enum Phase {
     Development,
     /// One read-only reviewer sees every repository.
     Review(usize),
-    /// Hive runs the mandatory commands before the first review. The index names the review
-    /// whose repair budget a red command spends, which is always the first.
+    /// Mandatory commands. The index names the review to continue when they pass.
+    /// A failing command uses the required QA stage's repair budget.
     Commands(usize),
     /// Automatic repair budget exhausted.
     Decision(usize),

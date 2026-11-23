@@ -54,22 +54,16 @@ impl TemplateEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut template = original.clone().unwrap_or_default();
+        let library = &AppState::get(cx).store.read(cx).state.pipelines;
+        let mut template = original.clone().unwrap_or_else(|| library.new_template());
         if original.is_none() {
             template.name = unique_name(
                 "Custom workflow",
-                AppState::get(cx)
-                    .store
-                    .read(cx)
-                    .state
-                    .pipelines
-                    .templates
-                    .iter()
-                    .map(|t| t.name.as_str()),
+                library.templates.iter().map(|t| t.name.as_str()),
             );
         }
         // A prompt edited or deleted since the recipe was saved must not show stale text.
-        template.sync_prompts(AppState::get(cx).store.read(cx).state.pipelines.prompts());
+        template.sync_prompts(library.prompts());
         let name = input(&template.name, "Template name", window, cx);
         let inspector = Inspector::new(Item::Planner, &template, window, cx);
         let models = cx.observe_in(
@@ -164,16 +158,8 @@ impl TemplateEditor {
                 Item::Lane(i)
             }
             StageChoice::Review(review) => {
-                let i = self.template.reviews.len();
                 let library = &AppState::get(cx).store.read(cx).state.pipelines;
-                let mut step = library.review_step(review);
-                step.name = unique_name(
-                    &step.name,
-                    self.template.reviews.iter().map(|s| s.name.as_str()),
-                );
-                step.profile = self.template.planner.profile.clone();
-                self.template.reviews.push(step);
-                Item::Review(i)
+                Item::Review(self.template.add_review(library.review_step(review)))
             }
         };
         self.load(item, w, cx);

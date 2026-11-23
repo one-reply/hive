@@ -1,6 +1,8 @@
 //! Starter recipes, and the upgrade of the ones saved with retired stock instructions.
-use super::stock::{DEVELOPER, FEATURE_PLANNER, QA_REVIEWER, SECURITY_AND_PERFORMANCE_REVIEWER};
-use super::{LanePreset, Template};
+use super::stock::{
+    CODE_REVIEWER, DEVELOPER, FEATURE_PLANNER, QA_REVIEWER, SECURITY_AND_PERFORMANCE_REVIEWER,
+};
+use super::{LanePreset, Library, ReviewKind, Step, Template};
 
 /// Stock instructions shipped before catalog version 2, by stage name. A saved starter recipe
 /// still holding one of them was never edited, so it may receive the current text.
@@ -33,12 +35,36 @@ const RETIRED: [(&str, &str); 6] = [
 
 impl Default for Template {
     fn default() -> Self {
+        Self::feature(CODE_REVIEWER.stage(ReviewKind::Code.stage_name()))
+    }
+}
+
+/// Older snapshots could omit the list and still resume with their two original review indices.
+pub(super) fn legacy_reviews() -> Vec<Step> {
+    vec![
+        QA_REVIEWER.stage("QA"),
+        SECURITY_AND_PERFORMANCE_REVIEWER.stage("Security & performance"),
+    ]
+}
+
+impl Library {
+    /// Starting point for a new editable template, following this library's reviewer.
+    pub fn new_template(&self) -> Template {
+        let mut template = Template::feature(self.review_step(ReviewKind::Code));
+        template.sync_prompts(self.prompts());
+        template
+    }
+}
+
+impl Template {
+    fn feature(code: Step) -> Self {
         Self {
             name: "Feature delivery".into(),
             shared_contract: false,
             planner: FEATURE_PLANNER.stage("Plan"),
             development: DEVELOPER.stage("Development"),
             reviews: vec![
+                code,
                 QA_REVIEWER.stage("QA"),
                 SECURITY_AND_PERFORMANCE_REVIEWER.stage("Security & performance"),
             ],
@@ -48,16 +74,17 @@ impl Default for Template {
             }],
         }
     }
-}
 
-impl Template {
     /// Starter recipes for a full feature, a targeted fix or an API/client change.
     pub fn presets() -> Vec<Self> {
-        let feature = Self::default();
+        Self::default().starter_variants()
+    }
+
+    pub(crate) fn starter_variants(self) -> Vec<Self> {
         let fix = Self {
             name: "Quick fix".into(),
             reviews: vec![QA_REVIEWER.stage("QA")],
-            ..feature.clone()
+            ..self.clone()
         };
         let cross = Self {
             name: "Cross-repository".into(),
@@ -68,9 +95,9 @@ impl Template {
                     ..Default::default()
                 })
                 .into(),
-            ..feature.clone()
+            ..self.clone()
         };
-        vec![feature, fix, cross]
+        vec![self, fix, cross]
     }
 }
 
@@ -101,12 +128,13 @@ pub(crate) fn refresh_stock_instructions(templates: &mut [Template]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::Library;
     use crate::pipeline::stock::{link_stock_prompts, unlinked};
 
     /// Feature delivery as a catalog-version-1 file holds it: retired texts, no links.
     fn retired_feature_delivery() -> Template {
         let mut template = unlinked(Template::default());
+        template.reviews.remove(0);
+        template.reviews[0].review_role = super::super::ReviewRole::Unspecified;
         template.planner.instruction = RETIRED[0].1.into();
         template.development.instruction = RETIRED[3].1.into();
         template.reviews[0].instruction = RETIRED[4].1.into();
@@ -140,9 +168,13 @@ mod tests {
     fn refresh_then_link_brings_an_untouched_recipe_to_the_current_preset() {
         let mut templates = [retired_feature_delivery()];
         refresh_stock_instructions(&mut templates);
-        assert_eq!(templates[0], unlinked(Template::default()));
         link_stock_prompts(&mut templates);
-        assert_eq!(templates[0], Template::default());
+        let mut library = Library {
+            templates: templates.into(),
+            ..Library::default()
+        };
+        library.upgrade_code_review();
+        assert_eq!(library.templates[0], Template::default());
     }
 
     #[test]
@@ -175,7 +207,7 @@ mod tests {
     #[test]
     fn refresh_keeps_a_retired_text_moved_to_another_stage() {
         let mut template = unlinked(Template::default());
-        template.reviews[1].instruction = RETIRED[4].1.into();
+        template.reviews[2].instruction = RETIRED[4].1.into();
         let expected = template.clone();
         let mut templates = [template];
         refresh_stock_instructions(&mut templates);

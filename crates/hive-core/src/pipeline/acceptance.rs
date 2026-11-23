@@ -167,7 +167,7 @@ impl Run {
         self.history
             .push(format!("Requested QA verification · {line}"));
         self.qa_focus = Some((lane, line.into()));
-        self.phase = Phase::Review(0);
+        self.phase = Phase::Review(self.template.qa_index());
         self.schedule(None);
         Ok(())
     }

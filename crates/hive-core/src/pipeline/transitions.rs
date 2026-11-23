@@ -273,7 +273,10 @@ impl Run {
         // that review already saw this pass: a run saved by a build that ran the checks
         // after it. There the checks conclude the review instead of preceding it.
         let reviewed = self.review_revision.is_some();
-        if reviewed || self.commands.iter().any(|r| !r.success) {
+        if self.commands.iter().any(|r| !r.success) {
+            // Check failures still use QA's repair budget when another review precedes it.
+            self.finish_review(self.template.qa_index());
+        } else if reviewed {
             self.finish_review(ix);
         } else {
             self.enter_review(ix);
@@ -304,8 +307,7 @@ impl Run {
     }
 
     fn finish_review(&mut self, ix: usize) {
-        let issues =
-            !self.findings.is_empty() || (ix == 0 && self.commands.iter().any(|r| !r.success));
+        let issues = !self.findings.is_empty() || self.commands.iter().any(|r| !r.success);
         if !issues {
             if self.qa_focus.take().is_some() {
                 self.phase = Phase::Acceptance;
@@ -400,7 +402,7 @@ impl Run {
             finding.description
         ));
         self.dismissed.push((ix, finding));
-        if self.findings.is_empty() && (ix != 0 || self.commands.iter().all(|r| r.success)) {
+        if self.findings.is_empty() && self.commands.iter().all(|r| r.success) {
             self.finish_review(ix);
         }
         Ok(())

@@ -70,8 +70,8 @@ impl From<Error> for String {
 }
 
 /// Version of the starter catalog: 1 added the extra starter recipes, 2 rewrote their stock
-/// instructions, 3 added the shared contract to Cross-repository.
-pub(crate) const CATALOG_VERSION: u64 = 3;
+/// instructions, 3 added the shared contract, 4 introduced code review before QA.
+pub(crate) const CATALOG_VERSION: u64 = 4;
 
 /// Shared templates and independently resumable task runs on this installation.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -178,11 +178,34 @@ impl PermissionMode {
     ];
 }
 
+/// Review stages whose identity must survive renaming and prompt customization.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewRole {
+    /// Inspects the implementation before QA.
+    Code,
+    /// The required stage that handles targeted acceptance checks.
+    Qa,
+    /// An unmarked stage, including those saved before roles were introduced.
+    #[default]
+    #[serde(other)]
+    Unspecified,
+}
+
+impl ReviewRole {
+    fn is_unspecified(&self) -> bool {
+        *self == Self::Unspecified
+    }
+}
+
 /// One stage's prompt and execution settings.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Step {
     /// Name shown on the stage card.
     pub name: String,
+    /// Absent in older recipes, whose first review is QA.
+    #[serde(default, skip_serializing_if = "ReviewRole::is_unspecified")]
+    pub review_role: ReviewRole,
     /// Instructions added to the task and handoff.
     #[serde(default)]
     pub instruction: String,
@@ -210,6 +233,7 @@ impl Step {
     pub fn new(name: &str, instruction: &str) -> Self {
         Self {
             name: name.into(),
+            review_role: ReviewRole::Unspecified,
             instruction: instruction.into(),
             profile: Profile::default(),
             limit: default_limit(),
@@ -251,7 +275,8 @@ pub struct Template {
     pub planner: Step,
     /// Instructions shared by development lanes.
     pub development: Step,
-    /// Ordered reviews; the first review owns mandatory QA commands.
+    /// Reviews in execution order, after the required commands.
+    #[serde(default = "presets::legacy_reviews")]
     pub reviews: Vec<Step>,
     /// Named development roles, in display and serialization order.
     pub lanes: Vec<LanePreset>,
@@ -274,6 +299,19 @@ impl Template {
         if self.name.trim().is_empty() || self.lanes.is_empty() || self.reviews.is_empty() {
             return Err(Error::InvalidInput(
                 "Give the template a name, a development lane and a QA review",
+            ));
+        }
+        let qa = self.qa_index();
+        if self.reviews[..qa]
+            .iter()
+            .any(|s| s.review_role != ReviewRole::Code)
+            || self.reviews[qa].review_role == ReviewRole::Code
+            || self.reviews[qa + 1..]
+                .iter()
+                .any(|s| s.review_role == ReviewRole::Qa)
+        {
+            return Err(Error::InvalidInput(
+                "A template needs one designated QA review.",
             ));
         }
         let mut names = HashSet::new();

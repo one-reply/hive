@@ -1,4 +1,4 @@
-//! Adding, reordering and removing stages: the first QA review is a fixed barrier, and lanes
+//! Adding, reordering and removing stages: the required QA review is a fixed barrier, and lanes
 //! and reviews only move among their own kind.
 use super::*;
 use gpui_kit::component::button::ButtonVariants as _;
@@ -18,10 +18,22 @@ impl StageChoice {
         }
     }
 }
+/// Which positions an optional review can occupy on its side of QA.
+pub(super) fn review_positions(t: &Template, index: usize) -> std::ops::Range<usize> {
+    let qa = t.qa_index();
+    match index.cmp(&qa) {
+        std::cmp::Ordering::Less => 0..qa,
+        std::cmp::Ordering::Equal => qa..qa,
+        std::cmp::Ordering::Greater => qa + 1..t.reviews.len(),
+    }
+}
+
 pub(super) fn move_item(t: &mut Template, from: Item, to: Item) -> bool {
     match (from, to) {
         (Item::Lane(a), Item::Lane(b)) => reorder(&mut t.lanes, a, b),
-        (Item::Review(a), Item::Review(b)) if a > 0 && b > 0 => reorder(&mut t.reviews, a, b),
+        (Item::Review(a), Item::Review(b)) if review_positions(t, a).contains(&b) => {
+            reorder(&mut t.reviews, a, b)
+        }
         _ => false,
     }
 }
@@ -60,7 +72,13 @@ impl TemplateEditor {
                 Item::Lane(i) if self.template.lanes.len() > 1 => {
                     (0, self.template.lanes.len(), i, Item::Lane)
                 }
-                Item::Review(i) if i > 0 => (1, self.template.reviews.len(), i, Item::Review),
+                Item::Review(i) => {
+                    let positions = review_positions(&self.template, i);
+                    if positions.is_empty() {
+                        return None;
+                    }
+                    (positions.start, positions.end, i, Item::Review)
+                }
                 _ => return None,
             };
         let mut options = Vec::new();
@@ -97,11 +115,12 @@ mod tests {
         let mut t = Template::default();
         assert!(!move_item(&mut t, Item::Review(1), Item::Review(0)));
         assert!(!move_item(&mut t, Item::Lane(0), Item::Review(1)));
-        t.reviews.push(t.reviews[1].clone());
-        t.reviews[2].name = "Code review".into();
-        assert!(move_item(&mut t, Item::Review(2), Item::Review(1)));
-        assert_eq!(t.reviews[0].name, "QA");
-        assert_eq!(t.reviews[1].name, "Code review");
+        assert!(!move_item(&mut t, Item::Review(2), Item::Review(0)));
+        t.reviews.push(t.reviews[2].clone());
+        t.reviews[3].name = "Extra review".into();
+        assert!(move_item(&mut t, Item::Review(3), Item::Review(2)));
+        assert_eq!(t.reviews[1].name, "QA");
+        assert_eq!(t.reviews[2].name, "Extra review");
         let mut items = vec!["api", "web", "mobile"];
         assert!(reorder(&mut items, 0, 2));
         assert_eq!(items, ["web", "mobile", "api"]);

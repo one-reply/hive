@@ -110,10 +110,12 @@ project while agents run.
    assignments. API, Web, and QA receive that approved text. Different repositories
    can develop in parallel. Click **Open live
    session** to see a running CLI and respond to questions or permission requests.
-4. QA starts with the approved criteria, worktrees and check results. After a repair,
-   QA also receives the earlier finding or command failure. A finding returns to
-   its development lane, followed by a fresh QA pass. After the configured repair
-   limit, **Needs attention** takes you to the decision. Required commands must pass.
+4. Once required checks pass, **Feature delivery** and **Cross-repository** run
+   **Code review**, **QA**, then **Security & performance**. The code reviewer reads
+   the diff and its callers for defects. QA verifies the approved acceptance criteria.
+   **Quick fix** goes straight to QA. Use **Add stage → Code review** to include the
+   code reviewer there too. Blocking findings return to development, then checks and
+   reviews run again. After the repair limit, **Needs attention** opens the decision.
 5. Open **Timeline** to see stage durations, parallel lanes and decision points.
    **Changes** groups files by repository and loads the selected diff. **Checks**
    shows test outcomes, and **Activity** retains the handoff history. Accept the
