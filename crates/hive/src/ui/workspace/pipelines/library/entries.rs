@@ -12,26 +12,32 @@ pub(in crate::ui::workspace::pipelines) enum Entry {
     Workflows,
     Section(&'static str),
     Run(u64),
+    /// The project's unsubmitted launch form.
+    Draft,
     /// A run of another project that waits for the user.
     Elsewhere(u64),
     NoRuns,
 }
 
 /// The page from top to bottom. `runs` are the project's runs, newest first, and every
-/// section keeps that order; a section without runs has no heading.
-pub(super) fn entries(runs: &[(u64, RunStatus)], elsewhere: &[u64]) -> Vec<Entry> {
+/// section keeps that order; a section without entries has no heading. The draft sits in
+/// the same place as in the overview card: after the live runs, before the finished ones.
+pub(super) fn entries(runs: &[(u64, RunStatus)], has_draft: bool, elsewhere: &[u64]) -> Vec<Entry> {
     let mut entries = vec![Entry::Workflows];
-    let mut sorted = runs.to_vec();
+    let mut sorted: Vec<_> = runs
+        .iter()
+        .map(|&(id, status)| (Group::of(status), Entry::Run(id)))
+        .chain(has_draft.then_some((Group::Drafts, Entry::Draft)))
+        .collect();
     // The sort is stable, so each section keeps the newest run first.
-    sorted.sort_by_key(|(_, status)| Group::of(*status));
+    sorted.sort_by_key(|(group, _)| *group);
     let mut previous = None;
-    for (id, status) in sorted {
-        let group = Group::of(status);
+    for (group, entry) in sorted {
         if previous != Some(group) {
             entries.push(Entry::Section(group.label()));
             previous = Some(group);
         }
-        entries.push(Entry::Run(id));
+        entries.push(entry);
     }
     if !elsewhere.is_empty() {
         entries.push(Entry::Section(ELSEWHERE));
@@ -59,7 +65,7 @@ mod tests {
             (1, Failed),
         ];
         assert_eq!(
-            entries(&runs, &[9]),
+            entries(&runs, false, &[9]),
             [
                 Entry::Workflows,
                 Entry::Section("Needs you"),
@@ -78,13 +84,46 @@ mod tests {
 
     #[test]
     fn a_project_without_runs_says_so_under_the_workflows() {
-        assert_eq!(entries(&[], &[]), [Entry::Workflows, Entry::NoRuns]);
+        assert_eq!(entries(&[], false, &[]), [Entry::Workflows, Entry::NoRuns]);
         assert_eq!(
-            entries(&[], &[9]),
+            entries(&[], false, &[9]),
             [
                 Entry::Workflows,
                 Entry::Section(ELSEWHERE),
                 Entry::Elsewhere(9),
+                Entry::NoRuns,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_draft_comes_after_the_live_runs_and_before_the_finished_ones() {
+        use RunStatus::*;
+        let runs = [(3, Completed), (2, Running), (1, NeedsYou)];
+        assert_eq!(
+            entries(&runs, true, &[]),
+            [
+                Entry::Workflows,
+                Entry::Section("Needs you"),
+                Entry::Run(1),
+                Entry::Section("Running"),
+                Entry::Run(2),
+                Entry::Section("Drafts"),
+                Entry::Draft,
+                Entry::Section("Recent"),
+                Entry::Run(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_draft_alone_is_listed_and_the_project_still_has_no_runs() {
+        assert_eq!(
+            entries(&[], true, &[]),
+            [
+                Entry::Workflows,
+                Entry::Section("Drafts"),
+                Entry::Draft,
                 Entry::NoRuns,
             ]
         );
