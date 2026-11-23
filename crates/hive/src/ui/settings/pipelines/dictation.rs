@@ -23,7 +23,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
     *,
 };
-use hive_core::dictation::{DEFAULT_PROMPT, Recipe};
+use hive_core::dictation::{DEFAULT_PROMPT, LANGUAGES, Recipe};
 use hive_core::llm::{AUDIO_PROVIDERS, Provider};
 
 /// Enough of the prompt is visible to read its rules without scrolling the field.
@@ -119,6 +119,7 @@ pub(super) struct DictationCard {
     providers: Entity<AiProviders>,
     provider: Entity<SelectState<SearchableVec<ProviderItem>>>,
     model: Entity<SelectState<SearchableVec<String>>>,
+    language: Entity<SelectState<SearchableVec<String>>>,
     prompt: Entity<TextareaState>,
     error: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
@@ -145,6 +146,15 @@ impl DictationCard {
             SelectState::new(SearchableVec::<String>::new(vec![]), None, window, cx)
                 .searchable(true)
         });
+        let language = cx.new(|cx| {
+            let languages = LANGUAGES.map(str::to_owned).to_vec();
+            let mut select =
+                SelectState::new(SearchableVec::new(languages), None, window, cx).searchable(true);
+            if let Some(language) = recipe(cx).language() {
+                select.set_selected_value(&language.to_owned(), window, cx);
+            }
+            select
+        });
         let prompt = cx.new(|cx| TextareaState::new(window, cx).rows(PROMPT_ROWS));
         let saved = recipe(cx).prompt().to_owned();
         prompt.update(cx, |input, cx| input.set_value(saved, window, cx));
@@ -166,6 +176,13 @@ impl DictationCard {
                 edit(cx, |recipe| recipe.set_model(model.clone()));
                 cx.notify();
             }),
+            cx.subscribe(&language, |card, _, event, cx| {
+                let SelectEvent::Confirm(language) = event;
+                card.error = edit(cx, |recipe| recipe.set_language(language.clone()))
+                    .err()
+                    .map(|error| error.to_string().into());
+                cx.notify();
+            }),
             cx.subscribe(&prompt, |card, _, event, cx| {
                 if matches!(event, InputEvent::Blur) {
                     card.save_prompt(cx);
@@ -178,6 +195,7 @@ impl DictationCard {
             providers,
             provider,
             model,
+            language,
             prompt,
             error: None,
             _subscriptions: subscriptions,
@@ -342,6 +360,22 @@ impl Render for DictationCard {
                 card.child(div().text_sm().text_color(muted).child(notice))
             })
             .children(model)
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child("Language")
+                    .child(
+                        Select::new(&self.language)
+                            .placeholder("Detect automatically")
+                            .search_placeholder("Search languages…")
+                            .accessibility_label("Dictation language")
+                            .cleanable(true),
+                    )
+                    .child(div().text_xs().text_color(muted).child(
+                        "Name the language you dictate in: a model left to detect it mistakes \
+                         close languages for each other.",
+                    )),
+            )
             .child(
                 h_flex()
                     .justify_between()

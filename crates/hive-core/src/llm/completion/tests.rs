@@ -97,7 +97,7 @@ fn posted_body(request: &str) -> serde_json::Value {
 }
 
 #[test]
-fn audio_requests_carry_the_prompt_and_base64_wav_for_each_audio_provider() {
+fn audio_requests_carry_the_prompt_as_the_system_instruction_and_the_wav_as_base64() {
     let wav = b"RIFF\x00\xffWAVE recording";
     let audio = STANDARD.encode(wav);
     for provider in AUDIO_PROVIDERS {
@@ -116,11 +116,15 @@ fn audio_requests_carry_the_prompt_and_base64_wav_for_each_audio_provider() {
                 "https://generativelanguage.googleapis.com/v1beta/models/fixture-model:generateContent"
             );
             assert_eq!(
-                sent["contents"][0]["parts"],
-                json!([
-                    {"text":"Transcribe."},
+                sent["systemInstruction"],
+                json!({"parts":[{"text":"Transcribe."}]})
+            );
+            assert_eq!(
+                sent["contents"],
+                json!([{"role":"user","parts":[
+                    {"text":"Transcribe this recording."},
                     {"inlineData":{"mimeType":"audio/wav","data":audio}},
-                ])
+                ]}])
             );
             assert_eq!(sent["generationConfig"]["maxOutputTokens"], 8192);
             continue;
@@ -128,10 +132,13 @@ fn audio_requests_carry_the_prompt_and_base64_wav_for_each_audio_provider() {
         assert_eq!(sent["model"], "fixture-model");
         assert_eq!(
             sent["messages"],
-            json!([{"role":"user","content":[
-                {"type":"text","text":"Transcribe."},
-                {"type":"input_audio","input_audio":{"data":audio,"format":"wav"}},
-            ]}])
+            json!([
+                {"role":"system","content":"Transcribe."},
+                {"role":"user","content":[
+                    {"type":"text","text":"Transcribe this recording."},
+                    {"type":"input_audio","input_audio":{"data":audio,"format":"wav"}},
+                ]},
+            ])
         );
         if provider == Provider::OpenAi {
             assert_eq!(url, "https://api.openai.com/v1/chat/completions");

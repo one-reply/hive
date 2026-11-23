@@ -8,6 +8,10 @@ use std::time::Duration;
 const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(180);
 /// Output limit of a transcription; the longest recording is a few thousand tokens of text.
 const TRANSCRIPT_TOKENS: u32 = 8192;
+/// What the user turn says beside the recording. The instructions go in the system role:
+/// a model that finds them in the same turn as the audio takes them for a writing brief,
+/// and one given audio alone answers what was said instead of writing it down.
+const TRANSCRIBE_REQUEST: &str = "Transcribe this recording.";
 
 /// Reply envelopes of the provider APIs. OpenAI answers `generate` through Responses and
 /// `transcribe` through Chat Completions, so the provider alone does not name the parser.
@@ -88,7 +92,8 @@ pub fn generate(provider: Provider, model: &str, prompt: &str) -> Result<String,
     extract(provider, Reply::for_text(provider), response)
 }
 
-/// Blocking: turns a WAV recording into text in one request, guided by `prompt`.
+/// Blocking: turns a WAV recording into text in one request. `prompt` is the system
+/// instruction the model follows while it transcribes.
 pub fn transcribe(
     provider: Provider,
     model: &str,
@@ -134,8 +139,9 @@ fn audio_request(
         return Ok((
             google_url(model)?,
             json!({
+                "systemInstruction":{"parts":[{"text":prompt}]},
                 "contents":[{"role":"user","parts":[
-                    {"text":prompt},
+                    {"text":TRANSCRIBE_REQUEST},
                     {"inlineData":{"mimeType":"audio/wav","data":audio}},
                 ]}],
                 "generationConfig":{"maxOutputTokens":TRANSCRIPT_TOKENS},
@@ -143,10 +149,13 @@ fn audio_request(
             Reply::GenerateContent,
         ));
     }
-    let messages = json!([{"role":"user","content":[
-        {"type":"text","text":prompt},
-        {"type":"input_audio","input_audio":{"data":audio,"format":"wav"}},
-    ]}]);
+    let messages = json!([
+        {"role":"system","content":prompt},
+        {"role":"user","content":[
+            {"type":"text","text":TRANSCRIBE_REQUEST},
+            {"type":"input_audio","input_audio":{"data":audio,"format":"wav"}},
+        ]},
+    ]);
     let (url, body) = if provider == Provider::OpenAi {
         (
             "https://api.openai.com/v1/chat/completions",

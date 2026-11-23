@@ -16,8 +16,9 @@ use crate::microphone::{self, Permission, Recording};
 /// How often the level and the clock of a recording are read. Twenty times a second moves
 /// the waveform with the voice without redrawing on every frame.
 const LEVEL_TICK: Duration = Duration::from_millis(50);
-/// How many readings the waveform shows: the last two and a half seconds.
-pub(crate) const LEVELS: usize = 50;
+/// How many readings are kept for the waveform: eight seconds, more bars than the widest
+/// panel has room for, so the waveform fills whatever width it is given.
+pub(crate) const LEVELS: usize = 160;
 
 pub(crate) enum Phase {
     Idle,

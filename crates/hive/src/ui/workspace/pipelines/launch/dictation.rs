@@ -17,8 +17,10 @@ const BAR_WIDTH: Pixels = px(3.);
 const BAR_GAP: Pixels = px(2.);
 /// A bar of silence is a dot, so the waveform keeps its shape between words.
 const BAR_MIN_HEIGHT: Pixels = px(3.);
-/// How much of its color the oldest bar keeps; the bars fade towards it as they age.
+/// How much of its color an old bar keeps, and over how many bars the newest fades to it:
+/// about the number a panel of the form's width shows.
 const OLDEST_BAR_OPACITY: f32 = 0.3;
+const FADE_BARS: usize = 100;
 /// Wide enough for the reason on two lines above its button.
 const SETUP_CARD_WIDTH: Pixels = px(240.);
 
@@ -43,27 +45,38 @@ fn bar_height(level: f32) -> Pixels {
     BAR_MIN_HEIGHT + (WAVE_HEIGHT - BAR_MIN_HEIGHT) * level.clamp(0., 1.)
 }
 
-/// Opacity of the bar at `index` of the waveform, where the last one is the newest.
-fn bar_opacity(index: usize) -> f32 {
-    let age = 1. - index as f32 / (LEVELS - 1) as f32;
-    1. - (1. - OLDEST_BAR_OPACITY) * age
+/// Opacity of a bar `age` readings old: the newest is solid and the bars fade as they near
+/// the far end of the panel.
+fn bar_opacity(age: usize) -> f32 {
+    let faded = (age as f32 / FADE_BARS as f32).min(1.);
+    1. - (1. - OLDEST_BAR_OPACITY) * faded
 }
 
-/// The recent loudness as bars centered on one line, the newest on the right. Readings not
-/// taken yet are bars of silence, so the waveform has its full width from the start.
+/// The recent loudness as bars centered on one line, filling the width it is given: the
+/// newest bar is at the right edge and older ones run off the left. Readings not taken yet
+/// are bars of silence, so the waveform is full from the start.
 fn waveform(levels: &std::collections::VecDeque<f32>, color: Hsla) -> Div {
     let silent = LEVELS.saturating_sub(levels.len());
-    let readings = std::iter::repeat_n(0., silent).chain(levels.iter().copied());
+    let newest_first = levels
+        .iter()
+        .rev()
+        .copied()
+        .chain(std::iter::repeat_n(0., silent));
     h_flex()
-        .flex_none()
+        // Laid out from the right, so the bars that do not fit are the oldest ones.
+        .flex_row_reverse()
+        .flex_1()
+        .min_w_0()
         .h(WAVE_HEIGHT)
         .gap(BAR_GAP)
-        .children(readings.enumerate().map(|(index, level)| {
+        .overflow_hidden()
+        .children(newest_first.enumerate().map(|(age, level)| {
             div()
+                .flex_none()
                 .w(BAR_WIDTH)
                 .h(bar_height(level))
                 .rounded_full()
-                .bg(color.opacity(bar_opacity(index)))
+                .bg(color.opacity(bar_opacity(age)))
         }))
 }
 
@@ -236,7 +249,7 @@ impl LaunchForm {
                 let time = format!("{} / {}", clock(*elapsed), clock(MAX_RECORDING));
                 bar.child(Icon::new(Lucide::Mic).small().text_color(danger))
                     .child(waveform(levels, danger))
-                    .child(status(time.into()).text_color(muted))
+                    .child(div().flex_none().text_color(muted).child(time))
                     .child(cancel("dictation-cancel", "Cancel", window, cx))
                     .child(button(
                         "dictation-done",
@@ -290,8 +303,8 @@ impl LaunchForm {
 #[cfg(test)]
 mod tests {
     use super::{
-        BAR_MIN_HEIGHT, LEVELS, OLDEST_BAR_OPACITY, WAVE_HEIGHT, bar_height, bar_opacity, clock,
-        dictated,
+        BAR_MIN_HEIGHT, FADE_BARS, LEVELS, OLDEST_BAR_OPACITY, WAVE_HEIGHT, bar_height,
+        bar_opacity, clock, dictated,
     };
     use std::time::Duration;
 
@@ -315,9 +328,13 @@ mod tests {
 
     #[test]
     fn bars_fade_from_the_newest_to_the_oldest() {
-        assert_eq!(bar_opacity(LEVELS - 1), 1.);
-        assert!((bar_opacity(0) - OLDEST_BAR_OPACITY).abs() < f32::EPSILON);
-        assert!(bar_opacity(LEVELS / 2) > bar_opacity(0));
+        assert_eq!(bar_opacity(0), 1.);
+        assert!(bar_opacity(FADE_BARS / 2) < 1.);
+        assert!(bar_opacity(FADE_BARS / 2) > bar_opacity(FADE_BARS));
+        // Every bar past the fade keeps the same faint color.
+        for age in [FADE_BARS, LEVELS - 1] {
+            assert!((bar_opacity(age) - OLDEST_BAR_OPACITY).abs() < f32::EPSILON);
+        }
     }
 
     #[test]
