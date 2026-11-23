@@ -261,7 +261,7 @@ mod tests {
     fn a_run_that_just_started_has_finished_none_of_its_stages() {
         let mut run = sample();
         run.record_stage(None, 1);
-        assert_eq!(run.progress(), RunProgress { done: 0, total: 7 });
+        assert_eq!(run.progress(), RunProgress { done: 0, total: 8 });
     }
 
     #[test]
@@ -289,7 +289,7 @@ mod tests {
         });
         advance(&mut run, 3, |run| run.approve().unwrap());
         // Planner and approval are done; Web has no task, so six stages remain to count.
-        assert_eq!(run.progress(), RunProgress { done: 2, total: 7 });
+        assert_eq!(run.progress(), RunProgress { done: 2, total: 8 });
         assert_eq!(Stage::Develop(1).status(&run, &[]), StageStatus::Unassigned);
     }
 
@@ -298,7 +298,7 @@ mod tests {
         let mut run = sample();
         run.lanes[0].assignment = "Add the endpoint".into();
         run.phase = Phase::Accepted;
-        assert_eq!(run.progress(), RunProgress { done: 7, total: 7 });
+        assert_eq!(run.progress(), RunProgress { done: 8, total: 8 });
     }
 
     #[test]
@@ -322,6 +322,7 @@ mod tests {
                 Stage::Commands(0),
                 Stage::Review(0),
                 Stage::Review(1),
+                Stage::Review(2),
                 Stage::Accept
             ]
         );

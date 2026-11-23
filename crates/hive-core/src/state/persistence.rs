@@ -46,7 +46,8 @@ pub enum StateError {
 /// Version 5 adds immutable review trees, targeted feedback and direct-to-development runs.
 /// Older and unversioned files load with defaults for any missing sections.
 /// Version 6 records criterion decisions, shared contracts and regression checkpoints.
-pub const SCHEMA_VERSION: u32 = 6;
+/// Version 7 preserves the QA stage's identity when code review precedes it.
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Loaded state and, when the file could not be used as written, what happened to it.
 pub struct LoadedState {
@@ -278,18 +279,12 @@ fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::L
     }
     let mut ids = HashSet::new();
     let mut names = HashSet::new();
-    let mut templates = if object.contains_key("templates") {
-        items(
-            object.get("templates"),
-            "pipelines.templates",
-            lost,
-            |t: &Template| {
-                t.validate_structure().is_ok() && names.insert(t.name.to_ascii_lowercase())
-            },
-        )
-    } else {
-        Library::default().templates
-    };
+    let mut templates = items(
+        object.get("templates"),
+        "pipelines.templates",
+        lost,
+        |t: &Template| t.validate_structure().is_ok() && names.insert(t.name.to_ascii_lowercase()),
+    );
     let runs = items(object.get("runs"), "pipelines.runs", lost, |r: &Run| {
         r.valid_snapshot() && ids.insert(r.id())
     });
@@ -297,23 +292,13 @@ fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::L
         .get("catalog_version")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    if catalog_version == 0 {
-        for starter in Template::presets().into_iter().skip(1) {
-            if !templates
-                .iter()
-                .any(|t| t.name.eq_ignore_ascii_case(&starter.name))
-            {
-                templates.push(starter);
-            }
-        }
-    }
     if catalog_version < 2 {
         refresh_stock_instructions(&mut templates);
     }
     let mut prompt_ids = HashSet::new();
     let mut prompt_names = HashSet::new();
     // A library saved before prompts existed, or whose list is unreadable, starts from the
-    // built-in prompts. A stored list is the user's and stays as it is, even when empty.
+    // built-in prompts. Preserve the user's saved entries and any deliberately empty list.
     let prompts = match object.get("prompts") {
         Some(stored) if stored.is_array() => {
             items(Some(stored), "pipelines.prompts", lost, |p: &Prompt| {
@@ -351,6 +336,30 @@ fn pipelines(value: Option<Value>, lost: &mut Vec<String>) -> crate::pipeline::L
     // A stage whose prompt was dropped above keeps its mirrored text as its own instructions.
     if catalog_version < 3 {
         library.upgrade_shared_contract();
+    }
+    if catalog_version < 4 {
+        library.upgrade_code_review();
+    }
+    if catalog_version < 5 {
+        library.refresh_code_reviewer_text();
+    }
+    let has_templates = object.contains_key("templates");
+    if !has_templates || catalog_version == 0 {
+        // Version zero had only Feature delivery. Keep existing templates in their saved order.
+        for starter in library
+            .new_template()
+            .starter_variants()
+            .into_iter()
+            .skip(usize::from(has_templates))
+        {
+            if !library
+                .templates
+                .iter()
+                .any(|t| t.name.eq_ignore_ascii_case(&starter.name))
+            {
+                library.templates.push(starter);
+            }
+        }
     }
     library.sync_prompts();
     library
@@ -575,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn first_launch_seeds_only_the_four_pipeline_role_prompts() {
+    fn first_launch_seeds_the_five_pipeline_role_prompts() {
         let fixture = Fixture::new();
         let state = State::load_from(&fixture.0).unwrap().state;
         let roles: Vec<_> = state
@@ -589,6 +598,7 @@ mod tests {
             [
                 (1, "Feature planner"),
                 (2, "Developer"),
+                (15, "Code reviewer"),
                 (3, "QA reviewer"),
                 (4, "Security & performance reviewer"),
             ]
@@ -598,6 +608,168 @@ mod tests {
             State::load_from(&fixture.0).unwrap().state.pipelines,
             state.pipelines
         );
+    }
+
+    #[test]
+    fn prior_catalog_upgrades_standard_reviews_once_and_preserves_the_active_run() {
+        use crate::pipeline::{Lane, Library, PermissionMode, ReviewRole, Run, Template};
+        let mut old = Library {
+            catalog_version: 3,
+            ..Default::default()
+        };
+        old.prompts.retain(|p| !p.is_code_reviewer());
+        for template in &mut old.templates {
+            template
+                .reviews
+                .retain(|s| s.review_role != ReviewRole::Code);
+            template.reviews[0].review_role = ReviewRole::Unspecified;
+        }
+        let mut custom = Template {
+            name: "My workflow".into(),
+            ..old.templates[0].clone()
+        };
+        custom.reviews[0].name = "My QA".into();
+        old.templates.push(custom.clone());
+        let qa = &mut old.templates[0].reviews[0];
+        qa.profile.agent = crate::agent::AgentKind::ClaudeCode;
+        qa.profile.model = "my-model".into();
+        qa.profile.effort = "high".into();
+        qa.profile.mode = Some(PermissionMode::Auto);
+        let lane = Lane {
+            name: "Development".into(),
+            project: "/api".into(),
+            base: "HEAD".into(),
+            ..Default::default()
+        };
+        let mut run = Run::new(
+            1,
+            "/api".into(),
+            "Task".into(),
+            old.templates[0].clone(),
+            vec![lane],
+        )
+        .unwrap();
+        run.start_direct("Works").unwrap();
+        run.report(
+            &run.pending()[0],
+            crate::pipeline::Report::Developed {
+                summary: "Done".into(),
+            },
+        )
+        .unwrap();
+        old.runs.push(run.clone());
+        let load = |value| {
+            let mut lost = vec![];
+            let library = pipelines(Some(value), &mut lost);
+            assert!(lost.is_empty(), "{lost:?}");
+            library
+        };
+        let mut upgraded = load(serde_json::to_value(&old).unwrap());
+        let mut expected_profile = old.templates[0].reviews[0].profile.clone();
+        expected_profile.mode = None;
+        assert_eq!(upgraded.templates[0].reviews[0].profile, expected_profile);
+        for i in [0, 2] {
+            assert_eq!(upgraded.templates[i].reviews[0].prompt, Some(15));
+            assert_eq!(upgraded.templates[i].qa_index(), 1);
+            assert_eq!(
+                upgraded.templates[i].reviews[1].profile,
+                old.templates[i].reviews[0].profile
+            );
+        }
+        assert_eq!(upgraded.prompt_uses(15), 2);
+        assert_eq!(upgraded.templates[1], old.templates[1]);
+        assert_eq!(upgraded.templates[3], custom);
+        assert_eq!(upgraded.runs, [run]);
+        let mut omitted = serde_json::to_value(&old).unwrap();
+        omitted["runs"][0]["template"]
+            .as_object_mut()
+            .unwrap()
+            .remove("reviews");
+        let restored = load(omitted);
+        let resumed = &restored.runs[0];
+        assert_eq!(resumed.step(&resumed.pending()[0]).unwrap().name, "QA");
+        assert_eq!(resumed.template().reviews.len(), 2);
+        assert_eq!(
+            upgraded.runs[0]
+                .step(&upgraded.runs[0].pending()[0])
+                .unwrap()
+                .name,
+            "QA"
+        );
+        assert_eq!(load(serde_json::to_value(&upgraded).unwrap()), upgraded);
+        upgraded.templates[0].remove_review(0).unwrap();
+        upgraded.delete_prompt(15).unwrap();
+        assert_eq!(load(serde_json::to_value(&upgraded).unwrap()), upgraded);
+
+        let mut legacy = old;
+        legacy.prompts.push(crate::pipeline::Prompt {
+            id: 11,
+            name: "Maintainer".into(),
+            text: "Our review instructions".into(),
+        });
+        let upgraded = load(serde_json::to_value(legacy).unwrap());
+        assert!(upgraded.prompt(15).is_none());
+        assert_eq!(upgraded.templates[0].reviews[0].prompt, Some(11));
+        assert_eq!(upgraded.new_template().reviews[0].prompt, Some(11));
+        assert_eq!(
+            upgraded.templates[0].reviews[0].instruction,
+            "Our review instructions"
+        );
+    }
+
+    #[test]
+    fn catalog_four_refreshes_only_the_original_code_reviewer_and_its_links() {
+        use crate::pipeline::{Lane, Library, Run};
+        let previous = include_str!("../pipeline/prompts/previous/code-reviewer-v4.md").trim_end();
+        let mut saved = Library {
+            catalog_version: 4,
+            ..Default::default()
+        };
+        saved
+            .save_prompt(Some(15), "Team reviewer", previous)
+            .unwrap();
+        let copy = saved.duplicate_prompt(15).unwrap();
+        saved.templates[2].reviews[0].prompt = None;
+        let run = Run::new(
+            1,
+            "/repo".into(),
+            "Task".into(),
+            saved.templates[0].clone(),
+            vec![Lane {
+                name: "Development".into(),
+                project: "/repo".into(),
+                ..Lane::default()
+            }],
+        )
+        .unwrap();
+        saved.runs.push(run.clone());
+        let load = |saved: &Library| {
+            let mut lost = vec![];
+            let library = pipelines(Some(serde_json::to_value(saved).unwrap()), &mut lost);
+            assert!(lost.is_empty(), "{lost:?}");
+            library
+        };
+        let updated = load(&saved);
+        let current = Library::default().prompt(15).unwrap().text.clone();
+        assert_ne!(previous, current);
+        let reviewer = updated.prompt(15).unwrap();
+        assert_eq!(reviewer.name, "Team reviewer");
+        assert_eq!(reviewer.text, current);
+        assert_eq!(updated.templates[0].reviews[0].instruction, current);
+        assert_eq!(updated.templates[2], saved.templates[2]);
+        assert_eq!(updated.prompt(copy), saved.prompt(copy));
+        assert_eq!(updated.runs, [run]);
+        assert_eq!(load(&updated), updated);
+
+        saved
+            .save_prompt(Some(15), "Team reviewer", "House rules")
+            .unwrap();
+        assert_eq!(
+            load(&saved).templates[0].reviews[0].instruction,
+            "House rules"
+        );
+        saved.delete_prompt(15).unwrap();
+        assert!(load(&saved).prompt(15).is_none());
     }
 
     #[test]
@@ -686,6 +858,7 @@ mod tests {
         use crate::pipeline::{Lane, Library, ReviewKind, Run, Template};
         let stock = Library::default();
         let mut saved = without_links(Template::default());
+        saved.remove_review(0).unwrap();
         saved.development.instruction = "House development rules".into();
         saved.reviews.push(stock.review_step(ReviewKind::Code));
         let saved = without_links(saved);
@@ -713,7 +886,7 @@ mod tests {
         let loaded = &library.templates[0];
         assert_eq!(loaded.planner, Template::default().planner);
         assert_eq!(loaded.development, saved.development);
-        assert_eq!(loaded.reviews[0], Template::default().reviews[0]);
+        assert_eq!(loaded.reviews[0], Template::default().reviews[1]);
         assert_eq!(loaded.reviews[2], stock.review_step(ReviewKind::Code));
         assert_eq!(library.runs, [run]);
         let reloaded = pipelines(Some(serde_json::to_value(&library).unwrap()), &mut lost);
@@ -747,7 +920,8 @@ mod tests {
             lost,
             [1, 2, 3, 4].map(|index| format!("pipelines.prompts[{index}]"))
         );
-        assert_eq!(library.prompts().len(), 1);
+        assert_eq!(library.prompts().len(), 2);
+        assert!(library.prompt(15).unwrap().is_code_reviewer());
         assert_eq!(library.prompt(1000).unwrap().name, "Mine");
         let loaded = &library.templates[0];
         assert_eq!(loaded.planner.prompt, None);

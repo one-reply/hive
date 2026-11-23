@@ -112,7 +112,7 @@ impl PipelinesPage {
             .accessibility_label(format!("Actions for {}", prompt.name))
             .tooltip("Prompt actions")
             .dropdown_menu(move |menu, _, _| prompt_menu(menu, &page, &menu_prompt, uses));
-        let role = RoleKind::of_prompt(&prompt.name);
+        let role = RoleKind::library_prompt(Some(prompt), &prompt.name);
         let color = role_color(role, cx);
         let theme = cx.theme();
         h_flex()
@@ -173,8 +173,7 @@ impl PipelinesPage {
         let library = &AppState::get(cx).store.read(cx).state.pipelines;
         let uses = saved.as_ref().map_or(0, |p| library.prompt_uses(p.id));
         let dirty = self.is_dirty(cx);
-        // The role follows the name as it is typed, so the icon shows what the row will get.
-        let role = RoleKind::of_prompt(&self.name.read(cx).value());
+        let role = RoleKind::library_prompt(saved.as_ref(), &self.name.read(cx).value());
         let color = role_color(role, cx);
         let back = action(
             "back-to-prompts",

@@ -1,5 +1,5 @@
 //! Editing rules shared by every template editor: names stay unique, routes follow renames.
-use super::{Error, Library, Profile, Template};
+use super::{Error, Library, Profile, ReviewRole, Step, Template};
 use std::collections::HashSet;
 
 /// `base`, or `base N` with the first free number; names compare ignoring ASCII case.
@@ -64,6 +64,34 @@ impl Library {
 }
 
 impl Template {
+    /// Position of the required QA stage. Saved recipes without a marker used the first review.
+    pub fn qa_index(&self) -> usize {
+        self.reviews
+            .iter()
+            .position(|s| s.review_role == ReviewRole::Qa)
+            .unwrap_or(0)
+    }
+
+    /// Inserts code review before QA, using QA's CLI settings and the read-only reviewer mode.
+    /// Other reviews keep the editor's convention of using the planner profile.
+    pub fn add_review(&mut self, mut step: Step) -> usize {
+        step.name = unique_name(&step.name, self.reviews.iter().map(|s| s.name.as_str()));
+        if step.review_role == ReviewRole::Code {
+            let index = self.qa_index();
+            if let Some(qa) = self.reviews.get_mut(index) {
+                qa.review_role = ReviewRole::Qa;
+                step.profile = qa.profile.clone();
+                step.profile.mode = None;
+            }
+            self.reviews.insert(index, step);
+            index
+        } else {
+            step.profile = self.planner.profile.clone();
+            self.reviews.push(step);
+            self.reviews.len() - 1
+        }
+    }
+
     /// Renames a lane and every QA route that returns work to it.
     pub fn rename_lane(&mut self, index: usize, name: String) -> Result<(), Error> {
         if self
@@ -101,9 +129,9 @@ impl Template {
         Ok(())
     }
 
-    /// Removes a QA review other than the first, which every template keeps.
+    /// Removes an optional review, keeping the required QA stage.
     pub fn remove_review(&mut self, index: usize) -> Result<(), Error> {
-        if index == 0 || index >= self.reviews.len() {
+        if index == self.qa_index() || index >= self.reviews.len() {
             return Err(Error::InvalidInput("A template needs a QA review."));
         }
         self.reviews.remove(index);
@@ -210,7 +238,9 @@ mod tests {
         t.remove_lane(1).unwrap();
         assert_eq!(t.reviews[0].return_lane, None);
         assert!(t.remove_lane(0).is_err());
-        assert!(t.remove_review(0).is_err());
+        assert!(t.remove_review(t.qa_index()).is_err());
+        t.remove_review(0).unwrap();
+        assert_eq!(t.qa_index(), 0);
         assert!(t.validate_structure().is_ok());
     }
 

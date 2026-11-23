@@ -455,7 +455,11 @@ fn retry_repeats_the_acceptance_check_only_when_that_check_is_what_failed(cx: &m
         p.suspended.clear();
         p.store.update(cx, |s, _| {
             let run = &mut s.state.pipelines.runs[0];
-            let decision = reviewed(run, Phase::Decision(1), &tree);
+            let decision = reviewed(
+                run,
+                Phase::Decision(run.template().reviews.len() - 1),
+                &tree,
+            );
             let mut saved = serde_json::to_value(decision).unwrap();
             saved["findings"] = serde_json::json!([{"lane": 0, "description": "Left open"}]);
             *run = serde_json::from_value(saved).unwrap();
@@ -728,7 +732,8 @@ fn a_gate_the_user_reaches_by_their_own_decision_is_not_announced(cx: &mut TestA
         p.store.update(cx, |s, _| {
             let run = &mut s.state.pipelines.runs[0];
             let mut saved = serde_json::to_value(&*run).unwrap();
-            saved["phase"] = serde_json::to_value(Phase::Decision(1)).unwrap();
+            saved["phase"] =
+                serde_json::to_value(Phase::Decision(run.template().reviews.len() - 1)).unwrap();
             saved["outstanding"] = serde_json::json!([]);
             saved["findings"] = serde_json::json!([{"lane": 0, "description": "Left open"}]);
             *run = serde_json::from_value(saved).unwrap();

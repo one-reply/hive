@@ -3,7 +3,7 @@
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{ActiveTheme as _, Icon, h_flex};
 use gpui_kit::*;
-use hive_core::pipeline::Step;
+use hive_core::pipeline::{Prompt, ReviewRole, Step};
 
 /// A role's surface is washed out so the icon or text on top keeps its contrast.
 pub(crate) const TINT_OPACITY: f32 = 0.12;
@@ -12,6 +12,7 @@ pub(crate) const TINT_OPACITY: f32 = 0.12;
 pub(crate) enum RoleKind {
     Plan,
     Build,
+    CodeReview,
     Qa,
     Security,
     Performance,
@@ -21,11 +22,16 @@ pub(crate) enum RoleKind {
 
 impl RoleKind {
     pub(crate) fn review(index: usize, step: &Step) -> Self {
-        if index == 0 {
-            return Self::Qa;
+        match step.review_role {
+            ReviewRole::Code => return Self::CodeReview,
+            ReviewRole::Qa => return Self::Qa,
+            ReviewRole::Unspecified if index == 0 => return Self::Qa,
+            ReviewRole::Unspecified => {}
         }
         let name = step.name.to_lowercase();
-        if name.contains("security") {
+        if name.contains("code review") {
+            Self::CodeReview
+        } else if name.contains("security") {
             Self::Security
         } else if name.contains("performance") {
             Self::Performance
@@ -34,9 +40,17 @@ impl RoleKind {
         }
     }
 
+    pub(crate) fn library_prompt(prompt: Option<&Prompt>, name: &str) -> Option<Self> {
+        if prompt.is_some_and(Prompt::is_code_reviewer) {
+            Some(Self::CodeReview)
+        } else {
+            Self::of_prompt(name)
+        }
+    }
+
     /// The role a library prompt is written for, read from its name. `None` when the name
     /// says nothing: the prompt is then drawn without a role.
-    pub(crate) fn of_prompt(name: &str) -> Option<Self> {
+    fn of_prompt(name: &str) -> Option<Self> {
         let name = name.to_lowercase();
         let mentions = |words: &[&str]| words.iter().any(|word| name.contains(word));
         // "Security & performance reviewer" and "QA reviewer" are reviewers of a kind, so the
@@ -49,6 +63,8 @@ impl RoleKind {
             Some(Self::Performance)
         } else if mentions(&["qa", "quality", "acceptance", "test"]) {
             Some(Self::Qa)
+        } else if mentions(&["code review"]) {
+            Some(Self::CodeReview)
         } else if mentions(&["review", "audit"]) {
             Some(Self::Review)
         } else if mentions(&["develop", "engineer", "implement", "build"]) {
@@ -62,6 +78,7 @@ impl RoleKind {
         match self {
             Self::Plan => Lucide::BrainCircuit,
             Self::Build => Lucide::CodeXml,
+            Self::CodeReview => Lucide::FileSearch,
             Self::Qa => Lucide::ListChecks,
             Self::Security => Lucide::ShieldCheck,
             Self::Performance => Lucide::Activity,
@@ -75,7 +92,9 @@ impl RoleKind {
             Self::Plan => cx.theme().magenta,
             Self::Build => cx.theme().blue,
             Self::Qa => cx.theme().cyan,
-            Self::Review | Self::Security | Self::Performance => cx.theme().yellow,
+            Self::CodeReview | Self::Review | Self::Security | Self::Performance => {
+                cx.theme().yellow
+            }
             Self::Human => cx.theme().green,
         }
     }
@@ -84,6 +103,7 @@ impl RoleKind {
         match self {
             Self::Plan => "Planning agent",
             Self::Build => "Development",
+            Self::CodeReview => "Code review",
             Self::Qa => "Quality check",
             Self::Security => "Security review",
             Self::Performance => "Performance review",
@@ -126,7 +146,7 @@ mod tests {
             ("Security & performance reviewer", RoleKind::Security),
             ("Security reviewer", RoleKind::Security),
             ("Performance reviewer", RoleKind::Performance),
-            ("Code reviewer", RoleKind::Review),
+            ("Code reviewer", RoleKind::CodeReview),
         ];
         for (name, role) in cases {
             assert_eq!(RoleKind::of_prompt(name), Some(role), "{name}");

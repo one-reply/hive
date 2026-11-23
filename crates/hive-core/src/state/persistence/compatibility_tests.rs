@@ -176,6 +176,14 @@ fn what_a_release_did_not_know_yet_takes_its_default() {
     assert_eq!(before_prompts.pipelines.runs.len(), 1);
     assert_eq!(before_prompts.pipelines.templates.len(), 3);
     assert!(before_prompts.pipelines.templates[2].shared_contract);
+    // The original specialized reviewer keeps its id and gains today's stock instructions.
+    let legacy = load(2).pipelines;
+    let current = crate::pipeline::Library::default();
+    assert_eq!(
+        legacy.prompt(11).unwrap().text,
+        current.prompt(15).unwrap().text
+    );
+    assert!(legacy.prompt(15).is_none());
     // The newest release's finished run keeps its reports, sessions and timings.
     let newest = as_json(&load(5));
     let run = &newest["pipelines"]["runs"][0];

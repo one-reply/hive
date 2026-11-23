@@ -38,7 +38,7 @@ impl TemplateEditor {
         };
         let drag = match item {
             Item::Lane(_) => self.template.lanes.len() > 1,
-            Item::Review(1..) => self.template.reviews.len() > 2,
+            Item::Review(i) => super::structure::review_positions(&self.template, i).len() > 1,
             _ => false,
         };
         let at = layout.placement(item);

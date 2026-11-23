@@ -98,7 +98,7 @@ impl Run {
                 .push(item.clone());
             record.push(item);
         }
-        if review == 0 {
+        if review == self.template.qa_index() {
             for result in self.commands.iter().filter(|c| !c.success) {
                 let item = format!(
                     "{} failed: {}\n{}",

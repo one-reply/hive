@@ -1,6 +1,13 @@
 use super::*;
 
+// These transition fixtures exercise a recipe with QA and one subsequent reviewer.
 fn run_with(projects: &[&str], limit: u8) -> Run {
+    let mut recipe = Template::default();
+    recipe.remove_review(0).unwrap();
+    run_with_recipe(projects, limit, recipe)
+}
+
+fn run_with_recipe(projects: &[&str], limit: u8, recipe: Template) -> Run {
     let mut template = Template {
         lanes: (0..projects.len())
             .map(|i| LanePreset {
@@ -8,7 +15,7 @@ fn run_with(projects: &[&str], limit: u8) -> Run {
                 ..Default::default()
             })
             .collect(),
-        ..Template::default()
+        ..recipe
     };
     for review in &mut template.reviews {
         review.limit = limit;
@@ -98,6 +105,70 @@ fn check(success: bool) -> CommandResult {
         .into(),
         passed: vec![],
     }
+}
+
+#[test]
+fn code_review_repairs_before_qa_and_targeted_verification_returns_to_renamed_qa() {
+    let mut run = run_with_recipe(&["/api", "/web"], 3, Template::default());
+    let qa = run.template.qa_index();
+    run.template.reviews[qa].name = "Acceptance checks".into();
+    run.lanes[0].command = "cargo test".into();
+    plan(&mut run);
+    for ticket in run.pending() {
+        run.report(&ticket, developed()).unwrap();
+    }
+    let stage_name = |run: &Run| run.step(&run.pending()[0]).unwrap().name.clone();
+    for severity in [Severity::Blocker, Severity::Major] {
+        assert_eq!(run.phase, Phase::Commands(0));
+        run.command_results(vec![check(true)]).unwrap();
+        assert_eq!(stage_name(&run), "Code review");
+        run.record_review_revision("candidate".into()).unwrap();
+        report(
+            &mut run,
+            review(vec![Finding {
+                severity,
+                ..issue(1)
+            }]),
+        );
+        assert_eq!(run.phase, Phase::Development);
+        assert_eq!(run.pending()[0].lane, Some(1));
+        report(&mut run, developed());
+    }
+    run.command_results(vec![check(true)]).unwrap();
+    run.record_review_revision("repaired".into()).unwrap();
+    report(&mut run, review(vec![note(1)]));
+    assert_eq!(stage_name(&run), "Acceptance checks");
+    report(&mut run, review(vec![]));
+    assert_eq!(stage_name(&run), "Security & performance");
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase, Phase::Acceptance);
+    assert_eq!(run.notes(), [(0, note(1))]);
+    run.verify_criterion(1, "Build and tests pass", "repaired")
+        .unwrap();
+    assert_eq!(stage_name(&run), "Acceptance checks");
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase, Phase::Acceptance);
+}
+
+#[test]
+fn red_checks_use_the_qa_budget_before_the_code_reviewer_is_dispatched() {
+    let mut run = run_with_recipe(&["/api"], 3, Template::default());
+    let qa = run.template.qa_index();
+    run.template.reviews[qa].limit = 0;
+    run.lanes[0].command = "cargo test".into();
+    plan(&mut run);
+    report(&mut run, developed());
+    run.command_results(vec![check(false)]).unwrap();
+    assert_eq!(run.phase, Phase::Decision(qa));
+    run.retry_gate("Repair the failing test").unwrap();
+    assert!(
+        run.prompt(&run.pending()[0])
+            .unwrap()
+            .contains("expected 3, got 2")
+    );
+    report(&mut run, developed());
+    run.command_results(vec![check(true)]).unwrap();
+    assert_eq!(run.phase, Phase::Review(0));
 }
 
 #[test]
@@ -1035,6 +1106,7 @@ fn independent_regression_pins_the_test_and_repeats_both_checks_after_explicit_a
 fn old_cross_repository_templates_and_runs_keep_their_distinct_workflows() {
     let mut library = Library::default();
     let mut recipe = library.templates[2].clone();
+    recipe.remove_review(0).unwrap();
     recipe.shared_contract = false;
     let mut frozen = run_with(&["/api", "/web"], 3);
     frozen.template = recipe.clone();
