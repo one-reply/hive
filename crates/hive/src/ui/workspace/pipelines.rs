@@ -389,6 +389,26 @@ fn button_with_size<V: 'static>(
         .on_click(cx.listener(move |this, _, w, cx| click(this, w, cx)))
         .smooth_hover(look, &hover, cx)
 }
+/// A small labeled button led by an icon that says what it does before the label is read.
+fn button_with_icon<V: 'static>(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: Lucide,
+    look: ButtonLook,
+    window: &mut Window,
+    cx: &mut Context<V>,
+    click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+) -> Stateful<Div> {
+    let id = id.into();
+    let hover = Hover::new(id.clone(), window, cx);
+    Button::new(id)
+        .cursor_pointer()
+        .small()
+        .icon(icon)
+        .label(label)
+        .on_click(cx.listener(move |this, _, w, cx| click(this, w, cx)))
+        .smooth_hover(look, &hover, cx)
+}
 /// A focusable card or row: pointer, Enter and Space run the same transition. GPUI turns
 /// Enter or Space released on a focused element into a click, so a key-down handler of our
 /// own would run the transition a second time.

@@ -19,11 +19,11 @@ impl RunView {
             return self.patch(run, lane, path, w, cx);
         }
         let mut page = v_flex().gap_1();
-        let mut head = h_flex().justify_between().child(heading("Changed files"));
-        head = head.child(button(
+        let mut actions = h_flex().gap_2().child(button_with_icon(
             "refresh-diff",
             "Refresh",
-            ButtonLook::Ghost,
+            Lucide::RefreshCw,
+            ButtonLook::Outline,
             w,
             cx,
             |view, _, cx| {
@@ -35,10 +35,14 @@ impl RunView {
             && !run.review_trees().is_empty()
             && matches!(run.phase(), Phase::Acceptance | Phase::Accepted)
         {
-            for (since, label) in [(true, "Since your feedback"), (false, "All changes")] {
-                head = head.child(button(
+            for (since, label, icon) in [
+                (true, "Since your feedback", Lucide::MessageSquareReply),
+                (false, "All changes", Lucide::Files),
+            ] {
+                actions = actions.child(button_with_icon(
                     label,
                     label,
+                    icon,
                     if since == self.since_feedback {
                         ButtonLook::Primary
                     } else {
@@ -54,7 +58,13 @@ impl RunView {
                 ));
             }
         }
-        page = page.child(head);
+        page = page.child(
+            h_flex()
+                .justify_between()
+                .gap_2()
+                .child(heading("Changed files"))
+                .child(actions),
+        );
         if run.phase() == Phase::Acceptance && !run.comments().is_empty() {
             page = page.child(self.comment_actions(run, w, cx));
         }
