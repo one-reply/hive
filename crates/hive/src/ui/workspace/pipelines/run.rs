@@ -92,6 +92,7 @@ pub(super) struct RunView {
     expanded_reviews: HashSet<usize>,
     expanded_reports: HashSet<u64>,
     expanded_events: HashSet<usize>,
+    expanded_notes: HashSet<usize>,
     selected_file: Option<(usize, String)>,
     display: Option<Entity<DiffState>>,
     timer: Option<Task<()>>,
@@ -165,6 +166,7 @@ impl RunView {
             expanded_reviews: HashSet::new(),
             expanded_reports: HashSet::new(),
             expanded_events: HashSet::new(),
+            expanded_notes: HashSet::new(),
             selected_file: None,
             display: None,
             timer: None,
@@ -284,6 +286,8 @@ impl Render for RunView {
                 && matches!(run.phase(), Phase::Acceptance | Phase::Accepted);
             self.editing_plan = false;
             self.giving_feedback = false;
+            // A new review pass numbers its notes anew.
+            self.expanded_notes.clear();
             self.plan.clear();
             self.note = area("", "Add feedback for the agent", w, cx);
             self.selected_stage = match run.phase() {

@@ -19,14 +19,14 @@ impl RunView {
             return self.patch(run, lane, path, w, cx);
         }
         let mut page = v_flex().gap_1();
-        let mut actions = h_flex().gap_2().child(header_button(
+        let mut actions = h_flex().gap_2().child(button_with_icon(
             "refresh-diff",
             "Refresh",
             Lucide::RefreshCw,
             ButtonLook::Outline,
             w,
             cx,
-            |view, cx| {
+            |view, _, cx| {
                 view.refresh_changes(cx);
                 cx.notify();
             },
@@ -39,7 +39,7 @@ impl RunView {
                 (true, "Since your feedback", Lucide::MessageSquareReply),
                 (false, "All changes", Lucide::Files),
             ] {
-                actions = actions.child(header_button(
+                actions = actions.child(button_with_icon(
                     label,
                     label,
                     icon,
@@ -50,7 +50,7 @@ impl RunView {
                     },
                     w,
                     cx,
-                    move |v, cx| {
+                    move |v, _, cx| {
                         v.since_feedback = since;
                         v.refresh_changes(cx);
                         cx.notify();
@@ -311,25 +311,6 @@ impl RunView {
             .child(body)
             .into_any_element()
     }
-}
-/// A labeled icon button of the "Changed files" header.
-fn header_button(
-    id: &'static str,
-    label: &'static str,
-    icon: Lucide,
-    look: ButtonLook,
-    w: &mut Window,
-    cx: &mut Context<RunView>,
-    click: impl Fn(&mut RunView, &mut Context<RunView>) + 'static,
-) -> Stateful<Div> {
-    let hover = Hover::new(id, w, cx);
-    Button::new(id)
-        .cursor_pointer()
-        .small()
-        .icon(icon)
-        .label(label)
-        .on_click(cx.listener(move |view, _, _, cx| click(view, cx)))
-        .smooth_hover(look, &hover, cx)
 }
 fn line_stats(added: usize, removed: usize, cx: &App) -> Div {
     h_flex()

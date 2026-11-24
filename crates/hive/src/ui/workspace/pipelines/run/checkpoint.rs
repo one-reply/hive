@@ -1,10 +1,6 @@
 //! Controls for the gate the run waits at: plan approval, repair decisions and acceptance.
 use super::*;
-
-/// Leave room for the diff and navigation when a plan has many criteria.
-const CRITERIA_PREVIEW: usize = 3;
-/// The expanded list scrolls inside this height instead of pushing the decision off screen.
-const CRITERIA_MAX_HEIGHT: Rems = rems(9.);
+use gpui_kit::component::Disableable as _;
 
 impl RunView {
     pub(super) fn checkpoint_actions(
@@ -15,11 +11,14 @@ impl RunView {
         cx: &mut Context<Self>,
     ) -> Option<Div> {
         let mut row = h_flex().gap_2().flex_wrap();
+        // What holds the gate shut, said after its buttons.
+        let mut blocker = None;
         match run.phase() {
             Phase::ApprovePlan => {
-                row = row.child(button(
+                row = row.child(button_with_icon(
                     "approve-plan",
                     "Approve plan",
+                    Lucide::Check,
                     ButtonLook::Primary,
                     w,
                     cx,
@@ -31,12 +30,17 @@ impl RunView {
                     .iter()
                     .map(|l| (l.assignment.clone(), l.criteria.clone()))
                     .collect::<Vec<_>>();
-                row = row.child(button(
+                row = row.child(button_with_icon(
                     "edit-plan",
                     if self.editing_plan {
                         "Discard edits"
                     } else {
                         "Edit plan"
+                    },
+                    if self.editing_plan {
+                        Lucide::Undo2
+                    } else {
+                        Lucide::Pencil
                     },
                     ButtonLook::Outline,
                     w,
@@ -70,9 +74,10 @@ impl RunView {
                     _ => None,
                 };
                 if run.review_revision().is_none() && !accepting {
-                    row = row.child(button(
+                    row = row.child(button_with_icon(
                         "recheck-current-files",
                         "Recheck current files",
+                        Lucide::RefreshCw,
                         ButtonLook::Outline,
                         w,
                         cx,
@@ -80,15 +85,15 @@ impl RunView {
                     ));
                 } else if let Some(error) = unreadable {
                     row = row
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().danger)
-                                .child(format!("Changes could not be read: {error}")),
-                        )
-                        .child(button(
+                        .child(notice(
+                            Lucide::CircleX,
+                            cx.theme().danger,
+                            format!("Changes could not be read: {error}"),
+                        ))
+                        .child(button_with_icon(
                             "reread-pipeline-changes",
                             "Read changes again",
+                            Lucide::RefreshCw,
                             ButtonLook::Outline,
                             w,
                             cx,
@@ -97,27 +102,12 @@ impl RunView {
                                 cx.notify();
                             },
                         ));
-                } else if reviewed
-                    && !accepting
-                    && let Err(reason) = run.can_accept()
-                {
-                    row = row.child(subtle(reason.to_string(), cx));
                 } else if reviewed && !accepting {
-                    row = row.child(button(
-                        "accept-pipeline",
-                        "Accept changes",
-                        ButtonLook::Primary,
-                        w,
-                        cx,
-                        |v, _, cx| {
-                            v.error = AppState::get(cx)
-                                .pipelines
-                                .clone()
-                                .update(cx, |p, cx| p.accept(v.id, cx))
-                                .err();
-                            cx.notify();
-                        },
-                    ));
+                    let reason = run.can_accept().err();
+                    row = row.child(Self::accept_button(reason.is_none(), w, cx));
+                    blocker = reason.map(|reason| {
+                        notice(Lucide::CircleAlert, cx.theme().warning, reason.to_string())
+                    });
                 } else {
                     row = row.child(subtle(
                         if accepting {
@@ -128,9 +118,10 @@ impl RunView {
                         cx,
                     ));
                 }
-                row = row.child(button(
+                row = row.child(button_with_icon(
                     "inspect-changes",
                     "Review files",
+                    Lucide::FileDiff,
                     ButtonLook::Outline,
                     w,
                     cx,
@@ -253,14 +244,19 @@ impl RunView {
             }
         }
         if matches!(run.phase(), Phase::ApprovePlan | Phase::Acceptance) {
-            row = row.child(button(
+            row = row.child(button_with_icon(
                 "request-feedback",
                 if self.giving_feedback {
                     "Cancel feedback"
                 } else {
                     "Request changes"
                 },
-                ButtonLook::Ghost,
+                if self.giving_feedback {
+                    Lucide::X
+                } else {
+                    Lucide::MessageSquarePlus
+                },
+                ButtonLook::Outline,
                 w,
                 cx,
                 |v, _, cx| {
@@ -269,53 +265,18 @@ impl RunView {
                 },
             ));
         }
-        let mut block = v_flex().gap_2().child(row);
+        let mut block = v_flex().gap_3().child(row.children(blocker));
         if run.phase() == Phase::Acceptance {
-            let mut rows = v_flex().gap_1();
-            let mut total = 0;
-            for (ix, line) in run.criteria() {
-                total += 1;
-                if total <= CRITERIA_PREVIEW || self.criteria_expanded {
-                    rows = rows.child(self.criterion_row(run, ix, line, total, w, cx));
-                }
-            }
-            let mut title = h_flex().gap_2().child(heading("Acceptance criteria"));
-            if total > CRITERIA_PREVIEW {
-                title = title.child(button(
-                    "expand-criteria",
-                    if self.criteria_expanded {
-                        "Show fewer".into()
-                    } else {
-                        format!("Show all {total}")
-                    },
-                    ButtonLook::Ghost,
-                    w,
-                    cx,
-                    |v, _, cx| {
-                        v.criteria_expanded = !v.criteria_expanded;
-                        cx.notify();
-                    },
-                ));
-            }
-            let rows = div()
-                .id("acceptance-criteria")
-                .max_h(CRITERIA_MAX_HEIGHT)
-                .overflow_y_scroll()
-                .child(rows);
-            block = block.child(v_flex().gap_1().child(title).child(rows));
-        }
-        if run.phase() == Phase::Acceptance
-            && let Some(notes) = review_notes(run, cx)
-        {
-            block = block.child(notes);
+            block = block.child(self.acceptance_review(run, w, cx));
         }
         if self.giving_feedback {
             let gate = run.phase();
             block = block
                 .child(paragraph("Feedback (optional)", &self.note, cx))
-                .child(h_flex().child(button(
+                .child(h_flex().child(button_with_icon(
                     "send-feedback",
                     "Send request",
+                    Lucide::Send,
                     ButtonLook::Primary,
                     w,
                     cx,
@@ -333,32 +294,38 @@ impl RunView {
         }
         Some(block)
     }
+
+    /// Stays in place while something holds acceptance back, so the gate always shows where
+    /// it ends.
+    fn accept_button(ready: bool, w: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
+        let hover = Hover::new("accept-pipeline", w, cx).enabled(ready);
+        Button::new("accept-pipeline")
+            .cursor_pointer()
+            .small()
+            .icon(Lucide::Check)
+            .label("Accept changes")
+            .disabled(!ready)
+            .on_click(cx.listener(|v, _, _, cx| {
+                v.error = AppState::get(cx)
+                    .pipelines
+                    .clone()
+                    .update(cx, |p, cx| p.accept(v.id, cx))
+                    .err();
+                cx.notify();
+            }))
+            .smooth_hover(ButtonLook::Primary, &hover, cx)
+    }
 }
 
-/// Reviewer findings that did not block the run, listed where the user decides to accept.
-fn review_notes(run: &Run, cx: &App) -> Option<Div> {
-    let notes = run.notes();
-    if notes.is_empty() {
-        return None;
-    }
-    let mut list = v_flex().gap_1().child(subtle(
-        format!(
-            "{} did not block acceptance",
-            count(notes.len(), "reviewer note", "reviewer notes")
-        ),
-        cx,
-    ));
-    for (i, (review, note)) in notes.iter().enumerate() {
-        let (Some(review), Some(lane)) = (
-            run.template().reviews.get(*review),
-            run.lanes().get(note.lane),
-        ) else {
-            continue;
-        };
-        list = list.child(div().text_sm().child(SelectableText::new(
-            ("review-note", i),
-            format!("{} · {}: {}", review.name, lane.name, note.description),
-        )));
-    }
-    Some(list)
+/// Why the gate cannot be passed yet, tinted so it reads apart from the buttons beside it.
+fn notice(icon: Lucide, color: Hsla, text: impl Into<SharedString>) -> Div {
+    h_flex()
+        .min_w_0()
+        .gap_1p5()
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .bg(color.opacity(STATUS_TINT_OPACITY))
+        .child(Icon::new(icon).flex_none().size_3p5().text_color(color))
+        .child(div().flex_1().min_w_0().text_xs().child(text.into()))
 }
