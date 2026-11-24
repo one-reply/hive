@@ -1,32 +1,21 @@
 use super::inspector::Inspector;
 use super::map::{Layout, RoleKind};
 use super::*;
-use hive_core::pipeline::LanePreset;
 use hive_core::pipeline::unique_name;
+mod drag;
 mod nodes;
 mod resize;
 mod structure;
+use drag::{Dragged, Dragging};
 use resize::{INSPECTOR_MAX_SHARE, InspectorResize, dragged_inspector_width};
-use structure::{StageChoice, move_item};
+use structure::StageChoice;
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum Item {
     Planner,
     Development,
     Lane(usize),
     Review(usize),
-}
-
-#[derive(Clone)]
-struct Dragged {
-    editor: EntityId,
-    item: Item,
-    label: String,
-}
-impl Render for Dragged {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        card(cx).child(self.label.clone())
-    }
 }
 
 pub(super) struct TemplateEditor {
@@ -45,6 +34,8 @@ pub(super) struct TemplateEditor {
     /// Inspector width beside the canvas, in rems; follows the pointer while it is dragged.
     inspector_width: f32,
     resizing_inspector: bool,
+    /// The drag over the canvas as of the last pointer move.
+    dragging: Option<Dragging>,
     _subscriptions: [Subscription; 2],
 }
 
@@ -95,6 +86,7 @@ impl TemplateEditor {
             show_inspector: false,
             inspector_width,
             resizing_inspector: false,
+            dragging: None,
             _subscriptions: [models, prompts],
         };
         // Read back through the same fields as every later comparison, so a field that
@@ -138,38 +130,53 @@ impl TemplateEditor {
         self.inspector = Inspector::new(item, &self.template, w, cx);
         self.selected = item;
     }
-    fn move_to(&mut self, from: Item, to: Item, w: &mut Window, cx: &mut Context<Self>) {
-        if self.apply(cx) && move_item(&mut self.template, from, to) {
-            self.load(to, w, cx);
-        }
+    /// Moves a lane or a review into the gap before position `before` among its own kind,
+    /// and selects it there.
+    fn move_to(&mut self, item: Item, before: usize, w: &mut Window, cx: &mut Context<Self>) {
         cx.notify();
-    }
-    fn add(&mut self, kind: StageChoice, w: &mut Window, cx: &mut Context<Self>) {
         if !self.apply(cx) {
-            cx.notify();
+            return;
+        }
+        let moved = match item {
+            Item::Lane(i) => self.template.move_lane(i, before).map(Item::Lane),
+            Item::Review(i) => self.template.move_review(i, before).map(Item::Review),
+            Item::Planner | Item::Development => None,
+        };
+        if let Some(moved) = moved {
+            self.load(moved, w, cx);
+        }
+    }
+    /// Adds a stage into the gap before position `before`, or at its usual place.
+    fn add(
+        &mut self,
+        kind: StageChoice,
+        before: Option<usize>,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.notify();
+        if !self.apply(cx) {
             return;
         }
         let item = match kind {
             StageChoice::Lane => {
-                let i = self.template.lanes.len();
-                self.template.lanes.push(LanePreset {
-                    name: unique_name(
-                        kind.label(),
-                        self.template.lanes.iter().map(|l| l.name.as_str()),
-                    ),
-                    profile: self.template.development.profile.clone(),
-                    ..Default::default()
-                });
-                Item::Lane(i)
+                let before = before.unwrap_or(self.template.lanes.len());
+                Item::Lane(self.template.insert_lane(before, kind.label()))
             }
             StageChoice::Review(review) => {
                 let library = &AppState::get(cx).store.read(cx).state.pipelines;
-                Item::Review(self.template.add_review(library.review_step(review)))
+                let step = library.review_step(review);
+                Item::Review(match before {
+                    Some(before) => self.template.insert_review(before, step),
+                    None => self.template.add_review(step),
+                })
             }
         };
         self.load(item, w, cx);
         self.show_inspector = true;
-        cx.notify();
+    }
+    fn layout(&self) -> Layout {
+        Layout::new(self.template.lanes.len(), self.template.reviews.len())
     }
     fn remove(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         match self.selected {
@@ -218,7 +225,7 @@ impl TemplateEditor {
         match item {
             Item::Planner => RoleKind::Plan,
             Item::Development | Item::Lane(_) => RoleKind::Build,
-            Item::Review(i) => RoleKind::review(i, &self.template.reviews[i]),
+            Item::Review(i) => RoleKind::review(&self.template, i),
         }
     }
 }
@@ -230,6 +237,7 @@ fn differs_from(opened: &Template, draft: Result<Template, String>) -> bool {
 
 impl Render for TemplateEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.settle_drag(cx);
         let title = if self.renaming {
             h_flex()
                 .flex_1()
@@ -323,7 +331,6 @@ impl Render for TemplateEditor {
                     cx.notify();
                 },
             ))
-            .child(self.add_menu(cx))
             .child(button(
                 "save-template",
                 "Save",

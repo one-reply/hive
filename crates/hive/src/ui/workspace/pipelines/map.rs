@@ -154,13 +154,7 @@ pub(super) fn grid(cx: &App) -> impl IntoElement {
 pub(super) fn miniature(t: &Template, cx: &App) -> impl IntoElement {
     let builds = t.lanes.len().clamp(1, 3);
     let mut roles = vec![RoleKind::Plan, RoleKind::Human, RoleKind::Build];
-    roles.extend(
-        t.reviews
-            .iter()
-            .take(3)
-            .enumerate()
-            .map(|(i, s)| RoleKind::review(i, s)),
-    );
+    roles.extend((0..t.reviews.len().min(3)).map(|i| RoleKind::review(t, i)));
     roles.push(RoleKind::Human);
     let count = roles.len();
     let wire = cx.theme().muted_foreground.alpha(0.55);

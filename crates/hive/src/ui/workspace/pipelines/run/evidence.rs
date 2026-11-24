@@ -164,7 +164,7 @@ impl RunView {
                     .cursor_pointer()
                     .hover_bg(&hover, cx.theme().background, cx.theme().muted)
                     .child(
-                        Icon::new(super::super::map::RoleKind::review(i, review).icon())
+                        Icon::new(super::super::map::RoleKind::review(r.template(), i).icon())
                             .size_4()
                             .text_color(color),
                     )

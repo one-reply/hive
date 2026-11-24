@@ -1,16 +1,23 @@
-//! Adding, reordering and removing stages: the required QA review is a fixed barrier, and lanes
-//! and reviews only move among their own kind.
+//! Adding, moving and removing stages. Lanes and reviews move among their own kind; the
+//! required QA review moves like any other but cannot be removed.
+use super::drag::{Ghost, Load};
+use super::nodes::{Detail, Face};
 use super::*;
 use gpui_kit::component::button::ButtonVariants as _;
 use hive_core::pipeline::ReviewKind;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum StageChoice {
     Lane,
     Review(ReviewKind),
 }
 impl StageChoice {
-    /// Menu label, which is also the name the new stage starts with.
+    /// Every stage the palette offers, lanes first.
+    fn all() -> impl Iterator<Item = Self> {
+        std::iter::once(Self::Lane).chain(ReviewKind::ALL.map(Self::Review))
+    }
+
+    /// Palette label, which is also the name the new stage starts with.
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Lane => "Development lane",
@@ -28,84 +35,92 @@ impl StageChoice {
         }
     }
 }
-/// Which positions an optional review can occupy on its side of QA.
-pub(super) fn review_positions(t: &Template, index: usize) -> std::ops::Range<usize> {
-    let qa = t.qa_index();
-    match index.cmp(&qa) {
-        std::cmp::Ordering::Less => 0..qa,
-        std::cmp::Ordering::Equal => qa..qa,
-        std::cmp::Ordering::Greater => qa + 1..t.reviews.len(),
-    }
+
+/// What the stage menu can do with the selected stage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StageAction {
+    /// Move it into the gap before this position of its row.
+    Move(usize),
+    Remove,
 }
 
-pub(super) fn move_item(t: &mut Template, from: Item, to: Item) -> bool {
-    match (from, to) {
-        (Item::Lane(a), Item::Lane(b)) => reorder(&mut t.lanes, a, b),
-        (Item::Review(a), Item::Review(b)) if review_positions(t, a).contains(&b) => {
-            reorder(&mut t.reviews, a, b)
-        }
-        _ => false,
+/// The menu of the selected stage, in order. Empty when the stage can neither move nor go.
+fn stage_actions(t: &Template, selected: Item) -> Vec<(&'static str, StageAction)> {
+    let (index, count, removable) = match selected {
+        Item::Lane(i) => (i, t.lanes.len(), t.lanes.len() > 1),
+        Item::Review(i) => (i, t.reviews.len(), i != t.qa_index()),
+        Item::Planner | Item::Development => return Vec::new(),
+    };
+    let mut actions = Vec::new();
+    if index > 0 {
+        actions.push(("Move earlier", StageAction::Move(index - 1)));
     }
-}
-fn reorder<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
-    if from == to || from >= items.len() || to >= items.len() {
-        return false;
+    if index + 1 < count {
+        actions.push(("Move later", StageAction::Move(index + 2)));
     }
-    let item = items.remove(from);
-    items.insert(to, item);
-    true
+    if removable {
+        actions.push(("Remove stage", StageAction::Remove));
+    }
+    actions
 }
+
 impl TemplateEditor {
-    pub(super) fn add_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let editor = cx.entity();
-        Button::new("add-stage")
-            .small()
-            .cursor_pointer()
-            .icon(Lucide::Plus)
-            .dropdown_caret(true)
-            .label("Add stage")
-            .dropdown_menu(move |mut menu, window, _| {
-                for stage in std::iter::once(StageChoice::Lane)
-                    .chain(ReviewKind::ALL.map(StageChoice::Review))
-                {
-                    menu = menu.item(
-                        PopupMenuItem::new(stage.label())
-                            .icon(stage.role().icon())
-                            .on_click(window.listener_for(&editor, move |editor, _, w, cx| {
-                                editor.add(stage, w, cx);
-                            })),
-                    );
-                }
-                menu
-            })
-            .into_any_element()
+    /// New stages: a click adds one at its usual place, a drag puts it where it is dropped.
+    pub(super) fn palette(&self, w: &mut Window, cx: &mut Context<Self>) -> Div {
+        let editor = cx.entity_id();
+        let mut palette = h_flex()
+            .flex_none()
+            .flex_wrap()
+            .gap_1()
+            .px_3()
+            .py_1p5()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(subtle("Add stage", cx));
+        for stage in StageChoice::all() {
+            let role = stage.role();
+            let dragged = Dragged {
+                editor,
+                load: Load::Add(stage),
+                ghost: Ghost::Stage(
+                    Face {
+                        role,
+                        glyph: role.icon(),
+                        title: stage.label().into(),
+                        detail: Detail::Note("New stage".into()),
+                    },
+                    None,
+                ),
+            };
+            palette = palette.child(
+                button_with_icon(
+                    SharedString::from(format!("add-stage-{}", stage.label())),
+                    stage.label(),
+                    role.icon(),
+                    ButtonLook::Outline,
+                    w,
+                    cx,
+                    move |s, w, cx| s.add(stage, None, w, cx),
+                )
+                .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone())),
+            );
+        }
+        palette.child(subtle("Click, or drag onto the canvas", cx))
     }
+
     pub(in crate::ui::workspace::pipelines) fn ordering(
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let (min, count, index, make): (usize, usize, usize, fn(usize) -> Item) =
-            match self.selected {
-                Item::Lane(i) if self.template.lanes.len() > 1 => {
-                    (0, self.template.lanes.len(), i, Item::Lane)
-                }
-                Item::Review(i) => {
-                    let positions = review_positions(&self.template, i);
-                    if positions.is_empty() {
-                        return None;
-                    }
-                    (positions.start, positions.end, i, Item::Review)
-                }
-                _ => return None,
-            };
-        let mut options = Vec::new();
-        if index > min {
-            options.push(("Move earlier".to_owned(), false, Some(make(index - 1))));
+        let selected = self.selected;
+        let actions = stage_actions(&self.template, selected);
+        if actions.is_empty() {
+            return None;
         }
-        if index + 1 < count {
-            options.push(("Move later".to_owned(), false, Some(make(index + 1))));
-        }
-        options.push(("Remove stage".to_owned(), false, None));
+        let options = actions
+            .into_iter()
+            .map(|(label, action)| (label.to_owned(), false, action))
+            .collect();
         Some(options_menu(
             Button::new("selected-stage-actions")
                 .ghost()
@@ -116,9 +131,9 @@ impl TemplateEditor {
                 .tooltip("Stage actions"),
             options,
             cx,
-            move |s, dest, w, cx| match dest {
-                Some(to) => s.move_to(make(index), to, w, cx),
-                None => s.remove(w, cx),
+            move |s, action, w, cx| match action {
+                StageAction::Move(before) => s.move_to(selected, before, w, cx),
+                StageAction::Remove => s.remove(w, cx),
             },
         ))
     }
@@ -126,11 +141,11 @@ impl TemplateEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Item, ReviewKind, RoleKind, StageChoice, Template, move_item, reorder};
+    use super::{Item, ReviewKind, RoleKind, StageAction, StageChoice, Template, stage_actions};
     use hive_core::pipeline::Library;
 
     #[test]
-    fn add_menu_roles_match_the_stages_on_the_canvas() {
+    fn palette_roles_match_the_stages_on_the_canvas() {
         assert_eq!(StageChoice::Lane.role(), RoleKind::Build);
         let library = Library::default();
         let mut template = Template::default();
@@ -138,24 +153,65 @@ mod tests {
             let i = template.add_review(library.review_step(kind));
             assert_eq!(
                 StageChoice::Review(kind).role(),
-                RoleKind::review(i, &template.reviews[i])
+                RoleKind::review(&template, i)
             );
         }
+        assert_eq!(StageChoice::all().count(), 1 + ReviewKind::ALL.len());
     }
 
     #[test]
-    fn cannot_drag_the_qa_barrier_or_move_lanes_into_review() {
+    fn qa_moves_like_any_review_but_is_never_removed() {
+        // Code review, QA, Security & performance.
+        let t = Template::default();
+        let labels = |item| -> Vec<_> { stage_actions(&t, item).into_iter().collect() };
+        assert_eq!(
+            labels(Item::Review(1)),
+            [
+                ("Move earlier", StageAction::Move(0)),
+                ("Move later", StageAction::Move(3)),
+            ]
+        );
+        assert_eq!(
+            labels(Item::Review(0)),
+            [
+                ("Move later", StageAction::Move(2)),
+                ("Remove stage", StageAction::Remove),
+            ]
+        );
+        assert_eq!(
+            labels(Item::Review(2)),
+            [
+                ("Move earlier", StageAction::Move(1)),
+                ("Remove stage", StageAction::Remove),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_menu_moves_a_stage_to_where_it_says() {
         let mut t = Template::default();
-        assert!(!move_item(&mut t, Item::Review(1), Item::Review(0)));
-        assert!(!move_item(&mut t, Item::Lane(0), Item::Review(1)));
-        assert!(!move_item(&mut t, Item::Review(2), Item::Review(0)));
-        t.reviews.push(t.reviews[2].clone());
-        t.reviews[3].name = "Extra review".into();
-        assert!(move_item(&mut t, Item::Review(3), Item::Review(2)));
-        assert_eq!(t.reviews[1].name, "QA");
-        assert_eq!(t.reviews[2].name, "Extra review");
-        let mut items = vec!["api", "web", "mobile"];
-        assert!(reorder(&mut items, 0, 2));
-        assert_eq!(items, ["web", "mobile", "api"]);
+        let (_, later) = stage_actions(&t, Item::Review(1))[1];
+        assert_eq!(later, StageAction::Move(3));
+        assert_eq!(t.move_review(1, 3), Some(2));
+        let (_, earlier) = stage_actions(&t, Item::Review(2))[0];
+        assert_eq!(earlier, StageAction::Move(1));
+        assert_eq!(t.move_review(2, 1), Some(1));
+        assert_eq!(t.qa_index(), 1);
+    }
+
+    #[test]
+    fn the_only_lane_and_the_fixed_stages_have_no_menu() {
+        let mut t = Template::default();
+        assert!(stage_actions(&t, Item::Lane(0)).is_empty());
+        assert!(stage_actions(&t, Item::Planner).is_empty());
+        assert!(stage_actions(&t, Item::Development).is_empty());
+        t.insert_lane(1, "API");
+        assert_eq!(
+            stage_actions(&t, Item::Lane(0)),
+            [
+                ("Move later", StageAction::Move(2)),
+                ("Remove stage", StageAction::Remove),
+            ]
+        );
     }
 }

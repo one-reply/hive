@@ -1,8 +1,129 @@
 use super::super::map::{BoxAt, units};
+use super::drag::{Ghost, Load, react, reaction};
 use super::*;
 use crate::ui::{agent_logo, hover::SmoothHoverBg as _};
+use hive_core::agent::AgentKind;
+
+/// What a stage card shows. The canvas and the card under the pointer draw it the same way.
+#[derive(Clone)]
+pub(super) struct Face {
+    pub(super) role: RoleKind,
+    pub(super) glyph: Lucide,
+    pub(super) title: SharedString,
+    pub(super) detail: Detail,
+}
+
+/// The second line of a stage card.
+#[derive(Clone)]
+pub(super) enum Detail {
+    /// The CLI that runs the stage, with its model when one is chosen.
+    Agent(AgentKind, SharedString),
+    /// Plain words, such as the number of lanes.
+    Note(SharedString),
+}
+
+impl Face {
+    /// The role tile and the two lines of text, for a row the caller sizes and frames.
+    pub(super) fn content(&self, cx: &App) -> [AnyElement; 2] {
+        let color = self.role.color(cx);
+        let detail = match &self.detail {
+            Detail::Agent(agent, line) => h_flex()
+                .gap_1()
+                .child(agent_logo::icon(*agent, cx).size_3())
+                .child(
+                    div()
+                        .truncate()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(line.clone()),
+                ),
+            Detail::Note(note) => subtle(note.clone(), cx),
+        };
+        [
+            div()
+                .size_6()
+                .flex_none()
+                .rounded_md()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(color.alpha(0.14))
+                .child(Icon::new(self.glyph).size_4().text_color(color))
+                .into_any_element(),
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_sm()
+                        .truncate()
+                        .child(self.title.clone()),
+                )
+                .child(detail)
+                .into_any_element(),
+        ]
+    }
+}
 
 impl TemplateEditor {
+    /// The card of a stage as it is now, the open form's unsaved fields included.
+    fn face(&self, item: Item, cx: &App) -> Face {
+        let (name, profile) = match item {
+            Item::Planner => (&self.template.planner.name, &self.template.planner.profile),
+            Item::Development => (
+                &self.template.development.name,
+                &self.template.development.profile,
+            ),
+            Item::Lane(i) => (
+                &self.template.lanes[i].name,
+                &self.template.lanes[i].profile,
+            ),
+            Item::Review(i) => (
+                &self.template.reviews[i].name,
+                &self.template.reviews[i].profile,
+            ),
+        };
+        let selected = item == self.selected;
+        let (title, agent, model) = if selected {
+            (
+                self.inspector.name.read(cx).value().to_string(),
+                self.inspector.agent,
+                self.inspector.model.read(cx).value().to_string(),
+            )
+        } else {
+            (name.clone(), profile.agent, profile.model.clone())
+        };
+        let role = self.role(item);
+        let detail = if item == Item::Development {
+            let n = self.template.lanes.len();
+            Detail::Note(format!("{n} parallel {}", if n == 1 { "lane" } else { "lanes" }).into())
+        } else if model.is_empty() {
+            Detail::Agent(agent, agent.name().into())
+        } else {
+            Detail::Agent(agent, format!("{} · {}", agent.name(), model).into())
+        };
+        Face {
+            role,
+            glyph: if item == Item::Development {
+                Lucide::GitFork
+            } else {
+                role.icon()
+            },
+            title: title.into(),
+            detail,
+        }
+    }
+
+    /// Whether the stage has another place to stand among its own kind.
+    fn is_movable(&self, item: Item) -> bool {
+        match item {
+            Item::Lane(_) => self.template.lanes.len() > 1,
+            Item::Review(_) => self.template.reviews.len() > 1,
+            Item::Planner | Item::Development => false,
+        }
+    }
+
     fn node(
         &self,
         item: Item,
@@ -10,91 +131,21 @@ impl TemplateEditor {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (kind, ix, name, profile) = match item {
-            Item::Planner => (
-                "planner",
-                0,
-                &self.template.planner.name,
-                &self.template.planner.profile,
-            ),
-            Item::Development => (
-                "development",
-                0,
-                &self.template.development.name,
-                &self.template.development.profile,
-            ),
-            Item::Lane(i) => (
-                "lane",
-                i,
-                &self.template.lanes[i].name,
-                &self.template.lanes[i].profile,
-            ),
-            Item::Review(i) => (
-                "review",
-                i,
-                &self.template.reviews[i].name,
-                &self.template.reviews[i].profile,
-            ),
+        let (kind, ix) = match item {
+            Item::Planner => ("planner", 0),
+            Item::Development => ("development", 0),
+            Item::Lane(i) => ("lane", i),
+            Item::Review(i) => ("review", i),
         };
-        let drag = match item {
-            Item::Lane(_) => self.template.lanes.len() > 1,
-            Item::Review(i) => super::structure::review_positions(&self.template, i).len() > 1,
-            _ => false,
-        };
+        let face = self.face(item, cx);
+        let movable = self.is_movable(item);
         let at = layout.placement(item);
-        let role = self.role(item);
-        let color = role.color(cx);
+        let color = face.role.color(cx);
         let id = SharedString::from(format!("pipeline-{kind}-{ix}"));
         let hover = Hover::new(id.clone(), w, cx);
         let selected = item == self.selected;
-        let view = cx.weak_entity();
-        let owner = cx.entity().entity_id();
-        let agent = if selected {
-            self.inspector.agent
-        } else {
-            profile.agent
-        };
-        let model = if selected {
-            self.inspector.model.read(cx).value().to_string()
-        } else {
-            profile.model.clone()
-        };
-        let title = if selected {
-            self.inspector.name.read(cx).value().to_string()
-        } else {
-            name.clone()
-        };
-        let detail = if model.is_empty() {
-            agent.name().to_owned()
-        } else {
-            format!("{} · {}", agent.name(), model)
-        };
-        let glyph = if item == Item::Development {
-            Lucide::GitFork
-        } else {
-            role.icon()
-        };
-        let main = h_flex()
-            .gap_1()
-            .child(agent_logo::icon(agent, cx).size_3())
-            .child(
-                div()
-                    .truncate()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(detail),
-            );
-        let sub = if item == Item::Development {
-            let n = self.template.lanes.len();
-            subtle(
-                format!("{n} parallel {}", if n == 1 { "lane" } else { "lanes" }),
-                cx,
-            )
-        } else {
-            main
-        };
         let mut node = h_flex()
-            .id(id.clone())
+            .id(id)
             .absolute()
             .left(units(at.x))
             .top(units(at.y))
@@ -104,38 +155,15 @@ impl TemplateEditor {
             .gap_2()
             .rounded_lg()
             .role(Role::Button)
-            .aria_label(format!("Configure {title}"))
+            .aria_label(format!("Configure {}", face.title))
             .tab_index(0)
             .cursor_pointer()
             .border_1()
             .border_color(if selected { color } else { cx.theme().border })
             .when(selected, |e| e.border_2())
             .focus_visible(move |s| s.border_color(color))
-            .child(
-                div()
-                    .size_6()
-                    .flex_none()
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(color.alpha(0.14))
-                    .child(Icon::new(glyph).size_4().text_color(color)),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_sm()
-                            .truncate()
-                            .child(title.clone()),
-                    )
-                    .child(sub),
-            )
-            .when(drag, |e| {
+            .children(face.content(cx))
+            .when(movable, |e| {
                 e.child(
                     Icon::new(Lucide::GripVertical)
                         .size_3()
@@ -143,42 +171,30 @@ impl TemplateEditor {
                 )
             });
         node = on_activate(node, cx, move |s, w, cx| s.select(item, w, cx));
-        if drag {
-            node = node
-                .on_drag(
-                    Dragged {
-                        editor: owner,
-                        item,
-                        label: title,
-                    },
-                    |d, _, _, cx| cx.new(|_| d.clone()),
-                )
-                .drag_over::<Dragged>(move |s, d, _, cx| {
-                    if d.editor == owner
-                        && d.item != item
-                        && std::mem::discriminant(&d.item) == std::mem::discriminant(&item)
-                    {
-                        s.border_color(cx.theme().drag_border)
-                    } else {
-                        s
-                    }
-                })
-                .on_drop(move |d: &Dragged, w, cx| {
-                    if d.editor == owner {
-                        let _ = view.update(cx, |s, cx| s.move_to(d.item, item, w, cx));
-                    }
-                });
+        if movable {
+            let dragged = Dragged {
+                editor: cx.entity_id(),
+                load: Load::Move(item),
+                ghost: Ghost::Stage(face, Some(at)),
+            };
+            node = node.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()));
         }
-        node.hover_bg(&hover, cx.theme().sidebar, cx.theme().accent)
+        react(node, reaction(self.dragging, item), cx)
+            .hover_bg(&hover, cx.theme().sidebar, cx.theme().accent)
             .into_any_element()
     }
+
     pub(super) fn canvas(&self, w: &mut Window, cx: &mut Context<Self>) -> Div {
-        let l = Layout::new(self.template.lanes.len(), self.template.reviews.len());
+        let l = self.layout();
         let mut graph = div()
             .relative()
             .flex_none()
             .w(units(l.width))
             .h(units(l.height))
+            .on_drag_move(
+                cx.listener(|s, event: &DragMoveEvent<Dragged>, _, cx| s.drag_moved(event, cx)),
+            )
+            .on_drop(cx.listener(|s, dragged: &Dragged, w, cx| s.dropped(dragged, w, cx)))
             .child(map::wires(l.clone(), self.selected, &self.template, cx))
             .child(marker(
                 l.start,
@@ -215,10 +231,15 @@ impl TemplateEditor {
         {
             graph = graph.child(self.node(item, &l, w, cx));
         }
+        for review in 0..l.reviews.len() {
+            graph = graph.child(self.route_port(review, &l, w, cx));
+        }
+        graph = graph.children(self.insertion_line(&l, cx));
         v_flex()
             .h_full()
             .flex_1()
             .min_w_0()
+            .child(self.palette(w, cx))
             .child(
                 div()
                     .flex_1()

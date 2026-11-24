@@ -302,11 +302,9 @@ impl Template {
                 "Give the template a name, a development lane and a QA review",
             ));
         }
+        // Reviews stand in any order: QA is the marked one, or the first of an unmarked recipe.
         let qa = self.qa_index();
-        if self.reviews[..qa]
-            .iter()
-            .any(|s| s.review_role != ReviewRole::Code)
-            || self.reviews[qa].review_role == ReviewRole::Code
+        if self.reviews[qa].review_role == ReviewRole::Code
             || self.reviews[qa + 1..]
                 .iter()
                 .any(|s| s.review_role == ReviewRole::Qa)

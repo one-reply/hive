@@ -36,7 +36,7 @@ fn stops(
         stops.push(command(&format!("Required checks · {checks}")));
     }
     for (index, review) in template.reviews.iter().enumerate() {
-        stops.push(role(RoleKind::review(index, review), &review.name));
+        stops.push(role(RoleKind::review(template, index), &review.name));
     }
     stops.push(role(RoleKind::Human, "Acceptance"));
     stops

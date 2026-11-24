@@ -1,6 +1,16 @@
 //! Editing rules shared by every template editor: names stay unique, routes follow renames.
-use super::{Error, Library, Profile, ReviewRole, Step, Template};
+use super::{Error, LanePreset, Library, Profile, ReviewRole, Step, Template};
 use std::collections::HashSet;
+
+/// Where the item at `from` lands when it is dropped into the gap before position `before`
+/// (`0..=len`). `None` when it would stay where it is or a position is out of range.
+fn destination(len: usize, from: usize, before: usize) -> Option<usize> {
+    if from >= len || before > len {
+        return None;
+    }
+    let to = if from < before { before - 1 } else { before };
+    (to != from).then_some(to)
+}
 
 /// `base`, or `base N` with the first free number; names compare ignoring ASCII case.
 pub fn unique_name<'a>(base: &str, existing: impl Iterator<Item = &'a str>) -> String {
@@ -72,24 +82,77 @@ impl Template {
             .unwrap_or(0)
     }
 
-    /// Inserts code review before QA, using QA's CLI settings and the read-only reviewer mode.
-    /// Other reviews keep the editor's convention of using the planner profile.
-    pub fn add_review(&mut self, mut step: Step) -> usize {
-        step.name = unique_name(&step.name, self.reviews.iter().map(|s| s.name.as_str()));
-        if step.review_role == ReviewRole::Code {
-            let index = self.qa_index();
-            if let Some(qa) = self.reviews.get_mut(index) {
-                qa.review_role = ReviewRole::Qa;
-                step.profile = qa.profile.clone();
-                step.profile.mode = None;
-            }
-            self.reviews.insert(index, step);
-            index
-        } else {
-            step.profile = self.planner.profile.clone();
-            self.reviews.push(step);
-            self.reviews.len() - 1
+    /// Marks QA explicitly. A recipe saved before roles has QA as its unmarked first review,
+    /// which stops being true once another review can stand before it.
+    fn pin_qa(&mut self) {
+        let qa = self.qa_index();
+        if let Some(step) = self.reviews.get_mut(qa)
+            && step.review_role == ReviewRole::Unspecified
+        {
+            step.review_role = ReviewRole::Qa;
         }
+    }
+
+    /// Adds a review at its usual place: code review before QA, any other review last.
+    pub fn add_review(&mut self, step: Step) -> usize {
+        let before = if step.review_role == ReviewRole::Code {
+            self.qa_index()
+        } else {
+            self.reviews.len()
+        };
+        self.insert_review(before, step)
+    }
+
+    /// Inserts a review into the gap before position `before` (the end when out of range) under
+    /// a free name, and returns its position. Code review starts with QA's CLI settings and the
+    /// read-only reviewer mode; other reviews keep the editor's convention of using the planner
+    /// profile.
+    pub fn insert_review(&mut self, before: usize, mut step: Step) -> usize {
+        step.name = unique_name(&step.name, self.reviews.iter().map(|s| s.name.as_str()));
+        self.pin_qa();
+        step.profile = match self.reviews.get(self.qa_index()) {
+            Some(qa) if step.review_role == ReviewRole::Code => Profile {
+                mode: None,
+                ..qa.profile.clone()
+            },
+            _ => self.planner.profile.clone(),
+        };
+        let index = before.min(self.reviews.len());
+        self.reviews.insert(index, step);
+        index
+    }
+
+    /// Moves a review, QA included, into the gap before position `before`
+    /// (`0..=reviews.len()`) and returns its new position. `None` when nothing moved: the two
+    /// gaps beside the review itself, or a position out of range.
+    pub fn move_review(&mut self, from: usize, before: usize) -> Option<usize> {
+        let to = destination(self.reviews.len(), from, before)?;
+        self.pin_qa();
+        let step = self.reviews.remove(from);
+        self.reviews.insert(to, step);
+        Some(to)
+    }
+
+    /// Moves a lane into the gap before position `before` (`0..=lanes.len()`) and returns its
+    /// new position, or `None` when nothing moved. Routes name their lane, so they follow it.
+    pub fn move_lane(&mut self, from: usize, before: usize) -> Option<usize> {
+        let to = destination(self.lanes.len(), from, before)?;
+        let lane = self.lanes.remove(from);
+        self.lanes.insert(to, lane);
+        Some(to)
+    }
+
+    /// Inserts a development lane into the gap before position `before` (the end when out of
+    /// range), named `name` or its first free numbered form, with the shared developer profile.
+    pub fn insert_lane(&mut self, before: usize, name: &str) -> usize {
+        let lane = LanePreset {
+            name: unique_name(name, self.lanes.iter().map(|l| l.name.as_str())),
+            profile: self.development.profile.clone(),
+            ..LanePreset::default()
+        };
+        let index = before.min(self.lanes.len());
+        self.lanes.insert(index, lane);
+        index
     }
 
     /// Renames a lane and every QA route that returns work to it.
@@ -241,6 +304,115 @@ mod tests {
         assert!(t.remove_review(t.qa_index()).is_err());
         t.remove_review(0).unwrap();
         assert_eq!(t.qa_index(), 0);
+        assert!(t.validate_structure().is_ok());
+    }
+
+    fn reviews(t: &Template) -> Vec<&str> {
+        t.reviews.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    /// QA then one optional review, as recipes were saved before stages carried a role.
+    fn unmarked() -> Template {
+        let mut t = Template::default();
+        t.remove_review(0).unwrap();
+        t.reviews[0].review_role = ReviewRole::Unspecified;
+        t
+    }
+
+    #[test]
+    fn a_review_moves_across_qa_and_qa_itself_moves() {
+        let mut t = Template::default();
+        assert_eq!(t.move_review(2, 0), Some(0));
+        assert_eq!(reviews(&t), ["Security & performance", "Code review", "QA"]);
+        assert_eq!(t.qa_index(), 2);
+        assert_eq!(t.move_review(2, 0), Some(0));
+        assert_eq!(reviews(&t), ["QA", "Security & performance", "Code review"]);
+        assert_eq!(t.qa_index(), 0);
+        assert_eq!(t.move_review(0, 3), Some(2));
+        assert_eq!(reviews(&t), ["Security & performance", "Code review", "QA"]);
+        assert!(t.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn a_review_moved_ahead_of_an_unmarked_qa_leaves_it_the_qa_stage() {
+        let mut t = unmarked();
+        assert_eq!(t.move_review(1, 0), Some(0));
+        assert_eq!(reviews(&t), ["Security & performance", "QA"]);
+        assert_eq!(t.reviews[1].review_role, ReviewRole::Qa);
+        assert_eq!(t.qa_index(), 1);
+        assert!(t.remove_review(1).is_err());
+        assert!(t.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn a_move_into_a_gap_beside_the_item_or_out_of_range_changes_nothing() {
+        let mut t = unmarked();
+        let before = t.clone();
+        for (from, gap) in [(0, 0), (0, 1), (1, 1), (1, 2), (2, 0), (0, 3)] {
+            assert_eq!(t.move_review(from, gap), None, "{from} before {gap}");
+        }
+        assert_eq!(t.move_lane(0, 0), None);
+        assert_eq!(t.move_lane(0, 1), None);
+        assert_eq!(t.move_lane(1, 0), None);
+        // Not even the QA marker: a drag that moved nothing is not an edit.
+        assert_eq!(t, before);
+    }
+
+    #[test]
+    fn a_review_is_inserted_into_the_chosen_gap_under_a_free_name() {
+        let mut t = Template::default();
+        assert_eq!(
+            t.insert_review(0, Step::new("QA", "Check the release notes.")),
+            0
+        );
+        assert_eq!(
+            reviews(&t),
+            ["QA 2", "Code review", "QA", "Security & performance"]
+        );
+        assert_eq!(t.qa_index(), 2);
+        assert_eq!(t.reviews[0].profile, t.planner.profile);
+        assert_eq!(t.insert_review(99, Step::new("Last", "Read it again.")), 4);
+        assert!(t.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn code_review_inserted_anywhere_starts_with_the_qa_profile_read_only() {
+        let mut t = unmarked();
+        t.reviews[0].profile.model = "qa-model".into();
+        let mut code = Step::new("Code review", "Read the diff.");
+        code.review_role = ReviewRole::Code;
+        assert_eq!(t.insert_review(2, code), 2);
+        assert_eq!(t.reviews[2].profile.model, "qa-model");
+        assert_eq!(t.reviews[2].profile.mode, None);
+        assert_eq!(t.qa_index(), 0);
+        assert_eq!(t.reviews[0].review_role, ReviewRole::Qa);
+        assert!(t.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn a_recipe_has_one_qa_wherever_it_stands() {
+        let mut t = Template::default();
+        t.move_review(2, 0);
+        assert!(t.validate_structure().is_ok());
+        t.reviews[0].review_role = ReviewRole::Qa;
+        assert!(t.validate_structure().is_err());
+        // Without a marker the first review is QA, and code review cannot be it.
+        let mut unmarked = Template::default();
+        unmarked.reviews[1].review_role = ReviewRole::Unspecified;
+        assert!(unmarked.validate_structure().is_err());
+    }
+
+    #[test]
+    fn lanes_move_and_insert_by_gap_and_routes_follow_their_lane() {
+        let mut t = Template::default();
+        assert_eq!(t.insert_lane(0, "Development"), 0);
+        t.reviews[0].return_lane = Some("Development".into());
+        assert_eq!(t.move_lane(0, 2), Some(1));
+        let lanes: Vec<_> = t.lanes.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(lanes, ["Development", "Development 2"]);
+        assert_eq!(t.lanes[1].profile, t.development.profile);
+        assert_eq!(t.reviews[0].return_lane.as_deref(), Some("Development"));
+        assert_eq!(t.insert_lane(99, "API"), 2);
         assert!(t.validate_structure().is_ok());
     }
 

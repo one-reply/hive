@@ -172,6 +172,29 @@ fn red_checks_use_the_qa_budget_before_the_code_reviewer_is_dispatched() {
 }
 
 #[test]
+fn reviews_run_in_the_recipes_order_wherever_qa_stands_and_red_checks_use_its_budget() {
+    let mut recipe = Template::default();
+    recipe.move_review(2, 0).unwrap();
+    let names: Vec<_> = recipe.reviews.iter().map(|s| s.name.clone()).collect();
+    assert_eq!(names, ["Security & performance", "Code review", "QA"]);
+    let mut run = run_with_recipe(&["/api"], 3, recipe);
+    run.template.reviews[2].limit = 0;
+    run.lanes[0].command = "cargo test".into();
+    plan(&mut run);
+    report(&mut run, developed());
+    run.command_results(vec![check(false)]).unwrap();
+    assert_eq!(run.phase, Phase::Decision(2));
+    run.retry_gate("Repair the failing test").unwrap();
+    report(&mut run, developed());
+    run.command_results(vec![check(true)]).unwrap();
+    for ix in 0..3 {
+        assert_eq!(run.phase, Phase::Review(ix));
+        report(&mut run, review(vec![]));
+    }
+    assert_eq!(run.phase, Phase::Acceptance);
+}
+
+#[test]
 fn targeted_feedback_preserves_the_base_and_runs_all_required_checks_after_one_repair() {
     let mut run = run_with(&["/api", "/web"], 3);
     for lane in &mut run.lanes {
