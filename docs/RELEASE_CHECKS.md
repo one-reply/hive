@@ -1,5 +1,21 @@
 # Release verification
 
+## README and website refresh — November 24, 2026
+
+The screenshots were captured from a development build of Hive 1.0.40 with the
+source tree at `v1.0.40` (`6fdaaa7`). A separate app identity, home directory,
+and data folder isolated the Northstar and Handbook demo repositories.
+
+- `hive-pipelines.png` shows a sample recipe with two development lanes,
+  grouped reviews, a path condition, and automatic plan approval.
+- `hive-editor.png` shows a Rust file beside local project search results.
+- `hive-review.png` shows the sample worktree's staged diff and a draft commit message.
+- `hive-create-worktree.png` shows the New worktree form, cropped to the dialog.
+
+Images were converted to PNG and inspected for private code, account details,
+credentials, and file paths. The demo used prepared Git changes and a sample
+recipe. No agent or transcription request was sent.
+
 ## README refresh — November 15, 2026
 
 The three `docs/images/hive-*.png` files are new, unretouched full-screen captures

@@ -1,8 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from prepare_update_site import latest_release, validate_feed
+from prepare_update_site import latest_release, prepare, validate_feed
 
 
 def release(version, **fields):
@@ -26,6 +27,21 @@ class UpdateSiteTests(unittest.TestCase):
     def test_no_complete_release_uses_bootstrap(self):
         self.assertIsNone(latest_release([release("0.1.0", draft=True)]))
         self.assertIsNone(latest_release([]))
+
+    def test_site_includes_local_images_and_preserves_bootstrap_feed(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "prepare_update_site.subprocess.check_output", return_value=b"[[]]"
+        ):
+            site = Path(directory)
+            prepare("example/hive", site)
+            page = (site / "index.html").read_text(encoding="utf-8")
+            self.assertIn('href="https://github.com/example/hive/releases/latest"', page)
+            self.assertIn('href="appcast.xml"', page)
+            for name in ("hive-pipelines.png", "hive-editor.png", "hive-review.png", "hive-logo.png"):
+                self.assertIn(f'src="images/{name}"', page)
+                self.assertTrue((site / "images" / name).read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+            self.assertEqual((site / "appcast.xml").read_bytes(),
+                             Path("packaging/updates/appcast.xml").read_bytes())
 
     def test_rejects_mismatched_or_unsigned_download_without_rewriting_feed(self):
         content = '''<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">

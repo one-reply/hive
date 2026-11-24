@@ -257,6 +257,9 @@ GitHub Pages uses **GitHub Actions** as its source. Release events dispatch
 site, preserving the Pages environment's main-only policy. The CI publisher also
 dispatches it explicitly after publication. Manual `workflow_dispatch` remains
 available for recovery.
+The same deploy publishes the product page from `packaging/updates/index.html`
+and the screenshots it shares with the README. Dispatch the workflow on `main`
+after a website update to publish it without cutting a new release.
 It copies the highest numeric stable `vMAJOR.MINOR.PATCH` release's signed appcast
 without changing its bytes. Prereleases, drafts, incomplete uploads and
 non-numeric tags are excluded. Until the first signed release is published,

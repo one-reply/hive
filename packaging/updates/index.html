@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Hive is a native macOS workspace for AI coding agents, Git worktrees, visual pipelines, and code review.">
+  <meta name="theme-color" content="#f6f3ed">
+  <title>Hive — A native workspace for AI coding agents</title>
+  <link rel="icon" href="images/hive-logo.png" type="image/png">
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f6f3ed;
+      --ink: #201d26;
+      --muted: #555064;
+      --rule: #d8d0df;
+      --accent: #5931b2;
+      --stage: #ece6fa;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+      line-height: 1.55;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    a { color: inherit; text-underline-offset: .23em; }
+    a:focus-visible { outline: 3px solid var(--accent); outline-offset: 5px; }
+    img { display: block; width: 100%; height: auto; }
+    h1, h2, h3, p, figure { margin: 0; }
+    .wrap { width: min(100% - 3rem, 78rem); margin-inline: auto; }
+    .masthead, .foot, .links { display: flex; align-items: center; gap: 1.3rem; }
+    .masthead, .foot { justify-content: space-between; flex-wrap: wrap; }
+    .masthead { padding-block: 1rem; border-bottom: 1px solid var(--rule); }
+    .brand { display: flex; align-items: center; gap: .55rem; font-size: 1.45rem; font-weight: 760; }
+    .brand img { width: 2.5rem; }
+    .links { flex-wrap: wrap; font-weight: 650; }
+    .links a:hover, .foot a:hover { color: var(--accent); }
+    .hero { margin-block: 2rem 4.5rem; padding: clamp(1.25rem, 4vw, 3.25rem); background: var(--stage); border-radius: 1.2rem; }
+    .hero-grid { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.35fr); align-items: center; gap: clamp(1.5rem, 3vw, 3.5rem); }
+    h1 { font-size: clamp(2.5rem, 5vw, 4.8rem); line-height: .98; letter-spacing: -.065em; max-width: 13ch; }
+    h2 { font-size: clamp(2rem, 4vw, 3.1rem); letter-spacing: -.047em; line-height: 1.07; }
+    h3 { font-size: 1.25rem; letter-spacing: -.025em; line-height: 1.2; }
+    .hero-copy p { margin-block: 1.35rem; max-width: 40ch; }
+    .button { display: inline-block; padding: .78rem 1.12rem; border-radius: .45rem; background: var(--accent); color: white; font-weight: 720; text-decoration: none; }
+    .button:hover { background: #45258e; }
+    .hero-copy .platform { color: var(--muted); font-size: .875rem; margin: .65rem 0 0; }
+    .frame { display: block; background: #111014; border: 1px solid #373044; border-radius: .7rem; overflow: hidden; }
+    .frame:hover { border-color: var(--accent); }
+    .hero .frame { box-shadow: 0 16px 30px #30214d29; }
+    figcaption { margin-top: .65rem; color: var(--muted); font-size: .875rem; }
+    .section { margin-block: 4.5rem; }
+    .intro { max-width: 58ch; margin-top: .85rem; color: var(--muted); }
+    .features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem; margin-top: 1.65rem; }
+    .features article { border-top: 2px solid var(--rule); padding-top: .9rem; }
+    .features p { margin-top: .55rem; color: var(--muted); }
+    .gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.4rem; margin-top: 1.4rem; }
+    .foot { padding-block: 1.35rem 2rem; color: var(--muted); border-top: 1px solid var(--rule); font-size: .9rem; }
+    @media (max-width: 54rem) {
+      .hero-grid { grid-template-columns: 1fr; }
+      h1 { max-width: 17ch; }
+    }
+    @media (max-width: 38rem) {
+      .wrap { width: calc(100% - 2rem); }
+      .features, .gallery { grid-template-columns: 1fr; }
+      .masthead, .foot, .links { gap: .85rem; }
+      .hero, .section { margin-block: 2.75rem; }
+    }
+  </style>
+</head>
+<body>
+  <header class="wrap masthead">
+    <div class="brand"><img src="images/hive-logo.png" alt="" width="128" height="128"> Hive</div>
+    <nav class="links" aria-label="Project">
+      <a href="https://github.com/$repository#readme">Docs</a>
+      <a href="https://github.com/$repository">GitHub</a>
+    </nav>
+  </header>
+  <main class="wrap">
+    <section class="hero" aria-labelledby="intro-title">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <h1 id="intro-title">A native workspace for AI coding agents.</h1>
+          <p>Run several agents in isolated Git worktrees. Plan, edit, and review their changes in one macOS app.</p>
+          <a class="button" href="https://github.com/$repository/releases/latest">Download for macOS</a>
+          <p class="platform">Apple Silicon · Apple-notarized · Apache 2.0</p>
+        </div>
+        <figure>
+          <a class="frame" href="images/hive-pipelines.png">
+            <img src="images/hive-pipelines.png" width="2200" height="1265" alt="Hive's pipeline canvas with parallel development lanes, grouped reviews, and a stage inspector">
+          </a>
+          <figcaption>Build a recipe with your own agents, checks, and approval steps.</figcaption>
+        </figure>
+      </div>
+    </section>
+    <section class="section" aria-labelledby="workflow-title">
+      <h2 id="workflow-title">From a task to reviewed changes</h2>
+      <div class="features">
+        <article>
+          <h3>Give each task a worktree</h3>
+          <p>Launch Claude Code, Codex, OpenCode, or a shell. Keep terminals and worktrees together as you switch between local projects and Linux projects over SSH.</p>
+        </article>
+        <article>
+          <h3>Build a pipeline</h3>
+          <p>Assign agents and models per stage, group reviews in parallel, and limit a reviewer to paths it owns. Start by typing or dictating a task.</p>
+        </article>
+        <article>
+          <h3>Review the evidence</h3>
+          <p>Inspect diffs, test results, and acceptance criteria. Send line feedback back to the right developer, then open a pull or merge request for the changes you accept.</p>
+        </article>
+      </div>
+    </section>
+    <section class="section" aria-labelledby="workspace-title">
+      <h2 id="workspace-title">Inside the workspace</h2>
+      <p class="intro">Search and edit project files, compare and stage changes, and create another isolated worktree when you need it.</p>
+      <div class="gallery">
+        <figure>
+          <a class="frame" href="images/hive-editor.png"><img src="images/hive-editor.png" width="1800" height="1140" loading="lazy" alt="Rust source open next to content search results in Hive"></a>
+          <figcaption>Search across a project while you edit.</figcaption>
+        </figure>
+        <figure>
+          <a class="frame" href="images/hive-review.png"><img src="images/hive-review.png" width="1800" height="1140" loading="lazy" alt="A staged Rust diff and a draft commit message in Hive's Git panel"></a>
+          <figcaption>Review a diff and stage the hunks you want to commit.</figcaption>
+        </figure>
+      </div>
+      <p class="intro"><a href="https://github.com/$repository#readme">See the worktree setup and keyboard shortcuts</a></p>
+    </section>
+  </main>
+  <footer class="wrap foot">
+    <p>Built in Rust with GPUI.</p>
+    <nav class="links" aria-label="Releases and updates">
+      <a href="https://github.com/$repository/releases">Release notes</a>
+      <a href="appcast.xml">Sparkle feed</a>
+    </nav>
+  </footer>
+</body>
+</html>
