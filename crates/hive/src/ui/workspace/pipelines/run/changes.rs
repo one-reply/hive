@@ -19,14 +19,14 @@ impl RunView {
             return self.patch(run, lane, path, w, cx);
         }
         let mut page = v_flex().gap_1();
-        let mut head = h_flex().justify_between().child(heading("Changed files"));
-        head = head.child(button(
+        let mut actions = h_flex().gap_2().child(header_button(
             "refresh-diff",
             "Refresh",
-            ButtonLook::Ghost,
+            Lucide::RefreshCw,
+            ButtonLook::Outline,
             w,
             cx,
-            |view, _, cx| {
+            |view, cx| {
                 view.refresh_changes(cx);
                 cx.notify();
             },
@@ -35,10 +35,14 @@ impl RunView {
             && !run.review_trees().is_empty()
             && matches!(run.phase(), Phase::Acceptance | Phase::Accepted)
         {
-            for (since, label) in [(true, "Since your feedback"), (false, "All changes")] {
-                head = head.child(button(
+            for (since, label, icon) in [
+                (true, "Since your feedback", Lucide::MessageSquareReply),
+                (false, "All changes", Lucide::Files),
+            ] {
+                actions = actions.child(header_button(
                     label,
                     label,
+                    icon,
                     if since == self.since_feedback {
                         ButtonLook::Primary
                     } else {
@@ -46,7 +50,7 @@ impl RunView {
                     },
                     w,
                     cx,
-                    move |v, _, cx| {
+                    move |v, cx| {
                         v.since_feedback = since;
                         v.refresh_changes(cx);
                         cx.notify();
@@ -54,7 +58,13 @@ impl RunView {
                 ));
             }
         }
-        page = page.child(head);
+        page = page.child(
+            h_flex()
+                .justify_between()
+                .gap_2()
+                .child(heading("Changed files"))
+                .child(actions),
+        );
         if run.phase() == Phase::Acceptance && !run.comments().is_empty() {
             page = page.child(self.comment_actions(run, w, cx));
         }
@@ -301,6 +311,25 @@ impl RunView {
             .child(body)
             .into_any_element()
     }
+}
+/// A labeled icon button of the "Changed files" header.
+fn header_button(
+    id: &'static str,
+    label: &'static str,
+    icon: Lucide,
+    look: ButtonLook,
+    w: &mut Window,
+    cx: &mut Context<RunView>,
+    click: impl Fn(&mut RunView, &mut Context<RunView>) + 'static,
+) -> Stateful<Div> {
+    let hover = Hover::new(id, w, cx);
+    Button::new(id)
+        .cursor_pointer()
+        .small()
+        .icon(icon)
+        .label(label)
+        .on_click(cx.listener(move |view, _, _, cx| click(view, cx)))
+        .smooth_hover(look, &hover, cx)
 }
 fn line_stats(added: usize, removed: usize, cx: &App) -> Div {
     h_flex()
