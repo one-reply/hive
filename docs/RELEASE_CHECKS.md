@@ -12,9 +12,11 @@ and data folder isolated the Northstar and Handbook demo repositories.
 - `hive-review.png` shows the sample worktree's staged diff and a draft commit message.
 - `hive-create-worktree.png` shows the New worktree form, cropped to the dialog.
 
-Images were converted to PNG and inspected for private code, account details,
-credentials, and file paths. The demo used prepared Git changes and a sample
-recipe. No agent or transcription request was sent.
+The workspace images are native 3456 × 2168 full-screen PNG captures. The New
+worktree image is cropped to the dialog at 1016 × 736. Capture excludes the
+pointer, window shadow, and attached controls. Each image was inspected for
+private information, capture overlays, and corner artifacts. The demo used
+prepared Git changes and a sample recipe. No agent or transcription request was sent.
 
 ## README refresh — November 15, 2026
 
