@@ -191,18 +191,20 @@ impl PipelinePanel {
         let mut actions = h_flex()
             .gap_2()
             .flex_wrap()
-            .child(button_with_size(
+            .child(button_with_icon_and_size(
                 "pipeline-prompts",
                 "Prompts",
-                ButtonLook::Ghost,
+                Lucide::MessageSquareText,
+                ButtonLook::Outline,
                 ButtonSize::Medium,
                 window,
                 cx,
                 |_, _, cx| crate::ui::settings::open_pipelines(cx),
             ))
-            .child(button_with_size(
+            .child(button_with_icon_and_size(
                 "new-template",
                 "New template",
+                Lucide::Plus,
                 ButtonLook::Outline,
                 ButtonSize::Medium,
                 window,
@@ -211,13 +213,14 @@ impl PipelinePanel {
             ));
         let has_draft = draft_template.is_some();
         if let Some(launch) = draft_template.or_else(|| templates.get(selected).cloned()) {
-            actions = actions.child(button_with_size(
+            actions = actions.child(button_with_icon_and_size(
                 "launch-template",
                 if has_draft {
                     "Resume draft"
                 } else {
                     "Start run"
                 },
+                Lucide::Play,
                 ButtonLook::Primary,
                 ButtonSize::Medium,
                 window,

@@ -399,11 +399,24 @@ fn button_with_icon<V: 'static>(
     cx: &mut Context<V>,
     click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
 ) -> Stateful<Div> {
+    button_with_icon_and_size(id, label, icon, look, ButtonSize::Small, window, cx, click)
+}
+#[allow(clippy::too_many_arguments)]
+fn button_with_icon_and_size<V: 'static>(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: Lucide,
+    look: ButtonLook,
+    size: ButtonSize,
+    window: &mut Window,
+    cx: &mut Context<V>,
+    click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+) -> Stateful<Div> {
     let id = id.into();
     let hover = Hover::new(id.clone(), window, cx);
     Button::new(id)
         .cursor_pointer()
-        .small()
+        .with_size(size)
         .icon(icon)
         .label(label)
         .on_click(cx.listener(move |this, _, w, cx| click(this, w, cx)))
