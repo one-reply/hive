@@ -46,23 +46,104 @@ fn report(run: &mut Run, value: Report) {
     run.report(&t, value).unwrap();
 }
 
+/// The planner's report: a task with criteria for each of `lanes`.
+fn assigning(lanes: impl IntoIterator<Item = usize>) -> Report {
+    Report::Plan {
+        assignments: lanes
+            .into_iter()
+            .map(|lane| Assignment {
+                lane,
+                task: format!("Task {lane}"),
+                criteria: "Build and tests pass".into(),
+            })
+            .collect(),
+        contract: String::new(),
+    }
+}
+
 fn plan(run: &mut Run) {
-    let assignments = (0..run.lanes.len())
-        .map(|lane| Assignment {
-            lane,
-            task: format!("Task {lane}"),
-            criteria: "Build and tests pass".into(),
-        })
-        .collect();
-    report(
-        run,
-        Report::Plan {
-            assignments,
-            contract: String::new(),
-        },
-    );
+    let plan = assigning(0..run.lanes.len());
+    report(run, plan);
     assert_eq!(run.phase, Phase::ApprovePlan);
     run.approve().unwrap();
+}
+
+fn auto_approving() -> Template {
+    let mut recipe = Template::default();
+    recipe.toggle_plan_approval();
+    recipe
+}
+
+#[test]
+fn an_auto_approving_recipe_starts_development_from_the_planners_report() {
+    let mut run = run_with_recipe(&["/api", "/web"], 3, auto_approving());
+    report(&mut run, assigning(0..2));
+    assert_eq!(run.phase, Phase::Development);
+    assert_eq!(run.pending().len(), 2);
+    assert_eq!(
+        run.history.last().map(String::as_str),
+        Some("Plan approved automatically (recipe setting)")
+    );
+    assert!(run.plan_auto_approved());
+    // The gate has no interval of its own, and still counts as passed.
+    assert_eq!(
+        Stage::Approval.status(&run, &Stage::Approval.observations(&run)),
+        StageStatus::AutoApproved
+    );
+    assert_eq!(run.progress().done, 2);
+}
+
+#[test]
+fn a_plan_that_cannot_be_approved_as_written_waits_at_the_gate_with_the_reason() {
+    let mut recipe = auto_approving();
+    recipe.reviews[0].return_lane = Some("Role 1".into());
+    let mut run = run_with_recipe(&["/api", "/web"], 3, recipe);
+    // The planner leaves out the lane that review sends its findings to.
+    report(&mut run, assigning([0]));
+    assert_eq!(run.phase, Phase::ApprovePlan);
+    assert!(run.pending().is_empty());
+    let reason = run.history.last().unwrap();
+    assert!(
+        reason.starts_with("Plan not approved automatically:") && reason.contains("Role 1"),
+        "{reason}"
+    );
+    run.record_stage(Some(Phase::Planning), 1);
+    // The user asks for a plan that covers both lanes and reads it themselves.
+    run.replan("Give the web lane its part").unwrap();
+    report(&mut run, assigning(0..2));
+    assert_eq!(run.phase, Phase::ApprovePlan);
+    run.approve().unwrap();
+    assert_eq!(run.phase, Phase::Development);
+    assert!(!run.plan_auto_approved());
+    assert_eq!(
+        Stage::Approval.status(&run, &Stage::Approval.observations(&run)),
+        StageStatus::Complete
+    );
+}
+
+#[test]
+fn a_run_cancelled_while_planning_did_not_pass_the_plan_gate() {
+    let mut run = run_with_recipe(&["/api"], 3, auto_approving());
+    run.cancel().unwrap();
+    assert!(!run.plan_auto_approved());
+    assert_eq!(
+        Stage::Approval.status(&run, &Stage::Approval.observations(&run)),
+        StageStatus::Stopped
+    );
+    // Cancelled during development, the gate it passed stays passed.
+    let mut run = run_with_recipe(&["/api"], 3, auto_approving());
+    report(&mut run, assigning([0]));
+    run.record_stage(Some(Phase::Planning), 1);
+    run.cancel().unwrap();
+    assert!(run.plan_auto_approved());
+}
+
+#[test]
+fn a_recipe_that_asks_waits_for_the_user_even_with_a_plan_that_could_be_approved() {
+    let mut run = run_with_recipe(&["/api"], 3, Template::default());
+    report(&mut run, assigning([0]));
+    assert_eq!(run.phase, Phase::ApprovePlan);
+    assert!(!run.plan_auto_approved());
 }
 
 fn developed() -> Report {

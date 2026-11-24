@@ -2,6 +2,7 @@ use super::super::map::{BoxAt, units};
 use super::drag::{Ghost, Load, react, reaction};
 use super::*;
 use crate::ui::{agent_logo, hover::SmoothHoverBg as _};
+use gpui_kit::component::tooltip::Tooltip;
 use hive_core::agent::AgentKind;
 
 /// What a stage card shows. The canvas and the card under the pointer draw it the same way.
@@ -184,6 +185,33 @@ impl TemplateEditor {
             .into_any_element()
     }
 
+    /// The plan gate. A click switches between the user approving the plan and the recipe
+    /// approving it; with a shared contract it always asks, and the click changes nothing.
+    fn plan_gate(&self, at: BoxAt, w: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let words = plan_gate_words(&self.template);
+        let (icon, color) = if self.template.auto_approves_plan() {
+            (Lucide::FastForward, cx.theme().muted_foreground)
+        } else {
+            (Lucide::UserRoundCheck, RoleKind::Human.color(cx))
+        };
+        let id = SharedString::from("pipeline-plan-gate");
+        let hover = Hover::new(id.clone(), w, cx);
+        let gate = marker(at, icon, words.label, color, cx)
+            .id(id)
+            .role(Role::Button)
+            .aria_label(format!("Plan approval: {}", words.hint))
+            .tab_index(0)
+            .focus_visible(move |s| s.border_color(color))
+            .when(!self.template.shared_contract, |gate| gate.cursor_pointer())
+            .tooltip(move |window, cx| Tooltip::new(words.hint).build(window, cx));
+        on_activate(gate, cx, |s, _, cx| {
+            s.template.toggle_plan_approval();
+            cx.notify();
+        })
+        .hover_bg(&hover, cx.theme().background, cx.theme().accent)
+        .into_any_element()
+    }
+
     pub(super) fn canvas(&self, w: &mut Window, cx: &mut Context<Self>) -> Div {
         let l = self.layout();
         let mut graph = div()
@@ -203,13 +231,7 @@ impl TemplateEditor {
                 cx.theme().muted_foreground,
                 cx,
             ))
-            .child(marker(
-                l.approve,
-                Lucide::UserRoundCheck,
-                "Approve plan",
-                RoleKind::Human.color(cx),
-                cx,
-            ))
+            .child(self.plan_gate(l.approve, w, cx))
             .child(marker(
                 l.join,
                 Lucide::GitMerge,
@@ -277,6 +299,33 @@ impl TemplateEditor {
             )
     }
 }
+/// How the plan gate reads on the canvas.
+#[derive(Debug, PartialEq)]
+struct PlanGateWords {
+    label: &'static str,
+    /// Who approves the plan now and what a click changes.
+    hint: &'static str,
+}
+
+fn plan_gate_words(template: &Template) -> PlanGateWords {
+    if template.shared_contract {
+        PlanGateWords {
+            label: "Approve plan",
+            hint: "You approve the plan: its shared contract is yours to read.",
+        }
+    } else if template.auto_approves_plan() {
+        PlanGateWords {
+            label: "Auto-approve",
+            hint: "The plan is approved automatically. Click to approve it yourself.",
+        }
+    } else {
+        PlanGateWords {
+            label: "Approve plan",
+            hint: "You approve the plan. Click to have it approved automatically.",
+        }
+    }
+}
+
 fn marker(at: BoxAt, icon: Lucide, label: &'static str, color: Hsla, cx: &App) -> Div {
     h_flex()
         .absolute()
@@ -292,4 +341,32 @@ fn marker(at: BoxAt, icon: Lucide, label: &'static str, color: Hsla, cx: &App) -
         .border_color(color.alpha(0.42))
         .child(Icon::new(icon).size_3().text_color(color))
         .child(div().text_xs().child(label))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Template, plan_gate_words};
+
+    #[test]
+    fn the_plan_gate_says_who_approves_and_what_a_click_changes() {
+        let mut recipe = Template::default();
+        let asking = plan_gate_words(&recipe);
+        assert_eq!(asking.label, "Approve plan");
+        assert!(
+            asking
+                .hint
+                .ends_with("Click to have it approved automatically.")
+        );
+
+        recipe.toggle_plan_approval();
+        let automatic = plan_gate_words(&recipe);
+        assert_eq!(automatic.label, "Auto-approve");
+        assert!(automatic.hint.ends_with("Click to approve it yourself."));
+
+        // With a shared contract the gate always asks and offers nothing to click.
+        recipe.set_shared_contract(true);
+        let contract = plan_gate_words(&recipe);
+        assert_eq!(contract.label, "Approve plan");
+        assert!(!contract.hint.contains("Click"));
+    }
 }

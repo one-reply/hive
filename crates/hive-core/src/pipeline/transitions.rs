@@ -55,6 +55,7 @@ impl Run {
                 self.phase = Phase::ApprovePlan;
                 self.history
                     .push("Planner submitted assignments for approval".into());
+                self.approve_plan_automatically();
             }
             (Phase::Development, Report::Developed { summary }) if !summary.trim().is_empty() => {
                 let lane = ticket
@@ -176,6 +177,41 @@ impl Run {
 
     /// Confirm the human-edited assignments and release the development lanes.
     pub fn approve(&mut self) -> Result<(), Error> {
+        self.release_plan("User approved the plan")
+    }
+
+    /// Releases development without the user when the recipe says so. A plan the user asked
+    /// to have revised waits for them, and so does one that cannot be approved as written.
+    fn approve_plan_automatically(&mut self) {
+        if !self.template.auto_approves_plan() || !self.feedback.is_empty() {
+            return;
+        }
+        if let Err(error) = self.release_plan("Plan approved automatically (recipe setting)") {
+            self.history
+                .push(format!("Plan not approved automatically: {error}"));
+        }
+    }
+
+    /// Whether the recipe let the plan through its gate without the user: the run is past the
+    /// gate and never waited at it. A cancelled run shows where it stopped only by what it
+    /// had timed.
+    pub fn plan_auto_approved(&self) -> bool {
+        let timed = |wanted: fn(Phase) -> bool| self.timings.iter().any(|row| wanted(row.phase));
+        let past_gate = match self.phase {
+            Phase::Planning | Phase::ApprovePlan => false,
+            Phase::Cancelled => {
+                timed(|phase| matches!(phase, Phase::Development | Phase::Regression(_)))
+            }
+            _ => true,
+        };
+        self.template.auto_approves_plan()
+            && !self.direct_start()
+            && past_gate
+            && !timed(|phase| phase == Phase::ApprovePlan)
+    }
+
+    /// Validates the plan at its gate and starts development; `approved` goes to the history.
+    fn release_plan(&mut self, approved: &str) -> Result<(), Error> {
         if self.phase != Phase::ApprovePlan {
             return Err(Error::WrongStage("The plan is not awaiting approval"));
         }
@@ -205,7 +241,7 @@ impl Run {
             return Err(Error::MissingLane(missing.clone()));
         }
         let indices: Vec<_> = assigned.into_iter().map(|(ix, _)| ix).collect();
-        self.history.push("User approved the plan".into());
+        self.history.push(approved.into());
         self.feedback.clear();
         self.briefs.clear();
         self.continuations.clear();

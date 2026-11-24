@@ -723,6 +723,77 @@ fn a_gate_reached_by_an_agents_report_is_announced_once(cx: &mut TestAppContext)
     });
 }
 
+/// Puts the fixture's run into the state its planner's report leaves it in under `recipe`,
+/// which `change` adjusts first, and announces the transition as a report would. The report
+/// itself is not sent: an approved plan would start preparing worktrees.
+fn planner_reported(
+    pipelines: &Entity<Pipelines>,
+    change: impl FnOnce(&mut Template, &mut Vec<Lane>),
+    cx: &mut TestAppContext,
+) {
+    pipelines.update(cx, |p, cx| {
+        p.store.update(cx, |s, _| {
+            let saved = &mut s.state.pipelines.runs[0];
+            let (mut recipe, mut lanes) = (saved.template().clone(), saved.lanes().to_vec());
+            change(&mut recipe, &mut lanes);
+            let mut run = Run::new(42, saved.owner().into(), "Task".into(), recipe, lanes).unwrap();
+            let ticket = run.pending()[0];
+            run.report(&ticket, plan(1)).unwrap();
+            run.record_stage(Some(Phase::Planning), 1);
+            *saved = run;
+        });
+        p.announce_gate(42, Phase::Planning, cx);
+    });
+}
+
+#[gpui::test]
+fn a_plan_approved_by_its_recipe_is_announced_without_a_gate(cx: &mut TestAppContext) {
+    use super::status::Waiting;
+    let pipelines = recovering(cx);
+    let (seen, _subscription) = announcements(&pipelines, cx);
+    planner_reported(&pipelines, |recipe, _| recipe.toggle_plan_approval(), cx);
+    let approved = super::RunWaits {
+        run: 42,
+        reason: Waiting::PlanAutoApproved,
+    };
+    assert_eq!(*seen.borrow(), std::slice::from_ref(&approved));
+    pipelines.read_with(cx, |p, cx| {
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Development);
+        assert_eq!(
+            p.notice(&approved, cx),
+            Some(("Plan approved automatically".into(), "Task".into()))
+        );
+    });
+}
+
+#[gpui::test]
+fn a_plan_its_recipe_could_not_approve_is_announced_at_the_gate(cx: &mut TestAppContext) {
+    use super::status::{Gate, Waiting};
+    let pipelines = recovering(cx);
+    let (seen, _subscription) = announcements(&pipelines, cx);
+    planner_reported(
+        &pipelines,
+        |recipe, lanes| {
+            recipe.toggle_plan_approval();
+            // The plan covers one lane, and this review returns its findings to the other.
+            lanes.push(Lane {
+                name: "API".into(),
+                ..lanes[0].clone()
+            });
+            recipe.insert_lane(1, "API");
+            recipe.reviews[0].return_lane = Some("API".into());
+        },
+        cx,
+    );
+    assert_eq!(
+        *seen.borrow(),
+        [super::RunWaits {
+            run: 42,
+            reason: Waiting::Gate(Gate::Plan),
+        }]
+    );
+}
+
 #[gpui::test]
 fn a_gate_the_user_reaches_by_their_own_decision_is_not_announced(cx: &mut TestAppContext) {
     let pipelines = recovering(cx);

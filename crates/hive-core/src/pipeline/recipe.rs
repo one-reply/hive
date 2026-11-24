@@ -1,5 +1,5 @@
 //! Editing rules shared by every template editor: names stay unique, routes follow renames.
-use super::{Error, LanePreset, Library, Profile, ReviewRole, Step, Template};
+use super::{Error, LanePreset, Library, PlanApproval, Profile, ReviewRole, Step, Template};
 use std::collections::HashSet;
 
 /// Where the item at `from` lands when it is dropped into the gap before position `before`
@@ -80,6 +80,28 @@ impl Template {
             .iter()
             .position(|s| s.review_role == ReviewRole::Qa)
             .unwrap_or(0)
+    }
+
+    /// Whether the planner's report releases development without the user. A recipe with a
+    /// shared contract always asks: the contract is the user's to approve.
+    pub fn auto_approves_plan(&self) -> bool {
+        self.plan_approval == PlanApproval::Auto && !self.shared_contract
+    }
+
+    /// Flips who approves the plan. A recipe with a shared contract keeps asking.
+    pub fn toggle_plan_approval(&mut self) {
+        self.plan_approval = match self.plan_approval {
+            PlanApproval::Ask if !self.shared_contract => PlanApproval::Auto,
+            PlanApproval::Ask | PlanApproval::Auto => PlanApproval::Ask,
+        };
+    }
+
+    /// Turns the shared contract on or off. Turning it on returns the plan to the user.
+    pub fn set_shared_contract(&mut self, on: bool) {
+        self.shared_contract = on;
+        if on {
+            self.plan_approval = PlanApproval::Ask;
+        }
     }
 
     /// Marks QA explicitly. A recipe saved before roles has QA as its unmarked first review,
@@ -414,6 +436,43 @@ mod tests {
         assert_eq!(t.reviews[0].return_lane.as_deref(), Some("Development"));
         assert_eq!(t.insert_lane(99, "API"), 2);
         assert!(t.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn only_a_recipe_without_a_shared_contract_approves_its_plan_automatically() {
+        let mut t = Template::default();
+        assert!(!t.auto_approves_plan());
+        t.toggle_plan_approval();
+        assert!(t.auto_approves_plan());
+        // Turning the contract on returns the plan to the user, and it stays with them.
+        t.set_shared_contract(true);
+        assert_eq!(t.plan_approval, PlanApproval::Ask);
+        t.toggle_plan_approval();
+        assert_eq!(t.plan_approval, PlanApproval::Ask);
+        t.set_shared_contract(false);
+        assert!(!t.auto_approves_plan());
+        t.toggle_plan_approval();
+        t.toggle_plan_approval();
+        assert_eq!(t.plan_approval, PlanApproval::Ask);
+        // A file edited by hand can hold both; the contract wins.
+        t.plan_approval = PlanApproval::Auto;
+        t.shared_contract = true;
+        assert!(!t.auto_approves_plan());
+    }
+
+    #[test]
+    fn an_unknown_plan_approval_asks_and_asking_is_not_written() {
+        let mut saved = serde_json::to_value(Template::default()).unwrap();
+        assert!(saved.get("plan_approval").is_none());
+        saved["plan_approval"] = "after_a_delay".into();
+        let read: Template = serde_json::from_value(saved).unwrap();
+        assert_eq!(read.plan_approval, PlanApproval::Ask);
+
+        let mut auto = Template::default();
+        auto.toggle_plan_approval();
+        let saved = serde_json::to_value(&auto).unwrap();
+        assert_eq!(saved["plan_approval"], "auto");
+        assert_eq!(serde_json::from_value::<Template>(saved).unwrap(), auto);
     }
 
     #[test]

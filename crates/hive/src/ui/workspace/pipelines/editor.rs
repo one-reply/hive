@@ -327,7 +327,8 @@ impl Render for TemplateEditor {
                 window,
                 cx,
                 |v, _, cx| {
-                    v.template.shared_contract = !v.template.shared_contract;
+                    let on = !v.template.shared_contract;
+                    v.template.set_shared_contract(on);
                     cx.notify();
                 },
             ))

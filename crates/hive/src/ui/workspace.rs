@@ -212,7 +212,9 @@ impl Workspace {
                         return;
                     };
                     let notification = match event.reason {
-                        Waiting::Gate(_) | Waiting::Slow { .. } => Notification::info(body),
+                        Waiting::Gate(_) | Waiting::Slow { .. } | Waiting::PlanAutoApproved => {
+                            Notification::info(body)
+                        }
                         Waiting::Failed(_) => Notification::error(body),
                     };
                     let run = event.run;

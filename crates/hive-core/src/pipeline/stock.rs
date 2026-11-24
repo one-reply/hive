@@ -209,7 +209,7 @@ impl Library {
                     || (template.planner.prompt == Some(FEATURE_PLANNER.id)
                         && template.planner.instruction == FEATURE_PLANNER.text))
             {
-                template.shared_contract = true;
+                template.set_shared_contract(true);
             }
         }
         if let Some(prompt) = self

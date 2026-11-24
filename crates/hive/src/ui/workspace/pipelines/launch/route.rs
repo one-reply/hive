@@ -2,11 +2,13 @@
 use super::*;
 use crate::ui::stage_role::{RoleKind, TINT_OPACITY};
 
-/// What performs a stage of the route: an agent or the user in a role, or a command Hive runs.
+/// What performs a stage of the route: an agent or the user in a role, a command Hive runs,
+/// or the recipe itself where it lets the run through a gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Performer {
     Role(RoleKind),
     Command,
+    Recipe,
 }
 
 /// The stages of `template` in the order a run reaches them. `planning` is off for a quick
@@ -23,7 +25,11 @@ fn stops(
     let mut stops = Vec::new();
     if planning {
         stops.push(role(RoleKind::Plan, &template.planner.name));
-        stops.push(role(RoleKind::Human, "Your approval"));
+        stops.push(if template.auto_approves_plan() {
+            (Performer::Recipe, "Automatic approval".to_owned())
+        } else {
+            role(RoleKind::Human, "Your approval")
+        });
     }
     if regression {
         stops.push(command("Reproduce on base"));
@@ -80,6 +86,7 @@ fn stage_chip(performer: Performer, name: String, cx: &App) -> Div {
     let (icon, color) = match performer {
         Performer::Role(role) => (role.icon(), role.color(cx)),
         Performer::Command => (Lucide::Terminal, cx.theme().muted_foreground),
+        Performer::Recipe => (Lucide::FastForward, cx.theme().muted_foreground),
     };
     let human = performer == Performer::Role(RoleKind::Human);
     h_flex()
@@ -129,6 +136,26 @@ mod tests {
             ))
         );
         assert_eq!(stops.len(), 4 + template.reviews.len());
+    }
+
+    #[test]
+    fn an_auto_approving_recipe_leaves_acceptance_as_the_users_only_decision() {
+        let mut template = Template::default();
+        template.toggle_plan_approval();
+        let stops = stops(&template, true, false, "");
+        assert_eq!(stops[1], (Performer::Recipe, "Automatic approval".into()));
+        let human = |stops: &[(Performer, String)]| {
+            let decisions = stops
+                .iter()
+                .filter(|(performer, _)| *performer == Performer::Role(RoleKind::Human));
+            decisions.map(|(_, name)| name.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(human(&stops), ["Acceptance"]);
+        // A shared contract is read by the user whatever the recipe says.
+        template.plan_approval = hive_core::pipeline::PlanApproval::Auto;
+        template.shared_contract = true;
+        let stops = super::stops(&template, true, false, "");
+        assert_eq!(human(&stops), ["Your approval", "Acceptance"]);
     }
 
     #[test]

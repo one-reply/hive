@@ -172,6 +172,14 @@ fn what_a_release_did_not_know_yet_takes_its_default() {
             crate::dictation::Recipe::default()
         );
     }
+    // Before the plan approval policy: every recipe, a run's own copy included, asks the user.
+    for index in 1..SAMPLES.len() {
+        let pipelines = load(index).pipelines;
+        let recipes = pipelines.templates.iter();
+        for recipe in recipes.chain(pipelines.runs.iter().map(|run| run.template())) {
+            assert_eq!(recipe.plan_approval, crate::pipeline::PlanApproval::Ask);
+        }
+    }
     // Before the prompt library: its stock prompts, with the saved run kept.
     let before_prompts = load(1);
     assert_eq!(

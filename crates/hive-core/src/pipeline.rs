@@ -264,12 +264,35 @@ pub struct LanePreset {
     pub command: String,
 }
 
+/// Who approves the planner's assignments before development starts.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanApproval {
+    /// Development starts as soon as the planner reports a plan that can be approved as
+    /// written.
+    Auto,
+    /// The user reads the plan and approves it. A policy this build does not know reads as
+    /// this one, so it never approves by itself.
+    #[default]
+    #[serde(other)]
+    Ask,
+}
+
+impl PlanApproval {
+    fn is_ask(&self) -> bool {
+        *self == Self::Ask
+    }
+}
+
 /// Ordered stage recipe shared between projects.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Template {
     /// Require one shared, human-approved interface contract for all stages.
     pub shared_contract: bool,
+    /// Who approves the plan; see [`Template::auto_approves_plan`] for when it applies.
+    #[serde(default, skip_serializing_if = "PlanApproval::is_ask")]
+    pub plan_approval: PlanApproval,
     /// Library display name.
     pub name: String,
     /// Initial read-only planner.

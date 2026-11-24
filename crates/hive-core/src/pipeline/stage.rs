@@ -37,6 +37,8 @@ pub enum StageStatus {
     InProgress,
     /// The stage finished.
     Complete,
+    /// The recipe let the plan through its gate without the user.
+    AutoApproved,
     /// The plan gave this lane no work.
     Unassigned,
     /// The run was cancelled before this stage.
@@ -55,6 +57,7 @@ impl StageStatus {
             Self::NeedsYou => "Needs you",
             Self::InProgress => "In progress",
             Self::Complete => "Complete",
+            Self::AutoApproved => "Approved automatically",
             Self::Unassigned => "Unassigned",
             Self::Stopped => "Stopped",
             Self::Pending => "Pending",
@@ -90,7 +93,7 @@ impl Run {
         for stage in Stage::recipe(self) {
             match stage.status(self, &stage.observations(self)) {
                 StageStatus::Unassigned => continue,
-                StageStatus::Complete => progress.done += 1,
+                StageStatus::Complete | StageStatus::AutoApproved => progress.done += 1,
                 _ => {}
             }
             progress.total += 1;
@@ -209,6 +212,9 @@ impl Stage {
         }
         if !records.is_empty() {
             return StageStatus::Complete;
+        }
+        if self == Self::Approval && run.plan_auto_approved() {
+            return StageStatus::AutoApproved;
         }
         if let Self::Develop(i) = self
             && run.lanes.get(i).is_some_and(|l| !l.is_assigned())
