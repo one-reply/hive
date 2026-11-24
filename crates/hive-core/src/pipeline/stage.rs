@@ -120,16 +120,15 @@ impl Stage {
         if run.lanes.iter().any(|lane| run.shows_check(lane)) {
             stages.push(Self::Commands(0));
         }
-        for i in 0..run.template.reviews.len() {
-            stages.push(Self::Review(i));
-            if run.phase == Phase::Decision(i)
-                || run
-                    .timings
-                    .iter()
-                    .any(|row| row.phase == Phase::Decision(i))
-            {
-                stages.push(Self::Decision(i));
-            }
+        // Reviews that run together stand together; a decision one of them needed follows
+        // the whole group.
+        for group in run.template.review_groups() {
+            stages.extend(group.clone().map(Self::Review));
+            let decided = |i: &usize| {
+                let phase = Phase::Decision(*i);
+                run.phase == phase || run.timings.iter().any(|row| row.phase == phase)
+            };
+            stages.extend(group.filter(decided).map(Self::Decision));
         }
         stages.push(Self::Accept);
         stages
@@ -179,6 +178,13 @@ impl Stage {
         if let Self::Develop(i) = self {
             return run.phase == Phase::Development
                 && run.pending().iter().any(|t| t.lane == Some(i));
+        }
+        // Reviews of a group run at once: each is at work while its own reviewer is.
+        if let Self::Review(i) = self {
+            let pending = run.pending();
+            return pending
+                .iter()
+                .any(|ticket| run.ticket_phase(ticket) == Phase::Review(i));
         }
         Some(self) == Self::from_phase(run.phase, None)
     }

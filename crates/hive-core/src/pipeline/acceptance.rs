@@ -167,8 +167,10 @@ impl Run {
         self.history
             .push(format!("Requested QA verification · {line}"));
         self.qa_focus = Some((lane, line.into()));
-        self.phase = Phase::Review(self.template.qa_index());
-        self.schedule(None);
+        // QA alone, also when it otherwise runs together with other reviews.
+        let qa = self.template.qa_index();
+        self.phase = Phase::Review(qa);
+        self.schedule_review(qa);
         Ok(())
     }
 }

@@ -1,6 +1,7 @@
 //! Editing rules shared by every template editor: names stay unique, routes follow renames.
 use super::{Error, LanePreset, Library, PlanApproval, Profile, ReviewRole, Step, Template};
 use std::collections::HashSet;
+use std::ops::Range;
 
 /// Where the item at `from` lands when it is dropped into the gap before position `before`
 /// (`0..=len`). `None` when it would stay where it is or a position is out of range.
@@ -115,21 +116,91 @@ impl Template {
         }
     }
 
-    /// Adds a review at its usual place: code review before QA, any other review last.
-    pub fn add_review(&mut self, step: Step) -> usize {
-        let before = if step.review_role == ReviewRole::Code {
-            self.qa_index()
-        } else {
-            self.reviews.len()
-        };
-        self.insert_review(before, step)
+    /// The reviews that run together with the one at `index`, itself included: a review and
+    /// the ones joined to it by [`Step::with_previous`]. Empty past the last review.
+    pub fn review_group(&self, index: usize) -> Range<usize> {
+        let count = self.reviews.len();
+        if index >= count {
+            return count..count;
+        }
+        let joined = |review: usize| review > 0 && self.reviews[review].with_previous;
+        let start = (0..=index).rev().find(|&review| !joined(review));
+        let end = (index + 1..count).find(|&review| !joined(review));
+        start.unwrap_or(0)..end.unwrap_or(count)
     }
 
-    /// Inserts a review into the gap before position `before` (the end when out of range) under
-    /// a free name, and returns its position. Code review starts with QA's CLI settings and the
-    /// read-only reviewer mode; other reviews keep the editor's convention of using the planner
-    /// profile.
-    pub fn insert_review(&mut self, before: usize, mut step: Step) -> usize {
+    /// The groups of reviews in the order they run; a review on its own is a group of one.
+    pub fn review_groups(&self) -> Vec<Range<usize>> {
+        let mut groups = Vec::new();
+        let mut next = 0;
+        while next < self.reviews.len() {
+            let group = self.review_group(next);
+            next = group.end;
+            groups.push(group);
+        }
+        groups
+    }
+
+    /// Which group the review at `index` runs in, counted from the first.
+    pub fn review_row(&self, index: usize) -> usize {
+        let groups = self.review_groups();
+        let row = groups.iter().position(|group| group.contains(&index));
+        row.unwrap_or(groups.len())
+    }
+
+    /// The reviews as rows of their positions; the reviews of a row run together.
+    fn review_rows(&self) -> Vec<Vec<usize>> {
+        self.review_groups()
+            .into_iter()
+            .map(Iterator::collect)
+            .collect()
+    }
+
+    /// Rearranges the reviews into `rows` of their current positions and returns where the
+    /// review at `followed` lands. `None`, and nothing touched, when that is how they stand.
+    fn arrange_reviews(&mut self, rows: Vec<Vec<usize>>, followed: usize) -> Option<usize> {
+        if rows == self.review_rows() {
+            return None;
+        }
+        self.pin_qa();
+        let mut steps: Vec<_> = std::mem::take(&mut self.reviews)
+            .into_iter()
+            .map(Some)
+            .collect();
+        let mut landed = None;
+        for row in rows {
+            for (place, from) in row.into_iter().enumerate() {
+                let Some(mut step) = steps.get_mut(from).and_then(Option::take) else {
+                    continue;
+                };
+                step.with_previous = place > 0;
+                if from == followed {
+                    landed = Some(self.reviews.len());
+                }
+                self.reviews.push(step);
+            }
+        }
+        // Every review is in `rows`; one that somehow is not must still not be lost.
+        self.reviews.extend(steps.into_iter().flatten());
+        landed
+    }
+
+    /// Adds a review at its usual place, on a row of its own: code review before the row QA
+    /// runs in, any other review last.
+    pub fn add_review(&mut self, step: Step) -> usize {
+        let row = if step.review_role == ReviewRole::Code {
+            self.review_row(self.qa_index())
+        } else {
+            self.review_groups().len()
+        };
+        self.insert_review(row, step)
+    }
+
+    /// Inserts a review on a row of its own before the row at position `row` (after the last
+    /// when out of range), under a free name, and returns its position. Code review starts
+    /// with QA's CLI settings and the read-only reviewer mode; other reviews keep the
+    /// editor's convention of using the planner profile.
+    pub fn insert_review(&mut self, row: usize, mut step: Step) -> usize {
         step.name = unique_name(&step.name, self.reviews.iter().map(|s| s.name.as_str()));
         self.pin_qa();
         step.profile = match self.reviews.get(self.qa_index()) {
@@ -139,20 +210,48 @@ impl Template {
             },
             _ => self.planner.profile.clone(),
         };
-        let index = before.min(self.reviews.len());
+        step.with_previous = false;
+        let groups = self.review_groups();
+        let index = groups
+            .get(row)
+            .map_or(self.reviews.len(), |group| group.start);
         self.reviews.insert(index, step);
         index
     }
 
-    /// Moves a review, QA included, into the gap before position `before`
-    /// (`0..=reviews.len()`) and returns its new position. `None` when nothing moved: the two
-    /// gaps beside the review itself, or a position out of range.
-    pub fn move_review(&mut self, from: usize, before: usize) -> Option<usize> {
-        let to = destination(self.reviews.len(), from, before)?;
-        self.pin_qa();
-        let step = self.reviews.remove(from);
-        self.reviews.insert(to, step);
-        Some(to)
+    /// Moves a review, QA included, onto a row of its own before the row at position `row`
+    /// (`0..=rows`) and returns its new position. A review taken out of a group this way
+    /// leaves the others together. `None` when nothing changes or a position is out of range.
+    pub fn move_review(&mut self, from: usize, row: usize) -> Option<usize> {
+        let mut rows = self.review_rows();
+        if from >= self.reviews.len() || row > rows.len() {
+            return None;
+        }
+        let own = self.review_row(from);
+        rows[own].retain(|review| *review != from);
+        let emptied = rows[own].is_empty();
+        if emptied {
+            rows.remove(own);
+        }
+        let row = if emptied && own < row { row - 1 } else { row };
+        rows.insert(row, vec![from]);
+        self.arrange_reviews(rows, from)
+    }
+
+    /// Puts a review beside the one at `beside`, after it or before it, so that the two run
+    /// together, and returns its new position. `None` when it already stands there.
+    pub fn join_review(&mut self, from: usize, beside: usize, after: bool) -> Option<usize> {
+        if from == beside || from.max(beside) >= self.reviews.len() {
+            return None;
+        }
+        let mut rows = self.review_rows();
+        rows.iter_mut()
+            .for_each(|row| row.retain(|review| *review != from));
+        rows.retain(|row| !row.is_empty());
+        let row = rows.iter_mut().find(|row| row.contains(&beside))?;
+        let place = row.iter().position(|review| *review == beside)?;
+        row.insert(place + usize::from(after), from);
+        self.arrange_reviews(rows, from)
     }
 
     /// Moves a lane into the gap before position `before` (`0..=lanes.len()`) and returns its
@@ -219,7 +318,14 @@ impl Template {
         if index == self.qa_index() || index >= self.reviews.len() {
             return Err(Error::InvalidInput("A template needs a QA review."));
         }
-        self.reviews.remove(index);
+        let removed = self.reviews.remove(index);
+        // The review that started a group hands the start to the next one; left joined, the
+        // rest of the group would run with whatever stands before it.
+        if !removed.with_previous
+            && let Some(next) = self.reviews.get_mut(index)
+        {
+            next.with_previous = false;
+        }
         Ok(())
     }
 
@@ -422,6 +528,138 @@ mod tests {
         let mut unmarked = Template::default();
         unmarked.reviews[1].review_role = ReviewRole::Unspecified;
         assert!(unmarked.validate_structure().is_err());
+    }
+
+    /// The reviews by name, one inner list per group that runs together.
+    fn rows(t: &Template) -> Vec<Vec<&str>> {
+        let groups = t.review_groups().into_iter();
+        groups
+            .map(|group| group.map(|i| t.reviews[i].name.as_str()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn reviews_put_beside_one_another_form_a_group_that_runs_together() {
+        // Code review, QA, Security & performance, each on its own.
+        let mut t = Template::default();
+        assert_eq!(t.review_groups(), [0..1, 1..2, 2..3]);
+        assert_eq!(t.join_review(2, 1, true), Some(2));
+        assert_eq!(
+            rows(&t),
+            [vec!["Code review"], vec!["QA", "Security & performance"]]
+        );
+        assert_eq!((t.review_group(1), t.review_group(2)), (1..3, 1..3));
+        assert_eq!((t.review_row(0), t.review_row(2)), (0, 1));
+        assert!(t.review_group(3).is_empty());
+        // Before the other one, and a third joins from the row above.
+        assert_eq!(t.join_review(2, 1, false), Some(1));
+        assert_eq!(t.join_review(0, 2, true), Some(2));
+        assert_eq!(
+            rows(&t),
+            [vec!["Security & performance", "QA", "Code review"]]
+        );
+        assert_eq!(t.qa_index(), 1);
+        assert!(t.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn a_review_taken_out_of_a_group_leaves_the_others_together() {
+        let mut t = Template::default();
+        t.join_review(1, 0, true).unwrap();
+        t.join_review(2, 1, true).unwrap();
+        assert_eq!(
+            rows(&t),
+            [vec!["Code review", "QA", "Security & performance"]]
+        );
+        // The first of the group moves to a row below it: the rest still run together.
+        assert_eq!(t.move_review(0, 1), Some(2));
+        assert_eq!(
+            rows(&t),
+            [vec!["QA", "Security & performance"], vec!["Code review"]]
+        );
+        // And one from the middle of a group, to a row above it.
+        t.join_review(2, 1, false).unwrap();
+        assert_eq!(
+            rows(&t),
+            [vec!["QA", "Code review", "Security & performance"]]
+        );
+        assert_eq!(t.move_review(1, 0), Some(0));
+        assert_eq!(
+            rows(&t),
+            [vec!["Code review"], vec!["QA", "Security & performance"]]
+        );
+    }
+
+    #[test]
+    fn removing_the_review_that_starts_a_group_does_not_join_the_rest_to_the_row_above() {
+        let mut t = Template::default();
+        // Code review, then Security & performance together with QA.
+        t.join_review(1, 2, true).unwrap();
+        assert_eq!(
+            rows(&t),
+            [vec!["Code review"], vec!["Security & performance", "QA"]]
+        );
+        t.remove_review(1).unwrap();
+        assert_eq!(rows(&t), [vec!["Code review"], vec!["QA"]]);
+        // A member that did not start its group goes without touching the others.
+        let mut t = Template::default();
+        t.join_review(2, 1, true).unwrap();
+        t.join_review(0, 1, false).unwrap();
+        t.remove_review(2).unwrap();
+        assert_eq!(rows(&t), [vec!["Code review", "QA"]]);
+    }
+
+    #[test]
+    fn a_review_put_where_it_already_stands_is_not_an_edit() {
+        let mut t = unmarked();
+        t.join_review(1, 0, true).unwrap();
+        let before = t.clone();
+        assert_eq!(t.join_review(1, 0, true), None);
+        assert_eq!(t.join_review(0, 1, false), None);
+        assert_eq!(t.join_review(0, 0, true), None);
+        assert_eq!(t.join_review(0, 9, true), None);
+        assert_eq!(t.move_review(1, 9), None);
+        assert_eq!(t, before);
+    }
+
+    #[test]
+    fn a_new_review_stands_on_a_row_of_its_own_and_code_review_before_qas_group() {
+        let mut t = Template::default();
+        t.remove_review(0).unwrap();
+        t.join_review(1, 0, true).unwrap();
+        assert_eq!(rows(&t), [vec!["QA", "Security & performance"]]);
+        let mut code = Step::new("Code review", "Read the diff.");
+        code.review_role = ReviewRole::Code;
+        code.with_previous = true;
+        assert_eq!(t.add_review(code), 0);
+        assert_eq!(t.add_review(Step::new("Docs", "Read the docs.")), 3);
+        assert_eq!(t.insert_review(1, Step::new("Licenses", "Check them.")), 1);
+        assert_eq!(
+            rows(&t),
+            [
+                vec!["Code review"],
+                vec!["Licenses"],
+                vec!["QA", "Security & performance"],
+                vec!["Docs"],
+            ]
+        );
+    }
+
+    #[test]
+    fn the_first_review_runs_first_whatever_its_flag_says() {
+        let mut t = Template::default();
+        t.reviews[0].with_previous = true;
+        assert_eq!(t.review_groups(), [0..1, 1..2, 2..3]);
+        assert!(t.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn a_recipe_saved_before_groups_reads_as_one_review_at_a_time() {
+        let mut saved = serde_json::to_value(Template::default()).unwrap();
+        assert!(saved["reviews"][1].get("with_previous").is_none());
+        saved["reviews"][2]["with_previous"] = true.into();
+        let grouped: Template = serde_json::from_value(saved).unwrap();
+        assert_eq!(grouped.review_groups(), [0..1, 1..3]);
     }
 
     #[test]

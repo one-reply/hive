@@ -49,7 +49,9 @@ pub enum StateError {
 /// Version 7 preserves the QA stage's identity when code review precedes it.
 /// Version 8 lets any review stand before QA; version 7 rejects such a recipe as invalid.
 /// It also records who approves the plan, the paths a review is limited to and the reviews
-/// a pass leaves out, all of which version 7 would drop when it next saved.
+/// a pass leaves out, all of which version 7 would drop when it next saved. And reviews can
+/// run together, one reviewer each: version 7 takes a run saved with two reviewers at work
+/// for a damaged one and drops it.
 pub const SCHEMA_VERSION: u32 = 8;
 
 /// Loaded state and, when the file could not be used as written, what happened to it.

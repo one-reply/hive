@@ -1,5 +1,7 @@
 use super::*;
 
+mod groups;
+
 // These transition fixtures exercise a recipe with QA and one subsequent reviewer.
 fn run_with(projects: &[&str], limit: u8) -> Run {
     let mut recipe = Template::default();

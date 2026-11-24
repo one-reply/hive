@@ -72,7 +72,8 @@ impl Run {
     pub fn start_attempt_at(&mut self, ticket: Ticket, at: u64) {
         if !self.has_open_attempt(&ticket) {
             self.timings.push(StageTiming {
-                phase: self.phase,
+                // A reviewer's interval belongs to its own review, not to the group's first.
+                phase: self.ticket_phase(&ticket),
                 lane: ticket.lane,
                 attempt: Some(ticket.attempt),
                 start_ms: at,
@@ -157,11 +158,13 @@ mod tests {
             run: 1,
             attempt: 2,
             lane: Some(0),
+            review: None,
         };
         let b = Ticket {
             run: 1,
             attempt: 3,
             lane: Some(1),
+            review: None,
         };
         run.start_attempt_at(a, 11);
         run.start_attempt_at(b, 12);

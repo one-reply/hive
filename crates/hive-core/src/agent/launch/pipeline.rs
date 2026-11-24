@@ -268,6 +268,7 @@ mod tests {
                 run: 3,
                 attempt: 2,
                 lane: None,
+                review: None,
             },
             resume: None,
             image_directory: None,

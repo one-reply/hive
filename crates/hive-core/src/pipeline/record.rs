@@ -138,10 +138,15 @@ impl Run {
             ));
         }
         self.skipped = skipped;
-        // The first review was scheduled before its condition could be judged.
-        if self.phase == Phase::Review(0) && self.skipped.contains(&0) {
-            self.outstanding.clear();
-            self.enter_review(1);
+        // The first group was scheduled before its conditions could be judged: the reviewers
+        // of the reviews now left out are withdrawn, and a group left out whole is passed.
+        if self.phase == Phase::Review(0) {
+            let skipped = &self.skipped;
+            self.outstanding
+                .retain(|ticket| !skipped.contains(&ticket.review.unwrap_or(0)));
+            if self.outstanding.is_empty() {
+                self.enter_review(self.template.review_group(0).end);
+            }
         }
     }
     /// Pending feedback anchored to an exact checkout tree, grouped by receiving lane.
@@ -295,11 +300,13 @@ mod tests {
             run: 12,
             attempt: 2,
             lane: Some(0),
+            review: None,
         };
         let review = Ticket {
             run: 12,
             attempt: 3,
             lane: None,
+            review: None,
         };
         let developed = Report::Developed {
             summary: "Build complete".into(),

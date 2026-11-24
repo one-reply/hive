@@ -232,6 +232,11 @@ pub struct Step {
     /// when the change under review touches one of them; empty means it always runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub only_paths: Vec<String>,
+    /// For a review: runs at the same time as the review before it. A group is a review
+    /// with the ones joined to it this way; their findings go back for one repair round.
+    /// Ignored on the first review, which has nothing before it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_previous: bool,
 }
 
 fn default_limit() -> u8 {
@@ -250,6 +255,7 @@ impl Step {
             return_lane: None,
             prompt: None,
             only_paths: Vec::new(),
+            with_previous: false,
         }
     }
 

@@ -8,7 +8,7 @@ impl Run {
         if self.step(ticket).is_none() {
             return Err(Error::InactiveAttempt);
         }
-        let handoff = (*ticket, self.phase, report.clone());
+        let handoff = (*ticket, self.ticket_phase(ticket), report.clone());
         match (self.phase, report) {
             (Phase::Regression(RegressionStep::Author), Report::Regression { test }) => {
                 self.submit_regression_test(test)?;
@@ -101,8 +101,10 @@ impl Run {
                 }) {
                     return Err(Error::InvalidFinding(invalid.lane));
                 }
+                // Reviews of a group report one by one; the ticket says which this is.
+                let review = ticket.review.unwrap_or(ix);
                 self.history
-                    .push(format!("{}: {summary}", self.template.reviews[ix].name));
+                    .push(format!("{}: {summary}", self.template.reviews[review].name));
                 for finding in &findings {
                     self.history.push(format!(
                         "{} ({}): {}",
@@ -117,18 +119,24 @@ impl Run {
                         !self
                             .dismissed
                             .iter()
-                            .any(|(gate, accepted)| *gate == ix && f.repeats(accepted))
+                            .any(|(gate, accepted)| *gate == review && f.repeats(accepted))
                     })
                     .partition(|f| f.severity.blocks());
-                self.findings = blocking;
+                // The findings of a group add up: entering it cleared the previous ones.
+                self.findings.extend(blocking);
                 // Return to QA asks a reviewer about the same files again, and it repeats the
                 // notes it already left; acceptance and the pull request list each once.
                 for note in notes {
                     if !self.notes.iter().any(|(_, held)| note.repeats(held)) {
-                        self.notes.push((ix, note));
+                        self.notes.push((review, note));
                     }
                 }
-                self.outstanding.clear();
+                self.outstanding.retain(|pending| pending != ticket);
+                // Recorded before the group concludes: who found what is read from the reports.
+                self.reports.push(handoff);
+                if !self.outstanding.is_empty() {
+                    return Ok(());
+                }
                 // Only a run saved mid-review by a build that ran the checks afterwards gets
                 // here with a check still owed; skipping it would accept untested work.
                 if ix == 0 && self.owes_checks() {
@@ -136,6 +144,7 @@ impl Run {
                 } else {
                     self.finish_review(ix);
                 }
+                return Ok(());
             }
             _ => {
                 return Err(Error::InvalidInput(
@@ -342,22 +351,65 @@ impl Run {
         })
     }
 
+    /// The review that reported `finding` in the current pass. Read from the reports, so
+    /// there is no second list to keep in step with the findings.
+    pub fn reviewer(&self, finding: &Finding) -> Option<usize> {
+        self.reports
+            .iter()
+            .rev()
+            .filter(|(ticket, ..)| ticket.attempt >= self.first_review_attempt)
+            .find_map(|(_, phase, report)| match (phase, report) {
+                (Phase::Review(review), Report::Review { findings, .. })
+                    if *review < self.rounds.len() && findings.contains(finding) =>
+                {
+                    Some(*review)
+                }
+                _ => None,
+            })
+    }
+
+    /// The reviews whose open findings ask for a repair, in recipe order; `fallback` alone
+    /// when a red check is all there is.
+    pub(super) fn askers(&self, fallback: usize) -> Vec<usize> {
+        let found = self.findings.iter();
+        let askers: BTreeSet<_> = found
+            .map(|finding| self.reviewer(finding).unwrap_or(fallback))
+            .collect();
+        if askers.is_empty() {
+            vec![fallback]
+        } else {
+            askers.into_iter().collect()
+        }
+    }
+
+    /// Concludes the review at `ix`, or the group it starts once every member has reported.
+    /// Clean, the run moves past the group. Otherwise each review that asked for fixes spends
+    /// one of its rounds on a single repair, unless one of them has none left: then the user
+    /// decides, and nobody is charged.
     fn finish_review(&mut self, ix: usize) {
         let issues = !self.findings.is_empty() || self.commands.iter().any(|r| !r.success);
         if !issues {
             if self.qa_focus.take().is_some() {
                 self.phase = Phase::Acceptance;
             } else {
-                self.enter_review(ix + 1);
+                self.enter_review(self.template.review_group(ix).end);
             }
-        } else if self.rounds[ix] >= self.template.reviews[ix].limit {
-            self.phase = Phase::Decision(ix);
+            return;
+        }
+        let askers = self.askers(ix);
+        let spent = askers
+            .iter()
+            .find(|&&review| self.rounds[review] >= self.template.reviews[review].limit);
+        if let Some(&review) = spent {
+            self.phase = Phase::Decision(review);
             self.history.push(format!(
                 "{} needs a decision",
-                self.template.reviews[ix].name
+                self.template.reviews[review].name
             ));
         } else {
-            self.rounds[ix] += 1;
+            for &review in &askers {
+                self.rounds[review] += 1;
+            }
             self.repair(ix, "");
         }
     }
@@ -383,19 +435,31 @@ impl Run {
         }
     }
 
-    /// Moves to the review at `ix`, or to the next one this pass does not leave out;
-    /// acceptance follows the last.
+    /// Moves to the group of reviews that starts at `ix`, or to the next one this pass does
+    /// not leave out whole, and schedules a reviewer for each of its reviews that runs.
+    /// Acceptance follows the last group.
     pub(super) fn enter_review(&mut self, ix: usize) {
         self.findings.clear();
-        let reviews = self.template.reviews.len();
-        let ix = (ix..reviews)
-            .find(|review| !self.skipped.contains(review))
-            .unwrap_or(reviews);
-        if ix == reviews {
-            self.phase = Phase::Acceptance;
-        } else {
-            self.phase = Phase::Review(ix);
-            self.schedule(None);
+        let mut next = ix;
+        loop {
+            let group = self.template.review_group(next);
+            if group.is_empty() {
+                self.phase = Phase::Acceptance;
+                return;
+            }
+            let running: Vec<_> = group
+                .clone()
+                .filter(|review| !self.skipped.contains(review))
+                .collect();
+            if running.is_empty() {
+                next = group.end;
+                continue;
+            }
+            self.phase = Phase::Review(group.start);
+            for review in running {
+                self.schedule_review(review);
+            }
+            return;
         }
     }
 
@@ -444,7 +508,9 @@ impl Run {
             "User dismissed “{}”: {reason}",
             finding.description
         ));
-        self.dismissed.push((ix, finding));
+        // Remembered for the review that reported it, so that review does not raise it again.
+        let review = self.reviewer(&finding).unwrap_or(ix);
+        self.dismissed.push((review, finding));
         if self.findings.is_empty() && self.commands.iter().all(|r| r.success) {
             self.finish_review(ix);
         }
