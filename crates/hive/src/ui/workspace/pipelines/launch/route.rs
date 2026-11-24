@@ -42,11 +42,16 @@ fn stops(
         stops.push(command(&format!("Required checks · {checks}")));
     }
     for (index, review) in template.reviews.iter().enumerate() {
+        let mut name = review.name.clone();
+        // A review that runs together with others names the one that starts their group.
+        let group = template.review_group(index);
+        if index > group.start {
+            name = format!("{name} · with {}", template.reviews[group.start].name);
+        }
         // A review limited to some paths may not run at all; the route says so up front.
-        let name = match template.review_condition(index) {
-            Some(_) => format!("{} · if paths match", review.name),
-            None => review.name.clone(),
-        };
+        if template.review_condition(index).is_some() {
+            name.push_str(" · if paths match");
+        }
         stops.push(role(RoleKind::review(template, index), &name));
     }
     stops.push(role(RoleKind::Human, "Acceptance"));
@@ -178,6 +183,23 @@ mod tests {
                 "QA",
                 "Security & performance · if paths match",
                 "Acceptance",
+            ]
+        );
+    }
+
+    #[test]
+    fn reviews_that_run_together_name_the_one_that_starts_their_group() {
+        let mut template = Template::default();
+        template.reviews[2].only_paths = vec!["crates/auth/".into()];
+        template.join_review(1, 0, true).unwrap();
+        template.join_review(2, 1, true).unwrap();
+        let stops = stops(&template, false, false, "");
+        assert_eq!(
+            names(&stops)[1..4],
+            [
+                "Code review",
+                "QA · with Code review",
+                "Security & performance · with Code review · if paths match",
             ]
         );
     }

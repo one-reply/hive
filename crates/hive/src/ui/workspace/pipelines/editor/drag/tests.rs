@@ -62,7 +62,7 @@ impl Render for Graph {
 fn graph(cx: &mut TestAppContext) -> (gpui::Entity<Graph>, &mut VisualTestContext) {
     cx.update(gpui_kit::init);
     cx.add_window_view(|_, _| Graph {
-        layout: Layout::new(3, 3),
+        layout: Layout::new(3, &[1, 1, 1]),
         dragging: None,
         landed: Vec::new(),
     })
@@ -93,7 +93,7 @@ fn drag(from: (f32, f32), to: (f32, f32), cx: &mut VisualTestContext) {
 #[gpui::test]
 fn a_stage_dropped_over_a_gap_lands_there_and_one_dropped_elsewhere_stays(cx: &mut TestAppContext) {
     let (view, cx) = graph(cx);
-    let layout = Layout::new(3, 3);
+    let layout = Layout::new(3, &[1, 1, 1]);
     let third = middle(layout.reviews[2]);
     // Over the upper half of the first review: the gap above it.
     drag(third, (third.0, layout.reviews[0].y + 5.), cx);
@@ -117,7 +117,7 @@ fn a_stage_dropped_over_a_gap_lands_there_and_one_dropped_elsewhere_stays(cx: &m
 #[gpui::test]
 fn findings_dropped_on_a_lane_or_on_development_ask_for_that_route(cx: &mut TestAppContext) {
     let (view, cx) = graph(cx);
-    let layout = Layout::new(3, 3);
+    let layout = Layout::new(3, &[1, 1, 1]);
     let findings = middle(layout.reviews[0]);
     drag(findings, middle(layout.lanes[2]), cx);
     drag(findings, middle(layout.build), cx);
@@ -155,7 +155,7 @@ fn lane_gap(layout: &Layout, gap: usize) -> (f32, f32) {
 
 #[test]
 fn a_stage_lands_in_any_gap_of_its_own_row_but_the_two_beside_it() {
-    let layout = Layout::new(3, 3);
+    let layout = Layout::new(3, &[1, 1, 1]);
     let landed = |load, at| target(&layout, load, at);
     let review = Load::Move(Item::Review(1));
     assert_eq!(landed(review, review_gap(&layout, 0)), Some(Target::Gap(0)));
@@ -176,8 +176,56 @@ fn a_stage_lands_in_any_gap_of_its_own_row_but_the_two_beside_it() {
 }
 
 #[test]
+fn a_review_lands_beside_another_over_its_side_and_leaves_its_group_into_a_gap() {
+    // Review 0 alone, reviews 1 and 2 together, review 3 alone.
+    let layout = Layout::new(1, &[1, 2, 1]);
+    let side = |review: usize, after: bool| {
+        let card = layout.reviews[review];
+        let x = if after {
+            card.x + card.w - 5.
+        } else {
+            card.x + 5.
+        };
+        (x, card.y + card.h / 2.)
+    };
+    let beside = |review, after| Some(Target::Beside { review, after });
+    let alone = Load::Move(Item::Review(3));
+    assert_eq!(target(&layout, alone, side(0, true)), beside(0, true));
+    assert_eq!(target(&layout, alone, side(1, false)), beside(1, false));
+    // Over the middle of a card the nearest gap between rows counts, as before.
+    let card = layout.reviews[0];
+    let middle = (card.middle(), card.y + 5.);
+    assert_eq!(target(&layout, alone, middle), Some(Target::Gap(0)));
+
+    // A member of the group already stands after its neighbour; before it is a move.
+    let member = Load::Move(Item::Review(2));
+    assert_eq!(target(&layout, member, side(1, true)), None);
+    assert_eq!(target(&layout, member, side(1, false)), beside(1, false));
+    // It leaves the group into the gap above or below its own row.
+    assert_eq!(
+        target(&layout, member, review_gap(&layout, 1)),
+        Some(Target::Gap(1))
+    );
+    assert_eq!(
+        target(&layout, member, review_gap(&layout, 2)),
+        Some(Target::Gap(2))
+    );
+    // A review alone on its row stays in the gaps around that row.
+    assert_eq!(target(&layout, alone, review_gap(&layout, 2)), None);
+    assert_eq!(target(&layout, alone, review_gap(&layout, 3)), None);
+
+    let new = Load::Add(StageChoice::Review(ReviewKind::Security));
+    assert_eq!(target(&layout, new, side(3, true)), beside(3, true));
+    // A lane has no place among the reviews, beside one or between them.
+    assert_eq!(
+        target(&layout, Load::Move(Item::Lane(0)), side(0, true)),
+        None
+    );
+}
+
+#[test]
 fn a_new_stage_lands_in_every_gap_of_its_row() {
-    let layout = Layout::new(1, 2);
+    let layout = Layout::new(1, &[1, 1]);
     let review = Load::Add(StageChoice::Review(ReviewKind::Security));
     for gap in 0..=2 {
         assert_eq!(
@@ -197,7 +245,7 @@ fn a_new_stage_lands_in_every_gap_of_its_row() {
 
 #[test]
 fn findings_land_on_a_lane_or_on_development_for_every_affected_lane() {
-    let layout = Layout::new(2, 1);
+    let layout = Layout::new(2, &[1]);
     let middle = |at: super::BoxAt| (at.middle(), at.y + at.h / 2.);
     let findings = Load::Route(0);
     assert_eq!(

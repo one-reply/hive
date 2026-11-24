@@ -33,6 +33,22 @@ fn path(
         window.paint_path(shape, color);
     }
 }
+/// The lane the return arrow of a row of reviews points at. `routes` holds each review's
+/// lane, `None` meaning the lanes its findings affect. The selected review's route when it
+/// stands in the row, else the route the whole row shares; development otherwise.
+fn row_route(
+    row: std::ops::Range<usize>,
+    selected: Option<usize>,
+    routes: &[Option<usize>],
+) -> Option<usize> {
+    if let Some(review) = selected.filter(|review| row.contains(review)) {
+        return routes.get(review).copied().flatten();
+    }
+    let mut lanes = routes.get(row)?.iter();
+    let first = *lanes.next()?;
+    lanes.all(|lane| *lane == first).then_some(first).flatten()
+}
+
 pub(super) fn wires(
     layout: Layout,
     selected: Item,
@@ -82,18 +98,31 @@ pub(super) fn wires(
                 from_to(layout.build, lane, window);
                 from_to(lane, layout.join, window);
             }
-            let mut prev = layout.join;
-            for (i, &review) in layout.reviews.iter().enumerate() {
-                from_to(prev, review, window);
-                let x = review.x + review.w;
-                let y = review.y + review.h / 2.;
+            // Reviews of a row run together: every one of them follows all of the row above
+            // and leads to all of the row below.
+            let mut above = vec![layout.join];
+            for row in &layout.rows {
+                let reviews = &layout.reviews[row.clone()];
+                for &from in &above {
+                    for &review in reviews {
+                        from_to(from, review, window);
+                    }
+                }
+                above = reviews.to_vec();
+                // One return arrow for the row, from its last review: the findings of a
+                // row go back in one round.
+                let Some(&last) = reviews.last() else {
+                    continue;
+                };
+                let x = last.x + last.w;
+                let y = last.y + last.h / 2.;
                 let rail = layout.width - 13.;
-                let color = if routed.is_none() || routed == Some(i) {
+                let color = if routed.is_none_or(|review| row.contains(&review)) {
                     retry
                 } else {
                     retry.alpha(0.26)
                 };
-                let target = fixes[i]
+                let target = row_route(row.clone(), routed, &fixes)
                     .and_then(|lane| layout.lanes.get(lane).copied())
                     .unwrap_or(layout.build);
                 let tx = target.x + target.w;
@@ -114,9 +143,10 @@ pub(super) fn wires(
                     false,
                     scale,
                 );
-                prev = review;
             }
-            from_to(prev, layout.end, window);
+            for &from in &above {
+                from_to(from, layout.end, window);
+            }
         },
     )
     .absolute()
@@ -151,19 +181,36 @@ pub(super) fn grid(cx: &App) -> impl IntoElement {
     .inset_0()
 }
 
+/// How many lanes, groups of reviews and reviews of a group the library preview has room for.
+const PREVIEW_SHOWN: usize = 3;
+
+/// A recipe as its library preview draws it: one column per step of a run, and in a column
+/// the stages that work at the same time — the lanes, or the reviews of a group.
+fn preview_columns(t: &Template) -> Vec<Vec<RoleKind>> {
+    let lanes = t.lanes.len().clamp(1, PREVIEW_SHOWN);
+    let mut columns = vec![
+        vec![RoleKind::Plan],
+        vec![RoleKind::Human],
+        vec![RoleKind::Build; lanes],
+    ];
+    for group in t.review_groups().into_iter().take(PREVIEW_SHOWN) {
+        let together = group.take(PREVIEW_SHOWN);
+        columns.push(together.map(|i| RoleKind::review(t, i)).collect());
+    }
+    columns.push(vec![RoleKind::Human]);
+    columns
+}
+
 pub(super) fn miniature(t: &Template, cx: &App) -> impl IntoElement {
-    let builds = t.lanes.len().clamp(1, 3);
-    let mut roles = vec![RoleKind::Plan, RoleKind::Human, RoleKind::Build];
-    roles.extend((0..t.reviews.len().min(3)).map(|i| RoleKind::review(t, i)));
-    roles.push(RoleKind::Human);
-    let count = roles.len();
+    let columns = preview_columns(t);
+    let count = columns.len();
     let wire = cx.theme().muted_foreground.alpha(0.55);
     let surface = cx.theme().sidebar;
     let mut nodes = Vec::new();
-    for (col, role) in roles.into_iter().enumerate() {
+    for (col, roles) in columns.into_iter().enumerate() {
         let x = (col as f32 + 0.5) / count as f32;
-        let rows = if col == 2 { builds } else { 1 };
-        for row in 0..rows {
+        let rows = roles.len();
+        for (row, role) in roles.into_iter().enumerate() {
             let y = 0.5 + (row as f32 - (rows as f32 - 1.) / 2.) * 0.31;
             nodes.push((col, x, y, role));
         }
@@ -229,4 +276,42 @@ pub(super) fn miniature(t: &Template, cx: &App) -> impl IntoElement {
         );
     }
     preview
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RoleKind, Template, preview_columns, row_route};
+
+    #[test]
+    fn the_preview_stacks_what_works_at_the_same_time() {
+        // Code review, then QA with Security & performance; two lanes.
+        let mut recipe = Template::default();
+        recipe.insert_lane(1, "API");
+        recipe.join_review(2, 1, true).unwrap();
+        assert_eq!(
+            preview_columns(&recipe),
+            [
+                vec![RoleKind::Plan],
+                vec![RoleKind::Human],
+                vec![RoleKind::Build, RoleKind::Build],
+                vec![RoleKind::CodeReview],
+                vec![RoleKind::Qa, RoleKind::Security],
+                vec![RoleKind::Human],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rows_return_arrow_follows_the_selected_review_or_the_route_the_row_shares() {
+        // Reviews 0 and 1 stand in one row; lane 1, then the lanes the findings affect.
+        let routes = [Some(1), None, Some(0)];
+        assert_eq!(row_route(0..2, None, &routes), None, "the routes differ");
+        assert_eq!(row_route(0..2, Some(0), &routes), Some(1));
+        assert_eq!(row_route(0..2, Some(1), &routes), None);
+        // A review selected in another row does not speak for this one.
+        assert_eq!(row_route(0..2, Some(2), &routes), None);
+        assert_eq!(row_route(2..3, None, &routes), Some(0));
+        assert_eq!(row_route(0..2, None, &[Some(1), Some(1)]), Some(1));
+        assert_eq!(row_route(3..4, None, &routes), None);
+    }
 }

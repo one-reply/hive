@@ -175,8 +175,47 @@ impl TemplateEditor {
         self.load(item, w, cx);
         self.show_inspector = true;
     }
+    /// Puts the review at `from` beside the one at `beside` so that the two run together,
+    /// and selects it there.
+    fn join(
+        &mut self,
+        from: usize,
+        beside: usize,
+        after: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.notify();
+        if !self.apply(cx) {
+            return;
+        }
+        if let Some(moved) = self.template.join_review(from, beside, after) {
+            self.load(Item::Review(moved), w, cx);
+        }
+    }
+    /// Adds a review of `kind` beside the one at `beside`, to run together with it.
+    fn add_beside(
+        &mut self,
+        kind: hive_core::pipeline::ReviewKind,
+        beside: usize,
+        after: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.notify();
+        if !self.apply(cx) {
+            return;
+        }
+        let library = &AppState::get(cx).store.read(cx).state.pipelines;
+        let step = library.review_step(kind);
+        // Added after the last row first, so `beside` still names the same review.
+        let added = self.template.insert_review(usize::MAX, step);
+        let joined = self.template.join_review(added, beside, after);
+        self.load(Item::Review(joined.unwrap_or(added)), w, cx);
+        self.show_inspector = true;
+    }
     fn layout(&self) -> Layout {
-        Layout::new(self.template.lanes.len(), self.template.reviews.len())
+        Layout::of(&self.template)
     }
     fn remove(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         match self.selected {

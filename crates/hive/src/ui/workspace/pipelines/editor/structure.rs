@@ -39,27 +39,51 @@ impl StageChoice {
 /// What the stage menu can do with the selected stage.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum StageAction {
-    /// Move it into the gap before this position of its row.
+    /// Move it into the gap before this position: among the lanes for a lane, among the
+    /// rows of reviews for a review, which then stands on a row of its own.
     Move(usize),
+    /// Put the review after the one at this position, to run together with it.
+    Join(usize),
     Remove,
 }
 
 /// The menu of the selected stage, in order. Empty when the stage can neither move nor go.
-fn stage_actions(t: &Template, selected: Item) -> Vec<(&'static str, StageAction)> {
-    let (index, count, removable) = match selected {
-        Item::Lane(i) => (i, t.lanes.len(), t.lanes.len() > 1),
-        Item::Review(i) => (i, t.reviews.len(), i != t.qa_index()),
+fn stage_actions(t: &Template, selected: Item) -> Vec<(String, StageAction)> {
+    let mut actions = Vec::new();
+    let mut offer = |label: &str, action| actions.push((label.to_owned(), action));
+    let removable = match selected {
+        Item::Lane(i) => {
+            if i > 0 {
+                offer("Move earlier", StageAction::Move(i - 1));
+            }
+            if i + 1 < t.lanes.len() {
+                offer("Move later", StageAction::Move(i + 2));
+            }
+            t.lanes.len() > 1
+        }
+        Item::Review(i) => {
+            let rows = t.review_groups();
+            let row = t.review_row(i);
+            if rows[row].len() > 1 {
+                // Leaving the group is one step; where it goes next is another.
+                offer("Run on its own", StageAction::Move(row + 1));
+            } else {
+                if row > 0 {
+                    offer("Move earlier", StageAction::Move(row - 1));
+                    let previous = rows[row - 1].end - 1;
+                    let label = format!("Run alongside {}", t.reviews[previous].name);
+                    offer(&label, StageAction::Join(previous));
+                }
+                if row + 1 < rows.len() {
+                    offer("Move later", StageAction::Move(row + 2));
+                }
+            }
+            i != t.qa_index()
+        }
         Item::Planner | Item::Development => return Vec::new(),
     };
-    let mut actions = Vec::new();
-    if index > 0 {
-        actions.push(("Move earlier", StageAction::Move(index - 1)));
-    }
-    if index + 1 < count {
-        actions.push(("Move later", StageAction::Move(index + 2)));
-    }
     if removable {
-        actions.push(("Remove stage", StageAction::Remove));
+        offer("Remove stage", StageAction::Remove);
     }
     actions
 }
@@ -119,7 +143,7 @@ impl TemplateEditor {
         }
         let options = actions
             .into_iter()
-            .map(|(label, action)| (label.to_owned(), false, action))
+            .map(|(label, action)| (label, false, action))
             .collect();
         Some(options_menu(
             Button::new("selected-stage-actions")
@@ -131,9 +155,13 @@ impl TemplateEditor {
                 .tooltip("Stage actions"),
             options,
             cx,
-            move |s, action, w, cx| match action {
-                StageAction::Move(before) => s.move_to(selected, before, w, cx),
-                StageAction::Remove => s.remove(w, cx),
+            move |s, action, w, cx| match (action, selected) {
+                (StageAction::Move(before), _) => s.move_to(selected, before, w, cx),
+                (StageAction::Join(beside), Item::Review(review)) => {
+                    s.join(review, beside, true, w, cx)
+                }
+                (StageAction::Join(_), _) => {}
+                (StageAction::Remove, _) => s.remove(w, cx),
             },
         ))
     }
@@ -159,30 +187,40 @@ mod tests {
         assert_eq!(StageChoice::all().count(), 1 + ReviewKind::ALL.len());
     }
 
+    /// The menu of `item` as labels with what each does.
+    fn menu(t: &Template, item: Item) -> Vec<(String, StageAction)> {
+        stage_actions(t, item)
+    }
+
+    fn entry(label: &str, action: StageAction) -> (String, StageAction) {
+        (label.to_owned(), action)
+    }
+
     #[test]
     fn qa_moves_like_any_review_but_is_never_removed() {
-        // Code review, QA, Security & performance.
+        // Code review, QA, Security & performance, each on a row of its own.
         let t = Template::default();
-        let labels = |item| -> Vec<_> { stage_actions(&t, item).into_iter().collect() };
         assert_eq!(
-            labels(Item::Review(1)),
+            menu(&t, Item::Review(1)),
             [
-                ("Move earlier", StageAction::Move(0)),
-                ("Move later", StageAction::Move(3)),
+                entry("Move earlier", StageAction::Move(0)),
+                entry("Run alongside Code review", StageAction::Join(0)),
+                entry("Move later", StageAction::Move(3)),
             ]
         );
         assert_eq!(
-            labels(Item::Review(0)),
+            menu(&t, Item::Review(0)),
             [
-                ("Move later", StageAction::Move(2)),
-                ("Remove stage", StageAction::Remove),
+                entry("Move later", StageAction::Move(2)),
+                entry("Remove stage", StageAction::Remove),
             ]
         );
         assert_eq!(
-            labels(Item::Review(2)),
+            menu(&t, Item::Review(2)),
             [
-                ("Move earlier", StageAction::Move(1)),
-                ("Remove stage", StageAction::Remove),
+                entry("Move earlier", StageAction::Move(1)),
+                entry("Run alongside QA", StageAction::Join(1)),
+                entry("Remove stage", StageAction::Remove),
             ]
         );
     }
@@ -190,27 +228,56 @@ mod tests {
     #[test]
     fn the_menu_moves_a_stage_to_where_it_says() {
         let mut t = Template::default();
-        let (_, later) = stage_actions(&t, Item::Review(1))[1];
+        let (_, later) = menu(&t, Item::Review(1))[2];
         assert_eq!(later, StageAction::Move(3));
         assert_eq!(t.move_review(1, 3), Some(2));
-        let (_, earlier) = stage_actions(&t, Item::Review(2))[0];
+        let (_, earlier) = menu(&t, Item::Review(2))[0];
         assert_eq!(earlier, StageAction::Move(1));
         assert_eq!(t.move_review(2, 1), Some(1));
         assert_eq!(t.qa_index(), 1);
     }
 
     #[test]
+    fn a_review_joins_the_row_above_and_one_in_a_group_can_only_leave_it_first() {
+        let mut t = Template::default();
+        let (label, join) = menu(&t, Item::Review(2))[1].clone();
+        assert_eq!(label, "Run alongside QA");
+        let StageAction::Join(beside) = join else {
+            panic!("{join:?}");
+        };
+        assert_eq!(t.join_review(2, beside, true), Some(2));
+        assert_eq!(t.review_groups(), [0..1, 1..3]);
+        // Both members of the group: one step takes either out, onto a row after it.
+        for review in [1, 2] {
+            let mut expected = vec![entry("Run on its own", StageAction::Move(2))];
+            if review != t.qa_index() {
+                expected.push(entry("Remove stage", StageAction::Remove));
+            }
+            assert_eq!(menu(&t, Item::Review(review)), expected);
+        }
+        assert_eq!(t.move_review(1, 2), Some(2));
+        assert_eq!(t.review_groups(), [0..1, 1..2, 2..3]);
+        assert_eq!(t.reviews[2].name, "QA");
+        // A review joins the last review of the row above it.
+        t.join_review(1, 0, true).unwrap();
+        assert_eq!(
+            menu(&t, Item::Review(2))[1],
+            entry("Run alongside Security & performance", StageAction::Join(1))
+        );
+    }
+
+    #[test]
     fn the_only_lane_and_the_fixed_stages_have_no_menu() {
         let mut t = Template::default();
-        assert!(stage_actions(&t, Item::Lane(0)).is_empty());
-        assert!(stage_actions(&t, Item::Planner).is_empty());
-        assert!(stage_actions(&t, Item::Development).is_empty());
+        assert!(menu(&t, Item::Lane(0)).is_empty());
+        assert!(menu(&t, Item::Planner).is_empty());
+        assert!(menu(&t, Item::Development).is_empty());
         t.insert_lane(1, "API");
         assert_eq!(
-            stage_actions(&t, Item::Lane(0)),
+            menu(&t, Item::Lane(0)),
             [
-                ("Move later", StageAction::Move(2)),
-                ("Remove stage", StageAction::Remove),
+                entry("Move later", StageAction::Move(2)),
+                entry("Remove stage", StageAction::Remove),
             ]
         );
     }

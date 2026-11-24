@@ -53,8 +53,11 @@ impl Load {
 /// Where a load lands if it is dropped now.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Target {
-    /// The gap before this position of the load's row.
+    /// The gap before this position: among the lanes for a lane, among the rows of reviews
+    /// for a review, which then stands on a row of its own.
     Gap(usize),
+    /// Beside the review at this position, to run together with it: after it, or before it.
+    Beside { review: usize, after: bool },
     /// A lane by position, or every lane the findings affect.
     Lane(Option<usize>),
 }
@@ -68,12 +71,40 @@ pub(super) fn target(layout: &Layout, load: Load, at: (f32, f32)) -> Option<Targ
         };
     }
     let (row, place) = load.row()?;
-    let gap = match row {
-        Row::Lanes => layout.lane_gap_at(at),
-        Row::Reviews => layout.review_gap_at(at),
-    }?;
-    // The two gaps beside a stage are where it already stands.
-    let stays = place.is_some_and(|place| gap == place || gap == place + 1);
+    match row {
+        Row::Lanes => {
+            let gap = layout.lane_gap_at(at)?;
+            // The two gaps beside a lane are where it already stands.
+            let stays = place.is_some_and(|place| gap == place || gap == place + 1);
+            (!stays).then_some(Target::Gap(gap))
+        }
+        Row::Reviews => review_target(layout, place, at),
+    }
+}
+
+/// Where a review lands among the reviews: beside the review whose side the pointer is
+/// over, else on a row of its own in the nearest gap between rows. `moving` is its position
+/// when it is already on the canvas; a place that leaves it where it stands is no target.
+fn review_target(layout: &Layout, moving: Option<usize>, at: (f32, f32)) -> Option<Target> {
+    if let Some((review, after)) = layout.review_side_at(at)
+        && moving != Some(review)
+    {
+        let stands = moving.is_some_and(|from| {
+            let neighbour = if after {
+                from == review + 1
+            } else {
+                from + 1 == review
+            };
+            neighbour && layout.row_of(from) == layout.row_of(review)
+        });
+        return (!stands).then_some(Target::Beside { review, after });
+    }
+    let gap = layout.review_gap_at(at)?;
+    // A review alone on its row already stands in the gaps above and below that row; one
+    // that shares its row leaves the others by landing there.
+    let stays = moving
+        .and_then(|from| layout.row_of(from))
+        .is_some_and(|row| layout.rows[row].len() == 1 && (gap == row || gap == row + 1));
     (!stays).then_some(Target::Gap(gap))
 }
 
@@ -229,28 +260,32 @@ impl TemplateEditor {
         match (load, target) {
             (Load::Move(item), Target::Gap(before)) => self.move_to(item, before, w, cx),
             (Load::Add(stage), Target::Gap(before)) => self.add(stage, Some(before), w, cx),
+            (Load::Move(Item::Review(from)), Target::Beside { review, after }) => {
+                self.join(from, review, after, w, cx)
+            }
+            (Load::Add(StageChoice::Review(kind)), Target::Beside { review, after }) => {
+                self.add_beside(kind, review, after, w, cx)
+            }
             (Load::Route(review), Target::Lane(None)) => self.route(review, None),
             (Load::Route(review), Target::Lane(Some(lane))) => {
                 if let Some(lane) = self.template.lanes.get(lane) {
                     self.route(review, Some(lane.name.clone()));
                 }
             }
-            (Load::Route(_), Target::Gap(_)) | (Load::Move(_) | Load::Add(_), Target::Lane(_)) => {}
+            // `target` pairs a load only with a place it can take.
+            (Load::Route(_), Target::Gap(_) | Target::Beside { .. })
+            | (Load::Move(_) | Load::Add(_), Target::Lane(_) | Target::Beside { .. }) => {}
         }
     }
 
     /// The line across the gap the dragged stage would land in.
     pub(super) fn insertion_line(&self, layout: &Layout, cx: &App) -> Option<Div> {
-        let Dragging {
-            load,
-            target: Some(Target::Gap(gap)),
-        } = self.dragging?
-        else {
-            return None;
-        };
-        let at = match load.row()?.0 {
-            Row::Lanes => layout.lane_gap_line(gap),
-            Row::Reviews => layout.review_gap_line(gap),
+        let Dragging { load, target } = self.dragging?;
+        let at = match (target?, load.row()?.0) {
+            (Target::Gap(gap), Row::Lanes) => layout.lane_gap_line(gap),
+            (Target::Gap(gap), Row::Reviews) => layout.review_gap_line(gap),
+            (Target::Beside { review, after }, _) => layout.review_side_line(review, after),
+            (Target::Lane(_), _) => None,
         }?;
         Some(
             div()
