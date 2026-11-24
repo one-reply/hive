@@ -7,26 +7,21 @@
 
 # Hive
 
-**A native desktop workspace for AI coding agents.**
+**A native macOS workspace for AI coding agents.**
 
 Run Claude Code, Codex, OpenCode, and other CLI agents side by side in isolated
-Git worktrees. Give each task its own terminals, search and edit the code, review
-diffs, resolve conflicts, and commit from one workspace. For work that spans
-repositories, Pipelines lets you assign development and review to different
-agents, send feedback on individual lines, and open a pull or merge request for
-the changes you accepted.
+Git worktrees. Search and edit code, stage and review changes, and switch between
+tasks without leaving the workspace. Use Pipelines to plan work across local
+repositories, run development and reviews in parallel, and approve the evidence
+before opening a pull or merge request.
 
-Built in Rust with GPUI, Hive runs natively on Apple Silicon Macs and also works
-with Linux projects over SSH.
+Built in Rust with GPUI for Apple Silicon. Hive also opens Linux projects over SSH.
 
-![Hive 1.0.21 showing its Rust editor, content search, and worktree sidebar](docs/images/hive-editor.png)
+[Project website](https://one-reply.github.io/hive/) · [Releases](https://github.com/one-reply/hive/releases)
 
-*Search across the project while editing, with isolated worktrees one click away.*
+![Hive's recipe canvas with parallel development and review stages](docs/images/hive-pipelines.png)
 
-> **Hive 1.0 · macOS / Apple Silicon**
->
-> Intel Macs are unsupported.
-> Linux and Windows are planned.
+*Edit agent roles, review groups, and approval checkpoints on the recipe canvas.*
 
 ## Download
 
@@ -38,26 +33,24 @@ Published builds have a Developer ID signature and Apple notarization.
 See the [latest release notes](https://github.com/one-reply/hive/releases/latest)
 for changes, verification results, and known limits.
 
-Packaged builds from **0.1.1** include signed in-app updates. Open **Settings → Updates**
-or **Hive → Check for Updates…** to check manually. Hive also checks daily and asks
-before installing and restarting. Finish active agent sessions before restarting.
-After updating, a compact notification links to the installed version’s release notes.
-Older builds need one manual installation of a version that includes the updater.
+Open **Hive → Check for Updates…** to check manually. Packaged builds also check
+daily for signed updates and ask before restarting. After updating, a notification
+links to the installed version’s release notes.
 
 ## What you can do today
 
 | Workflow | What Hive provides |
 | --- | --- |
-| **Organize your work** | Add local or SSH Linux projects, create and remove Git worktrees, reorder projects, and customize their names, colors, and icons. |
+| **Organize your work** | Add local or SSH Linux projects, create and remove Git worktrees, and personalize project names, colors, icons, illustrated avatars, and emoji. |
 | **Start a task** | Create a worktree from a chosen base branch and launch a terminal, Claude Code, Codex, OpenCode, or Antigravity with **Create & Start**. |
-| **Run a pipeline** | Plan work across local repositories or start a single-lane fix with your own criteria. Choose the CLI and model for each role, review evidence, and send changes back to the responsible developer. |
+| **Build and run pipelines** | Arrange stages on a canvas, choose agents, models, and permission modes, group parallel reviews, and run reviewers when their configured paths change. Type or dictate a task and return to saved drafts. |
 | **Run agents in terminals** | Use terminal tabs and split panes, with text selection, scrollback, and clipboard image paste. See running agents on their worktree cards. |
 | **Let agents work together** | Codex and Claude Code receive pane-specific MCP tools to list, start, message, read, wait for, and interrupt sibling agents. The `hive agent` CLI also supports coordination. |
-| **Edit files** | Find files with **⌘P** or search local file contents with **⌘⇧F**. Use syntax highlighting, completion, inline Git blame, image previews, explicit saves, and recovery drafts. |
+| **Edit files** | Find files with **⌘P** or search local file contents with **⌘⇧F**. Use syntax highlighting, completion, inline Git blame, image previews, recovery drafts, and optional language tools. |
 | **Manage files** | Create, rename, move, and delete files or folders; drag files between folders and see Git change badges in the tree. |
 | **Navigate your workspace** | Jump to a project, worktree, or agent with **⌘K**. Use **Needs attention** to see the status, task, agent, project, and branch of sessions that need you. |
 | **Pick up where you left off** | Restore selected worktrees, pinned files, terminal and diff tabs, split sizes, focus, and shell directories. Agent panes continue their Claude Code, Codex, OpenCode, or Antigravity conversation. |
-| **Review and commit** | Inspect unified or split diffs, stage files or hunks, compare branches, browse history, and commit, fetch, pull, or push. |
+| **Review and commit** | Inspect unified or split diffs, mark exact revisions reviewed, stage files or hunks, compare branches, browse history, and run Git actions from the sidebar. |
 | **Resolve conflicts** | Choose Current, Incoming, or both for each conflict block, review the result, then mark it resolved. Continue or abort the Git operation from the panel. |
 | **Resume a conversation** | Open local Claude and Codex conversation history with **⌘⇧H**, then resume a past session in a terminal. |
 | **Keep long tasks running** | Keep your Mac awake while agents work; the display can still sleep. Toggle it from the status bar. |
@@ -85,37 +78,46 @@ conversation; other processes and scrollback are not restored. Shell directories
 sampled once per second, so quitting immediately after `cd` may restore the previous
 directory.
 
-### Run a task across repositories
+### Run a pipeline
 
-Open **View → Toggle Pipelines** (Control + grave accent). The drawer covers the editor
-and Git/Files. Projects stays accessible on the left, so you can work in another
-project while agents run.
+Open **Pipelines** from the status bar or **View → Toggle Pipelines**
+(Control + grave accent). Projects stays accessible so you can switch workspaces
+while a run continues. The status bar summarizes runs and drafts across projects.
 
 1. Pick **Feature delivery**, **Quick fix**, or **Cross-repository** and choose **Start run**.
-   **Edit workflow** opens the stage map with draggable reviews and parallel lanes.
+   In **Edit workflow**, drag stages from the palette, reorder them on the canvas,
+   or place two reviews side by side to run them together. Use **Runs when** to limit
+   a review to changed paths. The stage inspector sets the agent, model, permission
+   mode, prompt, and return path for findings.
 2. Describe the task and choose **Start planning**. The launch sheet selects your
    project and starting branch, and suggests checks from committed manifests.
+   With dictation configured in **Settings → Pipelines**, hold **Space** in the task
+   field to record and release it to transcribe.
    Use the repository, branch and check menus to override those choices or add
-   another repository. After editing the form, choose **Resume draft** in the
-   project’s pipeline library to pick up where you left off. **Run again** lets
-   you choose between the original recipe and its updated template.
-   For a single-lane task, **Quick start with my criteria** skips planning. Turn on
+   another repository. Choose **Save draft and close** to pause. Use **Resume draft**
+   in the project’s pipeline library to pick up where you left off. **Run again**
+   lets you choose between the original recipe and its updated template.
+   When a single repository lane can receive every review, turn on **Quick start**
+   and enter your acceptance criteria to skip planning. Turn on
    **Independent regression test** to have a separate agent write one Cargo, Jest,
    or Vitest test. Hive checks that it fails for the expected reason on the base
    commit, then runs the same test against the fix. Changing the test requires
    your approval and repeats both checks. If the test cannot be reproduced in this
    checkout, **Continue without this test** records your reason and moves on.
 3. Review the planner’s assignments and acceptance criteria, then choose **Approve
-   plan**. In **Cross-repository**, edit the shared API contract above the lane
+   plan**. Recipes without a shared contract can turn on **Auto-approve**.
+   In **Cross-repository**, edit the shared API contract above the lane
    assignments. API, Web, and QA receive that approved text. Different repositories
    can develop in parallel. Click **Open live
    session** to see a running CLI and respond to questions or permission requests.
-4. Once required checks pass, **Feature delivery** and **Cross-repository** run
-   **Code review**, **QA**, then **Security & performance**. The code reviewer reads
-   the diff and its callers for defects. QA verifies the approved acceptance criteria.
-   **Quick fix** goes straight to QA. Use **Add stage → Code review** to include the
-   code reviewer there too. Blocking findings return to development, then checks and
-   reviews run again. After the repair limit, **Needs attention** opens the decision.
+4. In the stock recipes, once required checks pass, **Feature delivery** and
+   **Cross-repository** run **Code review**, **QA**, then **Security & performance**.
+   The code reviewer reads the diff and its callers for defects. QA verifies the
+   approved acceptance criteria.
+   **Quick fix** goes straight to QA. Add **Code review** from the canvas palette
+   to include a code reviewer there. Blocking findings return to development. A
+   parallel review group shares one repair round. After the repair limit,
+   **Needs attention** opens the decision.
 5. Open **Timeline** to see stage durations, parallel lanes and decision points.
    **Changes** groups files by repository and loads the selected diff. **Checks**
    shows test outcomes, and **Activity** retains the handoff history. Accept the
@@ -134,17 +136,20 @@ project while agents run.
 
 ## A closer look
 
+![Hive's Rust editor with local content search and a worktree sidebar](docs/images/hive-editor.png)
+
+*Find matches across the project while editing in an isolated worktree.*
+
 ![Hive showing a unified diff beside the Git Changes panel](docs/images/hive-review.png)
 
 *Review changes, stage individual hunks, and keep the worktree's Git context visible.*
 
-![Hive's New worktree dialog with task name, base branch, and agent choices](docs/images/hive-create-worktree.png)
+<img src="docs/images/hive-create-worktree.png" width="540" alt="Hive's New worktree dialog with task name, base branch, and start option">
 
 *Create an isolated worktree and choose the terminal or agent that starts in it.*
 
-Screenshots captured on November 15, 2026 show Hive **1.0.21**, built from the
-release source, with a disposable copy of Hive’s public code and sample changes.
-See the [capture record](docs/RELEASE_CHECKS.md#readme-refresh--november-15-2026).
+These screenshots show Hive **1.0.40** with a disposable demo project.
+See the [capture record](docs/RELEASE_CHECKS.md#readme-and-website-refresh--november-24-2026).
 
 ## Build and run
 
@@ -239,10 +244,11 @@ imports to their definitions; **⌘⇧-click** opens them in an adjacent tab.
 Inline Git blame shows the author and age of the current line, with commit details
 and a link to history.
 
-Code completion suggests names from the open file and JS/TS imports. Press
-**⌃Space** to show suggestions, **Tab** or **Enter** to accept, or **Escape** to dismiss.
-Disable it in **Settings → Files → Code completion**. Type-aware suggestions and
-automatic imports require a language server and are not included.
+Local completion suggests names from the open file and JavaScript/TypeScript imports.
+Press **⌃Space** to show suggestions. With **Language tools** enabled, Hive can use
+installed Rust and JavaScript/TypeScript servers for completion, hover, definitions,
+references, and diagnostics. Format with installed rustfmt or Prettier. Configure
+these options in **Settings → Files**.
 
 ### Agents working together
 
@@ -342,6 +348,9 @@ require the credentials described in [Releasing](docs/RELEASING.md#developer-id-
 | Open conversation history | ⌘⇧H |
 | Save file | ⌘S |
 | Show code suggestions | ⌃Space |
+| Go to a symbol in the current file | ⌘⇧O |
+| Show Problems | ⌘⇧M |
+| Copy a line reference from the editor or diff | ⌘⇧C |
 | New terminal | ⌘T |
 | Split terminal right | ⌘D |
 | Split terminal down | ⌘⇧D |
@@ -366,6 +375,7 @@ Shortcuts can be changed in **Settings → Application → Shortcuts**.
 - Pipeline review snapshots are local Git trees retained under `refs/hive/pipelines/` until the run is deleted.
 - Worktrees created by Hive live beside the repository in `<repo>-worktrees/`.
 - API keys entered in Hive are stored in **macOS Keychain**, separately from settings.
+- Pipeline dictation sends your recording to the transcription provider configured in **Settings → Pipelines**.
 - Usage indicators read existing CLI credentials and contact the provider's usage
   endpoint. They refresh every five minutes or on demand. These integrations rely
   on undocumented endpoints and may stop working when providers change them.
