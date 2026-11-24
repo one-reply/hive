@@ -4,12 +4,10 @@ use super::*;
 use hive_core::pipeline::LanePreset;
 use hive_core::pipeline::unique_name;
 mod nodes;
+mod resize;
 mod structure;
+use resize::{INSPECTOR_MAX_SHARE, InspectorResize, dragged_inspector_width};
 use structure::{StageChoice, move_item};
-
-/// Inspector width beside the canvas, in rems: wide enough for a mode's explanation to
-/// wrap in a few lines.
-const INSPECTOR_WIDTH: f32 = 20.;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(super) enum Item {
@@ -44,6 +42,9 @@ pub(super) struct TemplateEditor {
     renaming: bool,
     compact: bool,
     show_inspector: bool,
+    /// Inspector width beside the canvas, in rems; follows the pointer while it is dragged.
+    inspector_width: f32,
+    resizing_inspector: bool,
     _subscriptions: [Subscription; 2],
 }
 
@@ -54,7 +55,9 @@ impl TemplateEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let library = &AppState::get(cx).store.read(cx).state.pipelines;
+        let state = &AppState::get(cx).store.read(cx).state;
+        let inspector_width = state.settings.pipeline_inspector_width();
+        let library = &state.pipelines;
         let mut template = original.clone().unwrap_or_else(|| library.new_template());
         if original.is_none() {
             template.name = unique_name(
@@ -90,6 +93,8 @@ impl TemplateEditor {
             renaming: false,
             compact: false,
             show_inspector: false,
+            inspector_width,
+            resizing_inspector: false,
             _subscriptions: [models, prompts],
         };
         // Read back through the same fields as every later comparison, so a field that
@@ -339,13 +344,31 @@ impl Render for TemplateEditor {
                     .min_w_0()
                     .when(self.compact, |el| el.flex_1())
                     .when(!self.compact, |el| {
-                        el.w(rems(INSPECTOR_WIDTH))
+                        el.relative()
+                            .w(rems(self.inspector_width))
+                            .max_w(relative(INSPECTOR_MAX_SHARE))
                             .flex_none()
                             .border_l_1()
                             .border_color(cx.theme().border)
+                            .child(self.inspector_resize_handle(cx))
                     })
                     .child(scroll("pipeline-inspector", fields)),
             );
+        }
+        if !self.compact {
+            body = body.on_drag_move(cx.listener(
+                |s, event: &DragMoveEvent<InspectorResize>, window, cx| {
+                    let width = dragged_inspector_width(
+                        event.bounds,
+                        event.event.position.x,
+                        window.rem_size(),
+                    );
+                    if width != s.inspector_width {
+                        s.inspector_width = width;
+                        cx.notify();
+                    }
+                },
+            ));
         }
         let compact = self.compact;
         let split_width = map::units(600.).to_pixels(window.rem_size());
