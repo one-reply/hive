@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 mod acceptance;
 pub use acceptance::{CriterionDecision, EvidenceSource};
+mod condition;
+pub use condition::path_patterns;
 mod delivery;
 pub mod draft;
 mod feedback;
@@ -58,6 +60,9 @@ pub enum Error {
     /// A configured return route has no active development lane.
     #[error("Bind and assign return lane {0} before proceeding")]
     MissingLane(String),
+    /// A review's path condition holds a pattern that cannot be read.
+    #[error("“{0}” is not a path pattern Hive can read. Use a folder, a file name or a glob.")]
+    InvalidCondition(String),
     /// The installed CLI cannot represent a given session profile.
     #[error(transparent)]
     Profile(#[from] crate::agent::launch::LaunchError),
@@ -223,6 +228,10 @@ pub struct Step {
     /// `None` means the instructions are the stage's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<u64>,
+    /// For a review: `.gitignore`-style patterns of the paths it is limited to. It runs only
+    /// when the change under review touches one of them; empty means it always runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub only_paths: Vec<String>,
 }
 
 fn default_limit() -> u8 {
@@ -240,6 +249,7 @@ impl Step {
             limit: default_limit(),
             return_lane: None,
             prompt: None,
+            only_paths: Vec::new(),
         }
     }
 
@@ -310,6 +320,7 @@ impl Template {
     /// Checks a draft before it becomes an executable recipe.
     pub fn validate(&self) -> Result<(), Error> {
         self.validate_structure()?;
+        self.validate_conditions()?;
         for profile in self.profiles() {
             crate::agent::launch::validate_pipeline_profile(profile)?;
         }

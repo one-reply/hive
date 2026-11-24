@@ -39,6 +39,8 @@ pub enum StageStatus {
     Complete,
     /// The recipe let the plan through its gate without the user.
     AutoApproved,
+    /// The review is limited to paths this pass does not touch.
+    Skipped,
     /// The plan gave this lane no work.
     Unassigned,
     /// The run was cancelled before this stage.
@@ -58,6 +60,7 @@ impl StageStatus {
             Self::InProgress => "In progress",
             Self::Complete => "Complete",
             Self::AutoApproved => "Approved automatically",
+            Self::Skipped => "Skipped: no matching files",
             Self::Unassigned => "Unassigned",
             Self::Stopped => "Stopped",
             Self::Pending => "Pending",
@@ -92,7 +95,7 @@ impl Run {
         let mut progress = RunProgress::default();
         for stage in Stage::recipe(self) {
             match stage.status(self, &stage.observations(self)) {
-                StageStatus::Unassigned => continue,
+                StageStatus::Unassigned | StageStatus::Skipped => continue,
                 StageStatus::Complete | StageStatus::AutoApproved => progress.done += 1,
                 _ => {}
             }
@@ -195,6 +198,12 @@ impl Stage {
 
     /// Status from the run and this stage's `records` (its [`Self::observations`]).
     pub fn status(self, run: &Run, records: &[&StageTiming]) -> StageStatus {
+        // Before the intervals: a first review the pass leaves out was entered for a moment.
+        if let Self::Review(i) = self
+            && run.skipped.contains(&i)
+        {
+            return StageStatus::Skipped;
+        }
         match records.last() {
             Some(t) if t.failed && t.end_ms.is_none() => return StageStatus::Interrupted,
             Some(t) if t.failed => return StageStatus::Failed,

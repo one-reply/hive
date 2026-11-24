@@ -18,12 +18,28 @@ pub(super) fn replaces_failure(before: Phase, after: Phase, has_work: bool) -> b
     before != after || has_work
 }
 
+/// Blocking: the paths the reviewed `trees` change, for a recipe with a review limited to
+/// some paths. `None` when no review asks or the paths cannot be listed; every review then
+/// runs, which is the safe reading of a condition nobody could judge.
+fn reviewed_paths(run: &Run, trees: &[String]) -> Option<Vec<String>> {
+    if !run.template().has_review_conditions() {
+        return None;
+    }
+    workspace::reviewed_paths(run.id(), run.lanes(), trees)
+        .inspect_err(|error| {
+            tracing::warn!(run = run.id(), %error, "changed paths unreadable; no review is skipped");
+        })
+        .ok()
+}
+
 enum Work {
     Prepared(Vec<usize>, PathBuf),
     Checked(Vec<CommandResult>, Option<String>),
     Regression(hive_core::pipeline::workspace::RegressionResult),
     Dispatch,
-    ReviewRevision((String, Vec<String>)),
+    /// The fingerprint and trees of the pass about to be reviewed, with the paths they
+    /// change when a review of the recipe is limited to some and they could be listed.
+    ReviewRevision(String, Vec<String>, Option<Vec<String>>),
 }
 
 impl Pipelines {
@@ -132,9 +148,10 @@ impl Pipelines {
                 workspace::verify(id, lane).map_err(|e| e.to_string())?;
             }
             if run.phase() == Phase::Review(0) && run.review_revision().is_none() {
-                return workspace::reviewed_trees(id, run.lanes(), &cancel)
-                    .map(Work::ReviewRevision)
-                    .map_err(|e| e.to_string());
+                let (revision, trees) = workspace::reviewed_trees(id, run.lanes(), &cancel)
+                    .map_err(|e| e.to_string())?;
+                let changed = reviewed_paths(&run, &trees);
+                return Ok(Work::ReviewRevision(revision, trees, changed));
             }
             if matches!(run.phase(), Phase::Regression(_)) && run.has_command_work() {
                 return workspace::run_regression(&run, &cancel)
@@ -191,8 +208,10 @@ impl Pipelines {
                         p.announce_gate(id, phase, cx);
                         applied
                     }
-                    Ok(Work::ReviewRevision((hash, trees))) => {
-                        let applied = p.edit(id, cx, |r| Ok(r.record_review_trees(hash, trees)?));
+                    Ok(Work::ReviewRevision(hash, trees, changed)) => {
+                        let applied = p.edit(id, cx, |run| {
+                            Ok(run.record_review_trees(hash, trees, changed.as_deref())?)
+                        });
                         p.announce_gate(id, phase, cx);
                         applied
                     }

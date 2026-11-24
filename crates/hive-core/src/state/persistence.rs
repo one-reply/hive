@@ -48,7 +48,8 @@ pub enum StateError {
 /// Version 6 records criterion decisions, shared contracts and regression checkpoints.
 /// Version 7 preserves the QA stage's identity when code review precedes it.
 /// Version 8 lets any review stand before QA; version 7 rejects such a recipe as invalid.
-/// It also records who approves the plan, which version 7 would drop when it next saved.
+/// It also records who approves the plan, the paths a review is limited to and the reviews
+/// a pass leaves out, all of which version 7 would drop when it next saved.
 pub const SCHEMA_VERSION: u32 = 8;
 
 /// Loaded state and, when the file could not be used as written, what happened to it.

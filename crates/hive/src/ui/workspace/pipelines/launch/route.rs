@@ -42,7 +42,12 @@ fn stops(
         stops.push(command(&format!("Required checks · {checks}")));
     }
     for (index, review) in template.reviews.iter().enumerate() {
-        stops.push(role(RoleKind::review(template, index), &review.name));
+        // A review limited to some paths may not run at all; the route says so up front.
+        let name = match template.review_condition(index) {
+            Some(_) => format!("{} · if paths match", review.name),
+            None => review.name.clone(),
+        };
+        stops.push(role(RoleKind::review(template, index), &name));
     }
     stops.push(role(RoleKind::Human, "Acceptance"));
     stops
@@ -156,6 +161,25 @@ mod tests {
         template.shared_contract = true;
         let stops = super::stops(&template, true, false, "");
         assert_eq!(human(&stops), ["Your approval", "Acceptance"]);
+    }
+
+    #[test]
+    fn a_review_limited_to_some_paths_is_marked_and_qa_never_is() {
+        // Code review, QA, Security & performance.
+        let mut template = Template::default();
+        for review in &mut template.reviews {
+            review.only_paths = vec!["crates/auth/".into()];
+        }
+        let stops = stops(&template, false, false, "");
+        assert_eq!(
+            names(&stops)[1..],
+            [
+                "Code review · if paths match",
+                "QA",
+                "Security & performance · if paths match",
+                "Acceptance",
+            ]
+        );
     }
 
     #[test]

@@ -90,7 +90,13 @@ impl Run {
             ));
         }
         for (index, review) in self.template.reviews.iter().enumerate() {
-            if let Some((_, Report::Review { summary, .. })) =
+            if self.skipped.contains(&index) {
+                evidence.push(format!(
+                    "- {}: skipped, no changed file matches {}",
+                    review.name,
+                    review.only_paths.join(", ")
+                ));
+            } else if let Some((_, Report::Review { summary, .. })) =
                 self.stage_reports(Stage::Review(index)).next_back()
             {
                 evidence.push(format!("- {}: {}", review.name, summary.trim()));

@@ -323,7 +323,7 @@ fn check_log(log: &Log) -> (Option<i32>, String) {
 }
 
 mod review;
-pub use review::{ReviewFile, ReviewRepo, patch, review, review_round};
+pub use review::{ReviewFile, ReviewRepo, patch, review, review_round, reviewed_paths};
 
 mod regression;
 pub use regression::{RegressionResult, run_regression};

@@ -130,6 +130,10 @@ pub struct Run {
     /// Non-blocking findings of the current QA pass, with the review that reported each.
     #[serde(default)]
     pub(super) notes: Vec<(usize, Finding)>,
+    /// Reviews the current QA pass leaves out: their path condition matched nothing the pass
+    /// reviews. Decided together with the pass's fingerprint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) skipped: Vec<usize>,
     #[serde(default)]
     pub(super) feedback: String,
     /// Repair instructions addressed to one lane each; a lane without one reads `feedback`.
@@ -208,6 +212,7 @@ impl Run {
             rounds: vec![0; reviews],
             dismissed: vec![],
             notes: vec![],
+            skipped: vec![],
             feedback: String::new(),
             briefs: vec![],
             continuations: vec![],
@@ -403,6 +408,12 @@ impl Run {
                 .notes
                 .iter()
                 .any(|(review, f)| *review >= self.rounds.len() || f.lane >= self.lanes.len())
+            // Only a review with a condition can be left out; anything else would be a
+            // review that silently never ran.
+            || self
+                .skipped
+                .iter()
+                .any(|review| self.template.review_condition(*review).is_none())
             || self
                 .briefs
                 .iter()

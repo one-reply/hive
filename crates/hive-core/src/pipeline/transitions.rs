@@ -373,6 +373,7 @@ impl Run {
         self.findings.clear();
         self.commands.clear();
         self.notes.clear();
+        self.skipped.clear();
         self.briefs.clear();
         self.continuations.clear();
         if self.lanes.iter().any(Lane::requires_check) {
@@ -382,9 +383,15 @@ impl Run {
         }
     }
 
-    fn enter_review(&mut self, ix: usize) {
+    /// Moves to the review at `ix`, or to the next one this pass does not leave out;
+    /// acceptance follows the last.
+    pub(super) fn enter_review(&mut self, ix: usize) {
         self.findings.clear();
-        if ix == self.template.reviews.len() {
+        let reviews = self.template.reviews.len();
+        let ix = (ix..reviews)
+            .find(|review| !self.skipped.contains(review))
+            .unwrap_or(reviews);
+        if ix == reviews {
             self.phase = Phase::Acceptance;
         } else {
             self.phase = Phase::Review(ix);

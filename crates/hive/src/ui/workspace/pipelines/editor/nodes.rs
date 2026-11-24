@@ -140,6 +140,7 @@ impl TemplateEditor {
         };
         let face = self.face(item, cx);
         let movable = self.is_movable(item);
+        let conditional = matches!(item, Item::Review(i) if self.is_conditional(i, cx));
         let at = layout.placement(item);
         let color = face.role.color(cx);
         let id = SharedString::from(format!("pipeline-{kind}-{ix}"));
@@ -156,7 +157,7 @@ impl TemplateEditor {
             .gap_2()
             .rounded_lg()
             .role(Role::Button)
-            .aria_label(format!("Configure {}", face.title))
+            .aria_label(card_label(&face.title, conditional))
             .tab_index(0)
             .cursor_pointer()
             .border_1()
@@ -164,6 +165,13 @@ impl TemplateEditor {
             .when(selected, |e| e.border_2())
             .focus_visible(move |s| s.border_color(color))
             .children(face.content(cx))
+            .when(conditional, |e| {
+                e.child(
+                    Icon::new(Lucide::Funnel)
+                        .size_3()
+                        .text_color(cx.theme().muted_foreground),
+                )
+            })
             .when(movable, |e| {
                 e.child(
                     Icon::new(Lucide::GripVertical)
@@ -299,6 +307,16 @@ impl TemplateEditor {
             )
     }
 }
+/// What a screen reader says of a stage card; the funnel icon of a review limited to some
+/// paths is put into words.
+fn card_label(title: &str, conditional: bool) -> String {
+    if conditional {
+        format!("Configure {title}, runs only when the change touches its paths")
+    } else {
+        format!("Configure {title}")
+    }
+}
+
 /// How the plan gate reads on the canvas.
 #[derive(Debug, PartialEq)]
 struct PlanGateWords {
@@ -345,7 +363,16 @@ fn marker(at: BoxAt, icon: Lucide, label: &'static str, color: Hsla, cx: &App) -
 
 #[cfg(test)]
 mod tests {
-    use super::{Template, plan_gate_words};
+    use super::{Template, card_label, plan_gate_words};
+
+    #[test]
+    fn a_conditional_reviews_card_says_so_to_a_screen_reader() {
+        assert_eq!(card_label("QA", false), "Configure QA");
+        assert_eq!(
+            card_label("Security", true),
+            "Configure Security, runs only when the change touches its paths"
+        );
+    }
 
     #[test]
     fn the_plan_gate_says_who_approves_and_what_a_click_changes() {
