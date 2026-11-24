@@ -48,7 +48,7 @@ impl Pipelines {
                 {
                     continue;
                 }
-                let Some(stage) = Stage::from_phase(run.phase(), ticket.lane) else {
+                let Some(stage) = Stage::from_phase(run.ticket_phase(&ticket), ticket.lane) else {
                     continue;
                 };
                 slow.push((ticket, stage.title(run)));

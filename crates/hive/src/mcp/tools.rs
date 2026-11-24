@@ -88,7 +88,7 @@ struct Send {
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 struct PipelineReport {
-    /// The exact ticket object from Hive, with run, attempt and optional lane.
+    /// The exact ticket object from Hive, with run, attempt and its optional lane or review.
     #[schemars(with = "serde_json::Map<String,Value>")]
     ticket: hive_core::pipeline::Ticket,
     /// The typed plan, regression, developed, or review result matching the example in your stage instructions.

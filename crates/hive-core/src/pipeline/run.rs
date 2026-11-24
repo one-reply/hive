@@ -309,6 +309,17 @@ impl Run {
         self.rounds.get(review).copied().unwrap_or_default()
     }
 
+    /// Repair rounds the run went through. Reviews that run together share a round, so a
+    /// group counts once, by the review that asked most often; when its reviews asked in
+    /// different passes this is short of the true number.
+    pub fn repair_rounds(&self) -> usize {
+        let groups = self.template.review_groups().into_iter();
+        groups
+            .map(|group| group.map(|review| usize::from(self.cycles(review))).max())
+            .map(Option::unwrap_or_default)
+            .sum()
+    }
+
     /// Prompt for an invocation, including the current plan and cross-repository context.
     /// Images pasted into the task are named by their files on this machine.
     pub fn prompt(&self, ticket: &Ticket) -> Result<String, Error> {

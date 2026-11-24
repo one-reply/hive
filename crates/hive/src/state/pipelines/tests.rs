@@ -984,6 +984,97 @@ fn an_attempt_past_its_time_budget_is_announced_once(cx: &mut TestAppContext) {
     assert_eq!(body, "Task");
 }
 
+/// Puts the fixture's run where all three of its reviews run together: development is
+/// reported and the pass is fingerprinted, so nothing is left to read from a worktree.
+fn reviewing_together(
+    pipelines: &Entity<Pipelines>,
+    cx: &mut TestAppContext,
+) -> Vec<super::Ticket> {
+    pipelines.update(cx, |p, cx| {
+        p.store.update(cx, |s, cx| {
+            let saved = &mut s.state.pipelines.runs[0];
+            let mut recipe = saved.template().clone();
+            recipe.join_review(1, 0, true).unwrap();
+            recipe.join_review(2, 1, true).unwrap();
+            let lanes = saved.lanes().to_vec();
+            let mut run = Run::new(42, saved.owner().into(), "Task".into(), recipe, lanes).unwrap();
+            let planner = run.pending()[0];
+            run.report(&planner, plan(1)).unwrap();
+            run.approve().unwrap();
+            let developer = run.pending()[0];
+            let done = Report::Developed {
+                summary: "done".into(),
+            };
+            run.report(&developer, done).unwrap();
+            run.record_review_trees("pass".into(), vec!["a".repeat(40)], None)
+                .unwrap();
+            *saved = run;
+            s.set_test_writer(cx, |_| Ok(()));
+        });
+        let reviewers = p.run(42, cx).unwrap().pending();
+        assert_eq!(reviewers.len(), 3);
+        reviewers
+    })
+}
+
+#[gpui::test]
+fn one_reviewer_of_a_group_reports_and_the_others_keep_their_sessions(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    let reviewers = reviewing_together(&pipelines, cx);
+    let reply = pipelines.update(cx, |p, cx| {
+        let mut sessions = Vec::new();
+        for ticket in &reviewers {
+            sessions.push(attach_session(p, *ticket, cx));
+        }
+        let clean = Report::Review {
+            summary: "Checked the change".into(),
+            findings: vec![],
+            evidence: vec![],
+        };
+        submit(p, sessions[1], reviewers[1], clean, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(reply.try_recv().unwrap(), Ok(()));
+    pipelines.read_with(cx, |p, cx| {
+        let run = p.run(42, cx).unwrap();
+        assert_eq!(
+            run.phase(),
+            Phase::Review(0),
+            "two reviewers are still at work"
+        );
+        assert_eq!(run.pending(), [reviewers[0], reviewers[2]]);
+        let live: Vec<_> = p.live_attempts(42).into_iter().map(|(t, _)| t).collect();
+        assert_eq!(live, [reviewers[0], reviewers[2]]);
+        // The report stands under the review that made it, not under the group's first.
+        let (_, phase, _) = run.reports().last().unwrap();
+        assert_eq!(*phase, Phase::Review(1));
+    });
+}
+
+#[gpui::test]
+fn a_slow_reviewer_of_a_group_is_named_by_its_own_review(cx: &mut TestAppContext) {
+    use super::status::Waiting;
+    const STARTED: u64 = 1_000;
+    const BUDGET: u64 = 30 * 60 * 1000;
+    let pipelines = recovering(cx);
+    let reviewers = reviewing_together(&pipelines, cx);
+    let (seen, _subscription) = announcements(&pipelines, cx);
+    pipelines.update(cx, |p, cx| {
+        let security = reviewers[2];
+        attach_session(p, security, cx);
+        p.store.update(cx, |s, _| {
+            s.state.pipelines.runs[0].start_attempt_at(security, STARTED)
+        });
+        p.announce_slow_attempts(STARTED + BUDGET, cx);
+    });
+    let seen = seen.borrow();
+    assert_eq!(seen.len(), 1);
+    let Waiting::Slow { stage, .. } = &seen[0].reason else {
+        panic!("{:?}", seen[0].reason);
+    };
+    assert_eq!(stage, "Security & performance");
+}
+
 #[gpui::test]
 fn only_a_finished_run_can_be_deleted_and_nothing_is_kept_for_it(cx: &mut TestAppContext) {
     let pipelines = recovering(cx);

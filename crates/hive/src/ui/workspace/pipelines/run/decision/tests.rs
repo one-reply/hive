@@ -79,6 +79,18 @@ fn click_apply(cx: &mut VisualTestContext) {
 }
 
 #[test]
+fn a_finding_names_its_review_only_when_the_gate_holds_findings_of_several() {
+    assert_eq!(
+        super::finding_title(2, None, "API", "major"),
+        "2 · API · major"
+    );
+    assert_eq!(
+        super::finding_title(1, Some("Security review"), "API", "blocker"),
+        "1 · Security review · API · blocker"
+    );
+}
+
+#[test]
 fn the_summary_names_what_is_open_and_the_rounds_spent() {
     assert_eq!(
         summary("QA", 2, 0, 3, 3),

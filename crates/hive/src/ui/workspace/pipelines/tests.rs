@@ -3,6 +3,56 @@ use crate::ui::keymap::SHORTCUTS;
 use gpui_kit as gpui;
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, FocusHandle, KeyBinding, TestAppContext, Window, div};
+use hive_core::pipeline::{Assignment, Lane, Report, Run, Template};
+
+#[test]
+fn the_phase_names_every_review_still_at_work() {
+    // Code review, QA and Security & performance, all three together.
+    let mut recipe = Template::default();
+    recipe.join_review(1, 0, true).unwrap();
+    recipe.join_review(2, 1, true).unwrap();
+    let lane = Lane {
+        name: "Web".into(),
+        project: "/unused-pipeline-test-project".into(),
+        base: "HEAD".into(),
+        ..Lane::default()
+    };
+    let owner = lane.project.clone();
+    let mut run = Run::new(7, owner, "Task".into(), recipe, vec![lane]).unwrap();
+    let report = |run: &mut Run, pending: usize, report: Report| {
+        let ticket = run.pending()[pending];
+        run.report(&ticket, report).unwrap();
+    };
+    let assignments = vec![Assignment {
+        lane: 0,
+        task: "Implement".into(),
+        criteria: "Tests pass".into(),
+    }];
+    let plan = Report::Plan {
+        assignments,
+        contract: String::new(),
+    };
+    report(&mut run, 0, plan);
+    run.approve().unwrap();
+    let developed = Report::Developed {
+        summary: "Done".into(),
+    };
+    report(&mut run, 0, developed);
+    assert_eq!(
+        super::reviews_at_work(&run, 0),
+        "Code review, QA, Security & performance"
+    );
+    let clean = Report::Review {
+        summary: "Checked".into(),
+        findings: vec![],
+        evidence: vec![],
+    };
+    report(&mut run, 1, clean);
+    assert_eq!(
+        super::reviews_at_work(&run, 0),
+        "Code review, Security & performance"
+    );
+}
 
 /// Uses the production drawer focus path without starting agents, shells, or disk writers.
 struct Harness {

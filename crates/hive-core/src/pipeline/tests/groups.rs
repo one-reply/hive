@@ -323,3 +323,17 @@ fn the_timeline_keeps_a_group_together_and_puts_its_decision_after_it() {
         ]
     );
 }
+
+#[test]
+fn a_round_shared_by_a_group_is_counted_once() {
+    let mut run = in_group(&["/api"], 3);
+    report_review(&mut run, 1, vec![issue(0)]);
+    report_review(&mut run, 2, vec![leak(0)]);
+    assert_eq!(run.rounds, [0, 1, 1]);
+    assert_eq!(run.repair_rounds(), 1);
+    // The next pass: code review, on its own, asks for a repair too.
+    report(&mut run, developed());
+    report(&mut run, review(vec![issue(0)]));
+    assert_eq!(run.rounds, [1, 1, 1]);
+    assert_eq!(run.repair_rounds(), 2);
+}

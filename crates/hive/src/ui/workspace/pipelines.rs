@@ -270,17 +270,30 @@ fn phase_label(run: &Run) -> String {
             hive_core::pipeline::RegressionStep::Decision => "Regression needs a decision",
         }
         .into(),
-        Review(i) => run
-            .template()
-            .reviews
-            .get(i)
-            .map(|s| s.name.clone())
-            .unwrap_or_else(|| "Review".into()),
+        Review(i) => reviews_at_work(run, i),
         Commands(_) => "Required checks".into(),
         Decision(_) => "Decision needed".into(),
         Acceptance => "Ready to accept".into(),
         Accepted => "Accepted".into(),
         Cancelled => "Cancelled".into(),
+    }
+}
+/// The reviews whose reviewers are at work, by name: several when a group runs together,
+/// fewer as its reviewers report. `current` names the review when none is pending.
+fn reviews_at_work(run: &Run, current: usize) -> String {
+    let name = |review: usize| run.template().reviews.get(review).map(|s| s.name.as_str());
+    let pending = run.pending();
+    let at_work: Vec<_> = pending
+        .iter()
+        .filter_map(|ticket| match run.ticket_phase(ticket) {
+            hive_core::pipeline::Phase::Review(review) => name(review),
+            _ => None,
+        })
+        .collect();
+    if at_work.is_empty() {
+        name(current).unwrap_or("Review").to_owned()
+    } else {
+        at_work.join(", ")
     }
 }
 fn count(n: usize, one: &str, many: &str) -> String {

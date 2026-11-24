@@ -239,7 +239,8 @@ impl Pipelines {
             self.live.insert(
                 ticket,
                 Live {
-                    phase: run.phase(),
+                    // The ticket's own phase: reviewers of a group each have a stage.
+                    phase: run.ticket_phase(&ticket),
                     session: session.clone(),
                     _subscriptions: subscriptions,
                 },
