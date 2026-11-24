@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Publish the newest complete release's signed feed without modifying its bytes."""
+"""Publish Hive's website and copy the newest complete release's signed feed."""
 
 import json
 from pathlib import Path
 import re
 import shutil
+from string import Template
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
 SPARKLE = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
+SCREENSHOTS = ("hive-pipelines.png", "hive-editor.png", "hive-review.png")
 
 
 def latest_release(releases):
@@ -64,11 +66,14 @@ def prepare(repository, destination):
         shutil.copyfile("packaging/updates/appcast.xml", feed)
     # shortcut: one release per feed; preserve per-OS feeds before raising minimum macOS.
     validate_feed(feed, repository, tag)
-    (destination / "index.html").write_text(
-        '<!doctype html><html lang="en"><meta charset="utf-8"><title>Hive updates</title>'
-        f'<h1>Hive updates</h1><p><a href="https://github.com/{repository}/releases">'
-        'Download Hive and read release notes</a></p></html>\n'
-    )
+    page = Template(Path("packaging/updates/index.html").read_text(encoding="utf-8"))
+    (destination / "index.html").write_text(page.substitute(repository=repository), encoding="utf-8")
+    images = destination / "images"
+    images.mkdir(exist_ok=True)
+    for name in SCREENSHOTS:
+        shutil.copyfile(Path("docs/images") / name, images / name)
+    logo = Path("crates/hive/assets/icons/Hive-light.iconset/icon_128x128.png")
+    shutil.copyfile(logo, images / "hive-logo.png")
     print(f"Prepared update feed: {tag or 'no published releases yet'}")
 
 
