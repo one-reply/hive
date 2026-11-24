@@ -89,6 +89,15 @@ impl IncludePatterns {
         })
     }
 
+    /// Whether the file at the repository-relative `path` is named by a pattern, by itself or
+    /// through a folder above it: `crates/auth` names every file inside that folder.
+    pub fn covers_file(&self, path: &str) -> bool {
+        self.matches(path, false)
+            || path
+                .match_indices('/')
+                .any(|(slash, _)| self.matches(&path[..slash], true))
+    }
+
     /// The paths inside `folder` that anchored patterns point into, for Git to list the
     /// ignored files there that a collapsed listing of `folder` hides.
     fn inside(&self, folder: &str) -> Vec<&str> {

@@ -41,6 +41,11 @@ pub struct Ticket {
     pub attempt: u64,
     /// Developer lane, absent for aggregate stages.
     pub lane: Option<usize>,
+    /// The review this attempt runs. Reviews of a group run at once, so the phase alone does
+    /// not name it; absent for other stages and in tickets issued before reviews could be
+    /// grouped, whose review is the one the phase names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<usize>,
 }
 
 /// Measured wall-clock interval of one agent invocation or checkpoint, in Unix milliseconds.
@@ -130,6 +135,10 @@ pub struct Run {
     /// Non-blocking findings of the current QA pass, with the review that reported each.
     #[serde(default)]
     pub(super) notes: Vec<(usize, Finding)>,
+    /// Reviews the current QA pass leaves out: their path condition matched nothing the pass
+    /// reviews. Decided together with the pass's fingerprint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) skipped: Vec<usize>,
     #[serde(default)]
     pub(super) feedback: String,
     /// Repair instructions addressed to one lane each; a lane without one reads `feedback`.
@@ -208,6 +217,7 @@ impl Run {
             rounds: vec![0; reviews],
             dismissed: vec![],
             notes: vec![],
+            skipped: vec![],
             feedback: String::new(),
             briefs: vec![],
             continuations: vec![],
@@ -217,15 +227,34 @@ impl Run {
     }
 
     pub(super) fn schedule(&mut self, lane: Option<usize>) -> Ticket {
+        self.issue(lane, None)
+    }
+
+    /// Schedules the reviewer of the review at `review`.
+    pub(super) fn schedule_review(&mut self, review: usize) -> Ticket {
+        self.issue(None, Some(review))
+    }
+
+    fn issue(&mut self, lane: Option<usize>, review: Option<usize>) -> Ticket {
         // One ticket per invocation, bounded by state.json size even after manual retries.
         self.last_attempt += 1;
         let ticket = Ticket {
             run: self.id,
             attempt: self.last_attempt,
             lane,
+            review,
         };
         self.outstanding.push(ticket);
         ticket
+    }
+
+    /// The phase `ticket` works in. For a reviewer it names the ticket's own review, which
+    /// the run's phase does not when reviews run together.
+    pub fn ticket_phase(&self, ticket: &Ticket) -> Phase {
+        match (self.phase, ticket.review) {
+            (Phase::Review(_), Some(review)) => Phase::Review(review),
+            (phase, _) => phase,
+        }
     }
 
     /// Attempts runnable now. Within a repository the earliest unfinished lane owns the worktree.
@@ -252,11 +281,11 @@ impl Run {
         if !self.pending().contains(ticket) {
             return None;
         }
-        match self.phase {
+        match self.ticket_phase(ticket) {
             Phase::Planning => Some(&self.template.planner),
             Phase::Regression(RegressionStep::Author) => Some(&self.template.development),
             Phase::Development => Some(&self.template.development),
-            Phase::Review(ix) => self.template.reviews.get(ix),
+            Phase::Review(review) => self.template.reviews.get(review),
             _ => None,
         }
     }
@@ -278,6 +307,17 @@ impl Run {
     /// Number of repair rounds already charged to this review.
     pub fn cycles(&self, review: usize) -> u8 {
         self.rounds.get(review).copied().unwrap_or_default()
+    }
+
+    /// Repair rounds the run went through. Reviews that run together share a round, so a
+    /// group counts once, by the review that asked most often; when its reviews asked in
+    /// different passes this is short of the true number.
+    pub fn repair_rounds(&self) -> usize {
+        let groups = self.template.review_groups().into_iter();
+        groups
+            .map(|group| group.map(|review| usize::from(self.cycles(review))).max())
+            .map(Option::unwrap_or_default)
+            .sum()
     }
 
     /// Prompt for an invocation, including the current plan and cross-repository context.
@@ -331,8 +371,8 @@ impl Run {
         if self.phase == Phase::Development {
             self.write_developer_constraints(&mut prompt);
         }
-        if let Phase::Review(ix) = self.phase {
-            self.write_review_context(ix, &mut prompt);
+        if let Phase::Review(review) = self.ticket_phase(ticket) {
+            self.write_review_context(review, &mut prompt);
         }
         let contract = match self.phase {
             Phase::Planning if self.template.shared_contract => {
@@ -403,6 +443,12 @@ impl Run {
                 .notes
                 .iter()
                 .any(|(review, f)| *review >= self.rounds.len() || f.lane >= self.lanes.len())
+            // Only a review with a condition can be left out; anything else would be a
+            // review that silently never ran.
+            || self
+                .skipped
+                .iter()
+                .any(|review| self.template.review_condition(*review).is_none())
             || self
                 .briefs
                 .iter()
@@ -411,13 +457,15 @@ impl Run {
             return false;
         }
         let mut attempts = HashSet::new();
-        let mut lanes = HashSet::new();
+        let mut works = HashSet::new();
+        let reviewing = matches!(self.phase, Phase::Review(_));
         if self.outstanding.iter().any(|t| {
             t.run != self.id
                 || t.attempt == 0
                 || t.attempt > self.last_attempt
                 || !attempts.insert(t.attempt)
-                || !lanes.insert(t.lane)
+                || !works.insert((t.lane, t.review))
+                || (t.review.is_some() && !reviewing)
         }) {
             return false;
         }
@@ -432,7 +480,20 @@ impl Run {
                     }
             }
             Phase::Planning => aggregate,
-            Phase::Review(ix) => ix < self.rounds.len() && aggregate,
+            // One reviewer per review of the group that runs, each named by its ticket; a
+            // ticket issued before reviews could be grouped names none and stands alone.
+            Phase::Review(ix) => {
+                let group = self.template.review_group(ix);
+                ix < self.rounds.len()
+                    && !self.outstanding.is_empty()
+                    && self.outstanding.iter().all(|t| {
+                        t.lane.is_none()
+                            && match t.review {
+                                Some(review) => group.contains(&review),
+                                None => aggregate,
+                            }
+                    })
+            }
             Phase::Development => {
                 !self.outstanding.is_empty()
                     && self

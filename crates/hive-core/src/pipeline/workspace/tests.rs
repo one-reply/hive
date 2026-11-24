@@ -387,6 +387,40 @@ fn large_text_changes_are_fingerprinted_beyond_the_display_budget() {
 }
 
 #[test]
+fn reviewed_paths_list_committed_uncommitted_new_and_renamed_files() {
+    let dir = Scratch::new("reviewed-paths");
+    let mut lane = dir.lane("repo");
+    lane.worktree = prepare(1, &lane, &Cancellation::default()).unwrap();
+    let write = |path: &str| {
+        let file = lane.worktree.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, "text\n").unwrap();
+    };
+    write("crates/auth/token.rs");
+    git(&lane.worktree, &["add", "."]);
+    git(&lane.worktree, &["commit", "-qm", "add the token"]);
+    git(&lane.worktree, &["mv", "contract", "agreement"]);
+    write("src/unstaged.rs");
+    git(&lane.worktree, &["add", "src/unstaged.rs"]);
+    write("notes/todo.md");
+    let lanes = std::slice::from_ref(&lane);
+    let (_, trees) = reviewed_trees(1, lanes, &Cancellation::default()).unwrap();
+    let mut paths = reviewed_paths(1, lanes, &trees).unwrap();
+    paths.sort();
+    assert_eq!(
+        paths,
+        [
+            "agreement",
+            "contract",
+            "crates/auth/token.rs",
+            "notes/todo.md",
+            "src/unstaged.rs",
+        ]
+    );
+    assert!(reviewed_paths(1, lanes, &[]).is_err());
+}
+
+#[test]
 fn file_review_uses_both_rename_paths_and_preserves_untracked_replacements() {
     let dir = Scratch::new("file-review");
     let mut lane = dir.lane("repo");

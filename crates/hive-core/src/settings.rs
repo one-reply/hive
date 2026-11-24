@@ -79,6 +79,12 @@ pub const GIT_PANEL_WIDTH_MIN: f32 = 280.;
 pub const GIT_PANEL_WIDTH_MAX: f32 = 600.;
 const GIT_PANEL_WIDTH_DEFAULT: f32 = 360.;
 
+/// Narrowest stage inspector of the pipeline template editor, in rems: wide enough for a
+/// mode's explanation to wrap in a few lines. Also the width before the user drags it.
+pub const PIPELINE_INSPECTOR_WIDTH_MIN: f32 = 20.;
+/// Widest stage inspector the user can drag to, in rems.
+pub const PIPELINE_INSPECTOR_WIDTH_MAX: f32 = 36.;
+
 /// Smallest UI font size (the rem every UI size scales from), in logical pixels.
 pub const UI_FONT_SIZE_MIN: f32 = 12.;
 /// Largest UI font size, in logical pixels.
@@ -126,6 +132,9 @@ pub struct Settings {
     pub scrollbars: Scrollbars,
     sidebar_width: f32,
     git_panel_width: f32,
+    /// In rems, unlike the pixel widths above: the inspector is a form and grows with the
+    /// UI font.
+    pipeline_inspector_width: f32,
     /// Whether source control is visible on launch.
     pub git_panel_open: bool,
     /// Files is selected in the shared right sidebar; older snapshots default to Git.
@@ -167,6 +176,7 @@ impl Default for Settings {
             scrollbars: Scrollbars::default(),
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             git_panel_width: GIT_PANEL_WIDTH_DEFAULT,
+            pipeline_inspector_width: PIPELINE_INSPECTOR_WIDTH_MIN,
             git_panel_open: true,
             files_selected: false,
             diff_split: false,
@@ -226,6 +236,16 @@ impl Settings {
     /// Store a finite source control width within its supported range.
     pub fn set_git_panel_width(&mut self, width: f32) {
         self.git_panel_width = clamp_git_panel_width(width);
+    }
+    /// Stage inspector width of the pipeline template editor in rems, always within the
+    /// allowed range.
+    pub fn pipeline_inspector_width(&self) -> f32 {
+        clamp_pipeline_inspector_width(self.pipeline_inspector_width)
+    }
+
+    /// Stores `width` (rems) clamped to the allowed range.
+    pub fn set_pipeline_inspector_width(&mut self, width: f32) {
+        self.pipeline_inspector_width = clamp_pipeline_inspector_width(width);
     }
     /// Sidebar width in logical pixels, always within the allowed range.
     pub fn sidebar_width(&self) -> f32 {
@@ -347,6 +367,17 @@ pub fn clamp_git_panel_width(width: f32) -> f32 {
     )
 }
 
+/// Clamps `width` (rems) to `PIPELINE_INSPECTOR_WIDTH_MIN..=PIPELINE_INSPECTOR_WIDTH_MAX`;
+/// a non-finite value falls back to the narrowest.
+pub fn clamp_pipeline_inspector_width(width: f32) -> f32 {
+    clamp_or_default(
+        width,
+        PIPELINE_INSPECTOR_WIDTH_MIN,
+        PIPELINE_INSPECTOR_WIDTH_MAX,
+        PIPELINE_INSPECTOR_WIDTH_MIN,
+    )
+}
+
 fn clamp_ui_font_size(size: f32) -> f32 {
     clamp_or_default(
         size,
@@ -409,6 +440,33 @@ mod tests {
         assert_eq!(settings.git_panel_width(), 360.);
         assert!(settings.git_panel_open);
         assert!(!settings.diff_split);
+    }
+
+    #[test]
+    fn pipeline_inspector_width_defaults_narrow_round_trips_and_stays_in_range() {
+        // A settings object as 1.0.39 wrote it: the field is absent.
+        let mut settings: Settings =
+            serde_json::from_str(r#"{"git_panel_width":400.0}"#).expect("valid json");
+        assert_eq!(
+            settings.pipeline_inspector_width(),
+            PIPELINE_INSPECTOR_WIDTH_MIN
+        );
+        settings.set_pipeline_inspector_width(28.5);
+        let saved = serde_json::to_string(&settings).expect("serializable");
+        let reloaded: Settings = serde_json::from_str(&saved).expect("valid json");
+        assert_eq!(reloaded.pipeline_inspector_width(), 28.5);
+        for (hand_edited, shown) in [
+            ("-4.0", PIPELINE_INSPECTOR_WIDTH_MIN),
+            ("1e9", PIPELINE_INSPECTOR_WIDTH_MAX),
+        ] {
+            let json = format!(r#"{{"pipeline_inspector_width":{hand_edited}}}"#);
+            let settings: Settings = serde_json::from_str(&json).expect("valid json");
+            assert_eq!(settings.pipeline_inspector_width(), shown);
+        }
+        assert_eq!(
+            clamp_pipeline_inspector_width(f32::NAN),
+            PIPELINE_INSPECTOR_WIDTH_MIN
+        );
     }
 
     #[test]

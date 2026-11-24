@@ -76,24 +76,31 @@ impl Run {
         review: usize,
         note: &str,
     ) -> (String, Vec<(usize, String)>) {
-        let step = &self.template.reviews[review];
-        let fixed = step
-            .return_lane
-            .as_ref()
-            .and_then(|name| self.lanes.iter().position(|l| l.name == *name));
+        // Each finding goes where its own review sends findings: reviews that ran together
+        // may route differently.
+        let fixed = |asker: usize| {
+            let route = self.template.reviews[asker].return_lane.as_ref();
+            route.and_then(|name| self.lanes.iter().position(|l| l.name == *name))
+        };
         // Red checks stop a pass before its first review, so no reviewer asked for anything.
         let cause = if self.findings.is_empty() {
             "Required checks failed.".to_owned()
         } else {
-            format!("{} requested fixes.", step.name)
+            let names: Vec<_> = self
+                .askers(review)
+                .into_iter()
+                .map(|asker| self.template.reviews[asker].name.as_str())
+                .collect();
+            format!("{} requested fixes.", names.join(" and "))
         };
         let header = format!("{cause} {note}").trim_end().to_owned();
         let mut routed: BTreeMap<usize, Vec<String>> = BTreeMap::new();
         let mut record = vec![header.clone()];
         for f in &self.findings {
             let item = format!("{}: {}", self.lanes[f.lane].name, f.description);
+            let asker = self.reviewer(f).unwrap_or(review);
             routed
-                .entry(fixed.unwrap_or(f.lane))
+                .entry(fixed(asker).unwrap_or(f.lane))
                 .or_default()
                 .push(item.clone());
             record.push(item);

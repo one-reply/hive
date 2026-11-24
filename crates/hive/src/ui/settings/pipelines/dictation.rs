@@ -26,8 +26,11 @@ use gpui_kit::{
 use hive_core::dictation::{DEFAULT_PROMPT, LANGUAGES, Recipe};
 use hive_core::llm::{AUDIO_PROVIDERS, Provider};
 
-/// Enough of the prompt is visible to read its rules without scrolling the field.
-const PROMPT_ROWS: usize = 9;
+mod prompt;
+
+/// Side of the tinted square that holds the card's microphone.
+const BADGE_SIZE: Pixels = px(32.);
+const BADGE_TINT: f32 = 0.15;
 
 /// A provider that takes audio, as the picker lists it.
 #[derive(Clone, IntoElement)]
@@ -115,12 +118,28 @@ fn model_items(models: &Models, saved: Option<&str>) -> Vec<String> {
     items
 }
 
+/// What is still missing before dictation can work, in the order the user fixes it.
+fn setup_notice(recipe: &Recipe, key: Option<KeyStatus>) -> Option<&'static str> {
+    if recipe.provider().is_none() {
+        return Some("Choose a provider that has an API key in AI settings.");
+    }
+    if key == Some(KeyStatus::Missing) {
+        return Some("Selected provider has no API key. Add it in AI settings.");
+    }
+    if recipe.model().is_none() {
+        return Some("Choose a model to turn dictation on.");
+    }
+    None
+}
+
 pub(super) struct DictationCard {
     providers: Entity<AiProviders>,
     provider: Entity<SelectState<SearchableVec<ProviderItem>>>,
     model: Entity<SelectState<SearchableVec<String>>>,
     language: Entity<SelectState<SearchableVec<String>>>,
     prompt: Entity<TextareaState>,
+    /// Whether the prompt shows as its field rather than as a preview of its first lines.
+    editing_prompt: bool,
     error: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
@@ -155,7 +174,7 @@ impl DictationCard {
             }
             select
         });
-        let prompt = cx.new(|cx| TextareaState::new(window, cx).rows(PROMPT_ROWS));
+        let prompt = cx.new(|cx| TextareaState::new(window, cx).rows(prompt::EDIT_ROWS));
         let saved = recipe(cx).prompt().to_owned();
         prompt.update(cx, |input, cx| input.set_value(saved, window, cx));
         let subscriptions = vec![
@@ -197,6 +216,7 @@ impl DictationCard {
             model,
             language,
             prompt,
+            editing_prompt: false,
             error: None,
             _subscriptions: subscriptions,
         };
@@ -274,8 +294,10 @@ impl DictationCard {
             _ => None,
         };
         v_flex()
+            .flex_1()
+            .min_w_0()
             .gap_2()
-            .child("Model")
+            .child(label("Model"))
             .child(
                 h_flex()
                     .gap_2()
@@ -314,59 +336,115 @@ impl DictationCard {
     }
 }
 
+/// The name of a field, a step quieter than the card's title.
+fn label(text: &'static str) -> Div {
+    div().text_sm().font_weight(FontWeight::MEDIUM).child(text)
+}
+
+impl DictationCard {
+    fn header(&self, ready: bool, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme();
+        let (status, color) = if ready {
+            ("Ready", theme.success)
+        } else {
+            ("Needs setup", theme.warning)
+        };
+        let badge = div()
+            .flex_none()
+            .size(BADGE_SIZE)
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme.radius)
+            .bg(theme.primary.opacity(BADGE_TINT))
+            .child(Icon::new(Lucide::Mic).size_4().text_color(theme.primary));
+        let state = h_flex()
+            .flex_none()
+            .gap_1p5()
+            .px_2()
+            .py_0p5()
+            .rounded_full()
+            .bg(color.opacity(BADGE_TINT))
+            .text_xs()
+            .text_color(color)
+            .child(div().size_1p5().rounded_full().bg(color))
+            .child(status);
+        h_flex().items_start().gap_3().child(badge).child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .gap_2()
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child("Dictation"))
+                        .child(state),
+                )
+                .child(div().text_sm().text_color(theme.muted_foreground).child(
+                    "Dictate a task in New run: hold Space in the Task field or click the \
+                         microphone. The selected model turns the recording into text.",
+                )),
+        )
+    }
+}
+
 impl Render for DictationCard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = recipe(cx).clone();
-        let providers = self.providers.read(cx);
-        let notice: Option<&'static str> = match saved.provider() {
-            None => Some("Choose a provider that has an API key in AI settings."),
-            Some(provider) if providers.provider(provider).status == KeyStatus::Missing => {
-                Some("Selected provider has no API key. Add it in AI settings.")
-            }
-            Some(_) if saved.model().is_none() => Some("Choose a model to turn dictation on."),
-            _ => None,
-        };
-        let reset_hover = Hover::new("reset-dictation-prompt", window, cx);
-        let muted = cx.theme().muted_foreground;
+        let key = saved
+            .provider()
+            .map(|provider| self.providers.read(cx).provider(provider).status);
+        let notice = setup_notice(&saved, key);
         let model = saved
             .provider()
             .map(|provider| self.model_control(provider, saved.model(), cx));
-        let file_transcription = saved
-            .provider()
-            .zip(saved.model())
-            .is_some_and(|(provider, model)| provider.uses_file_transcription(model));
+        let header = self.header(notice.is_none(), cx);
+        let prompt = self.prompt_section(&saved, window, cx);
         let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let divider = || div().h_px().bg(theme.border);
         v_flex()
             .gap_4()
             .p_4()
             .border_1()
             .border_color(theme.border)
             .rounded_lg()
+            .child(header)
+            .child(divider())
             .child(
-                v_flex()
-                    .gap_1()
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Dictation"))
-                    .child(div().text_sm().text_color(muted).child(
-                        "Record a task with the microphone in New run. The selected model \
-                         transcribes the recording into the Task field.",
-                    )),
-            )
-            .child(
-                v_flex().gap_2().child("Provider").child(
-                    Select::new(&self.provider)
-                        .placeholder("Select a provider")
-                        .accessibility_label("Dictation provider")
-                        .cleanable(true),
-                ),
+                h_flex()
+                    .items_start()
+                    .gap_3()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_2()
+                            .child(label("Provider"))
+                            .child(
+                                Select::new(&self.provider)
+                                    .placeholder("Select a provider")
+                                    .accessibility_label("Dictation provider")
+                                    .cleanable(true),
+                            ),
+                    )
+                    .children(model),
             )
             .when_some(notice, |card, notice| {
-                card.child(div().text_sm().text_color(muted).child(notice))
+                card.child(
+                    h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(Icon::new(Lucide::Info).size_4().flex_none())
+                        .child(notice),
+                )
             })
-            .children(model)
             .child(
                 v_flex()
                     .gap_2()
-                    .child("Language")
+                    .child(label("Language"))
                     .child(
                         Select::new(&self.language)
                             .placeholder("Detect automatically")
@@ -379,54 +457,20 @@ impl Render for DictationCard {
                          close languages for each other.",
                     )),
             )
-            .child(
-                h_flex()
-                    .justify_between()
-                    .items_center()
-                    .child("Prompt")
-                    .child(
-                        Button::new("reset-dictation-prompt")
-                            .cursor_pointer()
-                            .small()
-                            .icon(Lucide::RotateCcw)
-                            .label("Reset prompt")
-                            .on_click(cx.listener(|card, _, window, cx| {
-                                card.prompt.update(cx, |input, cx| {
-                                    input.set_value(DEFAULT_PROMPT, window, cx)
-                                });
-                                card.save_prompt(cx);
-                                cx.notify();
-                            }))
-                            .smooth_hover(ButtonLook::Ghost, &reset_hover, cx),
-                    ),
-            )
-            .child(TextField::textarea(
-                Textarea::new(&self.prompt).aria_label("Dictation prompt"),
-                &self.prompt,
-                cx,
-            ))
-            .when(file_transcription, |card| {
-                card.child(div().text_xs().text_color(muted).child(
-                    "Use the prompt to give context, such as project names and technical terms you expect to say.",
-                ))
-            })
+            .child(divider())
+            .child(prompt)
             .when_some(self.error.clone(), |card, error| {
                 card.child(div().text_sm().text_color(theme.danger).child(error))
             })
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child("Changes save automatically when you finish editing."),
-            )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::model_items;
-    use crate::state::ai_providers::Models;
-    use hive_core::llm::{Capability, Model};
+    use super::{model_items, setup_notice};
+    use crate::state::ai_providers::{KeyStatus, Models};
+    use hive_core::dictation::Recipe;
+    use hive_core::llm::{Capability, Model, Provider};
 
     fn model(id: &str, capability: Capability) -> Model {
         Model {
@@ -456,5 +500,23 @@ mod tests {
             ["both"]
         );
         assert!(model_items(&Models::Loading, None).is_empty());
+    }
+
+    #[test]
+    fn setup_names_the_first_missing_piece_and_is_quiet_when_ready() {
+        let mut recipe = Recipe::default();
+        assert!(setup_notice(&recipe, None).unwrap().contains("provider"));
+        recipe.set_provider(Some(Provider::OpenAi)).unwrap();
+        let missing_key = setup_notice(&recipe, Some(KeyStatus::Missing)).unwrap();
+        assert!(missing_key.contains("API key"));
+        assert!(
+            setup_notice(&recipe, Some(KeyStatus::Configured))
+                .unwrap()
+                .contains("model")
+        );
+        recipe.set_model(Some("gpt-audio".into()));
+        assert_eq!(setup_notice(&recipe, Some(KeyStatus::Configured)), None);
+        // A key not checked yet does not hold the card back.
+        assert_eq!(setup_notice(&recipe, Some(KeyStatus::Unknown)), None);
     }
 }

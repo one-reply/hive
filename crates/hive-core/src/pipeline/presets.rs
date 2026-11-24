@@ -2,7 +2,7 @@
 use super::stock::{
     CODE_REVIEWER, DEVELOPER, FEATURE_PLANNER, QA_REVIEWER, SECURITY_AND_PERFORMANCE_REVIEWER,
 };
-use super::{LanePreset, Library, ReviewKind, Step, Template};
+use super::{LanePreset, Library, PlanApproval, ReviewKind, Step, Template};
 
 /// Stock instructions shipped before catalog version 2, by stage name. A saved starter recipe
 /// still holding one of them was never edited, so it may receive the current text.
@@ -61,6 +61,7 @@ impl Template {
         Self {
             name: "Feature delivery".into(),
             shared_contract: false,
+            plan_approval: PlanApproval::Ask,
             planner: FEATURE_PLANNER.stage("Plan"),
             development: DEVELOPER.stage("Development"),
             reviews: vec![

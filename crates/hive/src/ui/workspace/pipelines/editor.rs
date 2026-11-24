@@ -1,34 +1,21 @@
 use super::inspector::Inspector;
 use super::map::{Layout, RoleKind};
 use super::*;
-use hive_core::pipeline::LanePreset;
 use hive_core::pipeline::unique_name;
+mod drag;
 mod nodes;
+mod resize;
 mod structure;
-use structure::{StageChoice, move_item};
+use drag::{Dragged, Dragging};
+use resize::{INSPECTOR_MAX_SHARE, InspectorResize, dragged_inspector_width};
+use structure::StageChoice;
 
-/// Inspector width beside the canvas, in rems: wide enough for a mode's explanation to
-/// wrap in a few lines.
-const INSPECTOR_WIDTH: f32 = 20.;
-
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum Item {
     Planner,
     Development,
     Lane(usize),
     Review(usize),
-}
-
-#[derive(Clone)]
-struct Dragged {
-    editor: EntityId,
-    item: Item,
-    label: String,
-}
-impl Render for Dragged {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        card(cx).child(self.label.clone())
-    }
 }
 
 pub(super) struct TemplateEditor {
@@ -44,6 +31,11 @@ pub(super) struct TemplateEditor {
     renaming: bool,
     compact: bool,
     show_inspector: bool,
+    /// Inspector width beside the canvas, in rems; follows the pointer while it is dragged.
+    inspector_width: f32,
+    resizing_inspector: bool,
+    /// The drag over the canvas as of the last pointer move.
+    dragging: Option<Dragging>,
     _subscriptions: [Subscription; 2],
 }
 
@@ -54,7 +46,9 @@ impl TemplateEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let library = &AppState::get(cx).store.read(cx).state.pipelines;
+        let state = &AppState::get(cx).store.read(cx).state;
+        let inspector_width = state.settings.pipeline_inspector_width();
+        let library = &state.pipelines;
         let mut template = original.clone().unwrap_or_else(|| library.new_template());
         if original.is_none() {
             template.name = unique_name(
@@ -90,6 +84,9 @@ impl TemplateEditor {
             renaming: false,
             compact: false,
             show_inspector: false,
+            inspector_width,
+            resizing_inspector: false,
+            dragging: None,
             _subscriptions: [models, prompts],
         };
         // Read back through the same fields as every later comparison, so a field that
@@ -133,38 +130,92 @@ impl TemplateEditor {
         self.inspector = Inspector::new(item, &self.template, w, cx);
         self.selected = item;
     }
-    fn move_to(&mut self, from: Item, to: Item, w: &mut Window, cx: &mut Context<Self>) {
-        if self.apply(cx) && move_item(&mut self.template, from, to) {
-            self.load(to, w, cx);
-        }
+    /// Moves a lane or a review into the gap before position `before` among its own kind,
+    /// and selects it there.
+    fn move_to(&mut self, item: Item, before: usize, w: &mut Window, cx: &mut Context<Self>) {
         cx.notify();
-    }
-    fn add(&mut self, kind: StageChoice, w: &mut Window, cx: &mut Context<Self>) {
         if !self.apply(cx) {
-            cx.notify();
+            return;
+        }
+        let moved = match item {
+            Item::Lane(i) => self.template.move_lane(i, before).map(Item::Lane),
+            Item::Review(i) => self.template.move_review(i, before).map(Item::Review),
+            Item::Planner | Item::Development => None,
+        };
+        if let Some(moved) = moved {
+            self.load(moved, w, cx);
+        }
+    }
+    /// Adds a stage into the gap before position `before`, or at its usual place.
+    fn add(
+        &mut self,
+        kind: StageChoice,
+        before: Option<usize>,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.notify();
+        if !self.apply(cx) {
             return;
         }
         let item = match kind {
             StageChoice::Lane => {
-                let i = self.template.lanes.len();
-                self.template.lanes.push(LanePreset {
-                    name: unique_name(
-                        kind.label(),
-                        self.template.lanes.iter().map(|l| l.name.as_str()),
-                    ),
-                    profile: self.template.development.profile.clone(),
-                    ..Default::default()
-                });
-                Item::Lane(i)
+                let before = before.unwrap_or(self.template.lanes.len());
+                Item::Lane(self.template.insert_lane(before, kind.label()))
             }
             StageChoice::Review(review) => {
                 let library = &AppState::get(cx).store.read(cx).state.pipelines;
-                Item::Review(self.template.add_review(library.review_step(review)))
+                let step = library.review_step(review);
+                Item::Review(match before {
+                    Some(before) => self.template.insert_review(before, step),
+                    None => self.template.add_review(step),
+                })
             }
         };
         self.load(item, w, cx);
         self.show_inspector = true;
+    }
+    /// Puts the review at `from` beside the one at `beside` so that the two run together,
+    /// and selects it there.
+    fn join(
+        &mut self,
+        from: usize,
+        beside: usize,
+        after: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.notify();
+        if !self.apply(cx) {
+            return;
+        }
+        if let Some(moved) = self.template.join_review(from, beside, after) {
+            self.load(Item::Review(moved), w, cx);
+        }
+    }
+    /// Adds a review of `kind` beside the one at `beside`, to run together with it.
+    fn add_beside(
+        &mut self,
+        kind: hive_core::pipeline::ReviewKind,
+        beside: usize,
+        after: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.notify();
+        if !self.apply(cx) {
+            return;
+        }
+        let library = &AppState::get(cx).store.read(cx).state.pipelines;
+        let step = library.review_step(kind);
+        // Added after the last row first, so `beside` still names the same review.
+        let added = self.template.insert_review(usize::MAX, step);
+        let joined = self.template.join_review(added, beside, after);
+        self.load(Item::Review(joined.unwrap_or(added)), w, cx);
+        self.show_inspector = true;
+    }
+    fn layout(&self) -> Layout {
+        Layout::of(&self.template)
     }
     fn remove(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         match self.selected {
@@ -213,7 +264,7 @@ impl TemplateEditor {
         match item {
             Item::Planner => RoleKind::Plan,
             Item::Development | Item::Lane(_) => RoleKind::Build,
-            Item::Review(i) => RoleKind::review(i, &self.template.reviews[i]),
+            Item::Review(i) => RoleKind::review(&self.template, i),
         }
     }
 }
@@ -225,6 +276,7 @@ fn differs_from(opened: &Template, draft: Result<Template, String>) -> bool {
 
 impl Render for TemplateEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.settle_drag(cx);
         let title = if self.renaming {
             h_flex()
                 .flex_1()
@@ -314,11 +366,11 @@ impl Render for TemplateEditor {
                 window,
                 cx,
                 |v, _, cx| {
-                    v.template.shared_contract = !v.template.shared_contract;
+                    let on = !v.template.shared_contract;
+                    v.template.set_shared_contract(on);
                     cx.notify();
                 },
             ))
-            .child(self.add_menu(cx))
             .child(button(
                 "save-template",
                 "Save",
@@ -339,13 +391,31 @@ impl Render for TemplateEditor {
                     .min_w_0()
                     .when(self.compact, |el| el.flex_1())
                     .when(!self.compact, |el| {
-                        el.w(rems(INSPECTOR_WIDTH))
+                        el.relative()
+                            .w(rems(self.inspector_width))
+                            .max_w(relative(INSPECTOR_MAX_SHARE))
                             .flex_none()
                             .border_l_1()
                             .border_color(cx.theme().border)
+                            .child(self.inspector_resize_handle(cx))
                     })
                     .child(scroll("pipeline-inspector", fields)),
             );
+        }
+        if !self.compact {
+            body = body.on_drag_move(cx.listener(
+                |s, event: &DragMoveEvent<InspectorResize>, window, cx| {
+                    let width = dragged_inspector_width(
+                        event.bounds,
+                        event.event.position.x,
+                        window.rem_size(),
+                    );
+                    if width != s.inspector_width {
+                        s.inspector_width = width;
+                        cx.notify();
+                    }
+                },
+            ));
         }
         let compact = self.compact;
         let split_width = map::units(600.).to_pixels(window.rem_size());

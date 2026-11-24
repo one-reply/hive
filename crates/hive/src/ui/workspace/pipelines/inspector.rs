@@ -8,6 +8,7 @@ use hive_core::agent::{
 use hive_core::pipeline::{PermissionMode, Profile};
 
 mod agents;
+mod condition;
 mod findings;
 mod instructions;
 mod models;
@@ -33,6 +34,8 @@ pub(super) struct Inspector {
     prompt_picker: Option<PromptPicker>,
     /// `None` follows the role's own mode, as a stage saved before modes existed does.
     mode: Option<PermissionMode>,
+    /// For a review: the paths it is limited to, one pattern per line.
+    pub(super) paths: Entity<TextareaState>,
 }
 impl Inspector {
     pub(super) fn new(
@@ -76,8 +79,14 @@ impl Inspector {
             }
         };
         let is_stage = !matches!(item, Item::Lane(_));
+        // QA always runs: a condition a hand-edited file gave it is dropped with the next edit.
+        let paths = match item {
+            Item::Review(i) => t.review_condition(i).unwrap_or_default().join("\n"),
+            Item::Planner | Item::Development | Item::Lane(_) => String::new(),
+        };
         ensure_models(profile.agent, cx);
         Self {
+            paths: area(&paths, "crates/auth/\n*.sql", w, cx),
             picker: ModelPicker::new(profile.agent, &profile.model, t, w, cx),
             name: input(name, "Name", w, cx),
             instruction: area(body, "", w, cx),
@@ -107,6 +116,8 @@ impl Inspector {
             mode: self.mode,
         };
         hive_core::agent::launch::validate_pipeline_profile(&profile).map_err(|e| e.to_string())?;
+        let only_paths = hive_core::pipeline::path_patterns(self.paths.read(cx).value().as_ref())
+            .map_err(|e| e.to_string())?;
         if item == Item::Development {
             t.set_development_profile(profile.clone());
         }
@@ -128,6 +139,7 @@ impl Inspector {
         if matches!(item, Item::Review(_)) {
             step.limit = self.limit;
             step.return_lane = self.route.clone();
+            step.only_paths = only_paths;
         }
         step.name = name;
         step.instruction = body;
@@ -167,7 +179,7 @@ impl TemplateEditor {
         if matches!(self.selected, Item::Review(_)) {
             fields = fields.child(self.review_routing(cx));
         }
-        fields
+        fields.children(self.review_condition(cx))
     }
     fn stage_identity(&self, w: &mut Window, cx: &mut Context<Self>) -> Div {
         let form = &self.inspector;

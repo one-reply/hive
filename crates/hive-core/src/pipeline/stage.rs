@@ -37,6 +37,10 @@ pub enum StageStatus {
     InProgress,
     /// The stage finished.
     Complete,
+    /// The recipe let the plan through its gate without the user.
+    AutoApproved,
+    /// The review is limited to paths this pass does not touch.
+    Skipped,
     /// The plan gave this lane no work.
     Unassigned,
     /// The run was cancelled before this stage.
@@ -55,6 +59,8 @@ impl StageStatus {
             Self::NeedsYou => "Needs you",
             Self::InProgress => "In progress",
             Self::Complete => "Complete",
+            Self::AutoApproved => "Approved automatically",
+            Self::Skipped => "Skipped: no matching files",
             Self::Unassigned => "Unassigned",
             Self::Stopped => "Stopped",
             Self::Pending => "Pending",
@@ -89,8 +95,8 @@ impl Run {
         let mut progress = RunProgress::default();
         for stage in Stage::recipe(self) {
             match stage.status(self, &stage.observations(self)) {
-                StageStatus::Unassigned => continue,
-                StageStatus::Complete => progress.done += 1,
+                StageStatus::Unassigned | StageStatus::Skipped => continue,
+                StageStatus::Complete | StageStatus::AutoApproved => progress.done += 1,
                 _ => {}
             }
             progress.total += 1;
@@ -114,16 +120,15 @@ impl Stage {
         if run.lanes.iter().any(|lane| run.shows_check(lane)) {
             stages.push(Self::Commands(0));
         }
-        for i in 0..run.template.reviews.len() {
-            stages.push(Self::Review(i));
-            if run.phase == Phase::Decision(i)
-                || run
-                    .timings
-                    .iter()
-                    .any(|row| row.phase == Phase::Decision(i))
-            {
-                stages.push(Self::Decision(i));
-            }
+        // Reviews that run together stand together; a decision one of them needed follows
+        // the whole group.
+        for group in run.template.review_groups() {
+            stages.extend(group.clone().map(Self::Review));
+            let decided = |i: &usize| {
+                let phase = Phase::Decision(*i);
+                run.phase == phase || run.timings.iter().any(|row| row.phase == phase)
+            };
+            stages.extend(group.filter(decided).map(Self::Decision));
         }
         stages.push(Self::Accept);
         stages
@@ -174,6 +179,13 @@ impl Stage {
             return run.phase == Phase::Development
                 && run.pending().iter().any(|t| t.lane == Some(i));
         }
+        // Reviews of a group run at once: each is at work while its own reviewer is.
+        if let Self::Review(i) = self {
+            let pending = run.pending();
+            return pending
+                .iter()
+                .any(|ticket| run.ticket_phase(ticket) == Phase::Review(i));
+        }
         Some(self) == Self::from_phase(run.phase, None)
     }
 
@@ -192,6 +204,12 @@ impl Stage {
 
     /// Status from the run and this stage's `records` (its [`Self::observations`]).
     pub fn status(self, run: &Run, records: &[&StageTiming]) -> StageStatus {
+        // Before the intervals: a first review the pass leaves out was entered for a moment.
+        if let Self::Review(i) = self
+            && run.skipped.contains(&i)
+        {
+            return StageStatus::Skipped;
+        }
         match records.last() {
             Some(t) if t.failed && t.end_ms.is_none() => return StageStatus::Interrupted,
             Some(t) if t.failed => return StageStatus::Failed,
@@ -209,6 +227,9 @@ impl Stage {
         }
         if !records.is_empty() {
             return StageStatus::Complete;
+        }
+        if self == Self::Approval && run.plan_auto_approved() {
+            return StageStatus::AutoApproved;
         }
         if let Self::Develop(i) = self
             && run.lanes.get(i).is_some_and(|l| !l.is_assigned())

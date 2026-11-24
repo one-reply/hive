@@ -2,6 +2,18 @@
 use super::*;
 
 impl TemplateEditor {
+    /// Sends a review's findings to the lane named `lane`, or to the lanes they affect. The
+    /// canvas draws the return arrow from the recipe, and the open form shows the same route.
+    pub(in super::super) fn route(&mut self, review: usize, lane: Option<String>) {
+        let Some(step) = self.template.reviews.get_mut(review) else {
+            return;
+        };
+        step.return_lane.clone_from(&lane);
+        if self.selected == Item::Review(review) {
+            self.inspector.route = lane;
+        }
+    }
+
     pub(super) fn review_routing(&self, cx: &mut Context<Self>) -> Div {
         let form = &self.inspector;
         let mut routes = vec![(None, "Affected lanes".into())];
@@ -40,9 +52,8 @@ impl TemplateEditor {
                     cx,
                     |s: &mut Self, r, _, _| {
                         if let Item::Review(i) = s.selected {
-                            s.template.reviews[i].return_lane = r.clone();
+                            s.route(i, r);
                         }
-                        s.inspector.route = r
                     },
                 ),
                 cx,

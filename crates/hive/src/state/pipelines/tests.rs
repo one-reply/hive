@@ -723,6 +723,77 @@ fn a_gate_reached_by_an_agents_report_is_announced_once(cx: &mut TestAppContext)
     });
 }
 
+/// Puts the fixture's run into the state its planner's report leaves it in under `recipe`,
+/// which `change` adjusts first, and announces the transition as a report would. The report
+/// itself is not sent: an approved plan would start preparing worktrees.
+fn planner_reported(
+    pipelines: &Entity<Pipelines>,
+    change: impl FnOnce(&mut Template, &mut Vec<Lane>),
+    cx: &mut TestAppContext,
+) {
+    pipelines.update(cx, |p, cx| {
+        p.store.update(cx, |s, _| {
+            let saved = &mut s.state.pipelines.runs[0];
+            let (mut recipe, mut lanes) = (saved.template().clone(), saved.lanes().to_vec());
+            change(&mut recipe, &mut lanes);
+            let mut run = Run::new(42, saved.owner().into(), "Task".into(), recipe, lanes).unwrap();
+            let ticket = run.pending()[0];
+            run.report(&ticket, plan(1)).unwrap();
+            run.record_stage(Some(Phase::Planning), 1);
+            *saved = run;
+        });
+        p.announce_gate(42, Phase::Planning, cx);
+    });
+}
+
+#[gpui::test]
+fn a_plan_approved_by_its_recipe_is_announced_without_a_gate(cx: &mut TestAppContext) {
+    use super::status::Waiting;
+    let pipelines = recovering(cx);
+    let (seen, _subscription) = announcements(&pipelines, cx);
+    planner_reported(&pipelines, |recipe, _| recipe.toggle_plan_approval(), cx);
+    let approved = super::RunWaits {
+        run: 42,
+        reason: Waiting::PlanAutoApproved,
+    };
+    assert_eq!(*seen.borrow(), std::slice::from_ref(&approved));
+    pipelines.read_with(cx, |p, cx| {
+        assert_eq!(p.run(42, cx).unwrap().phase(), Phase::Development);
+        assert_eq!(
+            p.notice(&approved, cx),
+            Some(("Plan approved automatically".into(), "Task".into()))
+        );
+    });
+}
+
+#[gpui::test]
+fn a_plan_its_recipe_could_not_approve_is_announced_at_the_gate(cx: &mut TestAppContext) {
+    use super::status::{Gate, Waiting};
+    let pipelines = recovering(cx);
+    let (seen, _subscription) = announcements(&pipelines, cx);
+    planner_reported(
+        &pipelines,
+        |recipe, lanes| {
+            recipe.toggle_plan_approval();
+            // The plan covers one lane, and this review returns its findings to the other.
+            lanes.push(Lane {
+                name: "API".into(),
+                ..lanes[0].clone()
+            });
+            recipe.insert_lane(1, "API");
+            recipe.reviews[0].return_lane = Some("API".into());
+        },
+        cx,
+    );
+    assert_eq!(
+        *seen.borrow(),
+        [super::RunWaits {
+            run: 42,
+            reason: Waiting::Gate(Gate::Plan),
+        }]
+    );
+}
+
 #[gpui::test]
 fn a_gate_the_user_reaches_by_their_own_decision_is_not_announced(cx: &mut TestAppContext) {
     let pipelines = recovering(cx);
@@ -911,6 +982,97 @@ fn an_attempt_past_its_time_budget_is_announced_once(cx: &mut TestAppContext) {
     let (title, body) = seen[0].reason.notice("Task");
     assert!(title.ends_with("is still running after 30 min"), "{title}");
     assert_eq!(body, "Task");
+}
+
+/// Puts the fixture's run where all three of its reviews run together: development is
+/// reported and the pass is fingerprinted, so nothing is left to read from a worktree.
+fn reviewing_together(
+    pipelines: &Entity<Pipelines>,
+    cx: &mut TestAppContext,
+) -> Vec<super::Ticket> {
+    pipelines.update(cx, |p, cx| {
+        p.store.update(cx, |s, cx| {
+            let saved = &mut s.state.pipelines.runs[0];
+            let mut recipe = saved.template().clone();
+            recipe.join_review(1, 0, true).unwrap();
+            recipe.join_review(2, 1, true).unwrap();
+            let lanes = saved.lanes().to_vec();
+            let mut run = Run::new(42, saved.owner().into(), "Task".into(), recipe, lanes).unwrap();
+            let planner = run.pending()[0];
+            run.report(&planner, plan(1)).unwrap();
+            run.approve().unwrap();
+            let developer = run.pending()[0];
+            let done = Report::Developed {
+                summary: "done".into(),
+            };
+            run.report(&developer, done).unwrap();
+            run.record_review_trees("pass".into(), vec!["a".repeat(40)], None)
+                .unwrap();
+            *saved = run;
+            s.set_test_writer(cx, |_| Ok(()));
+        });
+        let reviewers = p.run(42, cx).unwrap().pending();
+        assert_eq!(reviewers.len(), 3);
+        reviewers
+    })
+}
+
+#[gpui::test]
+fn one_reviewer_of_a_group_reports_and_the_others_keep_their_sessions(cx: &mut TestAppContext) {
+    let pipelines = recovering(cx);
+    let reviewers = reviewing_together(&pipelines, cx);
+    let reply = pipelines.update(cx, |p, cx| {
+        let mut sessions = Vec::new();
+        for ticket in &reviewers {
+            sessions.push(attach_session(p, *ticket, cx));
+        }
+        let clean = Report::Review {
+            summary: "Checked the change".into(),
+            findings: vec![],
+            evidence: vec![],
+        };
+        submit(p, sessions[1], reviewers[1], clean, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(reply.try_recv().unwrap(), Ok(()));
+    pipelines.read_with(cx, |p, cx| {
+        let run = p.run(42, cx).unwrap();
+        assert_eq!(
+            run.phase(),
+            Phase::Review(0),
+            "two reviewers are still at work"
+        );
+        assert_eq!(run.pending(), [reviewers[0], reviewers[2]]);
+        let live: Vec<_> = p.live_attempts(42).into_iter().map(|(t, _)| t).collect();
+        assert_eq!(live, [reviewers[0], reviewers[2]]);
+        // The report stands under the review that made it, not under the group's first.
+        let (_, phase, _) = run.reports().last().unwrap();
+        assert_eq!(*phase, Phase::Review(1));
+    });
+}
+
+#[gpui::test]
+fn a_slow_reviewer_of_a_group_is_named_by_its_own_review(cx: &mut TestAppContext) {
+    use super::status::Waiting;
+    const STARTED: u64 = 1_000;
+    const BUDGET: u64 = 30 * 60 * 1000;
+    let pipelines = recovering(cx);
+    let reviewers = reviewing_together(&pipelines, cx);
+    let (seen, _subscription) = announcements(&pipelines, cx);
+    pipelines.update(cx, |p, cx| {
+        let security = reviewers[2];
+        attach_session(p, security, cx);
+        p.store.update(cx, |s, _| {
+            s.state.pipelines.runs[0].start_attempt_at(security, STARTED)
+        });
+        p.announce_slow_attempts(STARTED + BUDGET, cx);
+    });
+    let seen = seen.borrow();
+    assert_eq!(seen.len(), 1);
+    let Waiting::Slow { stage, .. } = &seen[0].reason else {
+        panic!("{:?}", seen[0].reason);
+    };
+    assert_eq!(stage, "Security & performance");
 }
 
 #[gpui::test]

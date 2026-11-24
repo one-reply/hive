@@ -1,5 +1,7 @@
 use super::*;
 
+mod groups;
+
 // These transition fixtures exercise a recipe with QA and one subsequent reviewer.
 fn run_with(projects: &[&str], limit: u8) -> Run {
     let mut recipe = Template::default();
@@ -46,23 +48,104 @@ fn report(run: &mut Run, value: Report) {
     run.report(&t, value).unwrap();
 }
 
+/// The planner's report: a task with criteria for each of `lanes`.
+fn assigning(lanes: impl IntoIterator<Item = usize>) -> Report {
+    Report::Plan {
+        assignments: lanes
+            .into_iter()
+            .map(|lane| Assignment {
+                lane,
+                task: format!("Task {lane}"),
+                criteria: "Build and tests pass".into(),
+            })
+            .collect(),
+        contract: String::new(),
+    }
+}
+
 fn plan(run: &mut Run) {
-    let assignments = (0..run.lanes.len())
-        .map(|lane| Assignment {
-            lane,
-            task: format!("Task {lane}"),
-            criteria: "Build and tests pass".into(),
-        })
-        .collect();
-    report(
-        run,
-        Report::Plan {
-            assignments,
-            contract: String::new(),
-        },
-    );
+    let plan = assigning(0..run.lanes.len());
+    report(run, plan);
     assert_eq!(run.phase, Phase::ApprovePlan);
     run.approve().unwrap();
+}
+
+fn auto_approving() -> Template {
+    let mut recipe = Template::default();
+    recipe.toggle_plan_approval();
+    recipe
+}
+
+#[test]
+fn an_auto_approving_recipe_starts_development_from_the_planners_report() {
+    let mut run = run_with_recipe(&["/api", "/web"], 3, auto_approving());
+    report(&mut run, assigning(0..2));
+    assert_eq!(run.phase, Phase::Development);
+    assert_eq!(run.pending().len(), 2);
+    assert_eq!(
+        run.history.last().map(String::as_str),
+        Some("Plan approved automatically (recipe setting)")
+    );
+    assert!(run.plan_auto_approved());
+    // The gate has no interval of its own, and still counts as passed.
+    assert_eq!(
+        Stage::Approval.status(&run, &Stage::Approval.observations(&run)),
+        StageStatus::AutoApproved
+    );
+    assert_eq!(run.progress().done, 2);
+}
+
+#[test]
+fn a_plan_that_cannot_be_approved_as_written_waits_at_the_gate_with_the_reason() {
+    let mut recipe = auto_approving();
+    recipe.reviews[0].return_lane = Some("Role 1".into());
+    let mut run = run_with_recipe(&["/api", "/web"], 3, recipe);
+    // The planner leaves out the lane that review sends its findings to.
+    report(&mut run, assigning([0]));
+    assert_eq!(run.phase, Phase::ApprovePlan);
+    assert!(run.pending().is_empty());
+    let reason = run.history.last().unwrap();
+    assert!(
+        reason.starts_with("Plan not approved automatically:") && reason.contains("Role 1"),
+        "{reason}"
+    );
+    run.record_stage(Some(Phase::Planning), 1);
+    // The user asks for a plan that covers both lanes and reads it themselves.
+    run.replan("Give the web lane its part").unwrap();
+    report(&mut run, assigning(0..2));
+    assert_eq!(run.phase, Phase::ApprovePlan);
+    run.approve().unwrap();
+    assert_eq!(run.phase, Phase::Development);
+    assert!(!run.plan_auto_approved());
+    assert_eq!(
+        Stage::Approval.status(&run, &Stage::Approval.observations(&run)),
+        StageStatus::Complete
+    );
+}
+
+#[test]
+fn a_run_cancelled_while_planning_did_not_pass_the_plan_gate() {
+    let mut run = run_with_recipe(&["/api"], 3, auto_approving());
+    run.cancel().unwrap();
+    assert!(!run.plan_auto_approved());
+    assert_eq!(
+        Stage::Approval.status(&run, &Stage::Approval.observations(&run)),
+        StageStatus::Stopped
+    );
+    // Cancelled during development, the gate it passed stays passed.
+    let mut run = run_with_recipe(&["/api"], 3, auto_approving());
+    report(&mut run, assigning([0]));
+    run.record_stage(Some(Phase::Planning), 1);
+    run.cancel().unwrap();
+    assert!(run.plan_auto_approved());
+}
+
+#[test]
+fn a_recipe_that_asks_waits_for_the_user_even_with_a_plan_that_could_be_approved() {
+    let mut run = run_with_recipe(&["/api"], 3, Template::default());
+    report(&mut run, assigning([0]));
+    assert_eq!(run.phase, Phase::ApprovePlan);
+    assert!(!run.plan_auto_approved());
 }
 
 fn developed() -> Report {
@@ -172,6 +255,29 @@ fn red_checks_use_the_qa_budget_before_the_code_reviewer_is_dispatched() {
 }
 
 #[test]
+fn reviews_run_in_the_recipes_order_wherever_qa_stands_and_red_checks_use_its_budget() {
+    let mut recipe = Template::default();
+    recipe.move_review(2, 0).unwrap();
+    let names: Vec<_> = recipe.reviews.iter().map(|s| s.name.clone()).collect();
+    assert_eq!(names, ["Security & performance", "Code review", "QA"]);
+    let mut run = run_with_recipe(&["/api"], 3, recipe);
+    run.template.reviews[2].limit = 0;
+    run.lanes[0].command = "cargo test".into();
+    plan(&mut run);
+    report(&mut run, developed());
+    run.command_results(vec![check(false)]).unwrap();
+    assert_eq!(run.phase, Phase::Decision(2));
+    run.retry_gate("Repair the failing test").unwrap();
+    report(&mut run, developed());
+    run.command_results(vec![check(true)]).unwrap();
+    for ix in 0..3 {
+        assert_eq!(run.phase, Phase::Review(ix));
+        report(&mut run, review(vec![]));
+    }
+    assert_eq!(run.phase, Phase::Acceptance);
+}
+
+#[test]
 fn targeted_feedback_preserves_the_base_and_runs_all_required_checks_after_one_repair() {
     let mut run = run_with(&["/api", "/web"], 3);
     for lane in &mut run.lanes {
@@ -190,7 +296,7 @@ fn targeted_feedback_preserves_the_base_and_runs_all_required_checks_after_one_r
     ];
     run.command_results(results.clone()).unwrap();
     let trees = vec!["a".repeat(40), "b".repeat(40)];
-    run.record_review_trees("first".into(), trees.clone())
+    run.record_review_trees("first".into(), trees.clone(), None)
         .unwrap();
     report(&mut run, review(vec![]));
     report(&mut run, review(vec![]));
@@ -239,7 +345,7 @@ fn a_whole_task_request_carries_the_queued_line_comments_and_acceptance_waits_fo
         run.report(&ticket, developed()).unwrap();
     }
     let trees = vec!["a".repeat(40), "b".repeat(40)];
-    run.record_review_trees("first".into(), trees.clone())
+    run.record_review_trees("first".into(), trees.clone(), None)
         .unwrap();
     report(&mut run, review(vec![]));
     report(&mut run, review(vec![]));
@@ -1084,12 +1190,13 @@ fn independent_regression_pins_the_test_and_repeats_both_checks_after_explicit_a
     run.record_regression(matched(&b, "base")).unwrap();
     assert_eq!(run.phase(), Phase::Regression(RegressionStep::Candidate));
     run.record_regression(matched(&b, "candidate")).unwrap();
-    run.record_review_trees("stale".into(), vec![a.clone()])
+    run.record_review_trees("stale".into(), vec![a.clone()], None)
         .unwrap();
     assert_eq!(run.phase(), Phase::Regression(RegressionStep::Decision));
     run.retry_regression(None).unwrap();
     run.record_regression(matched(&b, "new")).unwrap();
-    run.record_review_trees("new".into(), vec![a]).unwrap();
+    run.record_review_trees("new".into(), vec![a], None)
+        .unwrap();
     report(&mut run, review(vec![]));
     report(&mut run, review(vec![]));
     assert!(matches!(
@@ -1184,7 +1291,7 @@ fn an_unreproducible_regression_test_is_left_behind_only_with_a_reason() {
     assert!(prompt.contains("unverified regression test in tests/count.rs"));
     // The run finishes like one that never asked for the test, and the criterion stays open.
     report(&mut run, developed());
-    run.record_review_trees("first".into(), vec!["a".repeat(40)])
+    run.record_review_trees("first".into(), vec!["a".repeat(40)], None)
         .unwrap();
     report(&mut run, review(vec![]));
     report(&mut run, review(vec![]));
@@ -1369,4 +1476,161 @@ fn a_prompt_without_images_is_left_as_written() {
     let run = run_with(&["/api"], 1);
     let prompt = run.prompt(&run.pending()[0]).unwrap();
     assert!(!prompt.contains("image files"), "{prompt}");
+}
+
+/// A one-lane run of Code review, QA and a Security review limited to `crates/auth/`, with
+/// development finished and the first review entered.
+fn before_reviews_with_conditional_security() -> Run {
+    let mut recipe = Template::default();
+    recipe.reviews[2].only_paths = vec!["crates/auth/".into()];
+    let mut run = run_with_recipe(&["/api"], 3, recipe);
+    plan(&mut run);
+    report(&mut run, developed());
+    assert_eq!(run.phase, Phase::Review(0));
+    run
+}
+
+/// Fingerprints the pass about to be reviewed as a change of `changed`.
+fn fingerprint(run: &mut Run, changed: Option<&[&str]>) {
+    let changed: Option<Vec<String>> =
+        changed.map(|paths| paths.iter().map(|path| (*path).to_owned()).collect());
+    run.record_review_trees("pass".into(), vec!["a".repeat(40)], changed.as_deref())
+        .unwrap();
+}
+
+fn review_status(run: &Run, review: usize) -> StageStatus {
+    let stage = Stage::Review(review);
+    stage.status(run, &stage.observations(run))
+}
+
+#[test]
+fn a_conditional_review_is_left_out_when_no_changed_file_matches() {
+    let mut run = before_reviews_with_conditional_security();
+    fingerprint(&mut run, Some(&["README.md", "src/lib.rs"]));
+    assert_eq!(run.skipped_reviews(), [2]);
+    assert_eq!(
+        run.history.last().map(String::as_str),
+        Some("Security & performance skipped: no changed file matches crates/auth/")
+    );
+    assert_eq!(review_status(&run, 2), StageStatus::Skipped);
+    let stages = run.progress().total;
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase, Phase::Acceptance);
+    assert!(
+        run.stage_reports(Stage::Review(2)).next().is_none(),
+        "the skipped review never ran"
+    );
+    // It is not among the stages the run counts, and the pull request names it.
+    assert_eq!(run.progress().total, stages);
+    let unconditional = {
+        let mut run = run_with_recipe(&["/api"], 3, Template::default());
+        plan(&mut run);
+        report(&mut run, developed());
+        run.progress().total
+    };
+    assert_eq!(stages + 1, unconditional);
+    let (_, body) = run.pull_request_text(0).unwrap();
+    assert!(
+        body.contains("- Security & performance: skipped, no changed file matches crates/auth/"),
+        "{body}"
+    );
+}
+
+#[test]
+fn a_matching_change_and_a_change_that_could_not_be_listed_skip_nothing() {
+    let mut run = before_reviews_with_conditional_security();
+    fingerprint(&mut run, Some(&["crates/auth/src/token.rs"]));
+    assert!(run.skipped_reviews().is_empty());
+
+    let mut run = before_reviews_with_conditional_security();
+    fingerprint(&mut run, None);
+    assert!(run.skipped_reviews().is_empty());
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase, Phase::Review(2));
+}
+
+#[test]
+fn the_condition_is_judged_again_on_every_pass() {
+    let mut run = before_reviews_with_conditional_security();
+    fingerprint(&mut run, Some(&["README.md"]));
+    assert_eq!(run.skipped_reviews(), [2]);
+    // QA sends the work back, and the repair reaches into the review's paths.
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![issue(0)]));
+    assert_eq!(run.phase, Phase::Development);
+    report(&mut run, developed());
+    assert!(run.skipped_reviews().is_empty(), "a new pass decides anew");
+    fingerprint(&mut run, Some(&["README.md", "crates/auth/session.rs"]));
+    assert!(run.skipped_reviews().is_empty());
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase, Phase::Review(2));
+}
+
+#[test]
+fn a_review_that_already_reported_is_not_left_out_by_a_later_pass() {
+    let mut run = before_reviews_with_conditional_security();
+    fingerprint(&mut run, Some(&["crates/auth/src/token.rs"]));
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![issue(0)]));
+    assert_eq!(run.phase, Phase::Development);
+    // The repair moves the code out of the review's paths; its finding is still checked.
+    report(&mut run, developed());
+    fingerprint(&mut run, Some(&["src/token.rs"]));
+    assert!(run.skipped_reviews().is_empty());
+    report(&mut run, review(vec![]));
+    report(&mut run, review(vec![]));
+    assert_eq!(run.phase, Phase::Review(2));
+}
+
+#[test]
+fn a_first_review_left_out_hands_its_turn_to_the_next() {
+    let mut recipe = Template::default();
+    recipe.reviews[2].only_paths = vec!["*.sql".into()];
+    recipe.move_review(2, 0).unwrap();
+    let mut run = run_with_recipe(&["/api"], 3, recipe);
+    plan(&mut run);
+    report(&mut run, developed());
+    let scheduled = run.pending()[0];
+    fingerprint(&mut run, Some(&["src/lib.rs"]));
+    assert_eq!(run.skipped_reviews(), [0]);
+    assert_eq!(run.phase, Phase::Review(1));
+    let next = run.pending();
+    assert_eq!(next.len(), 1);
+    assert_ne!(next[0], scheduled);
+    assert!(matches!(
+        run.report(&scheduled, review(vec![])),
+        Err(Error::InactiveAttempt)
+    ));
+    assert_eq!(review_status(&run, 0), StageStatus::Skipped);
+}
+
+#[test]
+fn qa_runs_whatever_its_recipe_says_and_a_run_that_skips_it_is_not_loaded() {
+    let mut run = before_reviews_with_conditional_security();
+    // As a file edited by hand could say: QA with a condition of its own.
+    run.template.reviews[1].only_paths = vec!["docs/".into()];
+    fingerprint(&mut run, Some(&["src/lib.rs"]));
+    assert_eq!(run.skipped_reviews(), [2]);
+    assert!(run.valid_snapshot());
+
+    let mut saved = serde_json::to_value(&run).unwrap();
+    saved["skipped"] = serde_json::json!([1]);
+    let skipping_qa: Run = serde_json::from_value(saved.clone()).unwrap();
+    assert!(!skipping_qa.valid_snapshot());
+    saved["skipped"] = serde_json::json!([0]);
+    let skipping_unconditional: Run = serde_json::from_value(saved).unwrap();
+    assert!(!skipping_unconditional.valid_snapshot());
+}
+
+#[test]
+fn a_run_saved_before_conditions_reads_with_nothing_left_out() {
+    let run = before_reviews_with_conditional_security();
+    let mut saved = serde_json::to_value(&run).unwrap();
+    saved.as_object_mut().unwrap().remove("skipped");
+    let loaded: Run = serde_json::from_value(saved).unwrap();
+    assert!(loaded.skipped_reviews().is_empty() && loaded.valid_snapshot());
 }

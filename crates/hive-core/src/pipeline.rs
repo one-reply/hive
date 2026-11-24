@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 mod acceptance;
 pub use acceptance::{CriterionDecision, EvidenceSource};
+mod condition;
+pub use condition::path_patterns;
 mod delivery;
 pub mod draft;
 mod feedback;
@@ -58,6 +60,9 @@ pub enum Error {
     /// A configured return route has no active development lane.
     #[error("Bind and assign return lane {0} before proceeding")]
     MissingLane(String),
+    /// A review's path condition holds a pattern that cannot be read.
+    #[error("“{0}” is not a path pattern Hive can read. Use a folder, a file name or a glob.")]
+    InvalidCondition(String),
     /// The installed CLI cannot represent a given session profile.
     #[error(transparent)]
     Profile(#[from] crate::agent::launch::LaunchError),
@@ -223,6 +228,15 @@ pub struct Step {
     /// `None` means the instructions are the stage's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<u64>,
+    /// For a review: `.gitignore`-style patterns of the paths it is limited to. It runs only
+    /// when the change under review touches one of them; empty means it always runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub only_paths: Vec<String>,
+    /// For a review: runs at the same time as the review before it. A group is a review
+    /// with the ones joined to it this way; their findings go back for one repair round.
+    /// Ignored on the first review, which has nothing before it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_previous: bool,
 }
 
 fn default_limit() -> u8 {
@@ -240,6 +254,8 @@ impl Step {
             limit: default_limit(),
             return_lane: None,
             prompt: None,
+            only_paths: Vec::new(),
+            with_previous: false,
         }
     }
 
@@ -264,12 +280,35 @@ pub struct LanePreset {
     pub command: String,
 }
 
+/// Who approves the planner's assignments before development starts.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanApproval {
+    /// Development starts as soon as the planner reports a plan that can be approved as
+    /// written.
+    Auto,
+    /// The user reads the plan and approves it. A policy this build does not know reads as
+    /// this one, so it never approves by itself.
+    #[default]
+    #[serde(other)]
+    Ask,
+}
+
+impl PlanApproval {
+    fn is_ask(&self) -> bool {
+        *self == Self::Ask
+    }
+}
+
 /// Ordered stage recipe shared between projects.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Template {
     /// Require one shared, human-approved interface contract for all stages.
     pub shared_contract: bool,
+    /// Who approves the plan; see [`Template::auto_approves_plan`] for when it applies.
+    #[serde(default, skip_serializing_if = "PlanApproval::is_ask")]
+    pub plan_approval: PlanApproval,
     /// Library display name.
     pub name: String,
     /// Initial read-only planner.
@@ -287,6 +326,7 @@ impl Template {
     /// Checks a draft before it becomes an executable recipe.
     pub fn validate(&self) -> Result<(), Error> {
         self.validate_structure()?;
+        self.validate_conditions()?;
         for profile in self.profiles() {
             crate::agent::launch::validate_pipeline_profile(profile)?;
         }
@@ -302,11 +342,9 @@ impl Template {
                 "Give the template a name, a development lane and a QA review",
             ));
         }
+        // Reviews stand in any order: QA is the marked one, or the first of an unmarked recipe.
         let qa = self.qa_index();
-        if self.reviews[..qa]
-            .iter()
-            .any(|s| s.review_role != ReviewRole::Code)
-            || self.reviews[qa].review_role == ReviewRole::Code
+        if self.reviews[qa].review_role == ReviewRole::Code
             || self.reviews[qa + 1..]
                 .iter()
                 .any(|s| s.review_role == ReviewRole::Qa)

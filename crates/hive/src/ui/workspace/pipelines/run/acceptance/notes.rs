@@ -19,7 +19,8 @@ impl RunView {
             .filter_map(|(i, (review, note))| {
                 let step = run.template().reviews.get(*review)?;
                 let lane = run.lanes().get(note.lane)?;
-                Some((i, RoleKind::review(*review, step), step, lane, note))
+                let role = RoleKind::review(run.template(), *review);
+                Some((i, role, step, lane, note))
             })
             .collect();
         if notes.is_empty() {

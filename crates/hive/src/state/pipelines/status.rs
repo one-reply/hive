@@ -98,6 +98,9 @@ pub(crate) enum Waiting {
         stage: String,
         minutes: u64,
     },
+    /// The recipe approved the plan and development started; nothing is asked of the user,
+    /// who would otherwise never learn there was a plan to read.
+    PlanAutoApproved,
 }
 
 /// A notification body names the run by the first line of its task, cut to this many characters.
@@ -121,6 +124,7 @@ impl Waiting {
                 format!("{stage} is still running after {minutes} min"),
                 name,
             ),
+            Self::PlanAutoApproved => ("Plan approved automatically".to_owned(), name),
         }
     }
 }
@@ -144,14 +148,17 @@ impl Pipelines {
     /// decisions never call this: they are looking at the run they just moved.
     pub(super) fn announce_gate(&mut self, id: u64, before: Phase, cx: &mut Context<Self>) {
         let Ok(run) = self.run(id, cx) else { return };
-        if run.phase() != before
-            && let Some(gate) = Gate::at(run.phase())
-        {
-            cx.emit(RunWaits {
-                run: id,
-                reason: Waiting::Gate(gate),
-            });
+        if run.phase() == before {
+            return;
         }
+        let reason = match Gate::at(run.phase()) {
+            Some(gate) => Waiting::Gate(gate),
+            None if before == Phase::Planning && run.plan_auto_approved() => {
+                Waiting::PlanAutoApproved
+            }
+            None => return,
+        };
+        cx.emit(RunWaits { run: id, reason });
     }
 }
 
@@ -200,6 +207,10 @@ mod tests {
                 "Pipeline step failed".into(),
                 "Add login · Agent exited before reporting a result.".into()
             )
+        );
+        assert_eq!(
+            Waiting::PlanAutoApproved.notice("Add login"),
+            ("Plan approved automatically".into(), "Add login".into())
         );
     }
 

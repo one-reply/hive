@@ -1,15 +1,15 @@
 //! `state.json` as released versions of Hive wrote it, one sample per schema version.
 //!
 //! Each sample was written by that release's own `hive-core` (`State::load` then
-//! `State::save`, built from the release tag), not typed by hand: the newest also carries a
-//! finished pipeline run. Their content has the shape of a real data folder (nine projects,
+//! `State::save`, built from the release tag), not typed by hand: the two newest also carry
+//! a finished pipeline run. Their content has the shape of a real data folder (nine projects,
 //! split layouts, terminal, file and diff tabs) with every name, path, text and id replaced.
 //! How they were made is in `wiki/decisions/state-schema-version.md`.
 
 use super::*;
 
 /// The release that wrote the sample, the schema version it stamped, and the file.
-const SAMPLES: [(&str, u32, &str); 6] = [
+const SAMPLES: [(&str, u32, &str); 7] = [
     (
         "1.0.25",
         1,
@@ -39,6 +39,11 @@ const SAMPLES: [(&str, u32, &str); 6] = [
         "1.0.31",
         6,
         include_str!("../fixtures/state-1.0.31-schema-6.json"),
+    ),
+    (
+        "1.0.39",
+        7,
+        include_str!("../fixtures/state-1.0.39-schema-7.json"),
     ),
 ];
 
@@ -167,6 +172,19 @@ fn what_a_release_did_not_know_yet_takes_its_default() {
             crate::dictation::Recipe::default()
         );
     }
+    // Before the plan approval policy and review conditions: every recipe, a run's own copy
+    // included, asks the user and runs each of its reviews, and no run leaves a review out.
+    for index in 1..SAMPLES.len() {
+        let pipelines = load(index).pipelines;
+        let recipes = pipelines.templates.iter();
+        for recipe in recipes.chain(pipelines.runs.iter().map(|run| run.template())) {
+            assert_eq!(recipe.plan_approval, crate::pipeline::PlanApproval::Ask);
+            assert!(!recipe.has_review_conditions());
+        }
+        for run in &pipelines.runs {
+            assert!(run.skipped_reviews().is_empty());
+        }
+    }
     // Before the prompt library: its stock prompts, with the saved run kept.
     let before_prompts = load(1);
     assert_eq!(
@@ -184,16 +202,34 @@ fn what_a_release_did_not_know_yet_takes_its_default() {
         current.prompt(15).unwrap().text
     );
     assert!(legacy.prompt(15).is_none());
-    // The newest release's finished run keeps its reports, sessions and timings.
-    let newest = as_json(&load(5));
-    let run = &newest["pipelines"]["runs"][0];
-    assert_eq!(run["phase"], "accepted");
-    let count = |field: &str| run[field].as_array().unwrap().len();
-    assert_eq!(
-        (count("reports"), count("sessions"), count("timings")),
-        (4, 4, 13)
-    );
-    assert_eq!(count("history"), 6);
+    // A finished run keeps its reports, sessions and timings.
+    for index in 5..SAMPLES.len() {
+        let state = as_json(&load(index));
+        let run = &state["pipelines"]["runs"][0];
+        assert_eq!(run["phase"], "accepted");
+        let count = |field: &str| run[field].as_array().unwrap().len();
+        assert_eq!(
+            (count("reports"), count("sessions"), count("timings")),
+            (4, 4, 13)
+        );
+        assert_eq!(count("history"), 6);
+    }
+}
+
+#[test]
+fn a_recipe_with_a_review_before_qa_is_saved_and_read_back_whole() {
+    let (release, _, file) = SAMPLES[6];
+    let folder = Folder::holding(release, file);
+    let mut state = folder.load().state;
+    // The sample's recipes predate stage roles: QA is their unmarked first review.
+    let recipe = &mut state.pipelines.templates[0];
+    assert_eq!(recipe.move_review(1, 0), Some(0));
+    assert_eq!(recipe.qa_index(), 1);
+    let moved = recipe.clone();
+    state.save_to(&folder.0.join("state.json")).unwrap();
+    let loaded = folder.load();
+    assert!(loaded.recovery.is_none());
+    assert_eq!(loaded.state.pipelines.templates[0], moved);
 }
 
 /// Drops every `field` key, wherever it nests.
@@ -213,16 +249,17 @@ fn without(value: &Value, field: &str) -> Value {
 
 #[test]
 fn saved_prompt_catalog_and_its_template_links_survive_the_new_defaults() {
-    let (release, _, file) = SAMPLES[5];
-    let written = json(file);
-    let loaded = as_json(&Folder::holding(release, file).load().state);
-    for field in ["prompts", "templates", "runs"] {
-        // A lane's `edits` is read into its profile's mode and no longer written.
-        assert_eq!(
-            loaded["pipelines"][field],
-            without(&written["pipelines"][field], "edits"),
-            "{field}"
-        );
+    for (release, _, file) in &SAMPLES[5..] {
+        let written = json(file);
+        let loaded = as_json(&Folder::holding(release, file).load().state);
+        for field in ["prompts", "templates", "runs"] {
+            // A lane's `edits` is read into its profile's mode and no longer written.
+            assert_eq!(
+                loaded["pipelines"][field],
+                without(&written["pipelines"][field], "edits"),
+                "{release}: {field}"
+            );
+        }
     }
 }
 

@@ -39,9 +39,7 @@ impl RunView {
     ) -> Option<AnyElement> {
         let progress = reveal_progress(run.phase(), w, cx)?;
         let delivery = self.delivery(run, w, cx);
-        let repairs: usize = (0..run.template().reviews.len())
-            .map(|i| usize::from(run.cycles(i)))
-            .sum();
+        let repairs = run.repair_rounds();
         let success = cx.theme().success;
         // Sampled every frame, so the reports keep their progress while they fold away.
         let unfolded = transition(

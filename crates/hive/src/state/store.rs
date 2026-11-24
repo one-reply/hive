@@ -286,6 +286,11 @@ impl Store {
         self.commit(cx);
     }
 
+    pub(crate) fn set_pipeline_inspector_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        self.state.settings.set_pipeline_inspector_width(width);
+        self.commit(cx);
+    }
+
     pub(crate) fn set_git_panel_open(&mut self, open: bool, cx: &mut Context<Self>) {
         self.state.settings.git_panel_open = open;
         self.commit(cx);

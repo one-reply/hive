@@ -58,6 +58,24 @@ pub fn review_round(
     )
 }
 
+/// Blocking: the repository-relative paths the reviewed `trees` change against each lane's
+/// base, a rename under both of its names. The trees are what the review fingerprint covers,
+/// so committed, uncommitted and new files are all listed. Paths of several repositories
+/// come as one list.
+pub fn reviewed_paths(id: u64, lanes: &[Lane], trees: &[String]) -> Result<Vec<String>, GitError> {
+    if trees.len() != lanes.len() {
+        return Err(GitError::Invalid(
+            "Incomplete stored review snapshot.".into(),
+        ));
+    }
+    let files = read_files(id, lanes, &[], trees)?
+        .into_iter()
+        .flat_map(|repository| repository.files);
+    Ok(files
+        .flat_map(|file| std::iter::once(file.path).chain(file.old_path))
+        .collect())
+}
+
 fn read_files(
     id: u64,
     lanes: &[Lane],

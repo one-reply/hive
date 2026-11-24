@@ -54,6 +54,15 @@ struct FindingCard {
     description: String,
 }
 
+/// The heading of a finding: its number in the list, the review that raised it when the
+/// gate holds findings of several, the lane it is about and how severe it is.
+fn finding_title(number: usize, reviewer: Option<&str>, lane: &str, severity: &str) -> String {
+    match reviewer {
+        Some(reviewer) => format!("{number} · {reviewer} · {lane} · {severity}"),
+        None => format!("{number} · {lane} · {severity}"),
+    }
+}
+
 struct FailedCheck {
     command: String,
     /// Repository and exit status.
@@ -73,16 +82,23 @@ struct Brief {
 impl Brief {
     fn read(run: &Run, review: usize) -> Self {
         let lane = |ix: usize| run.lanes().get(ix);
+        // Reviews that ran together bring their findings to one gate: say whose each is.
+        let reviewers: Vec<_> = run.findings().iter().map(|f| run.reviewer(f)).collect();
+        let several = reviewers.iter().any(|reviewer| *reviewer != reviewers[0]);
+        let reviewer = |i: usize| {
+            let step = reviewers[i].and_then(|review| run.template().reviews.get(review));
+            step.filter(|_| several).map(|step| step.name.as_str())
+        };
         let findings: Vec<_> = run
             .findings()
             .iter()
             .enumerate()
             .map(|(i, f)| FindingCard {
-                title: format!(
-                    "{} · {} · {}",
+                title: finding_title(
                     i + 1,
+                    reviewer(i),
                     lane(f.lane).map_or("Unknown lane", |l| &l.name),
-                    f.severity.label()
+                    f.severity.label(),
                 ),
                 severity: f.severity,
                 description: f.description.clone(),

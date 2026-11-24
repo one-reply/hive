@@ -3,7 +3,7 @@
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{ActiveTheme as _, Icon, h_flex};
 use gpui_kit::*;
-use hive_core::pipeline::{Prompt, ReviewRole, Step};
+use hive_core::pipeline::{Prompt, ReviewRole, Template};
 
 /// A role's surface is washed out so the icon or text on top keeps its contrast.
 pub(crate) const TINT_OPACITY: f32 = 0.12;
@@ -21,12 +21,17 @@ pub(crate) enum RoleKind {
 }
 
 impl RoleKind {
-    pub(crate) fn review(index: usize, step: &Step) -> Self {
-        match step.review_role {
-            ReviewRole::Code => return Self::CodeReview,
-            ReviewRole::Qa => return Self::Qa,
-            ReviewRole::Unspecified if index == 0 => return Self::Qa,
-            ReviewRole::Unspecified => {}
+    /// The role of the review at `index` of `template`. QA is where the recipe says it is, not
+    /// whichever review comes first: reviews stand in any order.
+    pub(crate) fn review(template: &Template, index: usize) -> Self {
+        let Some(step) = template.reviews.get(index) else {
+            return Self::Review;
+        };
+        if step.review_role == ReviewRole::Code {
+            return Self::CodeReview;
+        }
+        if index == template.qa_index() {
+            return Self::Qa;
         }
         let name = step.name.to_lowercase();
         if name.contains("code review") {
@@ -132,6 +137,32 @@ pub(crate) fn tile(icon: Lucide, color: Hsla) -> Div {
 #[cfg(test)]
 mod tests {
     use super::RoleKind;
+    use hive_core::pipeline::{ReviewRole, Template};
+
+    #[test]
+    fn qa_is_the_marked_review_or_the_first_of_an_unmarked_recipe() {
+        let roles = |t: &Template| -> Vec<_> {
+            (0..t.reviews.len())
+                .map(|i| RoleKind::review(t, i))
+                .collect()
+        };
+        let mut recipe = Template::default();
+        assert_eq!(
+            roles(&recipe),
+            [RoleKind::CodeReview, RoleKind::Qa, RoleKind::Security]
+        );
+        recipe.move_review(2, 0).unwrap();
+        assert_eq!(
+            roles(&recipe),
+            [RoleKind::Security, RoleKind::CodeReview, RoleKind::Qa]
+        );
+        // Saved before roles: QA is the first review and carries no marker.
+        recipe.remove_review(1).unwrap();
+        recipe.move_review(1, 0).unwrap();
+        recipe.reviews[0].review_role = ReviewRole::Unspecified;
+        assert_eq!(roles(&recipe), [RoleKind::Qa, RoleKind::Security]);
+        assert_eq!(RoleKind::review(&recipe, 9), RoleKind::Review);
+    }
 
     #[test]
     fn built_in_prompt_names_map_to_their_roles() {

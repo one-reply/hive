@@ -69,6 +69,7 @@ mod tests {
                 run: 1,
                 attempt: 3,
                 lane: None,
+                review: None,
             },
             stage: Stage::Review(0),
             status: None,

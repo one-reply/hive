@@ -186,7 +186,7 @@ impl RunView {
         for ticket in r
             .pending()
             .into_iter()
-            .filter(|t| Stage::from_phase(r.phase(), t.lane) == Some(stage))
+            .filter(|t| Stage::from_phase(r.ticket_phase(t), t.lane) == Some(stage))
         {
             let p = AppState::get(cx).pipelines.read(cx);
             if p.session(&ticket).is_some() {

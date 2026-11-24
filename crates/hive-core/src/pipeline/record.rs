@@ -71,11 +71,22 @@ impl Run {
     pub fn feedback_trees(&self) -> &[String] {
         &self.feedback_trees
     }
-    /// Bind the QA fingerprint and the corresponding Git trees to the same review.
+    /// Reviews the current QA pass leaves out because nothing it reviews matches their paths.
+    pub fn skipped_reviews(&self) -> &[usize] {
+        &self.skipped
+    }
+
+    /// Bind the QA fingerprint and the corresponding Git trees to the same review, and decide
+    /// which conditional reviews this pass leaves out. `changed` lists the repository-relative
+    /// paths the trees change; `None` when they could not be listed, which skips nothing.
+    ///
+    /// One transition, so a saved run never holds the fingerprint without the decision: a
+    /// review that should have been skipped could otherwise start in between.
     pub fn record_review_trees(
         &mut self,
         revision: String,
         trees: Vec<String>,
+        changed: Option<&[String]>,
     ) -> Result<(), Error> {
         if trees.len() != self.lanes.len()
             || !trees
@@ -96,7 +107,47 @@ impl Run {
         }
         self.record_review_revision(revision)?;
         self.review_trees = trees;
+        if let Some(changed) = changed {
+            self.skip_reviews(changed);
+        }
         Ok(())
+    }
+
+    /// Leaves out the reviews whose condition matches none of `changed`. A review that has
+    /// already reported in this run keeps running: a repair that moved the code out of its
+    /// paths must not escape the check of its own finding.
+    fn skip_reviews(&mut self, changed: &[String]) {
+        let reported = |review: usize| {
+            let phase = Phase::Review(review);
+            self.reports.iter().any(|(_, at, _)| *at == phase)
+        };
+        let skipped: Vec<_> = (0..self.template.reviews.len())
+            .filter(|&review| {
+                self.template
+                    .review_condition(review)
+                    .is_some_and(|patterns| !super::condition::applies(patterns, changed))
+                    && !reported(review)
+            })
+            .collect();
+        for &review in &skipped {
+            let step = &self.template.reviews[review];
+            self.history.push(format!(
+                "{} skipped: no changed file matches {}",
+                step.name,
+                step.only_paths.join(", ")
+            ));
+        }
+        self.skipped = skipped;
+        // The first group was scheduled before its conditions could be judged: the reviewers
+        // of the reviews now left out are withdrawn, and a group left out whole is passed.
+        if self.phase == Phase::Review(0) {
+            let skipped = &self.skipped;
+            self.outstanding
+                .retain(|ticket| !skipped.contains(&ticket.review.unwrap_or(0)));
+            if self.outstanding.is_empty() {
+                self.enter_review(self.template.review_group(0).end);
+            }
+        }
     }
     /// Pending feedback anchored to an exact checkout tree, grouped by receiving lane.
     pub fn comments(&self) -> &[(usize, String, crate::git::review_notes::Note)] {
@@ -249,11 +300,13 @@ mod tests {
             run: 12,
             attempt: 2,
             lane: Some(0),
+            review: None,
         };
         let review = Ticket {
             run: 12,
             attempt: 3,
             lane: None,
+            review: None,
         };
         let developed = Report::Developed {
             summary: "Build complete".into(),

@@ -155,6 +155,7 @@ mod tests {
                 run: self.0.id(),
                 attempt: 1,
                 lane: None,
+                review: None,
             };
             div()
                 .w(WIDTH)

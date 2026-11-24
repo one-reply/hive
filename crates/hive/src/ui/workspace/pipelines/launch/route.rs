@@ -2,11 +2,13 @@
 use super::*;
 use crate::ui::stage_role::{RoleKind, TINT_OPACITY};
 
-/// What performs a stage of the route: an agent or the user in a role, or a command Hive runs.
+/// What performs a stage of the route: an agent or the user in a role, a command Hive runs,
+/// or the recipe itself where it lets the run through a gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Performer {
     Role(RoleKind),
     Command,
+    Recipe,
 }
 
 /// The stages of `template` in the order a run reaches them. `planning` is off for a quick
@@ -23,7 +25,11 @@ fn stops(
     let mut stops = Vec::new();
     if planning {
         stops.push(role(RoleKind::Plan, &template.planner.name));
-        stops.push(role(RoleKind::Human, "Your approval"));
+        stops.push(if template.auto_approves_plan() {
+            (Performer::Recipe, "Automatic approval".to_owned())
+        } else {
+            role(RoleKind::Human, "Your approval")
+        });
     }
     if regression {
         stops.push(command("Reproduce on base"));
@@ -36,7 +42,17 @@ fn stops(
         stops.push(command(&format!("Required checks · {checks}")));
     }
     for (index, review) in template.reviews.iter().enumerate() {
-        stops.push(role(RoleKind::review(index, review), &review.name));
+        let mut name = review.name.clone();
+        // A review that runs together with others names the one that starts their group.
+        let group = template.review_group(index);
+        if index > group.start {
+            name = format!("{name} · with {}", template.reviews[group.start].name);
+        }
+        // A review limited to some paths may not run at all; the route says so up front.
+        if template.review_condition(index).is_some() {
+            name.push_str(" · if paths match");
+        }
+        stops.push(role(RoleKind::review(template, index), &name));
     }
     stops.push(role(RoleKind::Human, "Acceptance"));
     stops
@@ -80,6 +96,7 @@ fn stage_chip(performer: Performer, name: String, cx: &App) -> Div {
     let (icon, color) = match performer {
         Performer::Role(role) => (role.icon(), role.color(cx)),
         Performer::Command => (Lucide::Terminal, cx.theme().muted_foreground),
+        Performer::Recipe => (Lucide::FastForward, cx.theme().muted_foreground),
     };
     let human = performer == Performer::Role(RoleKind::Human);
     h_flex()
@@ -129,6 +146,62 @@ mod tests {
             ))
         );
         assert_eq!(stops.len(), 4 + template.reviews.len());
+    }
+
+    #[test]
+    fn an_auto_approving_recipe_leaves_acceptance_as_the_users_only_decision() {
+        let mut template = Template::default();
+        template.toggle_plan_approval();
+        let stops = stops(&template, true, false, "");
+        assert_eq!(stops[1], (Performer::Recipe, "Automatic approval".into()));
+        let human = |stops: &[(Performer, String)]| {
+            let decisions = stops
+                .iter()
+                .filter(|(performer, _)| *performer == Performer::Role(RoleKind::Human));
+            decisions.map(|(_, name)| name.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(human(&stops), ["Acceptance"]);
+        // A shared contract is read by the user whatever the recipe says.
+        template.plan_approval = hive_core::pipeline::PlanApproval::Auto;
+        template.shared_contract = true;
+        let stops = super::stops(&template, true, false, "");
+        assert_eq!(human(&stops), ["Your approval", "Acceptance"]);
+    }
+
+    #[test]
+    fn a_review_limited_to_some_paths_is_marked_and_qa_never_is() {
+        // Code review, QA, Security & performance.
+        let mut template = Template::default();
+        for review in &mut template.reviews {
+            review.only_paths = vec!["crates/auth/".into()];
+        }
+        let stops = stops(&template, false, false, "");
+        assert_eq!(
+            names(&stops)[1..],
+            [
+                "Code review · if paths match",
+                "QA",
+                "Security & performance · if paths match",
+                "Acceptance",
+            ]
+        );
+    }
+
+    #[test]
+    fn reviews_that_run_together_name_the_one_that_starts_their_group() {
+        let mut template = Template::default();
+        template.reviews[2].only_paths = vec!["crates/auth/".into()];
+        template.join_review(1, 0, true).unwrap();
+        template.join_review(2, 1, true).unwrap();
+        let stops = stops(&template, false, false, "");
+        assert_eq!(
+            names(&stops)[1..4],
+            [
+                "Code review",
+                "QA · with Code review",
+                "Security & performance · with Code review · if paths match",
+            ]
+        );
     }
 
     #[test]
