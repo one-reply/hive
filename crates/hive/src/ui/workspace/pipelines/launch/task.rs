@@ -187,6 +187,9 @@ impl LaunchForm {
         v_flex()
             .gap_2()
             .key_context(KEY_CONTEXT)
+            // Before the editor, so a held Space records instead of typing.
+            .capture_key_down(cx.listener(Self::space_down))
+            .capture_key_up(cx.listener(|form, event, _, cx| form.space_up(event, cx)))
             .on_action(cx.listener(|form, _: &ToggleBold, w, cx| form.format(Format::Bold, w, cx)))
             .on_action(
                 cx.listener(|form, _: &ToggleItalic, w, cx| form.format(Format::Italic, w, cx)),

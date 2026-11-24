@@ -216,6 +216,16 @@ impl Dictation {
         cx.notify();
     }
 
+    /// Ends a dictation held on a key: what was recorded is sent, and a microphone still
+    /// opening is closed, since there is nothing to send yet.
+    pub(crate) fn release(&mut self, cx: &mut Context<Self>) {
+        match self.phase {
+            Phase::Recording { .. } => self.finish(cx),
+            Phase::Starting => self.cancel(cx),
+            _ => {}
+        }
+    }
+
     /// Sends the recording of a failed request again.
     pub(crate) fn retry(&mut self, cx: &mut Context<Self>) {
         if let Phase::Failed {
@@ -446,5 +456,24 @@ mod tests {
         cx.run_until_parked();
         assert!(texts.lock().unwrap().is_empty());
         dictation.read_with(cx, |dictation, _| assert!(!dictation.is_active()));
+    }
+
+    #[gpui::test]
+    fn releasing_the_key_while_the_microphone_opens_drops_the_dictation(cx: &mut TestAppContext) {
+        let (dictation, texts) = dictation(cx);
+        dictation.update(cx, |dictation, cx| {
+            dictation.phase = Phase::Starting;
+            dictation.release(cx);
+            assert!(!dictation.is_active());
+            // A failure stays on screen for Retry; a key coming up does not dismiss it.
+            dictation.phase = Phase::Failed {
+                message: "Timed out.".into(),
+                audio: Some(audio()),
+            };
+            dictation.release(cx);
+            assert!(matches!(dictation.phase(), Phase::Failed { .. }));
+        });
+        cx.run_until_parked();
+        assert!(texts.lock().unwrap().is_empty());
     }
 }
