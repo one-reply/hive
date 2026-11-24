@@ -94,10 +94,11 @@ while a run continues. The status bar summarizes runs and drafts across projects
    With dictation configured in **Settings → Pipelines**, hold **Space** in the task
    field to record and release it to transcribe.
    Use the repository, branch and check menus to override those choices or add
-   another repository. After editing the form, choose **Resume draft** in the
-   project’s pipeline library to pick up where you left off. **Run again** lets
-   you choose between the original recipe and its updated template.
-   For a single-lane task, **Quick start with my criteria** skips planning. Turn on
+   another repository. Choose **Save draft and close** to pause. Use **Resume draft**
+   in the project’s pipeline library to pick up where you left off. **Run again**
+   lets you choose between the original recipe and its updated template.
+   When a single repository lane can receive every review, turn on **Quick start**
+   and enter your acceptance criteria to skip planning. Turn on
    **Independent regression test** to have a separate agent write one Cargo, Jest,
    or Vitest test. Hive checks that it fails for the expected reason on the base
    commit, then runs the same test against the fix. Changing the test requires
@@ -111,8 +112,8 @@ while a run continues. The status bar summarizes runs and drafts across projects
    session** to see a running CLI and respond to questions or permission requests.
 4. In the stock recipes, once required checks pass, **Feature delivery** and
    **Cross-repository** run **Code review**, **QA**, then **Security & performance**.
-   The code reviewer reads
-   the diff and its callers for defects. QA verifies the approved acceptance criteria.
+   The code reviewer reads the diff and its callers for defects. QA verifies the
+   approved acceptance criteria.
    **Quick fix** goes straight to QA. Add **Code review** from the canvas palette
    to include a code reviewer there. Blocking findings return to development. A
    parallel review group shares one repair round. After the repair limit,
