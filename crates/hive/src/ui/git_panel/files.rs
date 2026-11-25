@@ -2,24 +2,7 @@
 use super::*;
 use std::rc::Rc;
 
-/// Groups of the Changes section, in display order.
-const GROUPS: [(&str, DiffSource); 4] = [
-    ("Conflicts", DiffSource::WorkingTree),
-    ("Staged", DiffSource::Staged),
-    ("Changes", DiffSource::WorkingTree),
-    ("Untracked", DiffSource::Untracked),
-];
-
-fn in_group(file: &FileChange, group: &str) -> bool {
-    match group {
-        "Conflicts" => file.staged == Some(Change::Conflicted),
-        "Staged" => file.staged.is_some_and(|c| c != Change::Conflicted),
-        "Changes" => file
-            .unstaged
-            .is_some_and(|c| !matches!(c, Change::Untracked | Change::Conflicted)),
-        _ => file.unstaged == Some(Change::Untracked),
-    }
-}
+use crate::state::git_diff::catalog::{GROUPS, in_group};
 
 impl GitPanel {
     fn discard_group_button(

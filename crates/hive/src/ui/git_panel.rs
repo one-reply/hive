@@ -36,6 +36,7 @@ mod dispatch;
 mod error;
 mod file_row;
 pub(super) use file_row::ActiveGitFile;
+pub(super) use file_row::status_badge;
 mod files;
 mod header;
 mod operation;

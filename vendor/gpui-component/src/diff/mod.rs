@@ -1,3 +1,4 @@
+// Modified for Hive: render file-specific review notices.
 //! Readonly, virtualized patch display inspired by Diffs from Pierre.
 //! Parse an externally supplied patch into [`DiffFile`]s, retain one
 //! [`DiffState`] for all of them in the owner, and build [`Diff`] during rendering.
@@ -1319,7 +1320,9 @@ fn file_annotations(
 
 /// Summarizes a file without source rows: binary, metadata-only or empty.
 fn render_notice(file: &DiffFile, cx: &App) -> AnyElement {
-    let message = if !file.has_changes() {
+    let message = if let Some(notice) = &file.notice {
+        std::borrow::Cow::Borrowed(notice.as_str())
+    } else if !file.has_changes() {
         t!("Diff.NoChanges")
     } else if file.is_binary() {
         t!("Diff.BinaryChanges")

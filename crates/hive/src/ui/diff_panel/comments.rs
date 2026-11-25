@@ -17,7 +17,10 @@ const ROWS: usize = 7;
 
 impl DiffPanel {
     pub(super) fn add_note(&self, range: DiffLineRange, window: &mut Window, cx: &mut App) {
-        let request = self.review.read(cx).request.clone();
+        let Some(block) = self.review.read(cx).blocks.get(range.path()) else {
+            return;
+        };
+        let request = block.entry.request.clone();
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .rows(ROWS)

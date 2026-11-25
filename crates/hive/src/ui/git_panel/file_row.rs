@@ -41,7 +41,7 @@ impl ActiveGitFile {
 }
 
 /// Letter and color of a change, as Git's own short status.
-fn status_badge(change: Option<Change>, cx: &App) -> impl IntoElement {
+pub(in crate::ui) fn status_badge(change: Option<Change>, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let (code, color) = match change {
         Some(Change::Added | Change::Untracked) => ("A", theme.green),

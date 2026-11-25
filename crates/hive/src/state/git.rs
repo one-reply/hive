@@ -34,6 +34,18 @@ pub(crate) struct DiffRequest {
     pub whole_file_only: bool,
 }
 
+impl DiffRequest {
+    pub(crate) fn for_file(target: &Target, file: &FileChange, source: DiffSource) -> Self {
+        Self {
+            target: target.clone(),
+            path: file.path.clone(),
+            old_path: file.old_path.clone(),
+            source,
+            whole_file_only: file.submodule || file.old_path.is_some(),
+        }
+    }
+}
+
 pub(crate) enum GitEvent {
     OpenDiff(DiffRequest),
     OpenConflict(ConflictRequest),
@@ -434,13 +446,9 @@ impl Git {
             return self.open_conflict(&file.path, cx);
         }
         if let Some(target) = &self.target {
-            cx.emit(GitEvent::OpenDiff(DiffRequest {
-                target: target.clone(),
-                path: file.path.clone(),
-                old_path: file.old_path.clone(),
-                source,
-                whole_file_only: file.submodule || file.old_path.is_some(),
-            }));
+            cx.emit(GitEvent::OpenDiff(DiffRequest::for_file(
+                target, file, source,
+            )));
         }
     }
 

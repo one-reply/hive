@@ -210,9 +210,10 @@ impl ProjectCenter {
         let existing = self
             .diffs
             .iter()
-            .find(|panel| panel.read(cx).review.read(cx).request == request)
+            .find(|panel| panel.read(cx).review.read(cx).request.target == request.target)
             .cloned();
         if let Some(panel) = existing {
+            panel.update(cx, |panel, cx| panel.reveal(request, cx));
             self.select(&panel, window, cx);
             Focusable::focus_handle(&panel, cx).focus(window, cx);
             return;

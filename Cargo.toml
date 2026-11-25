@@ -2,6 +2,10 @@
 resolver = "3"
 members = ["crates/*"]
 
+# The diff widget exposes its virtual list and separately addressable review blocks.
+[patch.crates-io]
+gpui-component = { path = "vendor/gpui-component" }
+
 [workspace.package]
 version = "1.0.42"
 edition = "2024"

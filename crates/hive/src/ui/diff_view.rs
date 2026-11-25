@@ -18,6 +18,19 @@ pub(super) fn bind_keys(cx: &mut App) {
     ]);
 }
 
+pub(super) fn pan_handle(
+    state: &Entity<DiffState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> ScrollHandle {
+    window
+        .use_keyed_state(("diff-pan", state.entity_id()), cx, |_, _| {
+            ScrollHandle::new()
+        })
+        .read(cx)
+        .clone()
+}
+
 pub(super) fn render(
     state: &Entity<DiffState>,
     diff: Diff,
@@ -39,12 +52,7 @@ pub(super) fn render(
     } else {
         code + gutter * 2.
     };
-    let scroll = window
-        .use_keyed_state(("diff-pan", state.entity_id()), cx, |_, _| {
-            ScrollHandle::new()
-        })
-        .read(cx)
-        .clone();
+    let scroll = pan_handle(state, window, cx);
     let (left, right) = (scroll.clone(), scroll.clone());
     div()
         .relative()

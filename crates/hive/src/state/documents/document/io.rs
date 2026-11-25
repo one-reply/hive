@@ -40,13 +40,7 @@ impl Changes {
         Self::Diffs(
             sources
                 .into_iter()
-                .map(|source| DiffRequest {
-                    target: target.clone(),
-                    path: file.path.clone(),
-                    old_path: file.old_path.clone(),
-                    source,
-                    whole_file_only: file.submodule,
-                })
+                .map(|source| DiffRequest::for_file(target, &file, source))
                 .collect(),
         )
     }

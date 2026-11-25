@@ -27,6 +27,7 @@ impl Workspace {
             if saved.host == Host::Local {
                 saved.prepare(is_dir);
             }
+            saved.merge_review_tabs();
         }
     }
 }

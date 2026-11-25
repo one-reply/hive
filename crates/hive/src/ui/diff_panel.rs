@@ -27,11 +27,14 @@ use hive_core::agent::reference::{self, CodeReference};
 use hive_core::git::diff::DiffSource;
 use hive_core::git::review_notes::Line;
 
+mod blocks;
 mod comments;
+mod viewport;
+use viewport::Reveal;
 
 pub(crate) struct DiffPanel {
     pub review: Entity<GitDiff>,
-    /// The widget's rows, selection and scroll; reloaded from `GitDiff::files` when they change.
+    /// The shared widget owns row layout, code selection, and scrolling.
     display: Entity<DiffState>,
     synced_generation: Option<u64>,
     git: Entity<Git>,
@@ -41,7 +44,8 @@ pub(crate) struct DiffPanel {
     area: WeakEntity<DockArea>,
     group: Option<WeakEntity<TabGroup>>,
     alone: bool,
-    current_hunk: usize,
+    reveal: Option<Reveal>,
+    visible: Vec<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -53,10 +57,29 @@ impl DiffPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let app = AppState::get(cx);
-        let (git, store) = (app.git.clone(), app.store.clone());
+        Self::over(
+            request,
+            area,
+            app.git.clone(),
+            app.store.clone(),
+            window,
+            cx,
+        )
+    }
+
+    fn over(
+        request: DiffRequest,
+        area: WeakEntity<DockArea>,
+        git: Entity<Git>,
+        store: Entity<Store>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let reveal = Some(Reveal::new(request.block_key()));
         let review = cx.new(|cx| GitDiff::new(request, git.clone(), cx));
         let display = cx.new(|cx| DiffState::new([], cx).with_mode(diff_mode(&store, cx)));
         let focus = display.read(cx).focus_handle(cx);
+        let mut reviewed = store.read(cx).state.reviewed.clone();
         let subscriptions = vec![
             cx.on_focus(&focus, window, |this, _, cx| {
                 if let Some(area) = this.area.upgrade() {
@@ -69,7 +92,12 @@ impl DiffPanel {
             }),
             cx.observe(&git, |_, _, cx| cx.notify()),
             // The store saves on every layout and cursor change; the panel draws two settings.
-            cx.observe(&store, |this, store, cx| {
+            cx.observe(&store, move |this, store, cx| {
+                let marks = &store.read(cx).state.reviewed;
+                if *marks != reviewed {
+                    reviewed.clone_from(marks);
+                    cx.notify();
+                }
                 let drawn = drawn_settings(&store, cx);
                 if this.drawn_settings == drawn {
                     return;
@@ -90,22 +118,12 @@ impl DiffPanel {
             area,
             group: None,
             alone: false,
-            current_hunk: 0,
+            reveal,
+            visible: vec![],
             _subscriptions: subscriptions,
         };
         this.sync_display(cx);
         this
-    }
-
-    /// Reloads the widget when the parsed patch changed.
-    fn sync_display(&mut self, cx: &mut Context<Self>) {
-        let review = self.review.read(cx);
-        if self.synced_generation == Some(review.files_generation()) {
-            return;
-        }
-        self.synced_generation = Some(review.files_generation());
-        let files = review.files().to_vec();
-        self.display.update(cx, |d, cx| d.set_files(files, cx));
     }
 
     pub fn set_alone(&mut self, alone: bool, cx: &mut Context<Self>) {
@@ -118,16 +136,8 @@ impl DiffPanel {
         }
     }
 
-    pub(crate) fn label(&self, cx: &App) -> SharedString {
-        let request = &self.review.read(cx).request;
-        let source = match &request.source {
-            DiffSource::WorkingTree => "Unstaged".into(),
-            DiffSource::Staged => "Staged".into(),
-            DiffSource::Untracked => "Untracked".into(),
-            DiffSource::Commit(oid) => format!("Commit {}", &oid[..oid.len().min(7)]),
-            DiffSource::Compare(base) => format!("Compare {base}"),
-        };
-        format!("{} · {source}", request.path).into()
+    pub(crate) fn label(&self, _: &App) -> SharedString {
+        "Files changed".into()
     }
 
     fn close(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -144,9 +154,15 @@ impl DiffPanel {
     /// appears once in the diff.
     fn code_reference(&self, cx: &App) -> Option<CodeReference> {
         let review = self.review.read(cx);
-        let (request, patch) = (&review.request, review.patch.as_ref()?);
         let display = self.display.read(cx);
-        let (version, lines) = match display.selected_lines() {
+        let selected = display.selected_lines();
+        let key = selected
+            .as_ref()
+            .map(|range| range.path())
+            .or_else(|| display.selected_text_file(cx).map(|file| file.path()))?;
+        let block = review.blocks.get(key)?;
+        let (request, patch) = (&block.entry.request, block.patch.as_ref()?);
+        let (version, lines) = match selected {
             Some(range) => reference::diff_lines(
                 patch,
                 &request.source,
@@ -167,28 +183,14 @@ impl DiffPanel {
     }
 
     fn navigate(&mut self, next: bool, cx: &mut Context<Self>) {
-        let review = self.review.read(cx);
-        let Some(patch) = &review.patch else {
-            return;
-        };
-        let count = patch.hunks().len();
-        if count == 0 {
-            return;
-        }
-        self.current_hunk = if next {
-            (self.current_hunk + 1) % count
-        } else {
-            (self.current_hunk + count - 1) % count
-        };
-        let hunk = &patch.hunks()[self.current_hunk];
-        let (side, line) = if hunk.new_line == 0 {
-            (DiffSide::Original, hunk.old_line)
-        } else {
-            (DiffSide::Modified, hunk.new_line)
-        };
-        let position = DiffLinePosition::new(review.request.path.clone(), side, line.max(1));
-        self.display
-            .update(cx, |d, cx| d.scroll_to_line(position, cx));
+        self.reveal = None;
+        self.display.update(cx, |display, cx| {
+            if next {
+                display.next_change(cx)
+            } else {
+                display.previous_change(cx)
+            }
+        });
     }
 }
 
@@ -226,12 +228,7 @@ impl BasePanel for DiffPanel {
     }
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         let target = self.review.read(cx).request.target.clone();
-        self.review.update(cx, |r, cx| {
-            r.set_active(active);
-            if active {
-                r.refresh(cx);
-            }
-        });
+        self.review.update(cx, |r, cx| r.set_active(active, cx));
         let git = self.git.clone();
         let id = cx.entity_id();
         cx.defer(move |cx| {
@@ -252,7 +249,7 @@ impl BasePanel for DiffPanel {
     fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let id = cx.entity_id();
         self.git.update(cx, |g, _| g.set_diff_visible(id, None));
-        self.review.update(cx, |r, _| r.set_active(false));
+        self.review.update(cx, |r, cx| r.set_active(false, cx));
     }
 }
 impl Panel for DiffPanel {
@@ -292,110 +289,37 @@ impl Render for DiffPanel {
                 .map(|id| Hover::new(id, window, cx));
         let notes_hover = Hover::new("review-notes", window, cx);
         let review = self.review.read(cx);
-        let reviewed = review.reviewed;
-        let can_review = review.revision.is_some() && review.error.is_none();
         let request = review.request.clone();
         let note_count = self.git.read(cx).notes(&request.target).len();
-        let patch = review.patch.clone();
+        let listed = review.listed;
+        let empty = review.order.is_empty();
         let error = review.error.clone();
         let display = self.display.clone();
         let source = match &request.source {
-            DiffSource::WorkingTree => "Unstaged".into(),
-            DiffSource::Staged => "Staged".into(),
-            DiffSource::Untracked => "Untracked".into(),
+            DiffSource::WorkingTree | DiffSource::Staged | DiffSource::Untracked => {
+                "Local changes".into()
+            }
             DiffSource::Commit(oid) => {
-                format!("Commit {} · first parent", &oid[..oid.len().min(7)])
+                format!(
+                    "Commit {} · first parent",
+                    oid.chars().take(7).collect::<String>()
+                )
             }
             DiffSource::Compare(base) => format!("{base} … HEAD · committed"),
         };
         let split = self.store.read(cx).state.settings.diff_split;
-        let mutable = matches!(request.source, DiffSource::WorkingTree | DiffSource::Staged);
-        let partial = mutable
-            && !request.whole_file_only
-            && patch.as_ref().is_some_and(|p| p.can_stage_hunks());
-        let busy = self.git.read(cx).is_busy_at(&request.target);
-        let mut annotations = Vec::new();
-        if partial && let Some(patch) = &patch {
-            for (index, hunk) in patch.hunks().iter().enumerate() {
-                let (side, line) = if hunk.new_line == 0 {
-                    (DiffSide::Original, hunk.old_line)
-                } else {
-                    (DiffSide::Modified, hunk.new_line)
-                };
-                annotations.push(DiffAnnotation::line(
-                    ("hunk", index),
-                    DiffLinePosition::new(request.path.clone(), side, line.max(1)),
-                ));
-            }
-        }
-        let ids = annotations
-            .iter()
-            .map(|a| a.id().clone())
-            .collect::<Vec<_>>();
-        let git = self.git.clone();
-        let request_action = request.clone();
-        let patch_action = patch.clone();
-        let panel = cx.entity().downgrade();
-        let file_request = request.clone();
-        let diff = Diff::new(&display)
-            .on_line_click(move |position, event, _, cx| {
-                if event.click_count() >= 2
-                    && position.side() == DiffSide::Modified
-                    && matches!(
-                        file_request.source,
-                        DiffSource::WorkingTree | DiffSource::Untracked
-                    )
-                {
-                    let documents = AppState::get(cx).documents.clone();
-                    documents.update(cx, |documents, cx| {
-                        documents.request(
-                            crate::state::documents::OpenFile {
-                                target: file_request.target.clone(),
-                                path: file_request.path.clone().into(),
-                                position: Some(Position::new(
-                                    u32::try_from(position.line().saturating_sub(1))
-                                        .unwrap_or(u32::MAX),
-                                    0,
-                                )),
-                                preview: false,
-                                placement: Default::default(),
-                            },
-                            cx,
-                        )
-                    });
-                }
-            })
-            .on_add_annotation(move |range, window, cx| {
-                let _ = panel.update(cx, |panel, cx| panel.add_note(range.clone(), window, cx));
-            })
-            .annotations(annotations)
-            .render_annotation(move |annotation, window, cx| {
-                let hover = Hover::new(annotation.id().clone(), window, cx).enabled(!busy);
-                let index = ids.iter().position(|id| id == annotation.id());
-                let (git, request, patch) =
-                    (git.clone(), request_action.clone(), patch_action.clone());
-                h_flex().justify_end().child(
-                    Button::new(annotation.id().clone())
-                        .cursor_pointer()
-                        .small()
-                        .label(if request.source == DiffSource::Staged {
-                            "Unstage hunk"
-                        } else {
-                            "Stage hunk"
-                        })
-                        .disabled(busy)
-                        .on_click(move |_, _, cx| {
-                            if let (Some(index), Some(patch)) = (index, patch.as_ref()) {
-                                git.update(cx, |g, cx| {
-                                    g.apply_hunk(request.clone(), patch.clone(), index, cx)
-                                });
-                            }
-                        })
-                        .smooth_hover(ButtonLook::Outline, &hover, cx),
-                )
-            });
+        let pan = super::diff_view::pan_handle(&display, window, cx);
+        let diff = self.blocks(pan, cx);
         let mut content = v_flex()
             .key_context("DiffPanel")
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, _| {
+                if matches!(
+                    event.keystroke.key.as_str(),
+                    "up" | "down" | "pageup" | "pagedown" | "home" | "end"
+                ) {
+                    this.reveal = None;
+                }
+            }))
             .size_full()
             .min_w_0()
             .min_h_0()
@@ -416,51 +340,6 @@ impl Render for DiffPanel {
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(div().flex_1().min_w_0().truncate().text_sm().child(source))
-                    .child({
-                        let hover = Hover::new("diff-reviewed", window, cx);
-                        Button::new("diff-reviewed")
-                            .small()
-                            .cursor_pointer()
-                            .label(if reviewed {
-                                "✓ Reviewed"
-                            } else {
-                                "Mark reviewed"
-                            })
-                            .tooltip("Acknowledges this exact diff. Changes invalidate the mark.")
-                            .disabled(!can_review)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.review
-                                    .update(cx, |review, cx| review.toggle_reviewed(cx))
-                            }))
-                            .smooth_hover(ButtonLook::Ghost, &hover, cx)
-                    })
-                    .child({
-                        let hover = Hover::new("diff-open-file", window, cx);
-                        let request = request.clone();
-                        Button::new("diff-open-file")
-                            .small()
-                            .cursor_pointer()
-                            .label("Open file")
-                            .tooltip("Open the current file on disk")
-                            .on_click(move |_, _, cx| {
-                                AppState::get(cx)
-                                    .documents
-                                    .clone()
-                                    .update(cx, |documents, cx| {
-                                        documents.request(
-                                            crate::state::documents::OpenFile {
-                                                target: request.target.clone(),
-                                                path: request.path.clone().into(),
-                                                position: None,
-                                                preview: false,
-                                                placement: Default::default(),
-                                            },
-                                            cx,
-                                        )
-                                    })
-                            })
-                            .smooth_hover(ButtonLook::Ghost, &hover, cx)
-                    })
                     .child(
                         Button::new("review-notes")
                             .cursor_pointer()
@@ -508,7 +387,7 @@ impl Render for DiffPanel {
                             .label("↻")
                             .tooltip("Refresh diff")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.review.update(cx, |r, cx| r.refresh(cx))
+                                this.review.update(cx, |r, cx| r.reload(cx));
                             }))
                             .smooth_hover(ButtonLook::Ghost, &refresh_hover, cx),
                     ),
@@ -517,24 +396,29 @@ impl Render for DiffPanel {
             content = content.child(
                 tab_message::render(error, &self.focus_handle(cx)).text_color(cx.theme().danger),
             );
-        } else if patch.as_ref().is_some_and(|p| p.patch().is_empty()) {
+        } else if empty {
             content = content.child(tab_message::render(
-                "No changes in this view.",
+                if listed {
+                    "No changes in this view."
+                } else {
+                    "Loading changes…"
+                },
                 &self.focus_handle(cx),
             ));
         } else {
-            if mutable && !partial {
-                content = content.child(
-                    div()
-                        .px_3()
-                        .py_1()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Use the sidebar to stage this change as a whole file."),
-                );
-            }
-            content = content.child(super::diff_view::render(&display, diff, window, cx));
+            content = content.child(
+                v_flex()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(self.track_viewport(cx))
+                    .child(super::diff_view::render(&display, diff, window, cx)),
+            );
         }
         content
     }
 }
+
+#[cfg(test)]
+mod tests;

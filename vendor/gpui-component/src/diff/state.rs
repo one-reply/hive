@@ -1,3 +1,4 @@
+// Modified for Hive: review viewport access and incremental syntax preparation.
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -567,7 +568,8 @@ impl DiffState {
     pub(crate) fn rows(&self) -> &Rc<Vec<DisplayRow>> {
         &self.rows
     }
-    pub(crate) fn list(&self) -> &ListState {
+    /// The virtual list used for viewport navigation.
+    pub fn list(&self) -> &ListState {
         &self.list
     }
     pub(crate) fn horizontal_scroll(&self) -> &ScrollHandle {
@@ -608,26 +610,66 @@ impl DiffState {
     /// Replaces the files and resets expansion, selection and viewport.
     /// Collapsed files stay collapsed when their path is still present.
     pub fn set_files(&mut self, files: impl IntoIterator<Item = DiffFile>, cx: &mut Context<Self>) {
-        if let Some(window) = self.window
+        self.replace_files(files.into_iter().collect(), false, cx);
+    }
+
+    /// Updates a review as patches arrive, keeping a selection in an unchanged document.
+    pub fn set_review_files(&mut self, files: Vec<DiffFile>, cx: &mut Context<Self>) {
+        let selected = self
+            .selected_lines
+            .as_ref()
+            .and_then(|range| self.file_ix(range.path()))
+            .or_else(|| super::selection::selected_source_range(&self.selection, cx).map(|r| r.0));
+        // Mouse selection keys encode the file index as well as its side and source offset.
+        let keep_selection = selected.is_some_and(|ix| {
+            self.files
+                .get(ix)
+                .zip(files.get(ix))
+                .is_some_and(|(old, new)| old.path() == new.path() && old.same_document(new))
+        });
+        self.replace_files(files, keep_selection, cx);
+    }
+
+    fn replace_files(
+        &mut self,
+        files: Vec<DiffFile>,
+        keep_selection: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !keep_selection
+            && let Some(window) = self.window
             && self.selection_is_local(cx)
         {
             TextSelection::clear_for_window(window, cx);
         }
-        self.files = files.into_iter().collect();
+        // A review may load one more file while its neighbors stay on screen.
+        let prepared = files
+            .iter()
+            .map(|file| {
+                let old = self.file_ix(file.path())?;
+                file.same_document(&self.files[old])
+                    .then(|| self.presentations[old].clone())
+                    .flatten()
+            })
+            .collect();
+        self.files = files;
         self.file_ixs = file_ixs(&self.files);
         self.collapsed
             .retain(|path| self.file_ixs.contains_key(path));
         self.resolutions.clear();
         self.expanded = vec![Vec::new(); self.files.len()];
         self.reset_presentation();
+        self.presentations = prepared;
         self.layout = None;
         self.annotations.clear();
-        self.selection.set_local_selection(false, cx);
-        self.selection.set_fallback_copy_text("", cx);
-        self.selected_lines = None;
-        self.selection_anchor = None;
-        self.selection_cursor = None;
-        self.selecting = false;
+        if !keep_selection {
+            self.selection.set_local_selection(false, cx);
+            self.selection.set_fallback_copy_text("", cx);
+            self.selected_lines = None;
+            self.selection_anchor = None;
+            self.selection_cursor = None;
+            self.selecting = false;
+        }
         self.geometry.borrow_mut().clear();
         self.rebuild(true);
         self.horizontal_scroll.set_offset(point(px(0.), px(0.)));
@@ -827,6 +869,27 @@ impl DiffState {
             self.reveal_line(&position);
             cx.notify();
         }
+    }
+
+    /// Index of the file in patch order.
+    pub fn file_index(&self, path: &str) -> Option<usize> {
+        self.file_ix(path)
+    }
+
+    /// Row of the file header in the current presentation.
+    pub fn header_row(&self, path: &str) -> Option<usize> {
+        self.header_rows.get(self.file_ix(path)?).copied()
+    }
+
+    /// File containing a row of the virtual list.
+    pub fn file_at_row(&self, row: usize) -> Option<&DiffFile> {
+        self.files.get(self.rows.get(row)?.file())
+    }
+
+    /// File containing a text selection made outside the line-number gutter.
+    pub fn selected_text_file(&self, cx: &App) -> Option<&DiffFile> {
+        let (index, _, _) = super::selection::selected_source_range(&self.selection, cx)?;
+        self.files.get(index)
     }
 
     /// Scrolls to the header of the file at `path`, a [`DiffFile::path`].
@@ -1435,7 +1498,7 @@ impl DiffState {
             .presentations
             .iter()
             .enumerate()
-            .filter(|(_, presentation)| presentation.is_none())
+            .filter(|(ix, presentation)| presentation.is_none() && self.files[*ix].notice.is_none())
             .map(|(ix, _)| (ix, self.files[ix].clone()))
             .collect::<Vec<_>>();
         if pending.is_empty() {

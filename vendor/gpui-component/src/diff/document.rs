@@ -1,3 +1,4 @@
+// Modified for Hive: independent review keys and notices for unavailable patches.
 use std::{ops::Range, sync::Arc};
 
 use gpui::SharedString;
@@ -395,6 +396,8 @@ struct DocumentInner {
 #[derive(Clone)]
 pub struct DiffFile {
     inner: Arc<DocumentInner>,
+    review_key: Option<SharedString>,
+    pub(super) notice: Option<SharedString>,
     language: Option<SharedString>,
 }
 
@@ -466,7 +469,37 @@ impl DiffFile {
                 conflicts: Vec::new(),
             }),
             language: None,
+            review_key: None,
+            notice: None,
         }
+    }
+
+    pub(super) fn same_document(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner) && self.language == other.language
+    }
+
+    /// Identifies this document separately from another version of the same path.
+    pub fn with_review_key(mut self, key: impl Into<SharedString>) -> Self {
+        self.language = Some(self.language());
+        self.review_key = Some(key.into());
+        self
+    }
+
+    /// An addressable file with a message in place of patch rows.
+    pub fn notice(path: impl Into<SharedString>, message: impl Into<SharedString>) -> Self {
+        let old = FileSide::new(None, String::new(), []);
+        let new = FileSide::new(Some(path.into()), String::new(), []);
+        let mut file = Self::new(
+            DiffFileStatus::Modified,
+            old,
+            new,
+            vec![],
+            vec![],
+            vec![],
+            false,
+        );
+        file.notice = Some(message.into());
+        file
     }
 
     /// Overrides the syntax language detected from the path, using a
@@ -489,10 +522,9 @@ impl DiffFile {
         self.inner.status
     }
 
-    /// The path to show for this file: the modified path, or the original path
-    /// of a deleted file.
+    /// Navigation key: the review key when set, otherwise the modified or deleted file path.
     pub fn path(&self) -> &SharedString {
-        &self.inner.path
+        self.review_key.as_ref().unwrap_or(&self.inner.path)
     }
     /// The original path, or `None` for an added file.
     pub fn original_path(&self) -> Option<&SharedString> {
