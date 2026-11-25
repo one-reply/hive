@@ -171,8 +171,24 @@ impl Snapshot {
     }
 
     /// Whether the editor contains the saved version, including after Undo.
-    pub fn matches(&self, text: &str) -> bool {
-        self.encode(text) == self.raw
+    pub fn matches(&self, mut text: &str) -> bool {
+        let mut saved = self.raw.strip_prefix('\u{feff}').unwrap_or(&self.raw);
+        // Encoding can only add bytes to the editor text, one CR per bare LF.
+        if text.len() >= saved.len() {
+            return text == saved;
+        }
+        while let Some((line, tail)) = text.split_once('\n') {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let Some(rest) = saved
+                .strip_prefix(line)
+                .and_then(|s| s.strip_prefix("\r\n"))
+            else {
+                return false;
+            };
+            saved = rest;
+            text = tail;
+        }
+        saved == text
     }
 }
 
