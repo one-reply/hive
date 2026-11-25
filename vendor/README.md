@@ -4,7 +4,7 @@ Hive builds the published gpui-component 0.9.0 source with a local Cargo patch. 
 
 The diff changes are confined to `src/diff/{document,mod,state}.rs`. The review needs the widget's measured list for smooth scrolling, stable keys for two versions of the same path, per-file loading/error notices, and the identity of the document containing a text selection. Previously highlighted documents retain their syntax presentation when another patch arrives.
 
-The window's focused-input registry holds a weak reference so that closing the last editor releases its buffer and undo history. A context menu acquires its own reference for the duration of its actions. Recheck both patches on a gpui-kit upgrade.
+The window's focused-input registry holds a weak reference so that closing the last editor releases its buffer and undo history. A context menu acquires its own reference for the duration of its actions. The Tree-sitter folding adapter seeks to the edited byte range when updating fold candidates. Recheck these changes on a gpui-kit upgrade.
 
 # core-text
 
