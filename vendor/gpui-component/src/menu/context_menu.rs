@@ -467,8 +467,8 @@ fn open_menu(
             // now taken focus and published its state, even if it
             // was unfocused in the last rendered frame.
             let selection_input =
-                WindowState::try_update(window, cx, |state, _, _| state.focused_input.clone())
-                    .flatten()
+                WindowState::try_read(window, cx)
+                    .and_then(|state| state.focused_input.as_ref()?.upgrade())
                     .filter(|input| input.focus_handle(cx).is_focused(window))
                     .or(previous_selection_input);
             let menu = PopupMenu::build(window, cx, move |menu, window, cx| {

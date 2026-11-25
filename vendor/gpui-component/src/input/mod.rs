@@ -59,6 +59,7 @@ pub use lsp_types::Position;
 pub use number_input::{NumberInput, NumberInputEvent, NumberStep, StepAction};
 pub use otp_input::*;
 pub use state::AnyInputState;
+pub(crate) use state::WeakInputState;
 pub use textarea::Textarea;
 
 pub(crate) fn init(cx: &mut gpui::App) {

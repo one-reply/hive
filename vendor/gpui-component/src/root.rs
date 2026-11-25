@@ -1,7 +1,7 @@
 use crate::{
     ActiveTheme, ElementExt, Placement,
     dialog::{ANIMATION_DURATION, Dialog, DialogMotion},
-    input::AnyInputState,
+    input::WeakInputState,
     native_menu::FallbackMenuOverlay,
     notification::{Notification, NotificationList},
     sheet::Sheet,
@@ -26,7 +26,7 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) struct WindowState {
     pub(crate) active_sheet: Option<ActiveSheet>,
     pub(crate) active_dialogs: Vec<ActiveDialog>,
-    pub(super) focused_input: Option<AnyInputState>,
+    pub(super) focused_input: Option<WeakInputState>,
     pub notification: Entity<NotificationList>,
     pub(crate) tooltip_overlay: Entity<gpui_base::TooltipOverlay>,
     tooltip_hovered_trigger: Option<GlobalElementId>,

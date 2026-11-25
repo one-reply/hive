@@ -44,6 +44,25 @@ fn preserves_bom_crlf_permissions_and_missing_final_newline() {
 }
 
 #[test]
+fn dirty_check_agrees_with_the_saved_bytes_for_any_line_ending() {
+    let parts = ["", "ї", "\r", "\n", "\r\n", "\r\r\n", "\u{feff}"];
+    let texts: Vec<_> = parts
+        .iter()
+        .flat_map(|a| parts.iter().map(move |b| format!("{a}{b}")))
+        .collect();
+    for raw in &texts {
+        let base = Snapshot::parse(Path::new("qa.txt"), raw.as_bytes()).unwrap();
+        for text in &texts {
+            assert_eq!(
+                base.matches(text),
+                base.encode(text) == *raw,
+                "saved {raw:?}, editor {text:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn stale_save_and_missing_file_never_overwrite_or_recreate() {
     let f = Fixture::new();
     let path = f.0.join("a");

@@ -234,28 +234,38 @@ fn extract_fold_ranges_in_range(
     tree: &tree_sitter::Tree,
     byte_range: Range<usize>,
 ) -> Vec<FoldRange> {
-    fn collect(node: tree_sitter::Node, bytes: &Range<usize>, ranges: &mut Vec<FoldRange>) {
-        if node.end_byte() <= bytes.start || node.start_byte() >= bytes.end {
-            return;
-        }
-        let start = node.start_position().row;
-        let end = node.end_position().row;
-        if end.saturating_sub(start) < 2 {
-            return;
-        }
-        ranges.push(FoldRange::new(start, end));
+    fn collect_children(
+        node: tree_sitter::Node,
+        bytes: &Range<usize>,
+        ranges: &mut Vec<FoldRange>,
+    ) {
         let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            collect(child, bytes, ranges);
+        // Seek directly to the edited bytes in wide blocks and top-level declaration lists.
+        if node.end_byte() <= bytes.start || cursor.goto_first_child_for_byte(bytes.start).is_none()
+        {
+            return;
+        }
+        loop {
+            let child = cursor.node();
+            if child.start_byte() >= bytes.end {
+                break;
+            }
+            if child.is_named() {
+                let start = child.start_position().row;
+                let end = child.end_position().row;
+                if end.saturating_sub(start) >= 2 {
+                    ranges.push(FoldRange::new(start, end));
+                    collect_children(child, bytes, ranges);
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
         }
     }
 
-    let root = tree.root_node();
     let mut ranges = Vec::new();
-    let mut cursor = root.walk();
-    for child in root.named_children(&mut cursor) {
-        collect(child, &byte_range, &mut ranges);
-    }
+    collect_children(tree.root_node(), &byte_range, &mut ranges);
     ranges.sort_by_key(|range| range.start_line);
     ranges.dedup_by_key(|range| range.start_line);
     ranges

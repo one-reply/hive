@@ -5,6 +5,8 @@ members = ["crates/*"]
 # The diff widget exposes its virtual list and separately addressable review blocks.
 [patch.crates-io]
 gpui-component = { path = "vendor/gpui-component" }
+# Backport the Core Text descriptor ownership fix to the version GPUI's font stack uses.
+core-text = { path = "vendor/core-text" }
 
 [workspace.package]
 version = "1.0.42"
