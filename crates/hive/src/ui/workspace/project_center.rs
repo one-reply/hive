@@ -62,6 +62,9 @@ impl ProjectCenter {
         let layout = cx.subscribe_in(&dock, window, move |workspace, _, event, window, cx| {
             if matches!(event, DockEvent::LayoutChanged) {
                 workspace.save_center(&project, window, cx);
+                if workspace.shown.as_ref() == Some(&project) {
+                    workspace.sync_git_file(cx);
+                }
             }
         });
         Self {
@@ -207,10 +210,12 @@ impl ProjectCenter {
         let existing = self
             .diffs
             .iter()
-            .find(|panel| panel.read(cx).review.read(cx).request == request)
+            .find(|panel| panel.read(cx).review.read(cx).request.target == request.target)
             .cloned();
         if let Some(panel) = existing {
+            panel.update(cx, |panel, cx| panel.reveal(request, cx));
             self.select(&panel, window, cx);
+            Focusable::focus_handle(&panel, cx).focus(window, cx);
             return;
         }
         let panel = cx.new(|cx| DiffPanel::new(request, self.dock.downgrade(), window, cx));
@@ -234,6 +239,7 @@ impl ProjectCenter {
             .cloned();
         if let Some(panel) = existing {
             self.select(&panel, window, cx);
+            Focusable::focus_handle(&panel, cx).focus(window, cx);
             return;
         }
         let panel = cx.new(|cx| ConflictPanel::new(request, self.dock.downgrade(), window, cx));

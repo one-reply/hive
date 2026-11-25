@@ -20,17 +20,17 @@ impl ProjectCenter {
             .panels()
             .filter(|id| self.snapshot_tab(*id, cx).is_some())
             .collect();
-        if let Some(focused) = ids.iter().find(|id| {
-            dock.panel(**id)
+        if let Some(focused) = tree.panels().find(|id| {
+            dock.panel(*id)
                 .is_some_and(|p| p.focus_handle(cx).contains_focused(window, cx))
         }) {
-            self.focused = Some(*focused);
-            self.recent_tabs.activate(*focused);
+            self.focused = Some(focused);
+            self.recent_tabs.activate(focused);
         }
         saved.focused = self
             .focused
             .and_then(|id| ids.iter().position(|candidate| *candidate == id))
-            .unwrap_or(0);
+            .unwrap_or_else(|| saved.focused.min(ids.len().saturating_sub(1)));
         saved.layout = self.snapshot_node(tree.root(), cx);
     }
 

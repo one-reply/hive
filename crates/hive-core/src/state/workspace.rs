@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 mod restore;
+mod review_tabs;
 
 /// Project and worktree selected in the sidebar.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

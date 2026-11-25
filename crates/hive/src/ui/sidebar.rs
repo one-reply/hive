@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::ui::text_field::TextField;
+use crate::ui::theme::{SELECTED_BACKGROUND_OPACITY, SELECTED_BORDER_OPACITY};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::badge::Badge;
@@ -72,8 +73,6 @@ const COLLAPSE_DURATION: Duration = Duration::from_millis(200);
 /// dropping it changes nothing on screen but stops a folded list from building hidden rows.
 const COLLAPSE_SETTLED: Duration = Duration::from_millis(400);
 const SELECTION_DURATION: Duration = Duration::from_millis(200);
-const SELECTED_BACKGROUND_OPACITY: f32 = 0.09;
-const SELECTED_BORDER_OPACITY: f32 = 0.14;
 const HOVER_BACKGROUND_OPACITY: f32 = 0.05;
 
 pub struct Sidebar {

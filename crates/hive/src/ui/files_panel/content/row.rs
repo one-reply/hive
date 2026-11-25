@@ -2,11 +2,12 @@
 //! so the panel reads the same in both search modes.
 use super::super::{
     ICON_SIZE, LABEL_SIZE, META_SIZE, icons,
-    row::{CHEVRON_DURATION, CHEVRON_OPEN, SELECTED_BACKGROUND_OPACITY, SELECTED_BORDER_OPACITY},
+    row::{CHEVRON_DURATION, CHEVRON_OPEN},
     search::match_highlight,
 };
 use super::*;
 use crate::ui::hover::SmoothHoverBg as _;
+use crate::ui::theme::{SELECTED_BACKGROUND_OPACITY, SELECTED_BORDER_OPACITY};
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::Icon;
 use hive_core::{files::content_search::LineMatch, settings::FilesSettings};

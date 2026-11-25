@@ -278,19 +278,15 @@ impl RunView {
                 }
                 let display = self.display.as_ref().expect("display was just initialized");
                 let view = cx.weak_entity();
-                Diff::new(display)
-                    .when(
-                        run.phase() == Phase::Acceptance && run.review_trees().get(lane).is_some(),
-                        |d| {
-                            d.on_add_annotation(move |range, w, cx| {
-                                let _ =
-                                    view.update(cx, |v, cx| v.comment(lane, &path, range, w, cx));
-                            })
-                        },
-                    )
-                    .flex_1()
-                    .min_h_0()
-                    .into_any_element()
+                let diff = Diff::new(display).when(
+                    run.phase() == Phase::Acceptance && run.review_trees().get(lane).is_some(),
+                    |d| {
+                        d.on_add_annotation(move |range, w, cx| {
+                            let _ = view.update(cx, |v, cx| v.comment(lane, &path, range, w, cx));
+                        })
+                    },
+                );
+                crate::ui::diff_view::render(display, diff, w, cx).into_any_element()
             }
             Some((_, _, Err(error))) => div()
                 .p_4()

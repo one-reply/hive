@@ -11,6 +11,9 @@ use crate::app::AppState;
 
 pub(crate) mod catalog;
 
+pub(super) const SELECTED_BACKGROUND_OPACITY: f32 = 0.09;
+pub(super) const SELECTED_BORDER_OPACITY: f32 = 0.14;
+
 /// What `apply` last wrote to the global theme; other settings changes skip the reload.
 #[derive(Clone, PartialEq)]
 struct Appearance {

@@ -1,5 +1,6 @@
 use super::*;
 use crate::ui::hover::SmoothHoverBg as _;
+use crate::ui::theme::{SELECTED_BACKGROUND_OPACITY, SELECTED_BORDER_OPACITY};
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::{Icon, list::ListItem, tree::TreeEntry};
 use hive_core::{files::decorations::Decoration, git::status::Change, settings::FilesSettings};
@@ -10,10 +11,6 @@ mod appearance;
 /// A quarter turn: the right-pointing chevron points down when its folder is open.
 pub(super) const CHEVRON_OPEN: f32 = std::f32::consts::FRAC_PI_2;
 pub(super) const CHEVRON_DURATION: Duration = Duration::from_millis(160);
-/// Matches the selected worktree card in the sidebar: a neutral tint of the foreground
-/// instead of the theme's blue `list_active`, so selection reads the same across panels.
-pub(super) const SELECTED_BACKGROUND_OPACITY: f32 = 0.09;
-pub(super) const SELECTED_BORDER_OPACITY: f32 = 0.14;
 
 pub(super) fn render(
     ix: usize,

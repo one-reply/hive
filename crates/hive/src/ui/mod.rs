@@ -6,6 +6,7 @@ pub(crate) mod code_reference;
 pub(crate) mod conflict_panel;
 pub(crate) mod destructive;
 pub(crate) mod diff_panel;
+mod diff_view;
 pub(crate) mod editor_panel;
 pub(crate) mod excerpts;
 pub(crate) mod files_panel;

@@ -1,11 +1,49 @@
 use super::*;
+use crate::ui::git_panel::ActiveGitFile;
 use crate::{
     state::documents::{OpenFile, TabPlacement},
     ui::editor_panel::EditorPanel,
 };
-use gpui_kit::component::dock::InsertTarget;
+use gpui_kit::component::dock::{InsertTarget, PaneRef};
 
 impl ProjectCenter {
+    pub(in crate::ui::workspace) fn active_git_file(&self, cx: &App) -> Option<ActiveGitFile> {
+        let dock = self.dock.read(cx);
+        let tree = dock.layout(DockPlacement::Center)?;
+        // Keep the displayed tab of the last focused split while focus is in the sidebar.
+        let group = dock
+            .zoomed_group()
+            .or_else(|| self.focused.and_then(|id| tree.find_panel_node(id)))
+            .or_else(|| tree.find_panel_node(tree.panels().next()?))?;
+        let PaneRef::Tabs { panels, active_ix } = tree.find_node(group)?.kind() else {
+            return None;
+        };
+        let view = dock.panel(*panels.get(active_ix)?)?.view();
+        if let Ok(panel) = view.clone().downcast::<DiffPanel>() {
+            let request = &panel.read(cx).review.read(cx).request;
+            return Some(ActiveGitFile {
+                target: request.target.clone(),
+                path: request.path.clone().into(),
+                source: Some(request.source.clone()),
+            });
+        }
+        if let Ok(panel) = view.clone().downcast::<ConflictPanel>() {
+            let request = &panel.read(cx).conflict.read(cx).request;
+            return Some(ActiveGitFile {
+                target: request.target.clone(),
+                path: request.path.clone().into(),
+                source: Some(hive_core::git::diff::DiffSource::WorkingTree),
+            });
+        }
+        let panel = view.downcast::<EditorPanel>().ok()?;
+        let document = panel.read(cx).document.read(cx);
+        Some(ActiveGitFile {
+            target: document.target.clone(),
+            path: document.path.clone(),
+            source: None,
+        })
+    }
+
     pub(in crate::ui::workspace) fn current_file(
         &self,
         window: &Window,
