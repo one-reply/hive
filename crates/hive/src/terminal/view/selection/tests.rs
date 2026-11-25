@@ -178,3 +178,50 @@ fn dragging_across_a_url_selects_without_opening_it(cx: &mut TestAppContext) {
     });
     assert_eq!(selected.as_deref(), Some("ps://ex"));
 }
+
+#[gpui::test]
+fn a_click_on_a_codex_document_label_reaches_the_application(cx: &mut TestAppContext) {
+    use alacritty_terminal::vte::ansi::Processor;
+
+    let (view, cx) = setup(cx);
+    let session = cx.read(|cx| view.read(cx).session.clone());
+    let feed = |bytes: &[u8], cx: &VisualTestContext| {
+        cx.read(|cx| {
+            let terminal = session.read(cx).terminal().unwrap();
+            let mut parser: Processor = Processor::new();
+            parser.advance(&mut *terminal.term().lock(), bytes);
+        });
+    };
+    // Codex owns the file destination. Its label is styled text with no OSC 8 target.
+    feed(
+        b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[4mSource\x1b[0m",
+        cx,
+    );
+    let at = cell_center(&view, 2., cx);
+    let elsewhere = cell_center(&view, 5., cx);
+    cx.simulate_mouse_down(at, MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(elsewhere, MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(at, MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(at, MouseButton::Left, Default::default());
+    assert!(cx.read(|cx| session.read(cx).written.is_empty()));
+
+    cx.simulate_click(
+        at,
+        gpui_kit::Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    );
+    cx.simulate_mouse_down(at, MouseButton::Left, Default::default());
+    feed(b"\x1b[?1003l", cx);
+    cx.simulate_mouse_up(at, MouseButton::Left, Default::default());
+    assert!(cx.read(|cx| session.read(cx).written.is_empty()));
+
+    feed(b"\x1b[?1003h", cx);
+    cx.simulate_click(at, Default::default());
+    assert_eq!(
+        cx.read(|cx| session.read(cx).written.clone()),
+        b"\x1b[<0;3;1M\x1b[<0;3;1m"
+    );
+    assert_eq!(cx.opened_url(), None);
+}

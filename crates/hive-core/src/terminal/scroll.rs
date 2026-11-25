@@ -13,6 +13,23 @@ pub struct ScrollModifiers {
 }
 
 impl Terminal {
+    /// Press and release for an unmodified left click on the application's live screen.
+    /// Both reports are delivered together once the terminal has ruled out a selection drag.
+    pub fn click_input(&self, point: Point<usize>) -> Option<Vec<u8>> {
+        let term = self.term.lock();
+        let mode = *term.mode();
+        if !mode.intersects(TermMode::MOUSE_MODE)
+            || term.grid().display_offset() != 0
+            || point.line >= term.screen_lines()
+            || point.column.0 >= term.columns()
+        {
+            return None;
+        }
+        let mut bytes = mouse_report(mode, point, 0, false)?;
+        bytes.extend(mouse_report(mode, point, 0, true)?);
+        Some(bytes)
+    }
+
     /// Wheel reports for drag autoscroll in applications that own their history.
     /// Never falls back to arrow keys, which could edit a prompt or change a menu choice.
     pub fn selection_scroll_input(&self, lines: i32, point: Point<usize>) -> Option<Vec<u8>> {
@@ -25,7 +42,7 @@ impl Terminal {
             Column(point.column.0.min(term.columns() - 1)),
         );
         let button = if lines > 0 { 64 } else { 65 };
-        let bytes = wheel_report(*term.mode(), point, button)?;
+        let bytes = mouse_report(*term.mode(), point, button, false)?;
         Some(bytes.repeat((lines.unsigned_abs() as usize).min(term.screen_lines())))
     }
 
@@ -53,7 +70,7 @@ impl Terminal {
             );
             let button = if lines > 0 { 64 } else { 65 };
             let button = button + u8::from(modifiers.alt) * 8 + u8::from(modifiers.control) * 16;
-            wheel_report(mode, point, button)?
+            mouse_report(mode, point, button, false)?
         } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
             vec![
                 0x1b,
@@ -72,10 +89,21 @@ impl Terminal {
     }
 }
 
-fn wheel_report(mode: TermMode, point: Point<usize>, button: u8) -> Option<Vec<u8>> {
+fn mouse_report(
+    mode: TermMode,
+    point: Point<usize>,
+    button: u8,
+    released: bool,
+) -> Option<Vec<u8>> {
     if mode.contains(TermMode::SGR_MOUSE) {
+        let suffix = if released { 'm' } else { 'M' };
         return Some(
-            format!("\x1b[<{button};{};{}M", point.column.0 + 1, point.line + 1).into_bytes(),
+            format!(
+                "\x1b[<{button};{};{}{suffix}",
+                point.column.0 + 1,
+                point.line + 1
+            )
+            .into_bytes(),
         );
     }
     let utf8 = mode.contains(TermMode::UTF8_MOUSE);
@@ -83,6 +111,7 @@ fn wheel_report(mode: TermMode, point: Point<usize>, button: u8) -> Option<Vec<u
     if point.column.0 >= limit || point.line >= limit {
         return None;
     }
+    let button = if released { 3 } else { button };
     let mut bytes = vec![0x1b, b'[', b'M', button + 32];
     for coordinate in [point.column.0, point.line] {
         let encoded = coordinate as u32 + 33;
@@ -107,6 +136,33 @@ mod tests {
         let mut parser: Processor = Processor::new();
         parser.advance(&mut *terminal.term.lock(), output.as_bytes());
         terminal
+    }
+
+    #[test]
+    fn left_clicks_use_the_requested_encoding_and_only_live_cells() {
+        let point = Point::new(1, Column(4));
+        let legacy = terminal_with_output("\x1b[?1000h");
+        assert_eq!(
+            legacy.click_input(point).as_deref(),
+            Some(&b"\x1b[M %\"\x1b[M#%\""[..])
+        );
+        assert_eq!(legacy.click_input(Point::new(1, Column(223))), None);
+
+        let utf8 = terminal_with_output("\x1b[?1002h\x1b[?1005h");
+        assert_eq!(
+            utf8.click_input(Point::new(0, Column(222))).as_deref(),
+            Some("\x1b[M ÿ!\x1b[M#ÿ!".as_bytes())
+        );
+
+        let sgr = terminal_with_output("1\r\n2\r\n3\r\n4\r\n5\x1b[?1003h\x1b[?1006h");
+        assert_eq!(
+            sgr.click_input(point).as_deref(),
+            Some(&b"\x1b[<0;5;2M\x1b[<0;5;2m"[..])
+        );
+        assert_eq!(sgr.click_input(Point::new(4, Column(0))), None);
+        sgr.scroll(1);
+        assert_eq!(sgr.click_input(point), None);
+        assert_eq!(terminal_with_output("\x1b[?1006h").click_input(point), None);
     }
 
     #[test]
@@ -212,27 +268,27 @@ mod tests {
     fn legacy_and_utf8_reports_respect_protocol_coordinate_limits() {
         let point = Point::new(2, Column(10));
         assert_eq!(
-            wheel_report(TermMode::NONE, point, 64),
+            mouse_report(TermMode::NONE, point, 64, false),
             Some(b"\x1b[M`+#".to_vec())
         );
         assert_eq!(
-            wheel_report(TermMode::NONE, Point::new(0, Column(222)), 65),
+            mouse_report(TermMode::NONE, Point::new(0, Column(222)), 65, false),
             Some(b"\x1b[Ma\xff!".to_vec())
         );
         assert_eq!(
-            wheel_report(TermMode::NONE, Point::new(0, Column(223)), 64),
+            mouse_report(TermMode::NONE, Point::new(0, Column(223)), 64, false),
             None
         );
         assert_eq!(
-            wheel_report(TermMode::UTF8_MOUSE, Point::new(0, Column(222)), 64),
+            mouse_report(TermMode::UTF8_MOUSE, Point::new(0, Column(222)), 64, false),
             Some("\x1b[M`ÿ!".as_bytes().to_vec())
         );
         assert_eq!(
-            wheel_report(TermMode::UTF8_MOUSE, Point::new(0, Column(2014)), 64),
+            mouse_report(TermMode::UTF8_MOUSE, Point::new(0, Column(2014)), 64, false),
             Some("\x1b[M`\u{7ff}!".as_bytes().to_vec())
         );
         assert_eq!(
-            wheel_report(TermMode::UTF8_MOUSE, Point::new(2015, Column(0)), 64),
+            mouse_report(TermMode::UTF8_MOUSE, Point::new(2015, Column(0)), 64, false),
             None
         );
     }
