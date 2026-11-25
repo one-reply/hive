@@ -1,0 +1,95 @@
+{
+  "title": "Add import from \"./Button\"",
+  "kind": "quickfix",
+  "command": {
+    "command": "_typescript.applyCodeActionCommand",
+    "arguments": [
+      {
+        "action": {
+          "fixName": "import",
+          "description": "Add import from \"./Button\"",
+          "changes": [
+            {
+              "fileName": "/project/ts/src/Demo.tsx",
+              "textChanges": [
+                {
+                  "start": {
+                    "line": 1,
+                    "offset": 1
+                  },
+                  "end": {
+                    "line": 1,
+                    "offset": 1
+                  },
+                  "newText": "import { Button } from \"./Button\";\n\n"
+                }
+              ]
+            }
+          ]
+        },
+        "diagnostic": {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 26
+            },
+            "end": {
+              "line": 0,
+              "character": 32
+            }
+          },
+          "message": "Cannot find name 'Button'.",
+          "severity": 1,
+          "code": 2304,
+          "source": "typescript"
+        },
+        "documentUri": "file:///project/ts/src/Demo.tsx"
+      }
+    ],
+    "title": ""
+  },
+  "diagnostics": [
+    {
+      "range": {
+        "start": {
+          "line": 0,
+          "character": 26
+        },
+        "end": {
+          "line": 0,
+          "character": 32
+        }
+      },
+      "message": "Cannot find name 'Button'.",
+      "severity": 1,
+      "code": 2304,
+      "source": "typescript"
+    }
+  ],
+  "edit": {
+    "documentChanges": [
+      {
+        "textDocument": {
+          "uri": "file:///project/ts/src/Demo.tsx",
+          "version": 2
+        },
+        "edits": [
+          {
+            "range": {
+              "start": {
+                "line": 0,
+                "character": 0
+              },
+              "end": {
+                "line": 0,
+                "character": 0
+              }
+            },
+            "newText": "import { Button } from \"./Button\";\n\n"
+          }
+        ]
+      }
+    ]
+  },
+  "isPreferred": true
+}

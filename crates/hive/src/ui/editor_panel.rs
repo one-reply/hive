@@ -8,7 +8,7 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, DockArea, DockEvent, Panel, PanelEvent, TabGroup};
-use gpui_kit::component::input::{Editor, EditorState, RopeExt as _};
+use gpui_kit::component::input::{Editor, EditorState, GutterDecorationCollection, RopeExt as _};
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -17,30 +17,54 @@ mod actions;
 mod agent_context;
 mod blame;
 pub(crate) mod close;
+mod editing;
 mod image_preview;
+mod line;
+pub(crate) use line::goto_line;
+pub(crate) mod import_menu;
+mod language_assist;
 mod language_tools;
 mod navigation;
 mod peek;
+mod rename;
 mod render;
 pub(crate) mod source_preview;
 mod sticky;
-mod suggestions;
+pub(crate) mod suggestions;
+pub(super) mod workspace_symbols;
 
 actions!(
     editor,
     [
+        SelectNextOccurrence,
+        ToggleComment,
+        MoveLinesUp,
+        MoveLinesDown,
+        DuplicateLinesUp,
+        DuplicateLinesDown,
         SaveFile,
         CloseFile,
         OpenFileSearch,
         SearchInFiles,
         GoToSymbol,
+        GoToLine,
+        SwitchRecentTab,
+        ReopenClosedFile,
+        LastEditLocation,
         NavigateBack,
         NavigateForward,
         FormatDocument,
         SelectionToAgent,
         PeekDefinition,
+        WorkspaceSymbols,
+        NextChange,
+        PreviousChange,
+        RenameSymbol,
         FindReferences,
-        ShowProblems
+        ShowProblems,
+        NextDiagnostic,
+        PreviousDiagnostic,
+        ShowSignature
     ]
 );
 
@@ -70,6 +94,8 @@ impl SavedTab {
 
 pub(crate) struct EditorPanel {
     pub document: Entity<Document>,
+    _gutter: Entity<crate::state::documents::Gutter>,
+    gutter_marks: GutterDecorationCollection,
     saved_tab: SavedTab,
     area: WeakEntity<DockArea>,
     pub group: Option<WeakEntity<TabGroup>>,
@@ -82,6 +108,9 @@ pub(crate) struct EditorPanel {
     blame_fade: blame::LabelFade,
     peek: Option<peek::Peek>,
     _peek: Option<Task<()>>,
+    import_scroll: ScrollHandle,
+    signature: Option<crate::state::documents::CallSignature>,
+    _signature: Option<Task<()>>,
     _position: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -98,7 +127,31 @@ impl EditorPanel {
         let editor = document.read(cx).editor.clone();
         let git = AppState::get(cx).git.clone();
         let changes = file_changes(&git, &document, cx);
+        let gutter =
+            cx.new(|cx| crate::state::documents::Gutter::new(document.clone(), git.clone(), cx));
+        let markers = editor.update(cx, |editor, cx| {
+            editor.create_gutter_decorations_collection(Vec::new(), cx)
+        });
         let subscriptions = vec![
+            cx.on_release(|this: &mut Self, cx| this.gutter_marks.dispose(cx)),
+            cx.observe(&gutter, |this, gutter, cx| {
+                use gpui_kit::component::input::GutterDecoration;
+                use hive_core::git::gutter::Kind;
+                let marks = gutter
+                    .read(cx)
+                    .marks
+                    .iter()
+                    .map(|m| {
+                        let color = match m.kind {
+                            Kind::Added => cx.theme().success,
+                            Kind::Deleted => cx.theme().danger,
+                            Kind::Modified => cx.theme().blue,
+                        };
+                        GutterDecoration::new(m.range.clone()).with_color(color)
+                    })
+                    .collect();
+                this.gutter_marks.set(marks, cx);
+            }),
             cx.observe(&git, |this, git, cx| {
                 let changes = file_changes(&git, &this.document, cx);
                 if this.changes != changes {
@@ -126,11 +179,45 @@ impl EditorPanel {
                 }
                 cx.notify();
             }),
-            cx.observe(&editor, |this, editor, cx| {
+            cx.observe_in(&editor, window, |this, editor, window, cx| {
                 let editor = editor.read(cx);
                 let cursor = editor.cursor_position();
                 let position = (cursor.line, cursor.character, editor.scroll_offset());
+                let caret = editor.cursor();
                 if this.last_position != position {
+                    if (this.last_position.0, this.last_position.1)
+                        != (cursor.line, cursor.character)
+                    {
+                        let offset = editor.cursor();
+                        let trigger = offset
+                            .checked_sub(1)
+                            .and_then(|start| {
+                                editor
+                                    .text()
+                                    .is_char_boundary(start)
+                                    .then(|| editor.text().slice(start..offset).to_string())
+                            })
+                            .is_some_and(|last| matches!(last.as_str(), "(" | ","));
+                        let refresh =
+                            trigger || this.signature.is_some() || this._signature.is_some();
+                        this.signature = None;
+                        this._signature = None;
+                        if refresh && editor.focus_handle(cx).is_focused(window) {
+                            this.signature_help(false, window, cx);
+                        }
+                    }
+                    if this
+                        .document
+                        .read(cx)
+                        .import_menu
+                        .as_ref()
+                        .is_some_and(|menu| menu.cursor != caret)
+                    {
+                        this.document.update(cx, |doc, cx| {
+                            doc.import_menu = None;
+                            cx.notify();
+                        });
+                    }
                     this.peek = None;
                     this._peek = None;
                     this.last_position = position;
@@ -160,6 +247,8 @@ impl EditorPanel {
         };
         Self {
             document,
+            _gutter: gutter,
+            gutter_marks: markers,
             saved_tab,
             area,
             group: None,
@@ -172,8 +261,25 @@ impl EditorPanel {
             blame_fade: blame::LabelFade::default(),
             peek: None,
             _peek: None,
+            import_scroll: ScrollHandle::new(),
+            signature: None,
+            _signature: None,
             _position: None,
             _subscriptions: subscriptions,
+        }
+    }
+
+    fn jump_change(&self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let doc = self.document.read(cx);
+        let editor = doc.editor.read(cx);
+        if let Some(offset) = hive_core::git::gutter::destination(
+            &self.gutter_marks.get_ranges(cx),
+            editor.cursor(),
+            forward,
+        ) {
+            let position = editor.text().offset_to_position(offset);
+            self.document
+                .update(cx, |doc, cx| doc.goto(position, window, cx));
         }
     }
 
@@ -207,6 +313,19 @@ impl EditorPanel {
             cx,
             move |window, cx| {
                 if let Some(area) = area.upgrade() {
+                    let d = panel.read(cx).document.read(cx);
+                    if !d.missing && d.base.is_some() {
+                        let closed = d.at_cursor(cx);
+                        AppState::get(cx)
+                            .documents
+                            .clone()
+                            .update(cx, |documents, cx| {
+                                documents.emit(
+                                    crate::state::documents::DocumentEvent::Closed(closed),
+                                    cx,
+                                )
+                            });
+                    }
                     area.update(cx, |area, cx| area.remove_panel(panel, window, cx));
                 }
             },

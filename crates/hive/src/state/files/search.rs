@@ -99,6 +99,10 @@ impl Files {
     pub(crate) fn search_query(&self) -> &str {
         &self.search.query
     }
+    pub(super) fn search_location(&self) -> Option<files::location::Location> {
+        file_query(self.search_query(), self.search.index.as_ref()?).1
+    }
+
     pub(crate) fn search_loading(&self) -> bool {
         self.search.running
     }
@@ -204,6 +208,22 @@ impl Files {
 #[cfg(test)]
 mod tests;
 
+fn file_query<'a>(
+    query: &'a str,
+    index: &FileIndex,
+) -> (&'a str, Option<files::location::Location>) {
+    // A literal filename containing a colon wins, just as it did before line suffixes.
+    if let Some((path, location)) = files::location::Location::split(query)
+        && index
+            .paths
+            .binary_search_by(|p| p.as_path().cmp(Path::new(query)))
+            .is_err()
+    {
+        return (path, Some(location));
+    }
+    (query, None)
+}
+
 fn load(
     target: &Target,
     query: &str,
@@ -220,7 +240,8 @@ fn load(
                 .map_err(|error| error.to_string())?,
         ),
     };
-    let matches = search::find(&index.paths, query, show_hidden);
+    let name = file_query(query, &index).0;
+    let matches = search::find(&index.paths, name, show_hidden);
     let mut errors = Vec::new();
     for directory in matches.directories() {
         if entries.contains_key(&directory) {

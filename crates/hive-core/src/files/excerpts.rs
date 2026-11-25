@@ -12,6 +12,8 @@ pub struct Hit {
     pub path: PathBuf,
     /// Zero-based buffer line.
     pub line: u32,
+    /// Scalar column of the match, or zero for a line-level result.
+    pub column: u32,
     /// Empty for references and text matches.
     pub message: String,
 }
@@ -30,7 +32,9 @@ pub struct File {
 /// Group locations by path, coalescing overlapping or adjacent context windows.
 /// Returns whether the caller must narrow the query to see all locations.
 pub fn group(mut hits: Vec<Hit>) -> (Vec<File>, bool) {
-    hits.sort_by(|a, b| (&a.path, a.line, &a.message).cmp(&(&b.path, b.line, &b.message)));
+    hits.sort_by(|a, b| {
+        (&a.path, a.line, a.column, &a.message).cmp(&(&b.path, b.line, b.column, &b.message))
+    });
     hits.dedup();
     let truncated = hits.len() > MAX_HITS;
     hits.truncate(MAX_HITS);
@@ -63,6 +67,7 @@ mod tests {
         Hit {
             path: path.into(),
             line,
+            column: 0,
             message: String::new(),
         }
     }

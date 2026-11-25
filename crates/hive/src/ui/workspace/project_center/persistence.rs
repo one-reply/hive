@@ -25,6 +25,7 @@ impl ProjectCenter {
                 .is_some_and(|p| p.focus_handle(cx).contains_focused(window, cx))
         }) {
             self.focused = Some(*focused);
+            self.recent_tabs.activate(*focused);
         }
         saved.focused = self
             .focused

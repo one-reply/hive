@@ -3017,7 +3017,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hive"
-version = "1.0.41"
+version = "1.0.42"
 dependencies = [
  "alacritty_terminal",
  "async-channel",
@@ -3043,7 +3043,7 @@ dependencies = [
 
 [[package]]
 name = "hive-core"
-version = "1.0.41"
+version = "1.0.42"
 dependencies = [
  "alacritty_terminal",
  "async-channel",
@@ -3063,6 +3063,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "shlex",
+ "similar",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",

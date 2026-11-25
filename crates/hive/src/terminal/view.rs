@@ -32,6 +32,7 @@ mod link;
 mod menu;
 mod selection;
 mod session;
+mod source;
 
 pub(crate) enum TerminalViewEvent {
     TitleChanged,

@@ -54,6 +54,7 @@ fn unlocking_a_renamed_document_opens_its_new_uri_without_another_session_event(
             diagnostics: HashMap::new(),
             diagnostics_limited: false,
             client,
+            generation: 0,
             documents: HashMap::<_, Synced>::new(),
             unsent: Default::default(),
             _events: None,

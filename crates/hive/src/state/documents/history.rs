@@ -6,6 +6,8 @@ const LIMIT: usize = 100;
 pub(crate) struct History {
     past: Vec<OpenFile>,
     future: Vec<OpenFile>,
+    closed: Vec<OpenFile>,
+    pub(crate) last_edit: Option<OpenFile>,
 }
 
 impl History {
@@ -29,8 +31,25 @@ impl History {
         Some(destination)
     }
 
+    pub(crate) fn closed(&mut self, file: OpenFile) {
+        self.closed
+            .retain(|entry| entry.target != file.target || entry.path != file.path);
+        push(&mut self.closed, file);
+    }
+
+    pub(crate) fn reopen(&mut self) -> Option<OpenFile> {
+        self.closed.pop()
+    }
+
     pub(crate) fn remove(&mut self, target: &hive_core::projects::Target, path: &std::path::Path) {
-        for stack in [&mut self.past, &mut self.future] {
+        if self
+            .last_edit
+            .as_ref()
+            .is_some_and(|entry| entry.target == *target && entry.path.starts_with(path))
+        {
+            self.last_edit = None;
+        }
+        for stack in [&mut self.past, &mut self.future, &mut self.closed] {
             stack.retain(|entry| entry.target != *target || !entry.path.starts_with(path));
         }
     }
@@ -41,7 +60,13 @@ impl History {
         from: &std::path::Path,
         to: &std::path::Path,
     ) {
-        for entry in self.past.iter_mut().chain(&mut self.future) {
+        for entry in self
+            .past
+            .iter_mut()
+            .chain(&mut self.future)
+            .chain(&mut self.closed)
+            .chain(&mut self.last_edit)
+        {
             if entry.target == *target
                 && let Some(path) = hive_core::files::relocated_path(&entry.path, from, to)
             {
@@ -120,6 +145,7 @@ mod tests {
         let mut history = History {
             past: vec![other_root.clone(), source.clone()],
             future: vec![other_host.clone(), source.clone()],
+            ..Default::default()
         };
         history.relocate(
             &source.target,
@@ -146,5 +172,40 @@ mod tests {
             history.step(false, None).unwrap().path,
             std::path::Path::new("src/c.rs")
         );
+    }
+}
+
+#[cfg(test)]
+mod edit_history_tests {
+    use super::*;
+    use gpui_kit::component::input::Position;
+    use std::path::Path;
+    #[test]
+    fn reopen_and_last_edit_follow_files_without_consuming_navigation() {
+        let file = OpenFile {
+            target: hive_core::projects::Target {
+                project: "/p".into(),
+                path: "/p/worktree".into(),
+                host: hive_core::host::Host::Local,
+            },
+            path: "dir/foo.rs".into(),
+            position: Some(Position::new(4, 6)),
+            preview: false,
+            placement: Default::default(),
+        };
+        let mut history = History {
+            last_edit: Some(file.clone()),
+            ..Default::default()
+        };
+        history.closed(file.clone());
+        history.closed(file.clone());
+        history.relocate(&file.target, Path::new("dir"), Path::new("lib"));
+        let reopened = history.reopen().unwrap();
+        assert_eq!(reopened.path, Path::new("lib/foo.rs"));
+        assert_eq!(reopened.position, file.position);
+        assert!(history.reopen().is_none());
+        assert_eq!(history.last_edit.as_ref().unwrap().path, reopened.path);
+        history.remove(&file.target, Path::new("lib"));
+        assert!(history.last_edit.is_none());
     }
 }

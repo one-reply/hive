@@ -2,6 +2,7 @@
 use crate::host::Host;
 use std::path::PathBuf;
 
+pub mod edits;
 mod events;
 mod input;
 pub mod markdown;
@@ -12,6 +13,7 @@ mod process;
 mod tests;
 mod wire;
 mod worker;
+pub mod workspace_edits;
 
 use lsp_types::{
     PublishDiagnosticsParams, ServerCapabilities, notification::Notification,
@@ -72,6 +74,22 @@ pub struct Outbox(mpsc::Receiver<Message>);
 
 #[cfg(any(test, feature = "test-support"))]
 impl Outbox {
+    /// Receives the next request and sends a fixture as the server response.
+    /// Returns its method and wire parameters so a test can verify the client contract.
+    pub fn respond(&self, result: Value) -> Option<(&'static str, Value)> {
+        let Message::Request {
+            method,
+            params,
+            reply,
+            ..
+        } = self.0.try_recv().ok()?
+        else {
+            return None;
+        };
+        reply.try_send(Ok(result)).ok()?;
+        Some((method, params))
+    }
+
     /// The LSP method of the oldest message nobody took yet.
     pub fn take(&self) -> Option<&'static str> {
         match self.0.try_recv().ok()? {

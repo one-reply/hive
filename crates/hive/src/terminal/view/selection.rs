@@ -21,11 +21,11 @@ impl TerminalView {
             }
         });
         let this = view.downgrade();
-        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
             if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
                 let _ = this.update(cx, |this, cx| {
                     this.extend_selection(event.position, cx);
-                    this.release_link(event, cx);
+                    this.release_link(event, window, cx);
                     this.stop_selection();
                 });
             }
@@ -81,7 +81,7 @@ impl TerminalView {
     ) {
         if !self.selecting {
             let pointer = hovered.then_some(event.position);
-            self.hover_link(pointer, cx);
+            self.hover_link(pointer, event.modifiers.platform, cx);
             return;
         }
         if event.pressed_button != Some(MouseButton::Left) || !window.is_window_active() {

@@ -122,7 +122,9 @@ pub fn find(paths: &[PathBuf], query: &str, show_hidden: bool) -> Matches {
             continue;
         }
         let name = lowercase(&name);
-        let score = if name == query {
+        let score = if folded == query {
+            600
+        } else if name == query {
             500
         } else if name.starts_with(&query) {
             400

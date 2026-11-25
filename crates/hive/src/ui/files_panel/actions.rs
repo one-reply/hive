@@ -6,6 +6,7 @@ use gpui_kit::component::menu::PopupMenu;
 enum EntryAction {
     Open,
     Changes,
+    FindInFolder,
     File,
     Folder,
     Paste,
@@ -38,6 +39,11 @@ pub(super) fn menu(
     let actions = [
         ("Open", EntryAction::Open, existing && !folder),
         ("Show Changes", EntryAction::Changes, changes),
+        (
+            "Find in Folder…",
+            EntryAction::FindInFolder,
+            folder && local && existing,
+        ),
         ("New File", EntryAction::File, mutable),
         ("New Folder", EntryAction::Folder, mutable),
         (pasting::menu_label(local), EntryAction::Paste, pastable),
@@ -56,11 +62,13 @@ pub(super) fn menu(
         ),
         ("Reveal in Finder", EntryAction::Reveal, existing),
     ];
-    for (index, (label, action, enabled)) in actions.into_iter().enumerate() {
-        if matches!(action, EntryAction::Reveal) && !local {
+    for (label, action, enabled) in actions {
+        if matches!(action, EntryAction::FindInFolder) && !enabled
+            || matches!(action, EntryAction::Reveal) && !local
+        {
             continue;
         }
-        if [2, 8].contains(&index) {
+        if matches!(action, EntryAction::File | EntryAction::CopyRelative) {
             menu = menu.separator();
         }
         let (panel, path) = (panel.clone(), path.clone());
@@ -87,6 +95,12 @@ impl FilesPanel {
             EntryAction::Open => self
                 .files
                 .update(cx, |files, cx| files.open(path, false, cx)),
+            EntryAction::FindInFolder => {
+                self.files
+                    .update(cx, |files, cx| files.search_folder(Some(path), cx));
+                self.sync_search_input(window, cx);
+                self.focus_search(window, cx);
+            }
             EntryAction::Changes => self
                 .files
                 .update(cx, |files, cx| files.show_changes(&path, cx)),

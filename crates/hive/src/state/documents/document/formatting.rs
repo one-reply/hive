@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit::component::input::RopeExt as _;
 
 const FORMAT_DISABLED: &str = "Formatting is off: language tools are disabled in Settings → Files.";
 
@@ -39,17 +38,7 @@ impl Document {
                 }
                 match result {
                     Ok(formatted) if formatted != text => {
-                        this.editor.update(cx, |editor, cx| {
-                            let selected = editor.selected_range();
-                            let start = editor.text().offset_to_position(selected.start);
-                            let end = editor.text().offset_to_position(selected.end);
-                            let reversed = editor.is_selection_reversed();
-                            let scroll = editor.scroll_offset();
-                            editor.replace_all(formatted, window, cx);
-                            let range = editor.text().position_to_offset(&start)..editor.text().position_to_offset(&end);
-                            editor.set_selected_range_with_direction(range, reversed, cx);
-                            editor.set_scroll_offset(scroll, cx);
-                        });
+                        this.replace_preserving_view(formatted, window, cx);
                     }
                     Ok(_) => {}
                     Err(error) => {

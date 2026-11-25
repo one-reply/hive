@@ -7,6 +7,8 @@ use lsp_types::{
 };
 use std::collections::{HashMap, VecDeque};
 
+#[cfg(test)]
+mod acceptance_tests;
 mod diagnostics;
 #[cfg(test)]
 mod diagnostics_tests;
@@ -77,6 +79,7 @@ pub(crate) struct LanguageSession {
     pub diagnostics: HashMap<String, diagnostics::Publication>,
     diagnostics_limited: bool,
     client: Session,
+    generation: u64,
     documents: HashMap<Uri, Synced>,
     /// Oldest first; sent before anything newer, so the server sees the editor's order.
     unsent: VecDeque<Unsent>,
@@ -85,6 +88,15 @@ pub(crate) struct LanguageSession {
 }
 
 impl LanguageSession {
+    pub(super) fn symbol_client(&self) -> Option<Session> {
+        self.capabilities
+            .as_ref()?
+            .workspace_symbol_provider
+            .as_ref()
+            .filter(|provider| !matches!(provider, lsp_types::OneOf::Left(false)))
+            .map(|_| self.client.clone())
+    }
+
     fn saved(&mut self, uri: Uri, text: Option<String>, cx: &mut Context<Self>) {
         let save = self
             .capabilities
@@ -158,6 +170,7 @@ impl LanguageSession {
             diagnostics: HashMap::new(),
             diagnostics_limited: false,
             client,
+            generation: 0,
             documents: HashMap::new(),
             unsent: VecDeque::new(),
             _events: None,
@@ -176,18 +189,12 @@ impl LanguageSession {
                             Event::Ready(capabilities) => {
                                 this.capabilities = Some(*capabilities);
                                 this.error = None;
-                                this.documents.clear();
-                                this.unsent.clear();
-                                this.diagnostics.clear();
-                                this.diagnostics_limited = false;
+                                this.reset_sync_state();
                             }
                             Event::Failed(error) => {
                                 this.capabilities = None;
                                 this.error = Some(error.to_string());
-                                this.documents.clear();
-                                this.unsent.clear();
-                                this.diagnostics.clear();
-                                this.diagnostics_limited = false;
+                                this.reset_sync_state();
                             }
                             Event::Diagnostics(params) => {
                                 this.receive_diagnostics(params);
@@ -202,10 +209,7 @@ impl LanguageSession {
             }
             let _ = this.update(cx, |this, cx| {
                 this.capabilities = None;
-                this.documents.clear();
-                this.unsent.clear();
-                this.diagnostics.clear();
-                this.diagnostics_limited = false;
+                this.reset_sync_state();
                 if this.error.is_none() {
                     this.error = Some("Language server stopped. Retry to reconnect.".into());
                 }
@@ -232,11 +236,27 @@ impl LanguageSession {
         self.client = client;
         self.capabilities = None;
         self.error = None;
+        self.reset_sync_state();
+        self.listen(events, cx);
+        cx.notify();
+    }
+
+    pub(super) fn document_version(&self, uri: &Uri) -> Option<i32> {
+        self.documents.get(uri).map(|document| document.version)
+    }
+
+    pub(super) fn synchronized_revision(&self, uri: &Uri) -> Option<(u64, i32)> {
+        self.capabilities.as_ref()?;
+        Some((self.generation, self.document_version(uri)?))
+    }
+
+    fn reset_sync_state(&mut self) {
+        // Document versions restart at didOpen, so they alone cannot identify a server snapshot.
+        self.generation = self.generation.wrapping_add(1);
         self.documents.clear();
         self.unsent.clear();
         self.diagnostics.clear();
-        self.listen(events, cx);
-        cx.notify();
+        self.diagnostics_limited = false;
     }
 
     pub(super) fn sync(
@@ -444,7 +464,6 @@ impl Document {
     fn attach_language(&mut self, session: Entity<LanguageSession>, cx: &mut Context<Self>) {
         self._language_subscription = Some(cx.observe(&session, |this, _, cx| {
             this.sync_language(cx);
-            this.apply_diagnostics(cx);
             cx.notify();
         }));
         self.language = Some(session);
@@ -466,8 +485,6 @@ impl Document {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.sync_language(cx);
-                // Servers may stay silent when an edit leaves the diagnosed lines unchanged.
-                this.apply_diagnostics(cx);
             });
         }));
     }
@@ -480,6 +497,8 @@ impl Document {
         }
         let text = self.editor.read(cx).text().clone();
         let _ = self.language_client(&text, cx);
+        // A session can already hold diagnostics before this buffer first synchronizes.
+        self.apply_diagnostics(cx);
     }
 
     pub(super) fn language_client(&self, text: &Rope, cx: &mut App) -> Option<(Session, Uri)> {

@@ -12,6 +12,8 @@ pub mod changes;
 pub mod commit_context;
 pub mod conflicts;
 pub mod diff;
+#[cfg(feature = "desktop")]
+pub mod gutter;
 pub mod history;
 pub mod hosting;
 mod numstat;
