@@ -27,6 +27,8 @@ objc2-av-foundation.workspace = true
 block2.workspace = true
 
 [dev-dependencies]
+# Feed captured TUI output into the terminal grid in window tests.
+alacritty_terminal.workspace = true
 # The one Git environment of every test that runs `git` (`hive_core::git::testing`).
 hive-core = { workspace = true, features = ["test-support"] }
 # Window tests (`#[gpui::test]`, simulated keystrokes) for editor key handling.

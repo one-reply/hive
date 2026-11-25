@@ -25,14 +25,15 @@ impl TerminalView {
             if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
                 let _ = this.update(cx, |this, cx| {
                     this.extend_selection(event.position, cx);
+                    this.release_link(event, cx);
                     this.stop_selection();
-                    this.release_link(event.position, cx);
                 });
             }
         });
     }
 
     pub(super) fn stop_selection(&mut self) {
+        self.link_hover.press = None;
         self.selecting = false;
         self.selection_scroll.stop();
         self.selection_scroll_remainder = 0.;
@@ -45,7 +46,6 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.focus_handle.focus(window, cx);
-        self.press_link(event, cx);
         let Some(grid) = self.grid else { return };
         let (point, side) = grid.cell_at(event.position);
         let kind = match event.click_count {
@@ -54,6 +54,7 @@ impl TerminalView {
             _ => SelectionType::Simple,
         };
         self.stop_selection();
+        self.press_link(event, cx);
         self.selecting = true;
         self.session.update(cx, |session, cx| {
             session.start_selection(point, side, kind, cx)
@@ -86,6 +87,14 @@ impl TerminalView {
         if event.pressed_button != Some(MouseButton::Left) || !window.is_window_active() {
             self.stop_selection();
             return;
+        }
+        if let Some((pressed, _)) = &self.link_hover.press
+            && (!hovered
+                || self
+                    .grid
+                    .is_none_or(|grid| grid.cell_at(event.position).0 != *pressed))
+        {
+            self.link_hover.press = None;
         }
         self.extend_selection(event.position, cx);
         self.selection_scroll.last_drag_position = Some(event.position);
