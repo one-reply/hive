@@ -74,6 +74,8 @@ const COLLAPSE_DURATION: Duration = Duration::from_millis(200);
 const COLLAPSE_SETTLED: Duration = Duration::from_millis(400);
 const SELECTION_DURATION: Duration = Duration::from_millis(200);
 const HOVER_BACKGROUND_OPACITY: f32 = 0.05;
+const ACTIVE_PROJECT_LINE_WIDTH: Pixels = px(2.);
+const ACTIVE_PROJECT_LINE_INSET: Pixels = px(2.);
 
 pub struct Sidebar {
     projects: Entity<Projects>,
@@ -156,6 +158,15 @@ impl Sidebar {
         cx.notify();
     }
 
+    fn holds_selection(&self, project: &Project, cx: &App) -> bool {
+        self.projects
+            .read(cx)
+            .selection()
+            .is_some_and(|(selected, _)| {
+                selected.host == project.host && selected.path == project.path
+            })
+    }
+
     /// A project header and its worktree list, which slides open and closed.
     fn render_project(
         &self,
@@ -173,41 +184,81 @@ impl Sidebar {
                 .copied(),
             Instant::now(),
         );
+        let list = (open || animate).then(|| {
+            let rows = self.render_rows(project, window, cx);
+            let height = rows
+                .iter()
+                .map(|(_, height)| *height + ROW_GAP)
+                .sum::<Pixels>();
+            let list = v_flex()
+                .overflow_hidden()
+                .children(rows.into_iter().map(|(row, _)| row));
+            if animate {
+                list.with_animation(
+                    animation_id(
+                        &format!("project-list:{:?}", project.host),
+                        &project.path,
+                        open,
+                    ),
+                    collapse_animation(),
+                    move |list, t| list.h(height * openness(open, t)),
+                )
+                .into_any_element()
+            } else {
+                list.into_any_element()
+            }
+        });
+        self.project_group(ix, project, open, list, window, cx)
+    }
+
+    /// Wraps a project header and its worktree list, marking the selected project with a left line.
+    fn project_group(
+        &self,
+        ix: usize,
+        project: &Project,
+        open: bool,
+        list: Option<AnyElement>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // The whole project, its cards included, reveals the header actions.
         let hover = Hover::new(("project", ix), window, cx);
         let header = self
             .render_header(ix, project, open, &hover, window, cx)
             .into_any_element();
-        let group = self
-            .project_drop_target(Some(project))
+        let active = transition(
+            format!("project-active-bar:{:?}:{:?}", project.host, project.path),
+            if self.holds_selection(project, cx) {
+                1.0_f32
+            } else {
+                0.
+            },
+            Transition::new(SELECTION_DURATION).ease(ease_in_out),
+            window,
+            cx,
+        );
+        let accent = project_badge::color(&project.identity, ix);
+        self.project_drop_target(Some(project))
+            .relative()
+            // Splits the tree's left gutter so the indicator bar sits inside the scroll area.
+            .pl_1()
             .on_hover(hover.listener())
-            .child(header);
-        if !open && !animate {
-            return group.into_any_element();
-        }
-        let rows = self.render_rows(project, window, cx);
-        let height = rows
-            .iter()
-            .map(|(_, height)| *height + ROW_GAP)
-            .sum::<Pixels>();
-        let list = v_flex()
-            .overflow_hidden()
-            .children(rows.into_iter().map(|(row, _)| row));
-        let list = if animate {
-            list.with_animation(
-                animation_id(
-                    &format!("project-list:{:?}", project.host),
-                    &project.path,
-                    open,
-                ),
-                collapse_animation(),
-                move |list, t| list.h(height * openness(open, t)),
-            )
+            .when(active > 0., |el| {
+                el.child(
+                    div()
+                        .debug_selector(move || format!("project-active-bar-{ix}"))
+                        .absolute()
+                        .top(ACTIVE_PROJECT_LINE_INSET)
+                        .bottom(ACTIVE_PROJECT_LINE_INSET)
+                        .left_0()
+                        .w(ACTIVE_PROJECT_LINE_WIDTH)
+                        .rounded_full()
+                        .bg(accent.opacity(active)),
+                )
+            })
+            .child(header)
+            .children(list)
             .into_any_element()
-        } else {
-            list.into_any_element()
-        };
-        group.child(list).into_any_element()
     }
 
     /// Cards under a project header with their heights.
@@ -300,13 +351,7 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         // An open project shows its selected card; a folded one carries the highlight itself.
-        let holds_selection = self
-            .projects
-            .read(cx)
-            .selection()
-            .is_some_and(|(selected, _)| {
-                selected.host == project.host && selected.path == project.path
-            });
+        let holds_selection = self.holds_selection(project, cx);
         let highlight = transition(
             format!("project-selection:{:?}:{:?}", project.host, project.path),
             if holds_selection && !open {
@@ -734,7 +779,8 @@ impl Render for Sidebar {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px_2()
+                    .pl_1()
+                    .pr_2()
                     .child(
                         // An explicit min height drops the flex item's `min-height: auto`, so
                         // without `flex_shrink_0` the list shrinks to the viewport and never
