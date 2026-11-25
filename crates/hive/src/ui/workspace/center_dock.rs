@@ -13,6 +13,7 @@ use gpui_kit::component::dock::{
     AnyDrag, BasePanelView, DockArea, DockAreaRenderer, DockContext, DockSkin, DragPanel,
     DropIndicator, NodeId, PanelHandle, PanelId, PanelState, TabGroupContext, TabGroupRenderer,
 };
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, IconName, Selectable as _, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -273,14 +274,20 @@ impl CenterTabs {
                 document.path.display(),
                 document.target.path.display()
             );
-            div()
+            let label = div()
                 .id(("editor-tab-label", ix))
                 .child(label)
                 .when(!document.pinned, |label| label.italic())
                 .tooltip(move |window, cx| {
                     gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
-                })
-                .into_any_element()
+                });
+            if document.content.shows_image() {
+                label.into_any_element()
+            } else {
+                label
+                    .context_menu(move |menu, _, cx| editor.read(cx).indentation_menu(menu, cx))
+                    .into_any_element()
+            }
         } else {
             label
         };

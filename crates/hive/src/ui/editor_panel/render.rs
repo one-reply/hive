@@ -413,6 +413,5 @@ impl Render for EditorPanel {
                     .children(self.render_imports(window, cx))
                     .children(self.render_peek(window, cx)),
             )
-            .child(editing::status(&self.document, window, cx))
     }
 }

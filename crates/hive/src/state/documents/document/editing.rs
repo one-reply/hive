@@ -77,7 +77,6 @@ pub(super) struct SelectionCommands {
     active_occurrence: Option<Range<usize>>,
     occurrence_count: usize,
     native_multiple: bool,
-    confirmed_multiple: bool,
     count_after_edit: Option<usize>,
     vertical_rows: Option<Range<usize>>,
 }
@@ -114,7 +113,7 @@ impl Document {
         cx.notify();
     }
 
-    pub(crate) fn cursor_count(&self) -> Option<usize> {
+    fn cursor_count(&self) -> Option<usize> {
         if self.selection_commands.native_multiple {
             self.selection_commands
                 .vertical_rows
@@ -124,10 +123,6 @@ impl Document {
         } else {
             Some(self.selection_commands.occurrence_count.max(1))
         }
-    }
-
-    pub(crate) fn multiple_cursors_without_count(&self) -> bool {
-        self.selection_commands.confirmed_multiple && self.cursor_count().is_none()
     }
 
     pub(crate) fn native_selections(&mut self, multiple: bool, cx: &mut Context<Self>) {
@@ -155,10 +150,7 @@ impl Document {
             None
         };
         let row_count = map.display_row_count();
-        let confirmed = self.cursor_count().is_some_and(|n| n > 1)
-            || self.selection_commands.confirmed_multiple;
         self.native_selections(true, cx);
-        self.selection_commands.confirmed_multiple = confirmed;
         self.selection_commands.vertical_rows = rows.map(|rows| {
             if above {
                 rows.start.saturating_sub(1)..rows.end
@@ -233,10 +225,6 @@ impl Document {
                 .count();
             state.occurrence_count = state.occurrence_count + 1 - joined;
             state.active_occurrence = Some(editor.selected_range());
-            let active = editor.selected_range();
-            if state.native_multiple {
-                state.confirmed_multiple = next.end < active.start || active.end < next.start;
-            }
             state.occurrences.push(next);
         });
         cx.notify();

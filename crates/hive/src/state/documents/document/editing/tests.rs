@@ -191,7 +191,6 @@ fn selecting_the_next_word_keeps_a_native_alt_click_caret(cx: &mut TestAppContex
         },
     );
     cx.simulate_keystrokes("cmd-d cmd-d");
-    cx.read(|cx| assert!(d.read(cx).multiple_cursors_without_count()));
     cx.simulate_keystrokes("x");
     cx.read(|cx| {
         assert_eq!(d.read(cx).editor.read(cx).text().to_string(), "x x\nbxar");
