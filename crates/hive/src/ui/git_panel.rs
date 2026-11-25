@@ -35,6 +35,7 @@ mod commit;
 mod dispatch;
 mod error;
 mod file_row;
+pub(super) use file_row::ActiveGitFile;
 mod files;
 mod header;
 mod operation;
@@ -64,6 +65,7 @@ struct ListView {
 
 pub(crate) struct GitPanel {
     git: Entity<Git>,
+    active_file: Option<ActiveGitFile>,
     /// What the hosting service says about each worktree's request, and where one is opened.
     pull_requests: Entity<PullRequests>,
     /// The agent the error card offers; the only setting this panel draws.
@@ -166,6 +168,7 @@ impl GitPanel {
         let draft_target = git.read(cx).target.clone();
         Self {
             git,
+            active_file: None,
             pull_requests,
             default_agent: store.read(cx).state.settings.default_cli_agent(),
             filter,

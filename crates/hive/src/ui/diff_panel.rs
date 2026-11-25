@@ -368,8 +368,6 @@ impl Render for DiffPanel {
             .on_add_annotation(move |range, window, cx| {
                 let _ = panel.update(cx, |panel, cx| panel.add_note(range.clone(), window, cx));
             })
-            .flex_1()
-            .min_h_0()
             .annotations(annotations)
             .render_annotation(move |annotation, window, cx| {
                 let hover = Hover::new(annotation.id().clone(), window, cx).enabled(!busy);
@@ -535,7 +533,7 @@ impl Render for DiffPanel {
                         .child("Use the sidebar to stage this change as a whole file."),
                 );
             }
-            content = content.child(diff);
+            content = content.child(super::diff_view::render(&display, diff, window, cx));
         }
         content
     }

@@ -9,6 +9,36 @@ const ACTION_TRANSITION_DURATION: Duration = Duration::from_millis(160);
 const ACTION_WIDTH: Pixels = px(28.);
 const ACTION_BACKGROUND_OPACITY: f32 = 0.08;
 
+/// A file displayed in the center. A diff identifies exactly one Git source;
+/// an editor shows the working copy, including files with only staged changes.
+#[derive(PartialEq, Eq)]
+pub(in crate::ui) struct ActiveGitFile {
+    pub(in crate::ui) target: Target,
+    pub(in crate::ui) path: std::path::PathBuf,
+    pub(in crate::ui) source: Option<DiffSource>,
+}
+
+impl ActiveGitFile {
+    pub(super) fn matches(
+        &self,
+        target: Option<&Target>,
+        file: &FileChange,
+        source: &DiffSource,
+    ) -> bool {
+        if target != Some(&self.target) || self.path != std::path::Path::new(&file.path) {
+            return false;
+        }
+        match &self.source {
+            Some(review) => review == source,
+            None => match source {
+                DiffSource::WorkingTree | DiffSource::Untracked => true,
+                DiffSource::Staged => file.unstaged.is_none(),
+                DiffSource::Compare(_) | DiffSource::Commit(_) => false,
+            },
+        }
+    }
+}
+
 /// Letter and color of a change, as Git's own short status.
 fn status_badge(change: Option<Change>, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
@@ -76,6 +106,17 @@ fn path_label(path: &str, cx: &App) -> impl IntoElement {
 }
 
 impl GitPanel {
+    pub(in crate::ui) fn set_active_file(
+        &mut self,
+        file: Option<ActiveGitFile>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_file != file {
+            self.active_file = file;
+            cx.notify();
+        }
+    }
+
     pub(super) fn file_row(
         &self,
         file: &FileChange,
@@ -276,9 +317,21 @@ impl GitPanel {
             );
         }
         let action_count = 1 + usize::from(discard.is_some()) + usize::from(can_act) + sides.len();
+        let active = self
+            .active_file
+            .as_ref()
+            .is_some_and(|active| active.matches(self.git.read(cx).target.as_ref(), file, &source));
+        let (idle, hovered) = if active {
+            (cx.theme().list_active, cx.theme().list_active)
+        } else {
+            (fg.opacity(0.), fg.opacity(0.05))
+        };
         let (selected, open_source) = (file.clone(), source);
         h_flex()
             .id(row_id)
+            .role(Role::ListBoxOption)
+            .aria_selected(active)
+            .aria_label(file.path.clone())
             .w_full()
             .h(ROW_HEIGHT)
             .flex_none()
@@ -288,7 +341,7 @@ impl GitPanel {
             .pr_1()
             .rounded_md()
             .cursor_pointer()
-            .hover_bg(&row_hover, fg.opacity(0.), fg.opacity(0.05))
+            .hover_bg(&row_hover, idle, hovered)
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .child(path_label(&file.path, cx))
             .child(

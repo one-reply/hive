@@ -12,6 +12,48 @@ fn worktree(path: &str) -> Target {
     }
 }
 
+#[test]
+fn the_active_file_follows_the_worktree_path_and_revision_being_viewed() {
+    use super::{ActiveGitFile, Change, DiffSource, FileChange};
+    let target = worktree("/first");
+    let other = worktree("/second");
+    let mut row = FileChange {
+        path: "src/lib.rs".into(),
+        old_path: None,
+        staged: Some(Change::Modified),
+        unstaged: Some(Change::Modified),
+        submodule: false,
+        conflict: None,
+        staged_stats: None,
+        unstaged_stats: None,
+    };
+    let mut file = ActiveGitFile {
+        target: target.clone(),
+        path: row.path.clone().into(),
+        source: None,
+    };
+    let matches = |file: &ActiveGitFile, row: &FileChange, source: &DiffSource| {
+        file.matches(Some(&target), row, source)
+    };
+    assert!(matches(&file, &row, &DiffSource::WorkingTree));
+    assert!(!matches(&file, &row, &DiffSource::Staged));
+    row.unstaged = None;
+    assert!(matches(&file, &row, &DiffSource::Staged));
+    for source in [
+        DiffSource::Staged,
+        DiffSource::Compare("origin/main".into()),
+        DiffSource::Commit("rev-a".into()),
+    ] {
+        file.source = Some(source.clone());
+        assert!(matches(&file, &row, &source));
+        assert!(!matches(&file, &row, &DiffSource::WorkingTree));
+        assert!(!matches(&file, &row, &DiffSource::Commit("rev-b".into())));
+        assert!(!file.matches(Some(&other), &row, &source));
+    }
+    row.path = "tests/lib.rs".into();
+    assert!(!matches(&file, &row, file.source.as_ref().unwrap()));
+}
+
 /// A window with source control that shows `shown` and a panel opened on it.
 fn open<'a>(
     shown: Option<&Target>,

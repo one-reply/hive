@@ -535,6 +535,7 @@ pub(crate) fn label(action: &dyn Action) -> Option<&'static str> {
 
 /// Installs the shortcuts now and again whenever the user reassigns one.
 pub fn init(cx: &mut App) {
+    super::diff_view::bind_keys(cx);
     cx.bind_keys(terminal_input_bindings());
     cx.bind_keys([KeyBinding::new(
         "down",

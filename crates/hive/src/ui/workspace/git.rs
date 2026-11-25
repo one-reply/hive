@@ -10,6 +10,14 @@ const RIGHT_TAB_WIDTH: Rems = rems(2.);
 const RIGHT_TAB_TRANSITION: Duration = Duration::from_millis(180);
 
 impl Workspace {
+    pub(super) fn sync_git_file(&self, cx: &mut Context<Self>) {
+        let active = self
+            .shown_center()
+            .and_then(|center| center.active_git_file(cx));
+        self.git_panel
+            .update(cx, |panel, cx| panel.set_active_file(active, cx));
+    }
+
     pub(super) fn watch_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let tab = RightTab::selected(cx);
         let git = AppState::get(cx).git.clone();
@@ -231,6 +239,7 @@ impl Workspace {
             .child(div().flex_1().min_h_0().child(if selected_files {
                 super::cached(&self.files_panel).into_any_element()
             } else {
+                self.sync_git_file(cx);
                 super::cached(&self.git_panel).into_any_element()
             }));
         // Right-aligned so the content's left edge moves while its right edge stays put.

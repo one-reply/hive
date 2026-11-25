@@ -132,7 +132,8 @@ impl EditorPanel {
         let markers = editor.update(cx, |editor, cx| {
             editor.create_gutter_decorations_collection(Vec::new(), cx)
         });
-        let subscriptions = vec![
+        let image_focus = cx.focus_handle();
+        let mut subscriptions = vec![
             cx.on_release(|this: &mut Self, cx| this.gutter_marks.dispose(cx)),
             cx.observe(&gutter, |this, gutter, cx| {
                 use gpui_kit::component::input::GutterDecoration;
@@ -238,6 +239,13 @@ impl EditorPanel {
                 }
             }),
         ];
+        for focus in [&editor.read(cx).focus_handle(cx), &image_focus] {
+            subscriptions.push(cx.on_focus(focus, window, |this, _, cx| {
+                if let Some(area) = this.area.upgrade() {
+                    cx.defer(move |cx| area.update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged)));
+                }
+            }));
+        }
         let saved_tab = {
             let document = document.read(cx);
             SavedTab {
@@ -255,7 +263,7 @@ impl EditorPanel {
             alone: false,
             restoring: false,
             last_position: (0, 0, Point::default()),
-            image_focus: cx.focus_handle(),
+            image_focus,
             changes,
             blame_card: blame::BlameCard::default(),
             blame_fade: blame::LabelFade::default(),

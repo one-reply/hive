@@ -409,7 +409,8 @@ impl Render for ConflictPanel {
                             .child("No conflict markers are left in this file. Mark it resolved to stage this version."),
                     )
                 })
-                .child(
+                .child(super::diff_view::render(
+                    &self.display,
                     Diff::new(&self.display)
                         .on_line_click(move |position, event, _, cx| {
                             if event.click_count() < 2 {
@@ -417,10 +418,10 @@ impl Render for ConflictPanel {
                             }
                             let line = position.line();
                             let _ = panel.update(cx, |panel, cx| panel.open_file(Some(line), cx));
-                        })
-                        .flex_1()
-                        .min_h_0(),
-                ),
+                        }),
+                    window,
+                    cx,
+                )),
         }
     }
 }
