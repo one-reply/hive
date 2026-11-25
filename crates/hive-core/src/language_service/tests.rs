@@ -275,12 +275,26 @@ impl lsp_types::notification::Notification for Blob {
 /// More than any pipe holds, so it stays queued behind a server that does not read.
 const BLOB: usize = 2 * 1024 * 1024;
 
+fn stall_with_input(
+    session: &Session,
+    events: &async_channel::Receiver<Event>,
+) -> super::Request<Stall> {
+    let stall = session.request::<Stall>(Value::Null).unwrap();
+    session.notify::<Blob>("x".repeat(BLOB)).unwrap();
+    // The peer acknowledges the header, then leaves the oversized body in the pipe.
+    let Event::Diagnostics(ack) = events.recv_blocking().unwrap() else {
+        panic!("the server never received the start of the blob");
+    };
+    assert_eq!(ack.uri.as_str(), "file:///stalled.ts");
+    stall
+}
+
 #[test]
 fn input_a_server_never_reads_is_bounded_and_ends_the_session() {
     let fixture = Fixture::new();
     let (session, events) = Session::start(Host::Local, fixture.0.clone(), Family::TypeScript);
     ready(&events);
-    let stall = session.request::<Stall>(Value::Null).unwrap();
+    let stall = stall_with_input(&session, &events);
     let blob = "x".repeat(BLOB);
     let error = loop {
         match session.notify::<Blob>(blob.clone()) {
@@ -309,8 +323,7 @@ fn stopping_a_session_does_not_wait_on_input_the_server_never_reads() {
     let fixture = Fixture::new();
     let (session, events) = Session::start(Host::Local, fixture.0.clone(), Family::TypeScript);
     ready(&events);
-    let stall = session.request::<Stall>(Value::Null).unwrap();
-    session.notify::<Blob>("x".repeat(BLOB)).unwrap();
+    let stall = stall_with_input(&session, &events);
     drop(stall);
     drop(session);
     // Ends once the worker has given up on the queued input and cleaned up the process.
@@ -324,8 +337,7 @@ fn a_server_that_dies_with_input_queued_restarts_once() {
     let fixture = Fixture::new();
     let (session, events) = Session::start(Host::Local, fixture.0.clone(), Family::TypeScript);
     ready(&events);
-    let stall = session.request::<Stall>(Value::Null).unwrap();
-    session.notify::<Blob>("x".repeat(BLOB)).unwrap();
+    let stall = stall_with_input(&session, &events);
     let pid = fs::read_to_string(fixture.0.join("pid"))
         .unwrap()
         .parse()
@@ -590,7 +602,7 @@ fn fake_language_server() {
 }
 
 fn serve_as_fake() -> ! {
-    use std::io::Write as _;
+    use std::io::{BufRead as _, Write as _};
     use std::os::fd::FromRawFd as _;
     let append = |file: &str, line: &str| {
         let mut file = fs::OpenOptions::new()
@@ -664,9 +676,15 @@ fn serve_as_fake() -> ! {
                 }
                 Value::Bool(true)
             }
-            "test/stall" => loop {
-                std::thread::park();
-            },
+            "test/stall" => {
+                let mut header = String::new();
+                input.read_line(&mut header).unwrap();
+                assert!(header.starts_with("Content-Length:"));
+                send(publish("file:///stalled.ts", serde_json::json!([])));
+                loop {
+                    std::thread::park();
+                }
+            }
             "test/diagnostics" => {
                 send(
                     serde_json::json!({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":params}),
