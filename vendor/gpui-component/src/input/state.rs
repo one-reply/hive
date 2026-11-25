@@ -1,5 +1,7 @@
 use crate::root::WindowState;
-use gpui::{App, Bounds, Entity, FocusHandle, Focusable as _, Pixels, SharedString, Window};
+use gpui::{
+    App, Bounds, Entity, FocusHandle, Focusable as _, Pixels, SharedString, WeakEntity, Window,
+};
 use gpui_base::OtpState;
 use ropey::Rope;
 
@@ -23,6 +25,26 @@ pub enum AnyInputState {
     Editor(Entity<EditorState>),
     /// A one-time-code [`crate::input::OtpInput`] state.
     Otp(Entity<OtpState>),
+}
+
+/// The window tracks focus without owning a removed input or its undo history.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum WeakInputState {
+    Input(WeakEntity<InputState>),
+    Textarea(WeakEntity<TextareaState>),
+    Editor(WeakEntity<EditorState>),
+    Otp(WeakEntity<OtpState>),
+}
+
+impl WeakInputState {
+    pub(crate) fn upgrade(&self) -> Option<AnyInputState> {
+        match self {
+            Self::Input(state) => state.upgrade().map(AnyInputState::Input),
+            Self::Textarea(state) => state.upgrade().map(AnyInputState::Textarea),
+            Self::Editor(state) => state.upgrade().map(AnyInputState::Editor),
+            Self::Otp(state) => state.upgrade().map(AnyInputState::Otp),
+        }
+    }
 }
 
 /// The three states the [`crate::input::Input`] element can render.
@@ -375,6 +397,12 @@ pub(super) fn sync_focused_input_registry(
 ) {
     let state = state.into();
     let focused = state.focus_handle(cx).is_focused(window);
+    let state = match state {
+        AnyInputState::Input(state) => WeakInputState::Input(state.downgrade()),
+        AnyInputState::Textarea(state) => WeakInputState::Textarea(state.downgrade()),
+        AnyInputState::Editor(state) => WeakInputState::Editor(state.downgrade()),
+        AnyInputState::Otp(state) => WeakInputState::Otp(state.downgrade()),
+    };
     // Every input syncs as it renders; only one that gains or loses focus
     // changes the registry, and notifying the window state otherwise would
     // draw the whole window again on every frame an input renders in.
@@ -385,7 +413,7 @@ pub(super) fn sync_focused_input_registry(
     }
     WindowState::try_update(window, cx, |root, _, cx| {
         if focused {
-            root.focused_input = Some(state.clone());
+            root.focused_input = Some(state);
         } else if root.focused_input.as_ref() == Some(&state) {
             root.focused_input = None;
         }

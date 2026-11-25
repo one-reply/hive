@@ -8,7 +8,7 @@ use crate::git::status::Change;
 use crate::settings::FilesSettings;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::{
     ffi::OsString,
@@ -116,42 +116,44 @@ fn with_deleted<'a>(
     decorations: &BTreeMap<PathBuf, Decoration>,
     missing: &mut HashSet<PathBuf>,
 ) -> Cow<'a, BTreeMap<PathBuf, Vec<Entry>>> {
-    let mut entries = Cow::Borrowed(entries);
+    let mut result = Cow::Borrowed(entries);
+    // A mass deletion should scan each affected directory's listing only once.
+    let mut siblings = HashMap::<&Path, HashSet<&Path>>::new();
     for (path, decoration) in decorations {
         if decoration.staged != Some(Change::Deleted)
             && decoration.unstaged != Some(Change::Deleted)
         {
             continue;
         }
-        if listed(&entries, path) {
-            continue;
-        }
-        missing.insert(path.clone());
-        let mut child = path.clone();
-        let mut directory = false;
-        while let Some(parent) = child.parent() {
-            let siblings = entries.to_mut().entry(parent.into()).or_default();
-            if !siblings.iter().any(|entry| entry.path == child) {
-                siblings.push(Entry {
-                    path: child.clone(),
-                    directory,
-                    unsupported: false,
-                });
-            }
-            child = parent.into();
-            directory = true;
-            if child.as_os_str().is_empty() {
+        for (depth, child) in path.ancestors().enumerate() {
+            let Some(parent) = child.parent() else { break };
+            let known = siblings.entry(parent).or_insert_with(|| {
+                entries
+                    .get(parent)
+                    .into_iter()
+                    .flatten()
+                    .map(|entry| entry.path.as_path())
+                    .collect()
+            });
+            if known.insert(child) {
+                if depth == 0 {
+                    missing.insert(path.clone());
+                }
+                result
+                    .to_mut()
+                    .entry(parent.into())
+                    .or_default()
+                    .push(Entry {
+                        path: child.into(),
+                        directory: depth != 0,
+                        unsupported: false,
+                    });
+            } else if depth == 0 {
                 break;
             }
         }
     }
-    entries
-}
-
-fn listed(entries: &BTreeMap<PathBuf, Vec<Entry>>, path: &Path) -> bool {
-    entries
-        .get(path.parent().unwrap_or(Path::new("")))
-        .is_some_and(|siblings| siblings.iter().any(|entry| entry.path == path))
+    result
 }
 
 fn children(
@@ -341,6 +343,7 @@ mod tests {
         };
         let decorations = BTreeMap::from([
             (PathBuf::from("docs/old/guide.md"), deleted.clone()),
+            (PathBuf::from("docs/old/second.md"), deleted.clone()),
             (PathBuf::from("src/main.rs"), deleted),
         ]);
         let tree = build_with(
@@ -352,7 +355,10 @@ mod tests {
         );
         assert_eq!(
             tree.missing,
-            HashSet::from([PathBuf::from("docs/old/guide.md")]),
+            HashSet::from([
+                PathBuf::from("docs/old/guide.md"),
+                PathBuf::from("docs/old/second.md")
+            ]),
             "a listed file is never missing"
         );
         let docs = tree
@@ -368,6 +374,14 @@ mod tests {
             panic!("docs must be a folder with children");
         };
         assert_eq!(paths(old), ["docs/old"]);
+        let NodeKind::Directory {
+            contents: Contents::Children(files),
+            ..
+        } = &old[0].kind
+        else {
+            panic!("old must be a folder with children");
+        };
+        assert_eq!(paths(files), ["docs/old/guide.md", "docs/old/second.md"]);
         let mut settings = FilesSettings::default();
         settings.git_decorations = false;
         let plain = build_with(&entries, &settings, &HashSet::new(), &decorations, None);
@@ -397,8 +411,9 @@ mod tests {
         decorations.insert("src/gone.rs".into(), deleted);
         let updated = with_deleted(&entries, &decorations, &mut missing);
         assert!(matches!(updated, Cow::Owned(_)));
-        assert!(listed(&updated, Path::new("src/gone.rs")));
-        assert!(!listed(&entries, Path::new("src/gone.rs")));
+        let gone = entry("src/gone.rs", false);
+        assert!(updated[Path::new("src")].contains(&gone));
+        assert!(!entries[Path::new("src")].contains(&gone));
         assert_eq!(missing, HashSet::from([PathBuf::from("src/gone.rs")]));
     }
 

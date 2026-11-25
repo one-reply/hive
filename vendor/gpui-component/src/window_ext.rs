@@ -264,15 +264,17 @@ impl WindowExt for Window {
     }
 
     fn focused_input(&mut self, cx: &mut App) -> Option<AnyInputState> {
-        let state = WindowState::read(self, cx).focused_input.clone()?;
-        if state.focus_handle(cx).is_focused(self) {
+        let registered = WindowState::read(self, cx).focused_input.clone()?;
+        if let Some(state) = registered.upgrade()
+            && state.focus_handle(cx).is_focused(self)
+        {
             return Some(state);
         }
 
         // An input removed from the tree while focused never re-renders to
         // unregister itself; drop the stale registration lazily.
         WindowState::try_update(self, cx, |root, _, cx| {
-            if root.focused_input.as_ref() == Some(&state) {
+            if root.focused_input.as_ref() == Some(&registered) {
                 root.focused_input = None;
                 cx.notify();
             }
