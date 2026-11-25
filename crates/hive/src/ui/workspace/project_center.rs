@@ -15,6 +15,7 @@ use crate::terminal::panel::Reveal;
 mod agent_draft;
 mod files;
 mod persistence;
+mod recent;
 mod spawn;
 
 pub(super) struct ProjectCenter {
@@ -32,6 +33,7 @@ pub(super) struct ProjectCenter {
     _observer: Subscription,
     _layout: Subscription,
     focused: Option<PanelId>,
+    recent_tabs: recent::RecentTabs,
     pub(super) navigation: crate::state::documents::history::History,
 }
 
@@ -73,6 +75,7 @@ impl ProjectCenter {
             _observer: observer,
             _layout: layout,
             focused: None,
+            recent_tabs: Default::default(),
             navigation: Default::default(),
         }
     }

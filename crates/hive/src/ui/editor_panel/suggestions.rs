@@ -3,6 +3,24 @@
 use gpui_kit::component::input::{EditorState, Enter, IndentInline};
 use gpui_kit::{App, Entity, Window};
 
+/// The widget's code-action menu propagates Enter after selecting its row. Consume the
+/// handled key before the editor or platform inserts a newline and invalidates the fix.
+pub(crate) fn accept_fix_on_enter(
+    editor: Entity<EditorState>,
+) -> impl Fn(&Enter, &mut Window, &mut App) + 'static {
+    move |action, window, cx| {
+        if Enter::is_primary(action)
+            && editor.update(cx, |editor, cx| {
+                editor.code_action_menu_state().open
+                    && editor.route_overlay_action(Box::new(action.clone()), window, cx)
+            })
+        {
+            window.prevent_default();
+            cx.stop_propagation();
+        }
+    }
+}
+
 /// Capture-phase listener for an element around `editor`: while the suggestion menu is open,
 /// Tab inserts the selected item the way Enter does; otherwise the editor indents as before.
 pub(super) fn accept_on_tab(

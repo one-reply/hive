@@ -58,6 +58,10 @@ impl Results {
             .and_then(|i| self.state.read(cx).rows.get(i))
             .copied()
         {
+            if !self.state.read(cx).can_open(row, cx) {
+                self.state.update(cx, |state, cx| state.refresh(cx));
+                return;
+            }
             window.close_dialog(cx);
             self.state.update(cx, |state, cx| state.open(row, cx));
         }

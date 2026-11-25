@@ -200,8 +200,14 @@ impl CompletionProvider for Completions {
         {
             return no_items();
         }
-        let server =
-            super::language_features::completion(&self.document, text, offset, context.clone(), cx);
+        let server = super::language_features::completion(
+            &self.document,
+            text,
+            offset,
+            context.clone(),
+            window,
+            cx,
+        );
         let fallback = self.local_completions(text, offset, context, window, cx);
         match server {
             Some(server) => cx.spawn(async move |_| match server.await {

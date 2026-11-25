@@ -1,6 +1,8 @@
 use super::completions::Completions;
 use super::*;
-use gpui_kit::component::input::{EditorState, InputEditsEvent, InputEvent, Position};
+use gpui_kit::component::input::{
+    EditorState, InputEditsEvent, InputEvent, Position, RopeExt as _,
+};
 use hive_core::agent::reference::{self, CodeReference, Version};
 use hive_core::code_navigation::Navigator;
 use hive_core::files::recovery::Draft;
@@ -9,6 +11,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 mod blame;
+mod editing;
+pub(crate) use editing::Indentation;
 mod formatting;
 mod image;
 mod io;
@@ -36,11 +40,15 @@ pub(crate) struct Document {
     pub target: Target,
     pub path: PathBuf,
     pub editor: Entity<EditorState>,
+    pub(crate) indentation: Indentation,
+    needs_indentation_detection: bool,
+    selection_commands: editing::SelectionCommands,
     completions: Rc<Completions>,
     pub(crate) symbols: Arc<Vec<hive_core::symbols::Symbol>>,
     pub(crate) symbols_text: Option<gpui_kit::component::input::Rope>,
     pub(crate) language: Option<Entity<super::language::LanguageSession>>,
     pub(crate) diagnostics: Vec<lsp_types::Diagnostic>,
+    pub(crate) import_menu: Option<super::language_features::ImportMenu>,
     pub(super) _language_subscription: Option<Subscription>,
     pub(super) _language_sync: Option<Task<()>>,
     blame: LineBlame,
@@ -54,7 +62,7 @@ pub(crate) struct Document {
     pub saving: bool,
     pub formatting: bool,
     pub format_error: Option<String>,
-    revision: u64,
+    pub(super) revision: u64,
     pub visible: bool,
     pub pinned: bool,
     pub path_busy: bool,
@@ -131,8 +139,11 @@ impl Document {
     ) -> Self {
         let language = files::editor_language(&request.path);
         let completions = Completions::new(cx.weak_entity(), navigator);
+        let indentation = Indentation::for_path(&request.path);
         let editor = cx.new(|cx| {
-            let mut editor = EditorState::new(window, cx).language(language);
+            let mut editor = EditorState::new(window, cx)
+                .language(language)
+                .tab_size(indentation.tab_size());
             editor.lsp_mut().completion_provider = Some(completions.clone());
             editor
         });
@@ -142,10 +153,12 @@ impl Document {
             cx.on_release(|this, cx| this.close_language(cx)),
             cx.observe(&store, |this, _, cx| this.apply_blame_setting(cx)),
             cx.subscribe(&editor, |this, _, event: &InputEditsEvent, _| {
+                this.selection_commands.edited(event);
                 this.completions.edit(event.edits());
             }),
             cx.subscribe_in(&editor, window, |this, _, event, _, cx| {
                 if matches!(event, InputEvent::Change) {
+                    this.import_menu = None;
                     this.revision = this.revision.wrapping_add(1);
                     this.symbols = Arc::default();
                     this.invalidate_image(cx);
@@ -155,11 +168,14 @@ impl Document {
                     this.completions.schedule_refresh(cx);
                     this.schedule_language(cx);
                     this.invalidate_blame(cx);
-                    this.emit(DocumentEvent::Changed(this.target.clone()), cx);
+                    this.emit(DocumentEvent::Edited(this.at_cursor(cx)), cx);
                     cx.notify();
                 }
             }),
             cx.on_focus_out(&editor_focus, window, |this, _, window, cx| {
+                if this.import_menu.take().is_some() {
+                    cx.notify();
+                }
                 if this.dirty && this.saves_on_focus_change(cx) {
                     this.save(None, window, cx);
                 }
@@ -197,11 +213,15 @@ impl Document {
             target: request.target,
             path: request.path,
             editor,
+            indentation,
+            needs_indentation_detection: true,
+            selection_commands: Default::default(),
             completions,
             symbols: Arc::default(),
             symbols_text: None,
             language: None,
             diagnostics: Vec::new(),
+            import_menu: None,
             _language_subscription: None,
             _language_sync: None,
             blame,
@@ -233,6 +253,7 @@ impl Document {
             _subscriptions: subscriptions,
         };
         if let Some(record) = recovered {
+            document.infer_indentation(&record.draft.text, cx);
             document.editor.update(cx, |editor, cx| {
                 editor.set_value(record.draft.text, window, cx)
             });
@@ -279,6 +300,16 @@ impl Document {
         )
         .inspect_err(|error| tracing::warn!(%error, "no code reference for this file"))
         .ok()
+    }
+
+    pub(crate) fn at_cursor(&self, cx: &App) -> OpenFile {
+        OpenFile {
+            target: self.target.clone(),
+            path: self.path.clone(),
+            position: Some(self.editor.read(cx).cursor_position()),
+            preview: false,
+            placement: Default::default(),
+        }
     }
 
     pub fn saved_position(&self, cx: &App) -> ([u32; 2], [f32; 2]) {
@@ -420,13 +451,48 @@ impl Document {
         }
     }
 
+    pub(super) fn replace_preserving_view(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            let selected = editor.selected_range();
+            let start = editor.text().offset_to_position(selected.start);
+            let end = editor.text().offset_to_position(selected.end);
+            let reversed = editor.is_selection_reversed();
+            let scroll = editor.scroll_offset();
+            editor.replace_all(text, window, cx);
+            let range =
+                editor.text().position_to_offset(&start)..editor.text().position_to_offset(&end);
+            editor.set_selected_range_with_direction(range, reversed, cx);
+            editor.set_scroll_offset(scroll, cx);
+        });
+    }
+
+    /// A just-created buffer already has an exact, rechecked rename baseline.
+    pub(super) fn install_reviewed(
+        &mut self,
+        snapshot: Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._read = None;
+        self.loading = false;
+        self.install(snapshot, window, cx);
+    }
+
     fn install(&mut self, snapshot: Snapshot, window: &mut Window, cx: &mut Context<Self>) {
         // Restoring a cursor focuses gpui-component's editor; background reads must not steal focus.
         let focus = window.focused(cx);
+        let text = snapshot.text();
+        self.infer_indentation(&text, cx);
+        self.selection_commands = Default::default();
         self.editor.update(cx, |editor, cx| {
             let position = editor.cursor_position();
             let scroll = editor.scroll_offset();
-            editor.set_value(snapshot.text(), window, cx);
+            editor.set_value(text, window, cx);
             editor.set_cursor_position(position, window, cx);
             editor.set_scroll_offset(scroll, cx);
         });

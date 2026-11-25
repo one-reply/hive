@@ -71,8 +71,13 @@ impl FilesPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.files
-            .update(cx, |files, cx| files.set_search_mode(mode, cx));
+        self.files.update(cx, |files, cx| {
+            if mode == SearchMode::Content {
+                files.search_folder(None, cx)
+            } else {
+                files.set_search_mode(mode, cx)
+            }
+        });
         self.sync_search_input(window, cx);
         self.focus_search(window, cx);
     }

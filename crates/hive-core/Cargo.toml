@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["dep:alacritty_terminal", "dep:rustix-openpty", "dep:polling", "dep:ureq", "dep:async-channel", "dep:security-framework", "dep:markdown"]
+desktop = ["dep:alacritty_terminal", "dep:rustix-openpty", "dep:polling", "dep:ureq", "dep:async-channel", "dep:security-framework", "dep:markdown", "dep:similar"]
 remote-helper = []
 # Exposes `git::testing`, the hermetic Git environment, to the tests of other crates. It adds
 # functions only: nothing behaves differently until a test calls them.
@@ -25,6 +25,7 @@ required-features = ["remote-helper"]
 serde.workspace = true
 serde_json.workspace = true
 shlex.workspace = true
+similar = { workspace = true, optional = true }
 sha2.workspace = true
 lsp-types.workspace = true
 markdown = { workspace = true, optional = true }

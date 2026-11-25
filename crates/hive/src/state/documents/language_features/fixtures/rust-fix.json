@@ -1,0 +1,29 @@
+{
+  "title": "Import `crate::model::FancyWidget`",
+  "kind": "quickfix",
+  "edit": {
+    "documentChanges": [
+      {
+        "textDocument": {
+          "version": 2,
+          "uri": "file:///project/rs/src/main.rs"
+        },
+        "edits": [
+          {
+            "range": {
+              "start": {
+                "line": 0,
+                "character": 0
+              },
+              "end": {
+                "line": 0,
+                "character": 0
+              }
+            },
+            "newText": "use crate::model::FancyWidget;\n\n"
+          }
+        ]
+      }
+    ]
+  }
+}

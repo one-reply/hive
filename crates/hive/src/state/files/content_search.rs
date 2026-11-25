@@ -7,6 +7,24 @@ use hive_core::{
     files::content_search::{self as engine, FileMatches, Query},
 };
 
+use gpui_kit::component::input::Rope;
+
+pub(crate) type Buffers = BTreeMap<PathBuf, Rope>;
+
+pub(crate) fn buffers(target: &Target, cx: &App) -> Buffers {
+    AppState::get(cx)
+        .documents
+        .read(cx)
+        .in_path(target, Path::new(""), cx)
+        .into_iter()
+        .filter_map(|doc| {
+            let d = doc.read(cx);
+            d.dirty
+                .then(|| (d.path.clone(), d.editor.read(cx).text().clone()))
+        })
+        .collect()
+}
+
 /// Typing pause before a search starts; toggles, Enter and refresh start at once.
 const DEBOUNCE: Duration = Duration::from_millis(150);
 
@@ -47,15 +65,17 @@ pub(crate) enum ContentStatus {
 }
 
 /// A finished run, before it is accepted into the model.
-pub(super) struct Finished {
-    truncated: bool,
-    index_truncated: bool,
+pub(crate) struct Finished {
+    pub(crate) truncated: bool,
+    pub(crate) index_truncated: bool,
 }
 
 #[derive(Default)]
 pub(super) struct ContentSearch {
     query: Query,
     results: Vec<FileMatches>,
+    folder: Option<PathBuf>,
+    buffers: Buffers,
     matched_lines: usize,
     status: ContentStatus,
     /// Results belong to an earlier query until the new run delivers its first batch, so
@@ -123,6 +143,7 @@ impl ContentSearch {
     fn clear(&mut self) {
         self.generation += 1;
         self.task = None;
+        self.buffers.clear();
         self.results.clear();
         self.matched_lines = 0;
         self.status = ContentStatus::Idle;
@@ -134,6 +155,7 @@ impl ContentSearch {
     /// Forget the query text too, keeping the comparison options.
     pub(super) fn reset(&mut self) {
         self.clear();
+        self.folder = None;
         self.query.text.clear();
     }
 
@@ -158,6 +180,38 @@ impl Files {
             SearchMode::Names => self.search_query(),
             SearchMode::Content => &self.content.query.text,
         }
+    }
+
+    pub(crate) fn content_folder(&self) -> Option<&Path> {
+        self.content.folder.as_deref()
+    }
+
+    pub(crate) fn search_folder(&mut self, folder: Option<PathBuf>, cx: &mut Context<Self>) {
+        let changed = self.content.folder != folder;
+        self.content.folder = folder;
+        if self.search_mode != SearchMode::Content {
+            self.set_search_mode(SearchMode::Content, cx);
+        } else if changed {
+            self.start_content_search(Duration::ZERO, cx);
+        }
+    }
+
+    pub(crate) fn open_match(
+        &mut self,
+        path: PathBuf,
+        line: u32,
+        column: u32,
+        preview: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(target) = self.target.as_ref() else {
+            return;
+        };
+        if self.content.stale || !snapshot_current(target, &path, &self.content.buffers, cx) {
+            self.rerun_content_search(cx);
+            return;
+        }
+        self.open_at(path, line, column, preview, cx);
     }
 
     pub(crate) fn content_query(&self) -> &Query {
@@ -239,6 +293,9 @@ impl Files {
         };
         let generation = self.content.begin();
         let query = self.content.query.clone();
+        let folder = self.content.folder.clone();
+        self.content.buffers = buffers(&target, cx);
+        let sources = self.content.buffers.clone();
         self.content.task = Some(cx.spawn(async move |this, cx| {
             if !delay.is_zero() {
                 cx.background_executor().timer(delay).await;
@@ -249,9 +306,16 @@ impl Files {
             let work = cx.background_executor().spawn(crate::state::file_io::run(
                 executor,
                 move |cancellation| {
-                    run(&target, &query, cancellation, |file| {
-                        let _ = sender.try_send(file);
-                    })
+                    run(
+                        &target,
+                        &query,
+                        folder.as_deref(),
+                        &sources,
+                        cancellation,
+                        |file| {
+                            let _ = sender.try_send(file);
+                        },
+                    )
                 },
             ));
             while let Ok(file) = receiver.recv().await {
@@ -278,21 +342,50 @@ impl Files {
 }
 
 /// Blocking: list the worktree afresh, so files agents just created are searched too.
-pub(super) fn run(
+pub(crate) fn run(
     target: &Target,
     query: &Query,
+    folder: Option<&Path>,
+    buffers: &Buffers,
     cancellation: &Cancellation,
     emit: impl FnMut(FileMatches),
 ) -> Result<Finished, String> {
-    let index = files::Access::new(&target.host, cancellation)
+    let mut index = files::Access::new(&target.host, cancellation)
         .list_files(&target.path)
         .map_err(|error| error.to_string())?;
-    let summary = engine::search(&target.path, &index.paths, query, cancellation, emit)
-        .map_err(|error| error.to_string())?;
+    index.paths.extend(buffers.keys().cloned());
+    if let Some(folder) = folder {
+        index.paths.retain(|p| p.starts_with(folder));
+    }
+    index.paths.sort();
+    index.paths.dedup();
+    let summary = engine::search_with_buffers(
+        &target.path,
+        &index.paths,
+        query,
+        cancellation,
+        |path| buffers.get(path).map(ToString::to_string),
+        emit,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(Finished {
         truncated: summary.truncated,
         index_truncated: index.truncated,
     })
+}
+
+/// A hit on an open file must still describe the version the user will see.
+pub(crate) fn snapshot_current(target: &Target, path: &Path, sources: &Buffers, cx: &App) -> bool {
+    let documents = AppState::get(cx).documents.read(cx);
+    let current = documents
+        .in_path(target, path, cx)
+        .into_iter()
+        .find(|d| d.read(cx).path == path);
+    match (sources.get(path), current) {
+        (Some(snapshot), Some(doc)) => doc.read(cx).editor.read(cx).text() == snapshot,
+        (None, Some(doc)) => !doc.read(cx).dirty,
+        (snapshot, None) => snapshot.is_none(),
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use super::{ContentSearch, ContentStatus, Finished, SearchOption, run};
+use super::{Buffers, ContentSearch, ContentStatus, Finished, Rope, SearchOption, run};
 use hive_core::{
     command::Cancellation,
     files::content_search::{FileMatches, LineMatch, Query},
@@ -7,7 +7,7 @@ use hive_core::{
 };
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -132,6 +132,7 @@ fn a_failed_run_drops_results_and_reports_the_error() {
 fn clearing_cancels_the_run_and_keeps_options() {
     let mut search = ContentSearch::default();
     search.query.text = "needle".into();
+    search.folder = Some("src".into());
     search.toggle(SearchOption::Regex);
     search.toggle(SearchOption::MatchCase);
     let run = search.begin();
@@ -144,6 +145,7 @@ fn clearing_cancels_the_run_and_keeps_options() {
 
     search.reset();
     assert!(search.query.text.is_empty());
+    assert!(search.folder.is_none());
     assert!(search.query.regex && search.query.case_sensitive && !search.query.whole_word);
 }
 
@@ -159,9 +161,14 @@ fn run_searches_a_plain_directory_in_path_order() {
         text: "needle".into(),
         ..Query::default()
     };
-    let finished = run(&f.0, &query, &Cancellation::default(), |file| {
-        found.push(file)
-    })
+    let finished = run(
+        &f.0,
+        &query,
+        None,
+        &Buffers::new(),
+        &Cancellation::default(),
+        |file| found.push(file),
+    )
     .unwrap();
     assert!(!finished.truncated && !finished.index_truncated);
     let found: Vec<_> = found
@@ -180,8 +187,49 @@ fn run_reports_an_invalid_pattern() {
         regex: true,
         ..Query::default()
     };
-    let Err(error) = run(&f.0, &query, &Cancellation::default(), |_| {}) else {
+    let Err(error) = run(
+        &f.0,
+        &query,
+        None,
+        &Buffers::new(),
+        &Cancellation::default(),
+        |_| {},
+    ) else {
         panic!("an invalid pattern must fail");
     };
     assert!(error.starts_with("Invalid regular expression"), "{error}");
+}
+
+#[test]
+fn scoped_search_uses_dirty_text_once_and_counts_unicode_columns() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.0.path.join("pkg")).unwrap();
+    fs::write(f.0.path.join("pkg/a.tsx"), "old needle").unwrap();
+    fs::write(f.0.path.join("pkg/b.rs"), "needle").unwrap();
+    fs::write(f.0.path.join("other.tsx"), "needle").unwrap();
+    let sources = Buffers::from([
+        (PathBuf::from("pkg/a.tsx"), Rope::from("😀needle")),
+        (PathBuf::from("pkg/b.rs"), Rope::from("removed")),
+        (
+            PathBuf::from("pkg/draft.ts"),
+            Rope::from("needle without a disk file"),
+        ),
+    ]);
+    let mut results = Vec::new();
+    run(
+        &f.0,
+        &Query {
+            text: "needle".into(),
+            ..Default::default()
+        },
+        Some(Path::new("pkg")),
+        &sources,
+        &Cancellation::default(),
+        |hit| results.push(hit),
+    )
+    .unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[1].path, Path::new("pkg/draft.ts"));
+    assert_eq!(results[0].path, Path::new("pkg/a.tsx"));
+    assert_eq!(results[0].lines[0].column, 1);
 }

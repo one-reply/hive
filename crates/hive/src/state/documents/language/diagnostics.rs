@@ -122,46 +122,91 @@ impl Documents {
         target: &Target,
         cx: &App,
     ) -> Vec<hive_core::files::excerpts::Hit> {
-        self.language_sessions
-            .iter()
-            .filter(|(host, root, _, _)| *host == target.host && *root == target.path)
-            .filter_map(|(_, _, _, session)| session.upgrade())
-            .flat_map(|session| {
-                let session = session.read(cx);
-                session
-                    .diagnostics
-                    .values()
-                    .flat_map(|publication| {
-                        let params = &publication.params;
-                        let path = position::path(&params.uri);
-                        let valid = self
-                            .buffer(
-                                &target.host,
-                                path.as_deref().unwrap_or(std::path::Path::new("")),
-                                cx,
-                            )
-                            .map(|text| session.current_diagnostics(&params.uri, &Rope::from(text)))
-                            .unwrap_or_else(|| params.diagnostics.clone());
-                        valid.into_iter().filter_map(move |diagnostic| {
-                            Some(hive_core::files::excerpts::Hit {
-                                path: path.clone()?,
-                                line: diagnostic.range.start.line,
-                                message: format!(
-                                    "{}: {}",
-                                    match diagnostic.severity {
-                                        Some(DiagnosticSeverity::ERROR) => "Error",
-                                        Some(DiagnosticSeverity::WARNING) => "Warning",
-                                        _ => "Info",
-                                    },
-                                    diagnostic.message
-                                ),
-                            })
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+        let mut hits = Vec::new();
+        self.visit_diagnostics(target, cx, |path, diagnostic| {
+            hits.push(hive_core::files::excerpts::Hit {
+                column: 0,
+                path: path.into(),
+                line: diagnostic.range.start.line,
+                message: format!(
+                    "{}: {}",
+                    match diagnostic.severity {
+                        Some(DiagnosticSeverity::ERROR) => "Error",
+                        Some(DiagnosticSeverity::WARNING) => "Warning",
+                        _ => "Info",
+                    },
+                    diagnostic.message
+                ),
+            });
+        });
+        hits
     }
+
+    fn visit_diagnostics(
+        &self,
+        target: &Target,
+        cx: &App,
+        mut visit: impl FnMut(&std::path::Path, &lsp_types::Diagnostic),
+    ) {
+        for session in self.problem_sessions(target) {
+            let session = session.read(cx);
+            for publication in session.diagnostics.values() {
+                let params = &publication.params;
+                let Some(path) = position::path(&params.uri) else {
+                    continue;
+                };
+                let current = self
+                    .buffer(&target.host, &path, cx)
+                    .map(|text| session.current_diagnostics(&params.uri, &Rope::from(text)));
+                for diagnostic in current.as_deref().unwrap_or(&params.diagnostics) {
+                    visit(&path, diagnostic);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn adjacent_diagnostic(
+        &self,
+        document: &Entity<Document>,
+        previous: bool,
+        cx: &App,
+    ) -> Option<Task<Result<OpenFile, String>>> {
+        let document = document.read(cx);
+        let editor = document.editor.read(cx);
+        let target = &document.target;
+        let cursor = position::at(&editor.text().to_string(), editor.cursor())?;
+        let mut positions = Vec::new();
+        self.visit_diagnostics(target, cx, |path, diagnostic| {
+            if let Ok(relative) = path.strip_prefix(&target.path)
+                && !relative.as_os_str().is_empty()
+                && relative
+                    .components()
+                    .all(|c| matches!(c,std::path::Component::Normal(part) if part != ".git"))
+            {
+                positions.push((relative.to_owned(), diagnostic.range.start));
+            }
+        });
+        let (path, position) = adjacent(positions, (document.path.clone(), cursor), previous)?;
+        Some(self.resolve_position(target.clone(), path, position, cx))
+    }
+}
+
+fn adjacent(
+    mut positions: Vec<(PathBuf, Position)>,
+    origin: (PathBuf, Position),
+    previous: bool,
+) -> Option<(PathBuf, Position)> {
+    positions.sort_unstable();
+    let ix = if previous {
+        positions
+            .partition_point(|entry| entry < &origin)
+            .checked_sub(1)
+            .or_else(|| positions.len().checked_sub(1))?
+    } else {
+        let next = positions.partition_point(|entry| entry <= &origin);
+        if next == positions.len() { 0 } else { next }
+    };
+    positions.get(ix).cloned()
 }
 
 // Bound retained server data as well as individual wire frames; auxiliary edits/data are unused.
@@ -186,8 +231,11 @@ fn retain_bounded(
         diagnostic.data = None;
         diagnostic.related_information = None;
         diagnostic.code_description = None;
-        diagnostic.source = None;
-        diagnostic.code = None;
+        // The TypeScript server keys quick fixes by diagnostic code. Keep bounded identifiers.
+        diagnostic.source = diagnostic.source.take().filter(|s| s.len() <= 128);
+        if matches!(&diagnostic.code, Some(NumberOrString::String(s)) if s.len() > 128) {
+            diagnostic.code = None;
+        }
     }
     if !params.diagnostics.is_empty() {
         map.insert(
@@ -200,6 +248,24 @@ fn retain_bounded(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diagnostics_walk_across_files_and_wrap_in_both_directions() {
+        let at = |name: &str, column| (std::path::PathBuf::from(name), Position::new(0, column));
+        let rows = vec![at("b.ts", 4), at("a.ts", 2), at("a.ts", 2)];
+        assert_eq!(
+            super::adjacent(rows.clone(), at("a.ts", 2), false),
+            Some(at("b.ts", 4))
+        );
+        assert_eq!(
+            super::adjacent(rows.clone(), at("b.ts", 4), false),
+            Some(at("a.ts", 2))
+        );
+        assert_eq!(
+            super::adjacent(rows, at("a.ts", 2), true),
+            Some(at("b.ts", 4))
+        );
+        assert!(super::adjacent(Vec::new(), at("a.ts", 0), true).is_none());
+    }
     use super::{HashMap, Publication, Rope, Synced, for_editor, retain_bounded, visible};
     use lsp_types::*;
 

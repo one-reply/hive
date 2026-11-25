@@ -37,6 +37,7 @@ use switcher::attention::Attention;
 
 mod center;
 mod center_dock;
+mod commands;
 pub(crate) mod exit_guard;
 mod files;
 mod git;
@@ -58,6 +59,7 @@ use right_tab::{RightTab, RightTabs};
 actions!(
     workspace,
     [
+        ShowCommands,
         QuickSwitch,
         OpenHistory,
         NewTerminal,
@@ -786,7 +788,43 @@ impl Render for Workspace {
             .size_full()
             .track_focus(&self.focus)
             .key_context("Workspace")
+            .on_action(cx.listener(|_, _: &ShowCommands, window, cx| commands::open(window, cx)))
             .on_action(cx.listener(Self::new_terminal))
+            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, _| {
+                if let Some(center) = this.shown.as_ref().and_then(|p| this.centers.get_mut(p)) {
+                    center.release_tab_cycle(event.modifiers);
+                }
+            }))
+            .on_action(cx.listener(
+                |this, _: &crate::ui::editor_panel::SwitchRecentTab, window, cx| {
+                    if let Some(center) = this.shown.as_ref().and_then(|p| this.centers.get_mut(p))
+                    {
+                        center.switch_recent(window, cx);
+                    }
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::ui::editor_panel::ReopenClosedFile, window, cx| {
+                    if let Some(file) = this
+                        .shown
+                        .as_ref()
+                        .and_then(|p| this.centers.get_mut(p))
+                        .and_then(|c| c.navigation.reopen())
+                    {
+                        this.open_file(file, window, cx);
+                    }
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::ui::editor_panel::LastEditLocation, window, cx| {
+                    if let Some(file) = this
+                        .shown_center()
+                        .and_then(|c| c.navigation.last_edit.clone())
+                    {
+                        this.open_file(file, window, cx);
+                    }
+                },
+            ))
             .on_action(cx.listener(
                 |this, _: &crate::ui::editor_panel::NavigateBack, window, cx| {
                     this.navigate_file(false, window, cx)
@@ -800,6 +838,13 @@ impl Render for Workspace {
             .on_action(cx.listener(
                 |this, _: &crate::ui::editor_panel::OpenFileSearch, window, cx| {
                     this.open_file_search(SearchMode::Names, window, cx)
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::ui::editor_panel::WorkspaceSymbols, window, cx| {
+                    if let Some(target) = this.projects.read(cx).target() {
+                        crate::ui::editor_panel::workspace_symbols::open(target, window, cx);
+                    }
                 },
             ))
             .on_action(cx.listener(

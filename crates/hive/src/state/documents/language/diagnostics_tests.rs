@@ -166,12 +166,6 @@ fn check_after_edit(cx: &mut TestAppContext, published: Published, edited: &str,
     });
     let (document, session) = captured.unwrap();
     cx.run_until_parked();
-    if matches!(published, Published::UnversionedBeforeOpen) {
-        // Attaching does not apply what the session already holds; the next session event,
-        // such as another file's publication, does.
-        session.update(cx, |_, cx| cx.notify());
-        cx.run_until_parked();
-    }
     cx.read(|cx| {
         assert_eq!(
             document.read(cx).diagnostics.len(),

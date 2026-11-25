@@ -7,6 +7,8 @@ use lsp_types::{
 };
 use std::collections::{HashMap, VecDeque};
 
+#[cfg(test)]
+mod acceptance_tests;
 mod diagnostics;
 #[cfg(test)]
 mod diagnostics_tests;
@@ -85,6 +87,15 @@ pub(crate) struct LanguageSession {
 }
 
 impl LanguageSession {
+    pub(super) fn symbol_client(&self) -> Option<Session> {
+        self.capabilities
+            .as_ref()?
+            .workspace_symbol_provider
+            .as_ref()
+            .filter(|provider| !matches!(provider, lsp_types::OneOf::Left(false)))
+            .map(|_| self.client.clone())
+    }
+
     fn saved(&mut self, uri: Uri, text: Option<String>, cx: &mut Context<Self>) {
         let save = self
             .capabilities
@@ -237,6 +248,10 @@ impl LanguageSession {
         self.diagnostics.clear();
         self.listen(events, cx);
         cx.notify();
+    }
+
+    pub(super) fn document_version(&self, uri: &Uri) -> Option<i32> {
+        self.documents.get(uri).map(|document| document.version)
     }
 
     pub(super) fn sync(
@@ -444,7 +459,6 @@ impl Document {
     fn attach_language(&mut self, session: Entity<LanguageSession>, cx: &mut Context<Self>) {
         self._language_subscription = Some(cx.observe(&session, |this, _, cx| {
             this.sync_language(cx);
-            this.apply_diagnostics(cx);
             cx.notify();
         }));
         self.language = Some(session);
@@ -466,8 +480,6 @@ impl Document {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.sync_language(cx);
-                // Servers may stay silent when an edit leaves the diagnosed lines unchanged.
-                this.apply_diagnostics(cx);
             });
         }));
     }
@@ -480,6 +492,8 @@ impl Document {
         }
         let text = self.editor.read(cx).text().clone();
         let _ = self.language_client(&text, cx);
+        // A session can already hold diagnostics before this buffer first synchronizes.
+        self.apply_diagnostics(cx);
     }
 
     pub(super) fn language_client(&self, text: &Rope, cx: &mut App) -> Option<(Session, Uri)> {

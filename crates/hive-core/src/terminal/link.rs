@@ -3,8 +3,9 @@
 //! Only web addresses count. Terminal output is untrusted, and handing `file:`, `ssh:` or a
 //! custom scheme to the system opener could launch an arbitrary app on a click.
 
-use std::ops::RangeInclusive;
+use crate::files::location::Location;
 use std::sync::{Mutex, PoisonError};
+use std::{ops::RangeInclusive, path::PathBuf};
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Boundary, Column, Direction};
@@ -17,6 +18,10 @@ use super::{Point, Terminal};
 /// Characters a URL cannot contain, after Alacritty's default hint pattern. Lowercase only:
 /// `RegexSearch` turns case-insensitive matching off when the pattern has an uppercase letter.
 const URL_PATTERN: &str = r#"https?://[^\x00-\x1f\x7f-\x9f<>"\s{}\^⟨⟩`\\]+"#;
+
+// One ordinary compiler token or a quoted path, with at least one numeric coordinate.
+const SOURCE_PATTERN: &str =
+    r#"(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s\x00-\x1f\x7f"'<>()\[\]{},:;]+):[0-9]+(?::[0-9]+)?"#;
 
 /// How far a URL may reach from the hovered cell. The lookup runs on every render under the
 /// terminal lock, and one wrapped line (minified output) can fill the whole scrollback:
@@ -42,12 +47,40 @@ impl TerminalLink {
     }
 }
 
+/// A compiler location under a cell. Source links open only in the originating worktree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceLink {
+    /// Filename as printed by the process.
+    pub path: PathBuf,
+    /// Requested logical editor position.
+    pub position: Location,
+    cells: RangeInclusive<Point>,
+}
+
+impl SourceLink {
+    /// Whether the terminal grid cell belongs to this location.
+    pub fn contains(&self, point: Point) -> bool {
+        self.cells.contains(&point)
+    }
+}
+
 /// The URL search automaton, compiled on the first lookup and kept for the terminal's life.
 /// Boxed: its four lazy DFAs would otherwise make every `Terminal` value large.
 #[derive(Default)]
 pub(super) struct UrlSearch(Mutex<Option<Box<RegexSearch>>>);
 
 impl Terminal {
+    /// The path and coordinates at a cell, accounting for terminal scrollback.
+    pub fn source_link_at(&self, point: Point<usize>) -> Option<SourceLink> {
+        let term = self.term.lock();
+        let point = grid_point(&term, point);
+        if term.grid()[point].hyperlink().is_some() {
+            return None;
+        }
+        self.source_search
+            .with_regex(SOURCE_PATTERN, |regex| source_at(&term, point, regex))
+    }
+
     /// The web link at a visible cell, accounting for scrollback.
     pub fn link_at(&self, point: Point<usize>) -> Option<TerminalLink> {
         let term = self.term.lock();
@@ -58,16 +91,24 @@ impl Terminal {
 
 impl UrlSearch {
     fn find<T>(&self, term: &Term<T>, point: Point) -> Option<TerminalLink> {
+        self.with_regex(URL_PATTERN, |regex| url_at(term, point, regex))
+    }
+
+    fn with_regex<R>(
+        &self,
+        pattern: &str,
+        find: impl FnOnce(&mut RegexSearch) -> Option<R>,
+    ) -> Option<R> {
         let mut regex = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let regex = match &mut *regex {
             Some(regex) => regex,
             empty => empty.insert(Box::new(
-                RegexSearch::new(URL_PATTERN)
+                RegexSearch::new(pattern)
                     .inspect_err(|error| tracing::warn!(%error, "terminal URL pattern rejected"))
                     .ok()?,
             )),
         };
-        url_at(term, point, regex)
+        find(regex)
     }
 }
 
@@ -96,15 +137,7 @@ fn hyperlink_at<T>(term: &Term<T>, point: Point) -> Option<TerminalLink> {
 /// A URL in the text of the (soft-wrapped) line under `point`, looked for no further than
 /// [`URL_ROWS`] rows either side of it.
 fn url_at<T>(term: &Term<T>, point: Point, regex: &mut RegexSearch) -> Option<TerminalLink> {
-    let line_start = term
-        .line_search_left(point)
-        .max(Point::new(point.line - URL_ROWS, Column(0)));
-    let line_end = term
-        .line_search_right(point)
-        .min(Point::new(point.line + URL_ROWS, term.last_column()));
-    let found = RegexIter::new(line_start, line_end, Direction::Right, term, regex)
-        .take_while(|found| *found.start() <= point)
-        .find(|found| found.contains(&point))?;
+    let found = text_match(term, point, regex)?;
     let text = term.bounds_to_string(*found.start(), *found.end());
     let url = trim_url(&text);
     if !is_web_url(url) {
@@ -116,6 +149,41 @@ fn url_at<T>(term: &Term<T>, point: Point, regex: &mut RegexSearch) -> Option<Te
     (point <= last).then(|| TerminalLink {
         url: url.to_owned(),
         cells: *found.start()..=last,
+    })
+}
+
+fn text_match<T>(
+    term: &Term<T>,
+    point: Point,
+    regex: &mut RegexSearch,
+) -> Option<RangeInclusive<Point>> {
+    let line_start = term
+        .line_search_left(point)
+        .max(Point::new(point.line - URL_ROWS, Column(0)));
+    let line_end = term
+        .line_search_right(point)
+        .min(Point::new(point.line + URL_ROWS, term.last_column()));
+    RegexIter::new(line_start, line_end, Direction::Right, term, regex)
+        .take_while(|found| *found.start() <= point)
+        .find(|found| found.contains(&point))
+}
+
+fn source_at<T>(term: &Term<T>, point: Point, regex: &mut RegexSearch) -> Option<SourceLink> {
+    let cells = text_match(term, point, regex)?;
+    let text = term.bounds_to_string(*cells.start(), *cells.end());
+    let (name, position) = Location::split(&text)?;
+    let name = name
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| name.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .unwrap_or(name);
+    if name.is_empty() || name.starts_with("//") {
+        return None;
+    }
+    Some(SourceLink {
+        path: name.into(),
+        position,
+        cells,
     })
 }
 
@@ -156,6 +224,49 @@ mod tests {
     use alacritty_terminal::index::Column;
     use alacritty_terminal::term::Config;
     use alacritty_terminal::vte::ansi::Processor;
+
+    #[test]
+    fn compiler_locations_cover_wrapped_cells_and_quoted_filenames() {
+        for (text, point, name, row, col) in [
+            (
+                " --> src/lib.rs:84:17",
+                Point::new(0, Column(7)),
+                "src/lib.rs",
+                83,
+                16,
+            ),
+            (
+                r#" ("two words.tsx":4:2)"#,
+                Point::new(0, Column(7)),
+                "two words.tsx",
+                3,
+                1,
+            ),
+            (
+                " long/nested/src/main.rs:3",
+                Point::new(1, Column(3)),
+                "long/nested/src/main.rs",
+                2,
+                0,
+            ),
+        ] {
+            let grid = term(text, 16, 4);
+            let found = source_at(
+                &grid,
+                grid_point(&grid, point),
+                &mut RegexSearch::new(SOURCE_PATTERN).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(found.path, PathBuf::from(name));
+            assert_eq!(
+                found.position,
+                Location {
+                    line: row,
+                    column: col
+                }
+            );
+        }
+    }
 
     fn term(text: &str, cols: u16, rows: u16) -> Term<VoidListener> {
         let mut term = Term::new(

@@ -80,7 +80,26 @@ fn map_uris(value: &mut Value, map: &dyn Fn(PathBuf) -> Option<PathBuf>) {
         }
         Value::Object(fields) => {
             for (key, value) in fields {
-                if matches!(key.as_str(), "uri" | "targetUri" | "rootUri") {
+                if key == "changes"
+                    && let Value::Object(changes) = value
+                {
+                    // WorkspaceEdit.changes keys are document URIs, unlike documentChanges.
+                    let mut mapped = serde_json::Map::new();
+                    for (key, edits) in std::mem::take(changes) {
+                        let key = position::decode(&key)
+                            .and_then(map)
+                            .and_then(|path| position::uri(&path))
+                            .map_or(key, |uri| uri.as_str().to_owned());
+                        if mapped.insert(key, edits).is_some() {
+                            // Ambiguous aliases must fail deserialization instead of losing one file's edits.
+                            *value = Value::Bool(false);
+                            break;
+                        }
+                    }
+                    if let Value::Object(changes) = value {
+                        *changes = mapped;
+                    }
+                } else if matches!(key.as_str(), "uri" | "targetUri" | "rootUri") {
                     let mapped = value
                         .as_str()
                         .and_then(position::decode)
@@ -103,6 +122,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn workspace_edit_keys_follow_the_root_and_collisions_are_rejected() {
+        let physical = Path::new("/real");
+        let alias = Path::new("/alias");
+        let mut edit = json!({"edit": {"changes":{"file:///real/a.rs":[]}}});
+        inbound(&mut edit, physical, alias);
+        assert!(edit["edit"]["changes"].get("file:///alias/a.rs").is_some());
+        let mut collision = json!({"changes":{"file:///real/a.rs":[],"file:///alias/a.rs":[]}});
+        inbound(&mut collision, physical, alias);
+        assert!(serde_json::from_value::<lsp_types::WorkspaceEdit>(collision).is_err());
+    }
     #[test]
     fn remote_root_discards_login_banners_and_resolves_a_symlink() {
         use std::{

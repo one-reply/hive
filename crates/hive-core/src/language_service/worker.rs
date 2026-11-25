@@ -131,7 +131,9 @@ fn serve(
             "workspace":{"configuration":true,"workspaceFolders":true,"applyEdit":false},
             "textDocument":{
                 "synchronization":{"dynamicRegistration":false,"didSave":true},
-                "completion":{"completionItem":{"snippetSupport":false,"insertReplaceSupport":false}},
+                "completion":{"completionItem":{"snippetSupport":false,"insertReplaceSupport":false,"labelDetailsSupport":true,"resolveSupport":{"properties":["additionalTextEdits"]}}},
+                "signatureHelp":{"signatureInformation":{"parameterInformation":{"labelOffsetSupport":true},"activeParameterSupport":true}},
+                "codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["quickfix"]}},"dataSupport":true,"resolveSupport":{"properties":["edit"]}},
                 "hover":{"contentFormat":["markdown","plaintext"]},
                 "definition":{"linkSupport":true},"references":{},
                 "publishDiagnostics":{"versionSupport":true,"relatedInformation":true}

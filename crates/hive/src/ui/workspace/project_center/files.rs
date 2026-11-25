@@ -11,7 +11,6 @@ impl ProjectCenter {
         window: &Window,
         cx: &App,
     ) -> Option<OpenFile> {
-        use gpui_kit::component::input::RopeExt as _;
         let panel = self
             .editors
             .iter()
@@ -21,15 +20,7 @@ impl ProjectCenter {
                     .iter()
                     .find(|panel| Some(PanelId::from(panel.entity_id())) == self.focused)
             })?;
-        let document = panel.read(cx).document.read(cx);
-        let editor = document.editor.read(cx);
-        Some(OpenFile {
-            target: document.target.clone(),
-            path: document.path.clone(),
-            position: Some(editor.text().offset_to_position(editor.cursor())),
-            preview: false,
-            placement: Default::default(),
-        })
+        Some(panel.read(cx).document.read(cx).at_cursor(cx))
     }
     pub(in crate::ui::workspace) fn remove_files(
         &mut self,

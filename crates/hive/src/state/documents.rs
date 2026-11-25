@@ -11,14 +11,22 @@ use std::sync::Arc;
 mod completions;
 mod definitions;
 mod document;
+mod gutter;
 pub(crate) mod history;
 mod language;
 mod language_features;
 mod source_preview;
-pub(crate) use document::{Changes, Content, Document, PreviewState, SaveBlocker, SvgMode};
+mod workspace_symbols;
+pub(crate) use document::{
+    Changes, Content, Document, Indentation, PreviewState, SaveBlocker, SvgMode,
+};
 pub(crate) use document::{STICKY_BORDER_WIDTH, sticky_row_limit};
+pub(crate) use gutter::Gutter;
 pub(crate) use language::LanguageStatus;
+pub(crate) use language_features::CallSignature;
+pub(crate) use language_features::rename::RenamePreview;
 pub(crate) use source_preview::SourcePreview;
+pub(crate) use workspace_symbols::SymbolLocation;
 
 #[derive(Clone)]
 pub(crate) struct OpenFile {
@@ -45,11 +53,14 @@ pub(crate) enum TabPlacement {
 
 pub(crate) enum DocumentEvent {
     Open(OpenFile),
+    OpenReviewed(Vec<(OpenFile, Entity<Document>)>),
     Reveal(Target, PathBuf),
     AgentDraft(Target, hive_core::agent::AgentKind, String),
     External(Target, PathBuf, Position),
     Activated(Target, PathBuf),
     Changed(Target),
+    Edited(OpenFile),
+    Closed(OpenFile),
     Saved(Target),
     Deleted(Target, PathBuf),
 }

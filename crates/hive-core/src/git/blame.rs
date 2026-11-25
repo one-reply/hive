@@ -182,7 +182,7 @@ fn iso_date(seconds: &str, zone: &str) -> Option<String> {
 }
 
 /// SHA-1 or SHA-256 object ID; also keeps a value Git would read as an option out of argv.
-fn is_oid(value: &str) -> bool {
+pub(super) fn is_oid(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 

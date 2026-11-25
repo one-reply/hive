@@ -144,7 +144,7 @@ impl FilesPanel {
                     return;
                 };
                 self.files.update(cx, |files, cx| {
-                    files.open_at(path, line, column, preview, cx)
+                    files.open_match(path, line, column, preview, cx)
                 });
             }
         }
@@ -158,6 +158,9 @@ impl FilesPanel {
             files.content_matched_lines(),
             files.content_results().len(),
         );
+        let text = files.content_folder().map_or(text.clone(), |folder| {
+            format!("{} · {text}", folder.display())
+        });
         div()
             .id("content-search-status")
             .role(Role::Status)

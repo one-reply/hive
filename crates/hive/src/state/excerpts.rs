@@ -1,3 +1,4 @@
+use crate::state::files::content_search;
 use crate::{
     app::AppState,
     state::documents::{Document, DocumentEvent, OpenFile},
@@ -29,6 +30,7 @@ pub(crate) struct Row {
 pub(crate) struct Excerpts {
     pub target: Target,
     query: Query,
+    buffers: content_search::Buffers,
     pub files: Vec<File>,
     pub rows: Vec<Row>,
     pub loading: bool,
@@ -50,6 +52,7 @@ impl Excerpts {
         let mut subscriptions = vec![
             cx.subscribe(&documents, |this, _, event, cx| {
                 let target = match event {
+                    DocumentEvent::Edited(file) => &file.target,
                     DocumentEvent::Changed(t)
                     | DocumentEvent::Saved(t)
                     | DocumentEvent::Deleted(t, _) => t,
@@ -84,6 +87,7 @@ impl Excerpts {
         let mut this = Self {
             target,
             query,
+            buffers: Default::default(),
             files: Vec::new(),
             rows: Vec::new(),
             loading: false,
@@ -111,7 +115,10 @@ impl Excerpts {
         self.error = None;
         self.stale = false;
         self.loading = true;
-        let query = self.query.run(&self.target, cx);
+        if matches!(self.query, Query::Content(..)) {
+            self.buffers = content_search::buffers(&self.target, cx);
+        }
+        let query = self.query.run(&self.target, &self.buffers, cx);
         self._query = Some(cx.spawn(async move |this, cx| {
             let result = query.await;
             let _ = this.update(cx, |this, cx| {
@@ -168,13 +175,17 @@ impl Excerpts {
             }
             let path = self.files[index].path.clone();
             let host = self.target.host.clone();
-            let buffer = if matches!(self.query, Query::Content(_)) {
-                None
+            let buffer = if matches!(self.query, Query::Content(..)) {
+                path.strip_prefix(&self.target.path)
+                    .ok()
+                    .and_then(|p| self.buffers.get(p))
+                    .cloned()
             } else {
                 AppState::get(cx)
                     .documents
                     .read(cx)
                     .buffer(&host, &path, cx)
+                    .map(Rope::from)
             };
             let task = cx.spawn(async move |this, cx| {
                 let result = super::file_io::run(cx.background_executor().clone(), move |cancel| {
@@ -191,8 +202,9 @@ impl Excerpts {
                             .read(root, Path::new(name))
                             .map_err(|e| e.to_string())?
                             .text()
+                            .into()
                     };
-                    Ok(Rope::from(text))
+                    Ok(text)
                 })
                 .await;
                 let _ = this.update(cx, |this, cx| {
@@ -262,13 +274,23 @@ impl Excerpts {
         )
     }
 
+    pub(crate) fn can_open(&self, row: Row, cx: &App) -> bool {
+        !matches!(self.query, Query::Content(..))
+            || self.files[row.file]
+                .path
+                .strip_prefix(&self.target.path)
+                .is_ok_and(|p| content_search::snapshot_current(&self.target, p, &self.buffers, cx))
+    }
+
     pub(crate) fn open(&self, row: Row, cx: &mut App) {
         let path = self.files[row.file].path.clone();
-        let position = Position::new(
-            row.line
-                .unwrap_or_else(|| self.files[row.file].hits[0].line),
-            0,
-        );
+        let hits = &self.files[row.file].hits;
+        let line = row.line.unwrap_or(hits[0].line);
+        let column = hits
+            .iter()
+            .find(|hit| hit.line == line)
+            .map_or(0, |hit| hit.column);
+        let position = Position::new(line, column);
         AppState::get(cx)
             .documents
             .clone()
@@ -315,6 +337,7 @@ mod tests {
             hits: vec![Hit {
                 path: "/work/a.rs".into(),
                 line: 2,
+                column: 0,
                 message: String::new(),
             }],
             windows: vec![0..6, 10..14],
