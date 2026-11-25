@@ -8,6 +8,12 @@ use lsp_types::{
 use std::{path::Path, rc::Rc};
 
 mod completion_items;
+mod imports;
+pub(crate) use imports::ImportMenu;
+mod fixes;
+pub(super) mod rename;
+mod signature;
+pub(crate) use signature::CallSignature;
 
 impl Document {
     pub(crate) fn references(
@@ -73,7 +79,13 @@ impl Document {
     }
 }
 
+#[derive(Clone)]
 struct Snapshot {
+    uri: Uri,
+    version: i32,
+    generation: u64,
+    revision: Option<u64>,
+    session: EntityId,
     document: WeakEntity<Document>,
     text: Rope,
     target: Target,
@@ -104,9 +116,16 @@ impl Snapshot {
             (d.target.clone(), d.path.clone())
         };
         let (client, uri) = entity.update(cx, |d, cx| d.language_client(text, cx))?;
+        let session = entity.read(cx).language.as_ref()?;
+        let (generation, version) = session.read(cx).synchronized_revision(&uri)?;
         let position = position::at(&text.to_string(), offset)?;
         Some((
             Self {
+                uri: uri.clone(),
+                version,
+                generation,
+                revision: None,
+                session: session.entity_id(),
                 document: document.clone(),
                 text: text.clone(),
                 target,
@@ -122,7 +141,16 @@ impl Snapshot {
     fn current(&self, cx: &App) -> bool {
         self.document.upgrade().is_some_and(|d| {
             let d = d.read(cx);
-            d.target == self.target && d.path == self.path && d.editor.read(cx).text() == &self.text
+            d.target == self.target
+                && d.path == self.path
+                && !d.path_busy
+                && self.revision.is_none_or(|v| d.revision == v)
+                && d.language.as_ref().is_some_and(|s| {
+                    s.entity_id() == self.session
+                        && s.read(cx).synchronized_revision(&self.uri)
+                            == Some((self.generation, self.version))
+                })
+                && d.editor.read(cx).text() == &self.text
         })
     }
 }
@@ -132,15 +160,28 @@ pub(super) fn completion(
     text: &Rope,
     offset: usize,
     context: CompletionContext,
+    window: &mut Window,
     cx: &mut App,
 ) -> Option<Task<gpui_kit::Result<Option<CompletionResponse>>>> {
-    let (snapshot, client, position) = Snapshot::capture(
+    let (mut snapshot, client, position) = Snapshot::capture(
         document,
         text,
         offset,
         |caps| caps.completion_provider.is_some(),
         cx,
     )?;
+    let entity = snapshot.document.upgrade()?;
+    let options = entity
+        .read(cx)
+        .language
+        .as_ref()?
+        .read(cx)
+        .capabilities
+        .as_ref()?
+        .completion_provider
+        .as_ref()?;
+    let resolve = options.resolve_provider == Some(true);
+    let context = completion_context(context, options);
     let request = client
         .request::<Completion>(CompletionParams {
             text_document_position: position,
@@ -149,9 +190,9 @@ pub(super) fn completion(
             context: Some(context),
         })
         .ok()?;
-    Some(cx.spawn(async move |cx| {
+    Some(window.spawn(cx, async move |cx| {
         let response = request.receive().await;
-        if !cx.update(|cx| snapshot.current(cx)) {
+        if !cx.update(|_, cx| snapshot.current(cx))? {
             return Ok(Some(CompletionResponse::Array(Vec::new())));
         }
         let response = match response {
@@ -170,13 +211,67 @@ pub(super) fn completion(
         let family = hive_core::completion::Family::for_path(&snapshot.path);
         let items = cx
             .background_executor()
-            .spawn(async move { completion_items::prepare(items, &source, offset, family) })
+            .spawn(async move { completion_items::candidates(items, &source, offset, family) })
             .await;
-        if !cx.update(|cx| snapshot.current(cx)) {
+        if !cx.update(|_, cx| snapshot.current(cx))? {
             return Ok(Some(CompletionResponse::Array(Vec::new())));
         }
-        Ok(Some(CompletionResponse::Array(items)))
+        let deferred = items
+            .iter()
+            .any(|candidate| imports::needs_acceptance(&candidate.raw, resolve));
+        tracing::debug!(
+            items = items.len(),
+            resolve,
+            deferred,
+            "language completion list"
+        );
+        if !deferred {
+            return Ok(Some(CompletionResponse::Array(
+                items.into_iter().map(|c| c.shown).collect(),
+            )));
+        }
+        cx.update(|window, cx| {
+            if let Some(document) = snapshot.document.upgrade() {
+                let editor = document.read(cx).editor.read(cx);
+                if editor.focus_handle(cx).is_focused(window) && editor.cursor() == offset {
+                    document.update(cx, |doc, cx| {
+                        // GPUI invokes the provider while its Change event is still queued.
+                        // At menu publication the editor and document revisions agree.
+                        snapshot.revision = Some(doc.revision);
+                        doc.import_menu =
+                            Some(ImportMenu::new(snapshot, client, items, offset, resolve));
+                        cx.notify();
+                    });
+                }
+            }
+        })?;
+        // Hive handles acceptance of this list for mouse and keyboard. A successful empty list
+        // closes the widget's plain-text menu without starting the local-name fallback.
+        Ok(Some(CompletionResponse::List(CompletionList {
+            is_incomplete: false,
+            items: vec![],
+        })))
     }))
+}
+
+// The widget passes the typed identifier as a trigger. The protocol reserves this
+// trigger kind for exact characters advertised by the server (for example a dot).
+fn completion_context(
+    mut context: CompletionContext,
+    options: &CompletionOptions,
+) -> CompletionContext {
+    if context.trigger_kind == CompletionTriggerKind::TRIGGER_CHARACTER
+        && !context.trigger_character.as_ref().is_some_and(|trigger| {
+            options
+                .trigger_characters
+                .as_ref()
+                .is_some_and(|known| known.contains(trigger))
+        })
+    {
+        context.trigger_kind = CompletionTriggerKind::INVOKED;
+        context.trigger_character = None;
+    }
+    context
 }
 
 struct Features {
@@ -193,6 +288,8 @@ pub(super) fn install(document: &Entity<Document>, documents: WeakEntity<Documen
             document: source.clone(),
             fallback: lsp.definition_provider.take(),
         });
+        lsp.code_action_providers
+            .push(Rc::new(fixes::QuickFixes::new(source.clone())));
         lsp.hover_provider = Some(provider.clone());
         lsp.definition_provider = Some(provider);
         lsp.show_document = Some(super::definitions::show_document(source, documents));

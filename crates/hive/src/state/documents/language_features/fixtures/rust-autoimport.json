@@ -1,0 +1,106 @@
+{
+  "source": "mod model;\nfn main(){ let _ = FancyWid",
+  "initial": {
+    "label": "FancyWidget",
+    "labelDetails": {
+      "detail": "(use crate::model::FancyWidget)",
+      "description": "FancyWidget"
+    },
+    "kind": 22,
+    "sortText": "7ffffff3",
+    "filterText": "FancyWidget",
+    "textEdit": {
+      "range": {
+        "start": {
+          "line": 1,
+          "character": 19
+        },
+        "end": {
+          "line": 1,
+          "character": 27
+        }
+      },
+      "newText": "FancyWidget"
+    },
+    "data": {
+      "position": {
+        "textDocument": {
+          "uri": "file:///project/rs/src/main.rs"
+        },
+        "position": {
+          "line": 1,
+          "character": 27
+        }
+      },
+      "imports": [
+        {
+          "full_import_path": "crate::model::FancyWidget",
+          "as_underscore": false
+        }
+      ],
+      "version": 1,
+      "for_ref": false,
+      "hash": "i12d6yplB45WBd00FgA6P+sVryI="
+    }
+  },
+  "resolved": {
+    "label": "FancyWidget",
+    "labelDetails": {
+      "detail": "(use crate::model::FancyWidget)",
+      "description": "FancyWidget"
+    },
+    "kind": 22,
+    "detail": "FancyWidget",
+    "preselect": true,
+    "sortText": "7ffffff3",
+    "filterText": "FancyWidget",
+    "textEdit": {
+      "range": {
+        "start": {
+          "line": 1,
+          "character": 19
+        },
+        "end": {
+          "line": 1,
+          "character": 27
+        }
+      },
+      "newText": "FancyWidget"
+    },
+    "additionalTextEdits": [
+      {
+        "range": {
+          "start": {
+            "line": 0,
+            "character": 0
+          },
+          "end": {
+            "line": 0,
+            "character": 0
+          }
+        },
+        "newText": "use crate::model::FancyWidget;\n\n"
+      }
+    ],
+    "data": {
+      "position": {
+        "textDocument": {
+          "uri": "file:///project/rs/src/main.rs"
+        },
+        "position": {
+          "line": 1,
+          "character": 27
+        }
+      },
+      "imports": [
+        {
+          "full_import_path": "crate::model::FancyWidget",
+          "as_underscore": false
+        }
+      ],
+      "version": 1,
+      "for_ref": false,
+      "hash": "i12d6yplB45WBd00FgA6P+sVryI="
+    }
+  }
+}

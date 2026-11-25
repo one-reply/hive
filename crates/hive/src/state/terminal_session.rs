@@ -16,6 +16,7 @@ mod draft;
 mod inbox;
 mod input;
 mod launch;
+mod source_link;
 pub(crate) use draft::{AgentDraft, DraftStatus};
 pub(crate) use inbox::{Message, Recipient};
 use input::Input;

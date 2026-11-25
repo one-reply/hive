@@ -1,3 +1,4 @@
+use crate::state::files::content_search;
 use crate::{
     app::AppState,
     state::documents::{Document, DocumentEvent, OpenFile},
@@ -29,6 +30,7 @@ pub(crate) struct Row {
 pub(crate) struct Excerpts {
     pub target: Target,
     query: Query,
+    buffers: content_search::Buffers,
     pub files: Vec<File>,
     pub rows: Vec<Row>,
     pub loading: bool,
@@ -50,6 +52,7 @@ impl Excerpts {
         let mut subscriptions = vec![
             cx.subscribe(&documents, |this, _, event, cx| {
                 let target = match event {
+                    DocumentEvent::Edited(file) => &file.target,
                     DocumentEvent::Changed(t)
                     | DocumentEvent::Saved(t)
                     | DocumentEvent::Deleted(t, _) => t,
@@ -84,6 +87,7 @@ impl Excerpts {
         let mut this = Self {
             target,
             query,
+            buffers: Default::default(),
             files: Vec::new(),
             rows: Vec::new(),
             loading: false,
@@ -111,7 +115,10 @@ impl Excerpts {
         self.error = None;
         self.stale = false;
         self.loading = true;
-        let query = self.query.run(&self.target, cx);
+        if matches!(self.query, Query::Content(..)) {
+            self.buffers = content_search::buffers(&self.target, cx);
+        }
+        let query = self.query.run(&self.target, &self.buffers, cx);
         self._query = Some(cx.spawn(async move |this, cx| {
             let result = query.await;
             let _ = this.update(cx, |this, cx| {
@@ -167,32 +174,33 @@ impl Excerpts {
                 continue;
             }
             let path = self.files[index].path.clone();
-            let host = self.target.host.clone();
-            let buffer = if matches!(self.query, Query::Content(_)) {
-                None
+            let target = self.target.clone();
+            let buffer = if matches!(self.query, Query::Content(..)) {
+                path.strip_prefix(&self.target.path)
+                    .ok()
+                    .and_then(|p| self.buffers.get(p))
+                    .map(|buffer| buffer.text.clone())
             } else {
                 AppState::get(cx)
                     .documents
                     .read(cx)
-                    .buffer(&host, &path, cx)
+                    .buffer(&target.host, &path, cx)
+                    .map(Rope::from)
             };
             let task = cx.spawn(async move |this, cx| {
                 let result = super::file_io::run(cx.background_executor().clone(), move |cancel| {
                     let text = if let Some(text) = buffer {
                         text
                     } else {
-                        let root = path
-                            .parent()
+                        let (root, name) = excerpt_source(&target.path, &path)
                             .ok_or_else(|| "Invalid source path".to_owned())?;
-                        let name = path
-                            .file_name()
-                            .ok_or_else(|| "Invalid source path".to_owned())?;
-                        files::Access::new(&host, cancel)
-                            .read(root, Path::new(name))
+                        files::Access::new(&target.host, cancel)
+                            .read(root, name)
                             .map_err(|e| e.to_string())?
                             .text()
+                            .into()
                     };
-                    Ok(Rope::from(text))
+                    Ok(text)
                 })
                 .await;
                 let _ = this.update(cx, |this, cx| {
@@ -262,13 +270,23 @@ impl Excerpts {
         )
     }
 
+    pub(crate) fn can_open(&self, row: Row, cx: &App) -> bool {
+        !matches!(self.query, Query::Content(..))
+            || self.files[row.file]
+                .path
+                .strip_prefix(&self.target.path)
+                .is_ok_and(|p| content_search::snapshot_current(&self.target, p, &self.buffers, cx))
+    }
+
     pub(crate) fn open(&self, row: Row, cx: &mut App) {
         let path = self.files[row.file].path.clone();
-        let position = Position::new(
-            row.line
-                .unwrap_or_else(|| self.files[row.file].hits[0].line),
-            0,
-        );
+        let hits = &self.files[row.file].hits;
+        let line = row.line.unwrap_or(hits[0].line);
+        let column = hits
+            .iter()
+            .find(|hit| hit.line == line)
+            .map_or(0, |hit| hit.column);
+        let position = Position::new(line, column);
         AppState::get(cx)
             .documents
             .clone()
@@ -294,6 +312,15 @@ impl Excerpts {
     }
 }
 
+// For a worktree file, Access must check every path component against the worktree root.
+fn excerpt_source<'a>(root: &'a Path, path: &'a Path) -> Option<(&'a Path, &'a Path)> {
+    if path.starts_with(root) {
+        Some((root, files::location::relative(root, path)?))
+    } else {
+        Some((path.parent()?, Path::new(path.file_name()?)))
+    }
+}
+
 fn file_rows(source: &File, file: usize, lines: Option<u32>) -> impl Iterator<Item = Row> + '_ {
     std::iter::once(Row { file, line: None }).chain(source.windows.iter().flat_map(move |window| {
         let end = lines.map_or(window.end, |lines| lines.min(window.end));
@@ -315,6 +342,7 @@ mod tests {
             hits: vec![Hit {
                 path: "/work/a.rs".into(),
                 line: 2,
+                column: 0,
                 message: String::new(),
             }],
             windows: vec![0..6, 10..14],
@@ -327,5 +355,23 @@ mod tests {
             [None, Some(0), Some(1), Some(2)]
         );
         assert_eq!(file_rows(&source, 0, Some(0)).count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::{Path, excerpt_source};
+    #[test]
+    fn in_tree_sources_keep_the_entire_path_for_the_filesystem_guard() {
+        let root = Path::new("/work");
+        assert_eq!(
+            excerpt_source(root, Path::new("/work/src/a")),
+            Some((root, Path::new("src/a")))
+        );
+        assert!(excerpt_source(root, Path::new("/work/../outside/file")).is_none());
+        assert_eq!(
+            excerpt_source(root, Path::new("/sdk/a")),
+            Some((Path::new("/sdk"), Path::new("a")))
+        );
     }
 }

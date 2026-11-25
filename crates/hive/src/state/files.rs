@@ -11,7 +11,7 @@ use hive_core::{
     files::{decorations::Decoration, tree::Node},
     settings::FilesSettings,
 };
-mod content_search;
+pub(crate) mod content_search;
 mod listing;
 mod mutations;
 mod recent;
@@ -149,10 +149,13 @@ impl Files {
                         }
                         target
                     }
+                    DocumentEvent::Closed(_) => return,
+                    DocumentEvent::Edited(file) => &file.target,
                     DocumentEvent::Changed(target)
                     | DocumentEvent::Saved(target)
                     | DocumentEvent::Deleted(target, _) => target,
-                    DocumentEvent::Open(_)
+                    DocumentEvent::OpenReviewed(_)
+                    | DocumentEvent::Open(_)
                     | DocumentEvent::Reveal(_, _)
                     | DocumentEvent::External(_, _, _)
                     | DocumentEvent::AgentDraft(_, _, _) => return,
@@ -350,7 +353,10 @@ impl Files {
     }
 
     pub fn open(&self, path: PathBuf, preview: bool, cx: &mut Context<Self>) {
-        self.request_open(path, None, preview, cx);
+        let position = self.search_location().map(|location| {
+            gpui_kit::component::input::Position::new(location.line, location.column)
+        });
+        self.request_open(path, position, preview, cx);
     }
 
     /// Open a file with the cursor at a zero-based line and char column.
@@ -373,7 +379,7 @@ impl Files {
         preview: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.missing.contains(&path) || self.busy {
+        if self.busy || (self.missing.contains(&path) && !self.dirty.contains(&path)) {
             return;
         }
         let Some(target) = self.target.clone() else {

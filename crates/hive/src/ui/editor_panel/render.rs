@@ -69,11 +69,41 @@ impl Render for EditorPanel {
             .aria_label(header.clone())
             .key_context(EDITOR_PANEL_CONTEXT)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape"
+                    && (this.signature.take().is_some() || this._signature.is_some())
+                {
+                    this._signature = None;
+                    cx.notify();
+                }
                 if event.keystroke.key == "escape" && (this.peek.is_some() || this._peek.is_some())
                 {
                     this.close_peek(window, cx);
                     cx.stop_propagation();
                 }
+            }))
+            .on_action(
+                cx.listener(|this, _: &GoToLine, window, cx| goto_line(&this.document, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &NextDiagnostic, window, cx| {
+                this.jump_diagnostic(false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PreviousDiagnostic, window, cx| {
+                this.jump_diagnostic(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowSignature, window, cx| {
+                this.signature_help(true, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &NextChange, window, cx| this.jump_change(true, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &PreviousChange, window, cx| {
+                this.jump_change(false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &WorkspaceSymbols, window, cx| {
+                workspace_symbols::open(this.document.read(cx).target.clone(), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &RenameSymbol, window, cx| {
+                rename::open(&this.document, window, cx)
             }))
             .on_action(cx.listener(|this, _: &FindReferences, window, cx| {
                 let target = this.document.read(cx).target.clone();
@@ -353,13 +383,23 @@ impl Render for EditorPanel {
             editor.clone(),
             self.blame_fade.clone(),
         );
-        body.capture_action(suggestions::accept_on_tab(editor.clone()))
+        let selection_document = self.document.clone();
+        let body = editing::bind(body, cx);
+        import_menu::keys(body, &self.document, cx)
+            .capture_action(suggestions::accept_on_tab(editor.clone()))
+            .capture_action(suggestions::accept_fix_on_enter(editor.clone()))
             .child(
                 div()
                     .relative()
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
+                    .capture_any_mouse_down(move |event, _, cx| {
+                        if event.button == MouseButton::Left {
+                            selection_document
+                                .update(cx, |d, cx| d.native_selections(event.modifiers.alt, cx));
+                        }
+                    })
                     .child(
                         Editor::new(&editor)
                             .readonly(!ready)
@@ -369,7 +409,10 @@ impl Render for EditorPanel {
                     .child(blame)
                     .children(sticky::render(&self.document, window, cx))
                     .children(self.render_blame_card(window, cx))
+                    .children(self.render_signature(window, cx))
+                    .children(self.render_imports(window, cx))
                     .children(self.render_peek(window, cx)),
             )
+            .child(editing::status(&self.document, window, cx))
     }
 }

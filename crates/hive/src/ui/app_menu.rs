@@ -106,6 +106,8 @@ pub(crate) fn install(cx: &mut App) {
             MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
         ]),
         Menu::new("View").items([
+            MenuItem::action("Command Palette…", crate::ui::workspace::ShowCommands),
+            MenuItem::separator(),
             MenuItem::action("Toggle Left Sidebar", ToggleSidebar),
             MenuItem::action("Toggle Right Sidebar", ToggleGitPanel),
             MenuItem::action("Show Git", ShowGitPanel),

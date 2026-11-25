@@ -515,7 +515,10 @@ impl Render for FilesPanel {
                             if let Some(target) = files.target().cloned() {
                                 let query = files.content_query().clone();
                                 crate::ui::excerpts::open(
-                                    crate::state::excerpts::Query::Content(query),
+                                    crate::state::excerpts::Query::Content(
+                                        query,
+                                        files.content_folder().map(Path::to_owned),
+                                    ),
                                     target,
                                     "Search results",
                                     window,

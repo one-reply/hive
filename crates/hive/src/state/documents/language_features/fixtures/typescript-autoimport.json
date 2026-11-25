@@ -1,0 +1,50 @@
+{
+  "source": "export const Demo = () => <Butt",
+  "initial": {
+    "label": "Button",
+    "kind": 3,
+    "sortText": "\uffff16",
+    "data": {
+      "cacheId": 906
+    },
+    "detail": "./Button"
+  },
+  "resolved": {
+    "label": "Button",
+    "kind": 3,
+    "sortText": "\uffff16",
+    "data": {
+      "file": "/project/ts/src/Demo.tsx",
+      "line": 1,
+      "offset": 32,
+      "entryNames": [
+        {
+          "name": "Button",
+          "source": "./Button",
+          "data": {
+            "exportName": "Button",
+            "exportMapKey": "6 1987 Button ",
+            "moduleSpecifier": "./Button",
+            "fileName": "/project/ts/src/Button.tsx"
+          }
+        }
+      ]
+    },
+    "detail": "Auto import from './Button'\nfunction Button(label: string, value: number): number",
+    "additionalTextEdits": [
+      {
+        "range": {
+          "start": {
+            "line": 0,
+            "character": 0
+          },
+          "end": {
+            "line": 0,
+            "character": 0
+          }
+        },
+        "newText": "import { Button } from \"./Button\";\n\n"
+      }
+    ]
+  }
+}

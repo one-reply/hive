@@ -113,6 +113,28 @@ impl Restart {
     }
 }
 
+fn initialize(root: &Path, uri: &lsp_types::Uri) -> Value {
+    json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{
+        "processId":null,"clientInfo":{"name":"Hive"},"rootUri":uri,
+        "workspaceFolders":[{"uri":uri,"name":root.file_name().unwrap_or_default().to_string_lossy()}],
+        "capabilities":{
+            "general":{"positionEncodings":["utf-16"]},
+            "workspace":{"configuration":true,"workspaceFolders":true,"applyEdit":false},
+            "textDocument":{
+                "synchronization":{"dynamicRegistration":false,"didSave":true},
+                // rust-analyzer negotiates its resolver with a detail/documentation property
+                // and separately checks additionalTextEdits before it offers import candidates.
+                "completion":{"completionItem":{"snippetSupport":false,"insertReplaceSupport":false,"labelDetailsSupport":true,"resolveSupport":{"properties":["detail","additionalTextEdits"]}}},
+                "signatureHelp":{"signatureInformation":{"parameterInformation":{"labelOffsetSupport":true},"activeParameterSupport":true}},
+                "codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["quickfix"]}},"dataSupport":true,"resolveSupport":{"properties":["edit"]}},
+                "hover":{"contentFormat":["markdown","plaintext"]},
+                "definition":{"linkSupport":true},"references":{},
+                "publishDiagnostics":{"versionSupport":true,"relatedInformation":true}
+            }
+        }
+    }})
+}
+
 fn serve(
     process: &mut Process,
     root: &Path,
@@ -123,21 +145,7 @@ fn serve(
     stopped: &AtomicBool,
 ) -> Result<(), Error> {
     let uri = position::uri(physical).ok_or_else(|| Error::Protocol("Invalid root URI".into()))?;
-    process.write(&json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{
-        "processId":null,"clientInfo":{"name":"Hive"},"rootUri":uri,
-        "workspaceFolders":[{"uri":uri,"name":root.file_name().unwrap_or_default().to_string_lossy()}],
-        "capabilities":{
-            "general":{"positionEncodings":["utf-16"]},
-            "workspace":{"configuration":true,"workspaceFolders":true,"applyEdit":false},
-            "textDocument":{
-                "synchronization":{"dynamicRegistration":false,"didSave":true},
-                "completion":{"completionItem":{"snippetSupport":false,"insertReplaceSupport":false}},
-                "hover":{"contentFormat":["markdown","plaintext"]},
-                "definition":{"linkSupport":true},"references":{},
-                "publishDiagnostics":{"versionSupport":true,"relatedInformation":true}
-            }
-        }
-    }}))?;
+    process.write(&initialize(root, &uri))?;
     let mut ready = false;
     let initialize_deadline = Instant::now() + INITIALIZE_TIMEOUT;
     let mut pending = Pending::new();
@@ -208,8 +216,9 @@ fn serve(
                     continue;
                 }
                 super::paths::rebase(&mut params, root, physical);
-                process.write(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
+                // A failing first write must deliver the transport error to this request too.
                 pending.insert(id, (Instant::now() + REQUEST_TIMEOUT, reply));
+                process.write(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
             }
             Message::Notify { method, mut params } if ready => {
                 super::paths::rebase(&mut params, root, physical);
@@ -391,6 +400,24 @@ fn shutdown(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn advertises_both_rust_analyzer_autoimport_capabilities() {
+        let root = Path::new("/project");
+        let init = initialize(root, &position::uri(root).unwrap());
+        let props = init.pointer("/params/capabilities/textDocument/completion/completionItem/resolveSupport/properties")
+            .unwrap().as_array().unwrap();
+        assert!(
+            props
+                .iter()
+                .any(|property| property == "additionalTextEdits")
+        );
+        assert!(
+            props
+                .iter()
+                .any(|property| property == "detail" || property == "documentation")
+        );
+    }
+
     #[test]
     fn deadlines_only_expire_requests_that_have_reached_their_limit() {
         let now = Instant::now();

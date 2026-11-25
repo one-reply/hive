@@ -24,6 +24,7 @@ impl Document {
             self.pending_position = Some(position);
             return;
         }
+        self.selection_commands = Default::default();
         let (cursor, text) = self.editor.update(cx, |editor, cx| {
             editor.unfold_at(position, cx);
             editor.set_cursor_position(position, window, cx);

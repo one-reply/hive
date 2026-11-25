@@ -151,6 +151,24 @@ impl Workspace {
                 &documents,
                 window,
                 |this, _, event, window, cx| match event {
+                    DocumentEvent::Edited(location) | DocumentEvent::Closed(location) => {
+                        let project = (
+                            location.target.host.clone(),
+                            location.target.project.clone(),
+                        );
+                        if let Some(center) = this.centers.get_mut(&project) {
+                            if matches!(event, DocumentEvent::Closed(_)) {
+                                center.navigation.closed(location.clone());
+                            } else {
+                                center.navigation.last_edit = Some(location.clone());
+                            }
+                        }
+                    }
+                    DocumentEvent::OpenReviewed(tabs) => {
+                        for (request, _document) in tabs {
+                            this.open_file(request.clone(), window, cx);
+                        }
+                    }
                     DocumentEvent::Open(request) => this.open_file(request.clone(), window, cx),
                     DocumentEvent::External(target, path, position) => {
                         crate::ui::editor_panel::source_preview::open(
@@ -202,7 +220,12 @@ impl Workspace {
         self.restore_drafts(window, cx);
     }
 
-    fn open_file(&mut self, request: OpenFile, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_file(
+        &mut self,
+        request: OpenFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let preview = request.preview;
         let project = (request.target.host.clone(), request.target.project.clone());
         if request.position.is_some()

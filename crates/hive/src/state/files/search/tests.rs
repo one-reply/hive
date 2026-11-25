@@ -415,3 +415,35 @@ fn search_expansion_does_not_change_the_ordinary_tree() {
     search.set_query(String::new());
     assert_eq!(tree::build(&source), before);
 }
+
+#[test]
+fn coordinates_filter_the_path_and_preserve_literal_colon_filenames() {
+    let index = index(&["a:4", "other/src/lib.rs", "src/lib.rs"]);
+    assert_eq!(super::file_query("a:4", &index), ("a:4", None));
+    let (name, location) = super::file_query("src/lib.rs:4:3", &index);
+    assert_eq!(name, "src/lib.rs");
+    assert_eq!(location, files::location::Location::parse("4:3"));
+    let fixture = Fixture::new();
+    fixture.write("src/lib.rs");
+    fixture.write("other/src/lib.rs");
+    let loaded = load(
+        &fixture.0,
+        "src/lib.rs:4:3",
+        true,
+        Some(index),
+        Arc::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    let source = Source {
+        entries: &loaded.entries,
+        expanded: &HashSet::new(),
+        ignored: &HashSet::new(),
+        decorations: &BTreeMap::new(),
+        settings: &FilesSettings::default(),
+        destination_for: None,
+    };
+    let mut tree = tree::build(&source);
+    loaded.matches.filter(&mut tree.nodes, &HashSet::new());
+    assert_eq!(tree.nodes.first().unwrap().path, Path::new("src"));
+}

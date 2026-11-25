@@ -1,4 +1,6 @@
-use super::{ContentSearch, ContentStatus, Finished, SearchOption, run};
+use super::{
+    Buffers, ContentSearch, ContentStatus, Finished, Rope, SearchBuffer, SearchOption, run,
+};
 use hive_core::{
     command::Cancellation,
     files::content_search::{FileMatches, LineMatch, Query},
@@ -7,7 +9,7 @@ use hive_core::{
 };
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -132,6 +134,7 @@ fn a_failed_run_drops_results_and_reports_the_error() {
 fn clearing_cancels_the_run_and_keeps_options() {
     let mut search = ContentSearch::default();
     search.query.text = "needle".into();
+    search.folder = Some("src".into());
     search.toggle(SearchOption::Regex);
     search.toggle(SearchOption::MatchCase);
     let run = search.begin();
@@ -144,6 +147,7 @@ fn clearing_cancels_the_run_and_keeps_options() {
 
     search.reset();
     assert!(search.query.text.is_empty());
+    assert!(search.folder.is_none());
     assert!(search.query.regex && search.query.case_sensitive && !search.query.whole_word);
 }
 
@@ -159,9 +163,14 @@ fn run_searches_a_plain_directory_in_path_order() {
         text: "needle".into(),
         ..Query::default()
     };
-    let finished = run(&f.0, &query, &Cancellation::default(), |file| {
-        found.push(file)
-    })
+    let finished = run(
+        &f.0,
+        &query,
+        None,
+        &Buffers::new(),
+        &Cancellation::default(),
+        |file| found.push(file),
+    )
     .unwrap();
     assert!(!finished.truncated && !finished.index_truncated);
     let found: Vec<_> = found
@@ -180,8 +189,86 @@ fn run_reports_an_invalid_pattern() {
         regex: true,
         ..Query::default()
     };
-    let Err(error) = run(&f.0, &query, &Cancellation::default(), |_| {}) else {
+    let Err(error) = run(
+        &f.0,
+        &query,
+        None,
+        &Buffers::new(),
+        &Cancellation::default(),
+        |_| {},
+    ) else {
         panic!("an invalid pattern must fail");
     };
     assert!(error.starts_with("Invalid regular expression"), "{error}");
+}
+
+#[test]
+fn scoped_search_uses_dirty_text_once_and_counts_unicode_columns() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.0.path.join("pkg")).unwrap();
+    fs::write(f.0.path.join("pkg/a.tsx"), "old needle").unwrap();
+    fs::write(f.0.path.join("pkg/b.rs"), "needle").unwrap();
+    fs::write(f.0.path.join("other.tsx"), "needle").unwrap();
+    let sources: Buffers = [
+        ("pkg/a.tsx", "😀needle", true),
+        ("pkg/b.rs", "removed", true),
+        ("pkg/draft.ts", "needle without a disk file", true),
+        ("pkg/ignored.ts", "needle outside the index", false),
+    ]
+    .into_iter()
+    .map(|(path, text, dirty)| {
+        (
+            PathBuf::from(path),
+            SearchBuffer {
+                text: Rope::from(text),
+                dirty,
+            },
+        )
+    })
+    .collect();
+    let mut results = Vec::new();
+    run(
+        &f.0,
+        &Query {
+            text: "needle".into(),
+            ..Default::default()
+        },
+        Some(Path::new("pkg")),
+        &sources,
+        &Cancellation::default(),
+        |hit| results.push(hit),
+    )
+    .unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[1].path, Path::new("pkg/draft.ts"));
+    assert_eq!(results[0].path, Path::new("pkg/a.tsx"));
+    assert_eq!(results[0].lines[0].column, 1);
+}
+
+#[test]
+fn search_results_use_the_open_version_even_if_saved_again_during_search() {
+    let fixture = Fixture::new();
+    fs::write(fixture.0.path.join("saved.ts"), "other text").unwrap();
+    let sources = Buffers::from([(
+        "saved.ts".into(),
+        SearchBuffer {
+            text: Rope::from("visible needle"),
+            dirty: false,
+        },
+    )]);
+    let mut hits = Vec::new();
+    run(
+        &fixture.0,
+        &Query {
+            text: "needle".into(),
+            ..Default::default()
+        },
+        None,
+        &sources,
+        &Cancellation::default(),
+        |file| hits.push(file),
+    )
+    .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].lines[0].preview, "visible needle");
 }

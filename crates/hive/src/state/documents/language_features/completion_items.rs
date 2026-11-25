@@ -4,19 +4,28 @@ use hive_core::{
 };
 use lsp_types::{CompletionItem, CompletionTextEdit, InsertTextFormat, Range, TextEdit};
 
-pub(super) fn prepare(
+pub(super) struct Candidate {
+    pub raw: CompletionItem,
+    pub shown: CompletionItem,
+}
+
+pub(super) fn candidates(
     items: Vec<CompletionItem>,
     text: &str,
     cursor: usize,
     family: Family,
-) -> Vec<CompletionItem> {
+) -> Vec<Candidate> {
     // Every item carries a range in the same buffer; a list of a thousand is ordinary.
     let lines = position::Lines::new(text);
     let mut items: Vec<_> = items
         .into_iter()
-        .filter_map(|item| adapt(item, &lines, cursor, family))
+        .filter_map(|item| {
+            let shown = adapt(item.clone(), &lines, cursor, family)?;
+            Some(Candidate { raw: item, shown })
+        })
         .collect();
     items.sort_by(|a, b| {
+        let (a, b) = (&a.shown, &b.shown);
         a.sort_text
             .as_ref()
             .unwrap_or(&a.label)
@@ -27,25 +36,69 @@ pub(super) fn prepare(
     // The menu renders documentation as Markdown and opens any link in it. `detail` is drawn
     // as a plain label, which has no links.
     for item in &mut items {
-        item.documentation = item.documentation.take().map(markdown::documentation);
+        let shown = &mut item.shown;
+        shown.documentation = shown.documentation.take().map(markdown::documentation);
+        if let Some(source) = origin(&item.raw) {
+            shown.detail = Some(source.into());
+        }
     }
     items
 }
 
-fn adapt(
+fn origin(item: &CompletionItem) -> Option<&str> {
+    let details = item.label_details.as_ref();
+    item.data
+        .as_ref()
+        .and_then(|data| {
+            data.pointer("/imports/0/full_import_path")
+                .or_else(|| data.pointer("/entryNames/0/source"))
+                .and_then(|source| source.as_str())
+        })
+        .or_else(|| {
+            details
+                .and_then(|d| d.description.as_deref())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            details
+                .and_then(|d| d.detail.as_deref())
+                .filter(|s| !s.is_empty())
+        })
+}
+
+#[cfg(test)]
+fn prepare(
+    items: Vec<CompletionItem>,
+    text: &str,
+    cursor: usize,
+    family: Family,
+) -> Vec<CompletionItem> {
+    candidates(items, text, cursor, family)
+        .into_iter()
+        .map(|item| item.shown)
+        .collect()
+}
+
+pub(super) fn adapt(
     mut item: CompletionItem,
     lines: &position::Lines,
     cursor: usize,
     family: Family,
 ) -> Option<CompletionItem> {
+    let mut edit = primary(&mut item, lines, cursor, family)?;
+    edit.range = lines.editor_range(edit.range)?;
+    item.text_edit = Some(CompletionTextEdit::Edit(edit));
+    Some(item)
+}
+
+pub(super) fn primary(
+    item: &mut CompletionItem,
+    lines: &position::Lines,
+    cursor: usize,
+    family: Family,
+) -> Option<TextEdit> {
     let text = lines.text();
-    if item.command.is_some()
-        || item
-            .additional_text_edits
-            .as_ref()
-            .is_some_and(|edits| !edits.is_empty())
-        || item.insert_text_format == Some(InsertTextFormat::SNIPPET)
-    {
+    if item.command.is_some() || item.insert_text_format == Some(InsertTextFormat::SNIPPET) {
         return None;
     }
     let (bytes, new_text) = match item.text_edit.take() {
@@ -86,11 +139,10 @@ fn adapt(
         },
     );
     // GPUI's implicit completion range can include '.', and insertText alone inserts at its end.
-    item.text_edit = Some(CompletionTextEdit::Edit(TextEdit {
-        range: lines.editor_range(Range::new(lines.at(bytes.start)?, lines.at(bytes.end)?))?,
+    Some(TextEdit {
+        range: Range::new(lines.at(bytes.start)?, lines.at(bytes.end)?),
         new_text,
-    }));
-    Some(item)
+    })
 }
 
 #[cfg(test)]
@@ -255,7 +307,7 @@ mod tests {
             range: Range::default(),
             new_text: "import name".into(),
         }]);
-        assert!(adapt(item, &position::Lines::new("😀x"), 4, Family::Other).is_none());
+        assert!(adapt(item, &position::Lines::new("😀x"), 4, Family::Other).is_some());
         for range in [
             Range::new(Position::new(0, 3), Position::new(0, 2)),
             Range::new(Position::new(0, 1), Position::new(0, 3)),

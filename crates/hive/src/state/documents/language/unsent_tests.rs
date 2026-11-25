@@ -34,6 +34,7 @@ fn busy_session(cx: &mut TestAppContext) -> (Entity<LanguageSession>, Outbox) {
         diagnostics: Default::default(),
         diagnostics_limited: false,
         client,
+        generation: 0,
         documents: Default::default(),
         unsent: Default::default(),
         _events: None,

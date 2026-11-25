@@ -23,7 +23,7 @@ pub use colors::{Palette, indexed, set_palette};
 pub use directory::working_directory;
 use events::Publisher;
 pub use events::TerminalUpdate;
-pub use link::TerminalLink;
+pub use link::{SourceLink, TerminalLink};
 pub use program_status::ProgramStatus;
 use pty::{Completion, ManagedPty};
 pub use scroll::ScrollModifiers;
@@ -171,6 +171,7 @@ pub struct Terminal {
     program_status: ProgramStatus,
     control: TerminalControl,
     url_search: link::UrlSearch,
+    source_search: link::UrlSearch,
 }
 
 impl Terminal {
@@ -263,6 +264,7 @@ impl Terminal {
             program_status,
             control,
             url_search: link::UrlSearch::default(),
+            source_search: link::UrlSearch::default(),
         })
     }
 

@@ -23,6 +23,7 @@ pub use mutations::{
     create_directory, create_file, delete_entry, entry_path, move_entry, name_taken, paste_entries,
     paste_name, relocated_path,
 };
+pub mod location;
 pub mod recovery;
 #[cfg(feature = "desktop")]
 pub mod search;
@@ -204,7 +205,7 @@ pub fn resolve(host: &Host, root: &Path, relative: &Path) -> Result<PathBuf, Fil
 fn stays_inside(relative: &Path) -> bool {
     relative
         .components()
-        .all(|part| matches!(part, Component::Normal(name) if name != ".git"))
+        .all(|part| matches!(part, Component::Normal(name) if !name.eq_ignore_ascii_case(".git")))
 }
 
 fn outside_worktree(relative: &Path) -> FileError {

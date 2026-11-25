@@ -23,6 +23,7 @@ pub mod identity;
 pub mod keychain;
 #[cfg(feature = "desktop")]
 pub mod language_service;
+pub mod line_edit;
 #[cfg(feature = "desktop")]
 pub mod llm;
 #[cfg(feature = "desktop")]

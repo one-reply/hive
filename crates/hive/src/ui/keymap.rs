@@ -36,6 +36,8 @@ pub(crate) const COMMIT_CONTEXT: &str = "(SourceControl > Input) || SourceContro
 pub(crate) const FILE_TAB_CONTEXT: &str = "EditorPanel || DiffPanel || ConflictPanel";
 /// Key context of a focused code editor, gpui-component's `Input mode=editor`.
 pub(crate) const CODE_EDITOR_CONTEXT: &str = "Input && mode == editor";
+/// The editable file panel's input, narrower than unrelated code inputs in dialogs.
+pub(crate) const FILE_EDITOR_INPUT_CONTEXT: &str = "EditorPanel > (Input && mode == editor)";
 /// Key context of the Files tree while no file name is being edited.
 pub(crate) const FILES_TREE_CONTEXT: &str = "(FilesPanel > Tree) && !Input";
 /// Match the input dispatch node too, where gpui-base binds ⌘⇧F to the editor's Replace.
@@ -87,7 +89,7 @@ enum FocusArea {
 
 fn focus_area(context: &str) -> Option<FocusArea> {
     match context {
-        "EditorPanel" | FILE_TAB_CONTEXT => Some(FocusArea::FileTab),
+        "EditorPanel" | FILE_TAB_CONTEXT | FILE_EDITOR_INPUT_CONTEXT => Some(FocusArea::FileTab),
         TERMINAL_CONTEXT | TERMINAL_VIEW_CONTEXT => Some(FocusArea::Terminal),
         FILES_TREE_CONTEXT => Some(FocusArea::FilesTree),
         _ => None,
@@ -120,7 +122,121 @@ impl Shortcut {
     }
 }
 
-pub(crate) static SHORTCUTS: [Shortcut; 40] = [
+const fn workspace_shortcut(
+    label: &'static str,
+    default: &'static str,
+    context: &'static str,
+    action: fn() -> Box<dyn Action>,
+) -> Shortcut {
+    Shortcut {
+        label,
+        default,
+        category: Category::Workspace,
+        context,
+        action,
+    }
+}
+
+pub(crate) static SHORTCUTS: &[Shortcut] = &[
+    workspace_shortcut("Command palette", "cmd-shift-p", CONTEXT, || {
+        Box::new(crate::ui::workspace::ShowCommands)
+    }),
+    workspace_shortcut(
+        "Select next occurrence",
+        "cmd-d",
+        FILE_EDITOR_INPUT_CONTEXT,
+        || Box::new(crate::ui::editor_panel::SelectNextOccurrence),
+    ),
+    workspace_shortcut("Toggle comment", "cmd-/", FILE_EDITOR_INPUT_CONTEXT, || {
+        Box::new(crate::ui::editor_panel::ToggleComment)
+    }),
+    workspace_shortcut("Move lines up", "alt-up", FILE_EDITOR_INPUT_CONTEXT, || {
+        Box::new(crate::ui::editor_panel::MoveLinesUp)
+    }),
+    workspace_shortcut(
+        "Move lines down",
+        "alt-down",
+        FILE_EDITOR_INPUT_CONTEXT,
+        || Box::new(crate::ui::editor_panel::MoveLinesDown),
+    ),
+    workspace_shortcut(
+        "Duplicate lines up",
+        "alt-shift-up",
+        FILE_EDITOR_INPUT_CONTEXT,
+        || Box::new(crate::ui::editor_panel::DuplicateLinesUp),
+    ),
+    workspace_shortcut(
+        "Duplicate lines down",
+        "alt-shift-down",
+        FILE_EDITOR_INPUT_CONTEXT,
+        || Box::new(crate::ui::editor_panel::DuplicateLinesDown),
+    ),
+    workspace_shortcut(
+        "Add cursor above",
+        "cmd-alt-up",
+        FILE_EDITOR_INPUT_CONTEXT,
+        || Box::new(gpui_kit::base::input::AddCursorAbove),
+    ),
+    workspace_shortcut(
+        "Add cursor below",
+        "cmd-alt-down",
+        FILE_EDITOR_INPUT_CONTEXT,
+        || Box::new(gpui_kit::base::input::AddCursorBelow),
+    ),
+    workspace_shortcut(
+        "Go to line and column",
+        "ctrl-g",
+        FILE_EDITOR_INPUT_CONTEXT,
+        || Box::new(crate::ui::editor_panel::GoToLine),
+    ),
+    workspace_shortcut("Go to definition", "f12", FILE_EDITOR_INPUT_CONTEXT, || {
+        Box::new(gpui_kit::component::input::GoToDefinition)
+    }),
+    workspace_shortcut("Switch recent tab", "ctrl-tab", CONTEXT, || {
+        Box::new(crate::ui::editor_panel::SwitchRecentTab)
+    }),
+    workspace_shortcut("Reopen closed file", "cmd-shift-t", CONTEXT, || {
+        Box::new(crate::ui::editor_panel::ReopenClosedFile)
+    }),
+    workspace_shortcut(
+        "Go to last edit",
+        "ctrl-alt--",
+        EDITOR_PANEL_CONTEXT,
+        || Box::new(crate::ui::editor_panel::LastEditLocation),
+    ),
+    workspace_shortcut("Rename symbol", "f2", FILE_EDITOR_INPUT_CONTEXT, || {
+        Box::new(crate::ui::editor_panel::RenameSymbol)
+    }),
+    workspace_shortcut("Search worktree symbols", "cmd-alt-o", CONTEXT, || {
+        Box::new(crate::ui::editor_panel::WorkspaceSymbols)
+    }),
+    workspace_shortcut("Next changed block", "alt-f5", EDITOR_PANEL_CONTEXT, || {
+        Box::new(crate::ui::editor_panel::NextChange)
+    }),
+    workspace_shortcut(
+        "Previous changed block",
+        "alt-shift-f5",
+        EDITOR_PANEL_CONTEXT,
+        || Box::new(crate::ui::editor_panel::PreviousChange),
+    ),
+    workspace_shortcut("Next diagnostic", "f8", FILE_EDITOR_INPUT_CONTEXT, || {
+        Box::new(crate::ui::editor_panel::NextDiagnostic)
+    }),
+    workspace_shortcut(
+        "Previous diagnostic",
+        "shift-f8",
+        FILE_EDITOR_INPUT_CONTEXT,
+        || Box::new(crate::ui::editor_panel::PreviousDiagnostic),
+    ),
+    workspace_shortcut(
+        "Show signature",
+        "cmd-shift-space",
+        FILE_EDITOR_INPUT_CONTEXT,
+        || Box::new(crate::ui::editor_panel::ShowSignature),
+    ),
+    workspace_shortcut("Quick fix", "cmd-.", FILE_EDITOR_INPUT_CONTEXT, || {
+        Box::new(gpui_kit::base::input::ToggleCodeActions)
+    }),
     Shortcut {
         label: "Find references",
         default: "shift-f12",
@@ -489,7 +605,16 @@ fn install(cx: &mut App) {
         })
         .collect();
     cx.clear_key_bindings();
-    cx.bind_keys(others.into_iter().chain(bindings));
+    // File-editor actions own remappable keys only inside that editor. Restore the widget's
+    // defaults in other inputs after removing its original unscoped copies above.
+    use gpui_kit::base::input::{AddCursorAbove, AddCursorBelow, ToggleCodeActions};
+    let other_input = Some("Input && !(EditorPanel > (Input && mode == editor))");
+    let widget = [
+        KeyBinding::new("cmd-alt-up", AddCursorAbove, other_input),
+        KeyBinding::new("cmd-alt-down", AddCursorBelow, other_input),
+        KeyBinding::new("cmd-.", ToggleCodeActions, other_input),
+    ];
+    cx.bind_keys(others.into_iter().chain(widget).chain(bindings));
     app_menu::install(cx);
 }
 
@@ -731,7 +856,7 @@ mod tests {
     #[test]
     fn every_shortcut_has_a_parsable_context_and_default() {
         use gpui_kit::KeyBindingContextPredicate;
-        for shortcut in &SHORTCUTS {
+        for shortcut in SHORTCUTS {
             assert!(
                 KeyBindingContextPredicate::parse(shortcut.context).is_ok(),
                 "context of {}",
@@ -797,7 +922,7 @@ mod tests {
     #[test]
     fn no_default_asks_for_shift_with_a_symbol_key() {
         // The platform delivers `ctrl-_`, never `ctrl-shift--`; such a default cannot fire.
-        for shortcut in &SHORTCUTS {
+        for shortcut in SHORTCUTS {
             let keystroke = keystroke(shortcut.default);
             // ⌘ shortcuts with a menu item fire through the menu's key equivalent instead.
             if keystroke.modifiers.platform {
@@ -829,8 +954,12 @@ mod tests {
             .iter()
             .map(|name| KeyContext::parse(name).expect("context"))
             .collect();
-        for shortcut in &SHORTCUTS {
+        for shortcut in SHORTCUTS {
             let keystroke = keystroke(shortcut.default);
+            // Ctrl-Tab switches the active tab even while cycling through terminals.
+            if shortcut.label == "Switch recent tab" {
+                continue;
+            }
             // Option as Meta sends the most keys to the shell, so it is the case to hold.
             if crate::terminal::keys::to_bytes(&keystroke, TermMode::default(), true).is_none() {
                 continue;

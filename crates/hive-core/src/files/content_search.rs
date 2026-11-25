@@ -92,6 +92,19 @@ pub fn search(
     paths: &[PathBuf],
     query: &Query,
     cancellation: &Cancellation,
+    emit: impl FnMut(FileMatches),
+) -> Result<Summary, Error> {
+    search_with_buffers(root, paths, query, cancellation, |_| None, emit)
+}
+
+/// Searches an immutable snapshot of open editor buffers before falling back to disk.
+/// Both sources use the same matcher, result order, limits and column convention.
+pub fn search_with_buffers(
+    root: &Path,
+    paths: &[PathBuf],
+    query: &Query,
+    cancellation: &Cancellation,
+    buffer: impl Fn(&Path) -> Option<String> + Sync,
     mut emit: impl FnMut(FileMatches),
 ) -> Result<Summary, Error> {
     if query.text.is_empty() || paths.is_empty() {
@@ -103,6 +116,7 @@ pub fn search(
         root: &root,
         paths,
         cancellation,
+        buffer: &buffer,
         next: AtomicUsize::new(0),
         found: AtomicUsize::new(0),
     };
@@ -147,6 +161,7 @@ struct Scan<'a> {
     root: &'a Path,
     paths: &'a [PathBuf],
     cancellation: &'a Cancellation,
+    buffer: &'a (dyn Fn(&Path) -> Option<String> + Sync),
     next: AtomicUsize,
     found: AtomicUsize,
 }
@@ -165,7 +180,16 @@ impl Scan<'_> {
             let Some(path) = self.paths.get(ix) else {
                 return;
             };
-            let matches = search_file(self.root, path, regex);
+            let matches = match (self.buffer)(path) {
+                Some(text) => {
+                    let lines = lines::matches(&text, regex, MAX_MATCHED_LINES + 1);
+                    (!lines.is_empty()).then(|| FileMatches {
+                        path: path.clone(),
+                        lines,
+                    })
+                }
+                None => search_file(self.root, path, regex),
+            };
             if let Some(file) = &matches {
                 self.found.fetch_add(file.lines.len(), Ordering::AcqRel);
             }
