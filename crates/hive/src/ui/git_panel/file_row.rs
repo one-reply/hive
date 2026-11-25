@@ -1,6 +1,7 @@
 //! File rows with a stable, animated trailing action slot.
 use super::*;
 use crate::ui::conflict_panel::sides;
+use crate::ui::theme::{SELECTED_BACKGROUND_OPACITY, SELECTED_BORDER_OPACITY};
 use gpui_kit::base::motion::{Transition, transition};
 use hive_core::git::conflicts::Side;
 use std::time::Duration;
@@ -322,7 +323,8 @@ impl GitPanel {
             .as_ref()
             .is_some_and(|active| active.matches(self.git.read(cx).target.as_ref(), file, &source));
         let (idle, hovered) = if active {
-            (cx.theme().list_active, cx.theme().list_active)
+            let selected = fg.opacity(SELECTED_BACKGROUND_OPACITY);
+            (selected, selected)
         } else {
             (fg.opacity(0.), fg.opacity(0.05))
         };
@@ -340,6 +342,8 @@ impl GitPanel {
             .pl_2()
             .pr_1()
             .rounded_md()
+            .border_1()
+            .border_color(fg.opacity(if active { SELECTED_BORDER_OPACITY } else { 0. }))
             .cursor_pointer()
             .hover_bg(&row_hover, idle, hovered)
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))

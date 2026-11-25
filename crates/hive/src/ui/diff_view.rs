@@ -74,9 +74,17 @@ fn pan(scroll: &ScrollHandle, distance: Pixels, window: &mut Window) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::bind_keys;
     use gpui_kit as gpui;
-    use gpui_kit::component::{diff::DiffFile, v_flex};
+    use gpui_kit::component::{
+        diff::{Diff, DiffFile, DiffMode, DiffState},
+        v_flex,
+    };
+    use gpui_kit::{
+        AppContext as _, Bounds, Context, Entity, Focusable as _, InteractiveElement as _,
+        IntoElement, ParentElement as _, Pixels, Render, ScrollDelta, ScrollEvent, Styled as _,
+        TestAppContext, VisualTestContext, Window, div, point, px,
+    };
 
     struct Host {
         width: Pixels,
