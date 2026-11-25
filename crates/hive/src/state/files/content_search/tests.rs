@@ -1,4 +1,6 @@
-use super::{Buffers, ContentSearch, ContentStatus, Finished, Rope, SearchOption, run};
+use super::{
+    Buffers, ContentSearch, ContentStatus, Finished, Rope, SearchBuffer, SearchOption, run,
+};
 use hive_core::{
     command::Cancellation,
     files::content_search::{FileMatches, LineMatch, Query},
@@ -207,14 +209,23 @@ fn scoped_search_uses_dirty_text_once_and_counts_unicode_columns() {
     fs::write(f.0.path.join("pkg/a.tsx"), "old needle").unwrap();
     fs::write(f.0.path.join("pkg/b.rs"), "needle").unwrap();
     fs::write(f.0.path.join("other.tsx"), "needle").unwrap();
-    let sources = Buffers::from([
-        (PathBuf::from("pkg/a.tsx"), Rope::from("😀needle")),
-        (PathBuf::from("pkg/b.rs"), Rope::from("removed")),
+    let sources: Buffers = [
+        ("pkg/a.tsx", "😀needle", true),
+        ("pkg/b.rs", "removed", true),
+        ("pkg/draft.ts", "needle without a disk file", true),
+        ("pkg/ignored.ts", "needle outside the index", false),
+    ]
+    .into_iter()
+    .map(|(path, text, dirty)| {
         (
-            PathBuf::from("pkg/draft.ts"),
-            Rope::from("needle without a disk file"),
-        ),
-    ]);
+            PathBuf::from(path),
+            SearchBuffer {
+                text: Rope::from(text),
+                dirty,
+            },
+        )
+    })
+    .collect();
     let mut results = Vec::new();
     run(
         &f.0,
@@ -232,4 +243,32 @@ fn scoped_search_uses_dirty_text_once_and_counts_unicode_columns() {
     assert_eq!(results[1].path, Path::new("pkg/draft.ts"));
     assert_eq!(results[0].path, Path::new("pkg/a.tsx"));
     assert_eq!(results[0].lines[0].column, 1);
+}
+
+#[test]
+fn search_results_use_the_open_version_even_if_saved_again_during_search() {
+    let fixture = Fixture::new();
+    fs::write(fixture.0.path.join("saved.ts"), "other text").unwrap();
+    let sources = Buffers::from([(
+        "saved.ts".into(),
+        SearchBuffer {
+            text: Rope::from("visible needle"),
+            dirty: false,
+        },
+    )]);
+    let mut hits = Vec::new();
+    run(
+        &fixture.0,
+        &Query {
+            text: "needle".into(),
+            ..Default::default()
+        },
+        None,
+        &sources,
+        &Cancellation::default(),
+        |file| hits.push(file),
+    )
+    .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].lines[0].preview, "visible needle");
 }

@@ -52,13 +52,15 @@ struct Results {
 }
 
 impl Results {
-    fn open_selected(&self, window: &mut Window, cx: &mut App) {
+    fn open_selected(&mut self, window: &mut Window, cx: &mut App) {
         if let Some(row) = self
             .selected
             .and_then(|i| self.state.read(cx).rows.get(i))
             .copied()
         {
             if !self.state.read(cx).can_open(row, cx) {
+                self.selected = None;
+                self.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 self.state.update(cx, |state, cx| state.refresh(cx));
                 return;
             }

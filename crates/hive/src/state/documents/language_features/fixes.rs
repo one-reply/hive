@@ -4,11 +4,17 @@ use gpui_kit::component::{
     input::{CodeActionProvider, EditorState, RopeExt as _},
     notification::Notification,
 };
-use std::cell::RefCell;
+use std::{cell::RefCell, ops::Range as ByteRange};
 
 pub(super) struct QuickFixes {
     document: WeakEntity<Document>,
-    offered: Rc<RefCell<Option<(Snapshot, language_service::Session)>>>,
+    offered: Rc<RefCell<Option<Offer>>>,
+}
+
+struct Offer {
+    snapshot: Snapshot,
+    client: language_service::Session,
+    selection: ByteRange<usize>,
 }
 
 impl QuickFixes {
@@ -28,16 +34,21 @@ impl CodeActionProvider for QuickFixes {
     fn code_actions(
         &self,
         editor: Entity<EditorState>,
-        range: std::ops::Range<usize>,
+        selection: ByteRange<usize>,
         window: &mut Window,
         cx: &mut App,
     ) -> Task<gpui_kit::Result<Vec<CodeAction>>> {
         self.offered.borrow_mut().take();
+        // The widget leaves its previous menu open while a new request is pending.
+        editor.update(cx, |editor, cx| editor.dismiss_code_action_overlay(cx));
+        if editor.read(cx).selected_range() != selection {
+            return Task::ready(Ok(Vec::new()));
+        }
         let text = editor.read(cx).text().clone();
         let Some((mut snapshot, client, pos)) = Snapshot::capture(
             &self.document,
             &text,
-            range.start,
+            selection.start,
             |caps| {
                 caps.code_action_provider
                     .as_ref()
@@ -51,7 +62,7 @@ impl CodeActionProvider for QuickFixes {
             );
             return Task::ready(Ok(Vec::new()));
         };
-        let Some(end) = position::at(&text.to_string(), range.end) else {
+        let Some(end) = position::at(&text.to_string(), selection.end) else {
             return Task::ready(Ok(Vec::new()));
         };
         let range = Range::new(pos.position, end);
@@ -104,7 +115,7 @@ impl CodeActionProvider for QuickFixes {
                 }
             };
             cx.update(|window, cx| {
-                if !snapshot.current(cx) {
+                if !snapshot.current(cx) || editor.read(cx).selected_range() != selection {
                     return Vec::new();
                 }
                 if actions.is_empty() {
@@ -113,7 +124,11 @@ impl CodeActionProvider for QuickFixes {
                         cx,
                     );
                 }
-                *offered.borrow_mut() = Some((snapshot, client));
+                *offered.borrow_mut() = Some(Offer {
+                    snapshot,
+                    client,
+                    selection,
+                });
                 actions
             })
         })
@@ -121,17 +136,17 @@ impl CodeActionProvider for QuickFixes {
 
     fn perform_code_action(
         &self,
-        _: Entity<EditorState>,
+        editor: Entity<EditorState>,
         action: CodeAction,
         _: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> Task<gpui_kit::Result<()>> {
-        let Some((snapshot, client)) = self.offered.borrow_mut().take() else {
+        let Some(offer) = self.offered.borrow_mut().take() else {
             return Task::ready(Ok(()));
         };
         window.spawn(cx, async move |cx| {
-            if let Err(error) = apply_quick_fix(snapshot, client, action, cx).await {
+            if let Err(error) = apply_quick_fix(offer, editor, action, cx).await {
                 tracing::warn!(%error, "quick fix not applied");
                 cx.update(|window, cx| {
                     window.push_notification(Notification::error(error.to_string()), cx)
@@ -143,11 +158,19 @@ impl CodeActionProvider for QuickFixes {
 }
 
 async fn apply_quick_fix(
-    snapshot: Snapshot,
-    client: language_service::Session,
+    offer: Offer,
+    editor: Entity<EditorState>,
     mut action: CodeAction,
     cx: &mut AsyncWindowContext,
 ) -> gpui_kit::Result<()> {
+    let Offer {
+        snapshot,
+        client,
+        selection,
+    } = offer;
+    if !cx.update(|_, cx| snapshot.current(cx) && editor.read(cx).selected_range() == selection)? {
+        return Err(stale_action().into());
+    }
     if action.edit.is_none() {
         action = client
             .request::<request::CodeActionResolveRequest>(action)?
@@ -171,7 +194,12 @@ async fn apply_quick_fix(
         .ok_or_else(|| {
             std::io::Error::other("The server returned invalid or overlapping edits.")
         })?;
-    cx.update(|window, cx| snapshot.replace(updated, None, window, cx))?
+    cx.update(|window, cx| {
+        if editor.read(cx).selected_range() != selection {
+            return Err(stale_action().into());
+        }
+        snapshot.replace(updated, None, window, cx)
+    })?
 }
 
 fn eligible_action(
@@ -239,9 +267,7 @@ impl Snapshot {
         cx: &mut App,
     ) -> gpui_kit::Result<()> {
         if !self.current(cx) {
-            return Err(
-                std::io::Error::other("The document changed. Request the action again.").into(),
-            );
+            return Err(stale_action().into());
         }
         let document = self
             .document
@@ -258,6 +284,10 @@ impl Snapshot {
         });
         Ok(())
     }
+}
+
+fn stale_action() -> std::io::Error {
+    std::io::Error::other("The language tools or document changed. Request the action again.")
 }
 
 #[cfg(test)]

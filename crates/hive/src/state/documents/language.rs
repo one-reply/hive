@@ -79,6 +79,7 @@ pub(crate) struct LanguageSession {
     pub diagnostics: HashMap<String, diagnostics::Publication>,
     diagnostics_limited: bool,
     client: Session,
+    generation: u64,
     documents: HashMap<Uri, Synced>,
     /// Oldest first; sent before anything newer, so the server sees the editor's order.
     unsent: VecDeque<Unsent>,
@@ -169,6 +170,7 @@ impl LanguageSession {
             diagnostics: HashMap::new(),
             diagnostics_limited: false,
             client,
+            generation: 0,
             documents: HashMap::new(),
             unsent: VecDeque::new(),
             _events: None,
@@ -187,18 +189,12 @@ impl LanguageSession {
                             Event::Ready(capabilities) => {
                                 this.capabilities = Some(*capabilities);
                                 this.error = None;
-                                this.documents.clear();
-                                this.unsent.clear();
-                                this.diagnostics.clear();
-                                this.diagnostics_limited = false;
+                                this.reset_sync_state();
                             }
                             Event::Failed(error) => {
                                 this.capabilities = None;
                                 this.error = Some(error.to_string());
-                                this.documents.clear();
-                                this.unsent.clear();
-                                this.diagnostics.clear();
-                                this.diagnostics_limited = false;
+                                this.reset_sync_state();
                             }
                             Event::Diagnostics(params) => {
                                 this.receive_diagnostics(params);
@@ -213,10 +209,7 @@ impl LanguageSession {
             }
             let _ = this.update(cx, |this, cx| {
                 this.capabilities = None;
-                this.documents.clear();
-                this.unsent.clear();
-                this.diagnostics.clear();
-                this.diagnostics_limited = false;
+                this.reset_sync_state();
                 if this.error.is_none() {
                     this.error = Some("Language server stopped. Retry to reconnect.".into());
                 }
@@ -243,15 +236,27 @@ impl LanguageSession {
         self.client = client;
         self.capabilities = None;
         self.error = None;
-        self.documents.clear();
-        self.unsent.clear();
-        self.diagnostics.clear();
+        self.reset_sync_state();
         self.listen(events, cx);
         cx.notify();
     }
 
     pub(super) fn document_version(&self, uri: &Uri) -> Option<i32> {
         self.documents.get(uri).map(|document| document.version)
+    }
+
+    pub(super) fn synchronized_revision(&self, uri: &Uri) -> Option<(u64, i32)> {
+        self.capabilities.as_ref()?;
+        Some((self.generation, self.document_version(uri)?))
+    }
+
+    fn reset_sync_state(&mut self) {
+        // Document versions restart at didOpen, so they alone cannot identify a server snapshot.
+        self.generation = self.generation.wrapping_add(1);
+        self.documents.clear();
+        self.unsent.clear();
+        self.diagnostics.clear();
+        self.diagnostics_limited = false;
     }
 
     pub(super) fn sync(

@@ -50,6 +50,7 @@ fn mount<'a>(
             diagnostics: Default::default(),
             diagnostics_limited: false,
             client,
+            generation: 0,
             documents: Default::default(),
             unsent: Default::default(),
             _events: None,
@@ -213,4 +214,104 @@ fn a_resolved_typescript_quick_fix_through_the_editor_requires_one_undo(cx: &mut
     });
     cx.simulate_keystrokes("cmd-z");
     cx.read(|cx| assert_eq!(editor.read(cx).text().to_string(), source));
+}
+
+#[gpui::test]
+fn quick_fixes_cannot_cross_a_language_server_restart(cx: &mut TestAppContext) {
+    let source = "const name = 1;";
+    let (doc, outbox, cx) = mount(source, cx);
+    let editor = cx.read(|cx| doc.read(cx).editor.clone());
+    cx.update(|window, cx| editor.update(cx, |editor, cx| editor.focus(window, cx)));
+    for resolve_in_flight in [false, true] {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.dispatch_action(gpui::base::input::ToggleCodeActions);
+        cx.run_until_parked();
+        let (method, _) = outbox
+            .respond(json!([{"title":"Rename constant", "kind":"quickfix", "data":{"fix":42}}]))
+            .unwrap();
+        assert_eq!(method, "textDocument/codeAction");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.read(|cx| editor.read(cx).code_action_menu_state().open));
+        if resolve_in_flight {
+            cx.simulate_keystrokes("enter");
+            cx.run_until_parked();
+        }
+        cx.update(|_, cx| {
+            let session = doc.read(cx).language.clone().unwrap();
+            session.update(cx, |session, cx| {
+                session.reset_sync_state();
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        if resolve_in_flight {
+            let (method, _) = outbox
+                .respond(json!({
+                    "title":"Rename constant",
+                    "edit":{"changes":{"file:///project/ts/src/Demo.tsx":[{
+                        "range":{"start":{"line":0,"character":6},"end":{"line":0,"character":10}},
+                        "newText":"other"
+                    }]}}
+                }))
+                .unwrap();
+            assert_eq!(method, "codeAction/resolve");
+        }
+        assert_eq!(outbox.take(), Some("textDocument/didOpen"));
+        if !resolve_in_flight {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.simulate_keystrokes("enter");
+        }
+        cx.run_until_parked();
+        assert_eq!(outbox.take(), None);
+        cx.read(|cx| assert_eq!(editor.read(cx).text().to_string(), source));
+    }
+}
+
+#[gpui::test]
+fn a_stale_empty_publication_does_not_clear_current_diagnostics(cx: &mut TestAppContext) {
+    use lsp_types::{Diagnostic, PublishDiagnosticsParams};
+    let (doc, _, cx) = mount("const name = 1;", cx);
+    let uri =
+        hive_core::language_service::position::uri(Path::new("/project/ts/src/Demo.tsx")).unwrap();
+    cx.update(|_, cx| {
+        let session = doc.read(cx).language.clone().unwrap();
+        session.update(cx, |session, cx| {
+            session.receive_diagnostics(PublishDiagnosticsParams::new(
+                uri.clone(),
+                vec![Diagnostic::default()],
+                Some(1),
+            ));
+            session.receive_diagnostics(PublishDiagnosticsParams::new(
+                uri.clone(),
+                Vec::new(),
+                Some(0),
+            ));
+            cx.notify();
+        });
+    });
+    cx.read(|cx| assert_eq!(doc.read(cx).diagnostics.len(), 1));
+}
+
+#[gpui::test]
+fn quick_fix_results_are_discarded_after_the_selection_moves(cx: &mut TestAppContext) {
+    let (doc, outbox, cx) = mount("const name = 1;", cx);
+    let editor = cx.read(|cx| doc.read(cx).editor.clone());
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| editor.focus(window, cx));
+        window.draw(cx).clear(cx);
+    });
+    cx.dispatch_action(gpui::base::input::ToggleCodeActions);
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.set_cursor_position(lsp_types::Position::new(0, 6), window, cx);
+        })
+    });
+    let (method, _) = outbox
+        .respond(json!([{"title":"Rename constant", "kind":"quickfix", "data":{"fix":42}}]))
+        .unwrap();
+    assert_eq!(method, "textDocument/codeAction");
+    cx.run_until_parked();
+    assert!(!cx.read(|cx| editor.read(cx).code_action_menu_state().open));
 }

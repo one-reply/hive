@@ -49,9 +49,18 @@ fn prepare(document: Entity<Document>, name: String, window: &mut Window, cx: &m
     let task = Document::rename(&document, name.clone(), cx);
     window
         .spawn(cx, async move |cx| {
-            let result = task.await;
+            let result = match task.await {
+                Ok(preview) => Ok(cx
+                    .background_executor()
+                    .spawn(async move {
+                        let rows = Arc::new(preview.rows());
+                        (preview, rows)
+                    })
+                    .await),
+                Err(error) => Err(error),
+            };
             let _ = cx.update(|window, cx| match result {
-                Ok(preview) => review(document, name, preview, window, cx),
+                Ok((preview, rows)) => review(document, name, preview, rows, window, cx),
                 Err(error) => window.push_notification(Notification::error(error), cx),
             });
         })
@@ -62,10 +71,10 @@ fn review(
     document: Entity<Document>,
     name: String,
     preview: Arc<RenamePreview>,
+    rows: Arc<Vec<String>>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let rows = Arc::new(preview.rows());
     window.open_alert_dialog(cx, move |dialog, _, _| {
         let rows = rows.clone();
         let (document, name, preview) = (document.clone(), name.clone(), preview.clone());

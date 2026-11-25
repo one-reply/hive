@@ -26,6 +26,29 @@ fn rename_rejects_git_parent_and_sibling_worktrees() {
     );
 }
 
+#[test]
+fn rename_only_uses_unsaved_text_known_to_the_requesting_server() {
+    let disk = Disk::parse(Path::new("a.ts"), b"disk").unwrap();
+    let mut source = super::OpenVersion {
+        text: "unsaved".into(),
+        disk: disk.clone(),
+        version: None,
+    };
+    assert!(super::rename_source(&disk, Some(&source), None).is_err());
+    source.text = "disk".into();
+    assert!(super::rename_source(&disk, Some(&source), Some(1)).is_err());
+    assert_eq!(
+        super::rename_source(&disk, Some(&source), None).unwrap(),
+        "disk"
+    );
+    source.text = "unsaved".into();
+    source.version = Some(1);
+    assert_eq!(
+        super::rename_source(&disk, Some(&source), Some(1)).unwrap(),
+        "unsaved"
+    );
+}
+
 struct Harness;
 impl Render for Harness {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

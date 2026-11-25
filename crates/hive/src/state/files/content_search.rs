@@ -9,7 +9,13 @@ use hive_core::{
 
 use gpui_kit::component::input::Rope;
 
-pub(crate) type Buffers = BTreeMap<PathBuf, Rope>;
+#[derive(Clone)]
+pub(crate) struct SearchBuffer {
+    pub(crate) text: Rope,
+    dirty: bool,
+}
+
+pub(crate) type Buffers = BTreeMap<PathBuf, SearchBuffer>;
 
 pub(crate) fn buffers(target: &Target, cx: &App) -> Buffers {
     AppState::get(cx)
@@ -19,8 +25,14 @@ pub(crate) fn buffers(target: &Target, cx: &App) -> Buffers {
         .into_iter()
         .filter_map(|doc| {
             let d = doc.read(cx);
-            d.dirty
-                .then(|| (d.path.clone(), d.editor.read(cx).text().clone()))
+            d.base.as_ref()?;
+            Some((
+                d.path.clone(),
+                SearchBuffer {
+                    text: d.editor.read(cx).text().clone(),
+                    dirty: d.dirty,
+                },
+            ))
         })
         .collect()
 }
@@ -353,7 +365,13 @@ pub(crate) fn run(
     let mut index = files::Access::new(&target.host, cancellation)
         .list_files(&target.path)
         .map_err(|error| error.to_string())?;
-    index.paths.extend(buffers.keys().cloned());
+    // Clean ignored files remain outside a worktree scan; unsaved drafts still participate.
+    index.paths.extend(
+        buffers
+            .iter()
+            .filter(|(_, b)| b.dirty)
+            .map(|(path, _)| path.clone()),
+    );
     if let Some(folder) = folder {
         index.paths.retain(|p| p.starts_with(folder));
     }
@@ -364,7 +382,7 @@ pub(crate) fn run(
         &index.paths,
         query,
         cancellation,
-        |path| buffers.get(path).map(ToString::to_string),
+        |path| buffers.get(path).map(|buffer| buffer.text.to_string()),
         emit,
     )
     .map_err(|error| error.to_string())?;
@@ -381,11 +399,11 @@ pub(crate) fn snapshot_current(target: &Target, path: &Path, sources: &Buffers, 
         .in_path(target, path, cx)
         .into_iter()
         .find(|d| d.read(cx).path == path);
-    match (sources.get(path), current) {
-        (Some(snapshot), Some(doc)) => doc.read(cx).editor.read(cx).text() == snapshot,
-        (None, Some(doc)) => !doc.read(cx).dirty,
-        (snapshot, None) => snapshot.is_none(),
-    }
+    let current = current.as_ref().and_then(|doc| {
+        let d = doc.read(cx);
+        d.base.as_ref().map(|_| d.editor.read(cx).text())
+    });
+    sources.get(path).map(|buffer| &buffer.text) == current
 }
 
 #[cfg(test)]

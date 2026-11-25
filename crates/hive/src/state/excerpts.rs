@@ -174,17 +174,17 @@ impl Excerpts {
                 continue;
             }
             let path = self.files[index].path.clone();
-            let host = self.target.host.clone();
+            let target = self.target.clone();
             let buffer = if matches!(self.query, Query::Content(..)) {
                 path.strip_prefix(&self.target.path)
                     .ok()
                     .and_then(|p| self.buffers.get(p))
-                    .cloned()
+                    .map(|buffer| buffer.text.clone())
             } else {
                 AppState::get(cx)
                     .documents
                     .read(cx)
-                    .buffer(&host, &path, cx)
+                    .buffer(&target.host, &path, cx)
                     .map(Rope::from)
             };
             let task = cx.spawn(async move |this, cx| {
@@ -192,14 +192,10 @@ impl Excerpts {
                     let text = if let Some(text) = buffer {
                         text
                     } else {
-                        let root = path
-                            .parent()
+                        let (root, name) = excerpt_source(&target.path, &path)
                             .ok_or_else(|| "Invalid source path".to_owned())?;
-                        let name = path
-                            .file_name()
-                            .ok_or_else(|| "Invalid source path".to_owned())?;
-                        files::Access::new(&host, cancel)
-                            .read(root, Path::new(name))
+                        files::Access::new(&target.host, cancel)
+                            .read(root, name)
                             .map_err(|e| e.to_string())?
                             .text()
                             .into()
@@ -316,6 +312,15 @@ impl Excerpts {
     }
 }
 
+// For a worktree file, Access must check every path component against the worktree root.
+fn excerpt_source<'a>(root: &'a Path, path: &'a Path) -> Option<(&'a Path, &'a Path)> {
+    if path.starts_with(root) {
+        Some((root, files::location::relative(root, path)?))
+    } else {
+        Some((path.parent()?, Path::new(path.file_name()?)))
+    }
+}
+
 fn file_rows(source: &File, file: usize, lines: Option<u32>) -> impl Iterator<Item = Row> + '_ {
     std::iter::once(Row { file, line: None }).chain(source.windows.iter().flat_map(move |window| {
         let end = lines.map_or(window.end, |lines| lines.min(window.end));
@@ -350,5 +355,23 @@ mod tests {
             [None, Some(0), Some(1), Some(2)]
         );
         assert_eq!(file_rows(&source, 0, Some(0)).count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::{Path, excerpt_source};
+    #[test]
+    fn in_tree_sources_keep_the_entire_path_for_the_filesystem_guard() {
+        let root = Path::new("/work");
+        assert_eq!(
+            excerpt_source(root, Path::new("/work/src/a")),
+            Some((root, Path::new("src/a")))
+        );
+        assert!(excerpt_source(root, Path::new("/work/../outside/file")).is_none());
+        assert_eq!(
+            excerpt_source(root, Path::new("/sdk/a")),
+            Some((Path::new("/sdk"), Path::new("a")))
+        );
     }
 }

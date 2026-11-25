@@ -26,15 +26,14 @@ impl Publication {
 
 impl LanguageSession {
     pub(super) fn receive_diagnostics(&mut self, params: PublishDiagnosticsParams) {
-        let diagnosed = self
-            .documents
-            .get(&params.uri)
-            .filter(|synced| {
-                params
-                    .version
-                    .is_none_or(|version| version == synced.version)
-            })
-            .map(|synced| synced.text.clone());
+        let synced = self.documents.get(&params.uri);
+        if let (Some(synced), Some(version)) = (synced, params.version)
+            && version != synced.version
+        {
+            // Even an empty publication from a stale version can erase a current diagnostic.
+            return;
+        }
+        let diagnosed = synced.map(|synced| synced.text.clone());
         self.diagnostics_limited |= retain_bounded(&mut self.diagnostics, params, diagnosed);
     }
     pub(super) fn current_diagnostics(&self, uri: &Uri, text: &Rope) -> Vec<lsp_types::Diagnostic> {

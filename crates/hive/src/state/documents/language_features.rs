@@ -83,6 +83,7 @@ impl Document {
 struct Snapshot {
     uri: Uri,
     version: i32,
+    generation: u64,
     revision: Option<u64>,
     session: EntityId,
     document: WeakEntity<Document>,
@@ -116,12 +117,13 @@ impl Snapshot {
         };
         let (client, uri) = entity.update(cx, |d, cx| d.language_client(text, cx))?;
         let session = entity.read(cx).language.as_ref()?;
-        let version = session.read(cx).document_version(&uri)?;
+        let (generation, version) = session.read(cx).synchronized_revision(&uri)?;
         let position = position::at(&text.to_string(), offset)?;
         Some((
             Self {
                 uri: uri.clone(),
                 version,
+                generation,
                 revision: None,
                 session: session.entity_id(),
                 document: document.clone(),
@@ -145,7 +147,8 @@ impl Snapshot {
                 && self.revision.is_none_or(|v| d.revision == v)
                 && d.language.as_ref().is_some_and(|s| {
                     s.entity_id() == self.session
-                        && s.read(cx).document_version(&self.uri) == Some(self.version)
+                        && s.read(cx).synchronized_revision(&self.uri)
+                            == Some((self.generation, self.version))
                 })
                 && d.editor.read(cx).text() == &self.text
         })

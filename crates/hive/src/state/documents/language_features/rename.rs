@@ -195,6 +195,28 @@ struct OpenVersion {
     version: Option<i32>,
 }
 
+/// A server can only address the unsaved text of buffers synchronized with that server.
+fn rename_source(
+    disk: &Disk,
+    open: Option<&OpenVersion>,
+    expected: Option<i32>,
+) -> Result<String, String> {
+    if expected.is_some() && expected != open.and_then(|source| source.version) {
+        return Err(STALE.into());
+    }
+    let Some(source) = open else {
+        return Ok(disk.text());
+    };
+    if source.disk != *disk {
+        return Err(STALE.into());
+    }
+    let text = source.text.to_string();
+    if source.version.is_none() && !disk.matches(&text) {
+        return Err("Rename includes unsaved changes unknown to this language server. Save the file and recalculate.".into());
+    }
+    Ok(text)
+}
+
 impl Document {
     pub(crate) fn rename(
         document: &Entity<Self>,
@@ -226,11 +248,12 @@ impl Document {
             let d = doc.read(cx);
             if let Some(disk) = d.base.clone() {
                 let text = d.editor.read(cx).text().clone();
-                let session = d.language.clone();
+                let session = d
+                    .language
+                    .clone()
+                    .filter(|s| s.entity_id() == origin.session);
                 let path = d.path.clone();
-                if session
-                    .as_ref()
-                    .is_some_and(|s| s.entity_id() == origin.session)
+                if session.is_some()
                     && doc
                         .update(cx, |d, cx| d.language_client(&text, cx))
                         .is_none()
@@ -278,20 +301,15 @@ impl Document {
                     let disk = access
                         .read(&target.path, &path)
                         .map_err(|e| e.to_string())?;
-                    let source = open.get(&path);
-                    if source.is_some_and(|s| s.disk != disk)
-                        || doc
-                            .version
-                            .is_some_and(|v| source.and_then(|s| s.version) != Some(v))
-                    {
-                        return Err(STALE.to_string());
+                    count += doc.edits.len();
+                    if count > CHANGED_RANGES {
+                        return Err("Rename exceeds the preview limit.".into());
                     }
-                    let before = source.map_or_else(|| disk.text(), |s| s.text.to_string());
+                    let before = rename_source(&disk, open.get(&path), doc.version)?;
                     let after = edits::apply(&before, &doc.edits)
                         .ok_or("The server returned invalid or overlapping edits.")?;
                     size += before.len() + after.len();
-                    count += doc.edits.len();
-                    if size > PREVIEW_BYTES || count > CHANGED_RANGES {
+                    if size > PREVIEW_BYTES {
                         return Err("Rename exceeds the preview limit.".into());
                     }
                     if before != after
@@ -314,7 +332,7 @@ impl Document {
                 if paths.is_empty() {
                     return Err("No occurrences to rename.".into());
                 }
-                Ok(paths.into_values().collect::<Vec<_>>())
+                Ok::<_, String>(paths.into_values().collect::<Vec<_>>())
             });
             let files = work.await?;
             if !cx.update(|cx| origin.current(cx)) {
