@@ -1,4 +1,4 @@
-use super::Sidebar;
+use super::{CARD_HEIGHT, ROW_GAP, Sidebar};
 use crate::state::{projects::Projects, store::Store};
 use crate::ui::hover::Hover;
 use gpui_kit as gpui;
@@ -6,7 +6,7 @@ use gpui_kit::component::v_flex;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Context, Entity, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke, Render, TestAppContext,
-    Window, point, px,
+    Window, div, point, px,
 };
 use hive_core::{
     host::Host,
@@ -237,4 +237,119 @@ fn project_names_expand_on_selection_and_toggle_when_active(cx: &mut TestAppCont
             hive_core::state::ProjectExpansion::Automatic
         );
     });
+}
+
+struct ProjectGroups(Entity<Sidebar>);
+
+impl Render for ProjectGroups {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.0.update(cx, |sidebar, cx| {
+            let items = sidebar.projects.read(cx).items.clone();
+            v_flex().w(px(300.)).pl_1().pr_2().children(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, project)| {
+                        let open = !sidebar
+                            .collapsed
+                            .contains(&(project.host.clone(), project.path.clone()));
+                        let list = open.then(|| {
+                            v_flex()
+                                .children(project.worktrees.iter().enumerate().map(|(wt_ix, _)| {
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("project-{ix}-worktree-{wt_ix}")
+                                        })
+                                        .mt(ROW_GAP)
+                                        .h(CARD_HEIGHT)
+                                }))
+                                .into_any_element()
+                        });
+                        sidebar.project_group(ix, project, open, list, window, cx)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+    }
+}
+
+#[gpui::test]
+fn active_project_line_highlights_selected_project_and_all_its_worktrees(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    let store = cx.new(|cx| {
+        Store::new(
+            Err(StateError::Io {
+                operation: "test",
+                path: "/unused".into(),
+                source: std::io::Error::other("persistence disabled for test"),
+            }),
+            hive_core::state::Access::Held,
+            cx,
+        )
+    });
+    store.update(cx, |store, _| {
+        store.state.projects = ["/alpha", "/beta"]
+            .into_iter()
+            .map(|path| hive_core::state::ProjectRef::new(path.into(), Host::Local))
+            .collect();
+    });
+    let projects = cx.new(|cx| Projects::new(&store, cx));
+    cx.run_until_parked();
+    projects.update(cx, |projects, cx| {
+        projects.items = vec![project("alpha"), project("beta")];
+        projects.select_project(&Host::Local, "/alpha".as_ref(), cx);
+    });
+    let sidebar = cx.new(|cx| Sidebar {
+        projects: projects.clone(),
+        store: store.clone(),
+        collapsed: HashSet::new(),
+        toggled: HashMap::new(),
+        agents_open: HashSet::new(),
+        working: crate::ui::stepped_spinner::SteppedSpinner::new(cx),
+        _observers: vec![cx.observe(&projects, |_, _, cx| cx.notify())],
+    });
+    let (_, cx) = cx.add_window_view(|_, _| ProjectGroups(sidebar.clone()));
+    cx.update(|window, cx| {
+        window.activate_window();
+        window.draw(cx).clear(cx);
+    });
+    let alpha_bar = cx
+        .debug_bounds("project-active-bar-0")
+        .expect("active project bar for alpha");
+    assert!(cx.debug_bounds("project-active-bar-1").is_none());
+    let alpha_last_worktree = cx
+        .debug_bounds("project-0-worktree-1")
+        .expect("last worktree of alpha");
+    assert_eq!(alpha_bar.size.width, px(2.));
+    assert!(alpha_bar.bottom() > alpha_last_worktree.top());
+    assert!((alpha_bar.bottom() - (alpha_last_worktree.bottom() - px(2.))).abs() <= px(0.5));
+
+    projects.update(cx, |projects, cx| {
+        projects.select_project(&Host::Local, "/beta".as_ref(), cx);
+    });
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    assert!(cx.debug_bounds("project-active-bar-0").is_none());
+    let beta_bar = cx
+        .debug_bounds("project-active-bar-1")
+        .expect("active project bar for beta");
+    let beta_last_worktree = cx
+        .debug_bounds("project-1-worktree-1")
+        .expect("last worktree of beta");
+    assert!(beta_bar.bottom() > beta_last_worktree.top());
+
+    sidebar.update(cx, |sidebar, cx| {
+        sidebar.toggle_collapsed(&(Host::Local, "/beta".into()), cx);
+    });
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    let collapsed_beta_bar = cx
+        .debug_bounds("project-active-bar-1")
+        .expect("active project bar remains on collapsed beta");
+    assert!(collapsed_beta_bar.size.height < beta_bar.size.height);
 }
