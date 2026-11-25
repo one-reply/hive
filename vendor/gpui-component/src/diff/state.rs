@@ -1381,7 +1381,7 @@ impl DiffState {
     fn rebuild(&mut self, reset: bool) {
         let rows = self.project_rows();
         self.file_rows = source_rows(&self.files, &rows);
-        self.change_rows = changed_groups(&rows);
+        self.change_rows = changed_groups(&rows, &self.files);
         self.header_rows = rows
             .iter()
             .enumerate()
@@ -1611,11 +1611,17 @@ fn source_rows(files: &[DiffFile], rows: &[DisplayRow]) -> Vec<FileRows> {
     file_rows
 }
 
-fn changed_groups(rows: &[DisplayRow]) -> Vec<usize> {
+fn changed_groups(rows: &[DisplayRow], files: &[DiffFile]) -> Vec<usize> {
     let changed = |row: &DisplayRow| matches!(row, DisplayRow::Code { changed: true, .. });
     rows.iter()
         .enumerate()
         .filter_map(|(ix, row)| {
+            // Navigation must reach lazy review blocks before their hunks are available.
+            if let DisplayRow::Notice(file) = row
+                && files[*file].notice.is_some()
+            {
+                return Some(ix);
+            }
             (changed(row)
                 && (ix == 0 || !changed(&rows[ix - 1]) || rows[ix - 1].file() != row.file()))
             .then_some(ix)

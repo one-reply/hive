@@ -54,6 +54,14 @@ fn loading_a_neighbor_preserves_a_code_selection_until_its_own_patch_changes(
         d.set_selected_lines(Some(DiffLineRange::new("a", DiffSide::Modified, 1, 1)), cx);
         d.set_review_files(vec![file, DiffFile::notice("b", "Loading changes…")], cx);
         assert_eq!(d.selected_text(cx), "new\n");
+        d.previous_change(cx);
+        assert_eq!(
+            d.file_at_row(d.list().logical_scroll_top().item_ix)
+                .unwrap()
+                .path()
+                .as_str(),
+            "b"
+        );
         d.set_review_files(
             DiffFile::parse(&patch.replace("+new", "+changed")).unwrap(),
             cx,
