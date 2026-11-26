@@ -133,9 +133,19 @@ pub(super) fn next_conflict(
         .or(Some(start))
 }
 
+/// What sits between the conflict arrows: the conflict they last moved to, or how many there
+/// are before the first move.
+pub(super) fn conflict_position(current: Option<usize>, total: usize) -> String {
+    match current {
+        Some(ix) if ix < total => format!("Conflict {}/{total}", ix + 1),
+        _ if total == 1 => "1 conflict".into(),
+        _ => format!("{total} conflicts"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Body, File, Progress, body, next_conflict};
+    use super::{Body, File, Progress, body, conflict_position, next_conflict};
     use crate::state::git::ConflictState;
     use hive_core::git::conflicts::Conflict;
 
@@ -201,5 +211,15 @@ mod tests {
         assert_eq!(next_conflict(Some(0), &[false], true), Some(0));
         assert_eq!(next_conflict(Some(9), &[true, false], true), Some(1));
         assert_eq!(next_conflict(None, &[], true), None);
+    }
+
+    #[test]
+    fn conflict_position_counts_until_the_arrows_move_then_shows_where_they_are() {
+        assert_eq!(conflict_position(None, 1), "1 conflict");
+        assert_eq!(conflict_position(None, 4), "4 conflicts");
+        assert_eq!(conflict_position(Some(0), 4), "Conflict 1/4");
+        assert_eq!(conflict_position(Some(3), 4), "Conflict 4/4");
+        // A position left over from a longer document falls back to the count.
+        assert_eq!(conflict_position(Some(4), 4), "4 conflicts");
     }
 }

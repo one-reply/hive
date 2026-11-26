@@ -17,6 +17,7 @@ mod files;
 mod persistence;
 mod recent;
 mod spawn;
+mod worktree_tabs;
 
 pub(super) struct ProjectCenter {
     pub(super) host: Host,
@@ -34,6 +35,7 @@ pub(super) struct ProjectCenter {
     _layout: Subscription,
     focused: Option<PanelId>,
     recent_tabs: recent::RecentTabs,
+    worktree_tabs: worktree_tabs::WorktreeTabs,
     pub(super) navigation: crate::state::documents::history::History,
 }
 
@@ -61,8 +63,14 @@ impl ProjectCenter {
         });
         let layout = cx.subscribe_in(&dock, window, move |workspace, _, event, window, cx| {
             if matches!(event, DockEvent::LayoutChanged) {
+                let shown = workspace.shown.as_ref() == Some(&project);
+                // Only a tab the user saw counts: an agent's tab opening in a hidden project is
+                // not the one they left there.
+                if shown && let Some(center) = workspace.centers.get_mut(&project) {
+                    center.remember_shown_tab(window, cx);
+                }
                 workspace.save_center(&project, window, cx);
-                if workspace.shown.as_ref() == Some(&project) {
+                if shown {
                     workspace.sync_git_file(cx);
                 }
             }
@@ -79,6 +87,7 @@ impl ProjectCenter {
             _layout: layout,
             focused: None,
             recent_tabs: Default::default(),
+            worktree_tabs: Default::default(),
             navigation: Default::default(),
         }
     }
@@ -111,6 +120,23 @@ impl ProjectCenter {
             .retain(|panel| dock.panel(PanelId::from(panel.entity_id())).is_some());
         self.editors
             .retain(|panel| dock.panel(PanelId::from(panel.entity_id())).is_some());
+        self.worktree_tabs
+            .retain_open(|tab| dock.panel(tab).is_some());
+    }
+
+    /// Notes the tab holding the keyboard, if one does, as the last focused tab.
+    fn note_focus(&mut self, window: &Window, cx: &App) {
+        let dock = self.dock.read(cx);
+        let Some(tree) = dock.layout(DockPlacement::Center) else {
+            return;
+        };
+        if let Some(focused) = tree.panels().find(|id| {
+            dock.panel(*id)
+                .is_some_and(|p| p.focus_handle(cx).contains_focused(window, cx))
+        }) {
+            self.focused = Some(focused);
+            self.recent_tabs.activate(focused);
+        }
     }
 
     /// Worktree paths with an open terminal here.
