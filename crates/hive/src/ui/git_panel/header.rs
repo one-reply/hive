@@ -29,13 +29,13 @@ impl GitPanel {
         let state = self.git.read(cx);
         let status = state.status.as_ref();
         let busy = state.is_busy();
+        let loaded = status.is_some();
         // A remote operation spins its own button, so the refresh icon stays still meanwhile.
-        // Reading what a confirmation will show is as quiet as a refresh, so it spins the same.
-        let spinning = state.loading
+        // Reading what a confirmation will show spins it like the user's own refresh.
+        let spinning = read_spins(state.loading, self.manual_refresh, loaded)
             || state.is_preparing()
             || (state.is_running() && state.remote_operation().is_none());
         let synced: Option<SharedString> = state.synced().map(|s| s.to_string().into());
-        let loaded = status.is_some();
         let detached = status.is_some_and(|s| s.branch.is_none());
         let branch: SharedString = status
             .and_then(|s| s.branch.clone())
@@ -94,10 +94,13 @@ impl GitPanel {
                     .loading(spinning)
                     .tooltip("Refresh")
                     .on_click(cx.listener(|this, _, _, cx| {
+                        this.manual_refresh = true;
                         this.git.update(cx, |g, cx| {
                             g.clear_error(cx);
                             g.refresh(true, cx);
-                        })
+                        });
+                        // Starting a read does not notify, and the button spins from now.
+                        cx.notify();
                     }))
                     .smooth_hover(ButtonLook::Ghost, &refresh_hover.enabled(!spinning), cx),
             )
@@ -228,6 +231,13 @@ fn segment(button: Button, position: Segment, hover: &Hover, cx: &App) -> Statef
         .h_full()
 }
 
+/// Whether a status read spins the refresh button: the user's own Refresh, or the first read
+/// while there is nothing to show yet. The poll reads every two seconds while the panel is
+/// open, and `Spinner` redraws the whole window on every frame it turns, so polls read quietly.
+fn read_spins(loading: bool, requested: bool, loaded: bool) -> bool {
+    loading && (requested || !loaded)
+}
+
 /// Whether `operation` is the one the button for `entry` started.
 fn runs(entry: Entry, operation: RemoteOperation) -> bool {
     matches!(
@@ -335,8 +345,24 @@ fn synced_note(text: SharedString, cx: &App) -> impl IntoElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{Entry, RemoteOperation, describe, label, pending, upstream_note};
+    use super::{Entry, RemoteOperation, describe, label, pending, read_spins, upstream_note};
     use hive_core::git::status::Status;
+
+    #[test]
+    fn a_background_poll_reads_without_spinning_the_refresh_button() {
+        let (loading, requested, loaded) = (true, false, true);
+        assert!(!read_spins(loading, requested, loaded));
+    }
+
+    #[test]
+    fn the_users_refresh_and_the_first_read_spin_until_they_end() {
+        assert!(read_spins(true, true, true), "the user's own refresh");
+        assert!(read_spins(true, false, false), "nothing to show yet");
+        assert!(read_spins(true, true, false));
+        for (requested, loaded) in [(false, false), (true, true), (false, true)] {
+            assert!(!read_spins(false, requested, loaded), "no read under way");
+        }
+    }
 
     fn tracking(ahead: usize, behind: usize) -> Status {
         Status {

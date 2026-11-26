@@ -19,33 +19,23 @@ impl Files {
         };
         self.loading = true;
         let generation = self.generation;
-        let paths: Vec<_> = std::iter::once(PathBuf::new())
-            .chain(self.expanded.iter().cloned())
-            .collect();
+        let expanded = self.expanded.clone();
         let ignored_paths =
             tracking::IgnoredPaths::of(&AppState::get(cx).git.read(cx).tracking(Some(&target)));
         self._read = Some(cx.spawn(async move |this, cx| {
             let read_target = target.clone();
             let result =
                 crate::state::file_io::run(cx.background_executor().clone(), move |cancellation| {
-                    let mut directories = BTreeMap::new();
-                    let mut errors = Vec::new();
-                    for path in paths {
-                        match files::Access::new(&read_target.host, cancellation)
-                            .list_directory(&read_target.path, &path)
-                        {
-                            Ok(entries) => {
-                                directories.insert(path, entries);
-                            }
-                            Err(error) if path.as_os_str().is_empty() => {
-                                return Err(error.to_string());
-                            }
-                            Err(error) => {
-                                directories.insert(path, Vec::new());
-                                errors.push(error.to_string());
-                            }
-                        }
-                    }
+                    let access = files::Access::new(&read_target.host, cancellation);
+                    let files::open_directories::Listed {
+                        directories,
+                        failures,
+                    } = files::open_directories::read(&expanded, |path| {
+                        access.list_directory(&read_target.path, path)
+                    })
+                    .map_err(|error| error.to_string())?;
+                    let mut errors: Vec<String> =
+                        failures.iter().map(ToString::to_string).collect();
                     let paths = directories
                         .values()
                         .flatten()
