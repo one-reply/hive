@@ -45,3 +45,6 @@ pub mod worktree;
 
 mod path_encoding;
 pub mod remote;
+
+#[cfg(feature = "desktop")]
+pub mod package_lens;

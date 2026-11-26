@@ -66,22 +66,7 @@ fn package_scripts(files: &[&str], manifest: &[u8]) -> Vec<String> {
     let Ok(package) = serde_json::from_slice::<Package>(manifest) else {
         return Vec::new();
     };
-    let declared = package
-        .manager
-        .as_deref()
-        .and_then(|s| s.split('@').next())
-        .filter(|m| ["npm", "yarn", "pnpm", "bun"].contains(m));
-    let manager = declared.unwrap_or_else(|| {
-        [
-            ("pnpm-lock.yaml", "pnpm"),
-            ("yarn.lock", "yarn"),
-            ("bun.lock", "bun"),
-            ("bun.lockb", "bun"),
-        ]
-        .into_iter()
-        .find(|(lock, _)| files.contains(lock))
-        .map_or("npm", |(_, m)| m)
-    });
+    let manager = crate::package_lens::detect_manager(package.manager.as_deref(), files);
     ["test", "lint", "typecheck", "type-check"]
         .into_iter()
         .filter(|name| {

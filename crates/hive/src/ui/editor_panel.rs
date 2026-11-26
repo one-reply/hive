@@ -25,6 +25,7 @@ pub(crate) mod import_menu;
 mod language_assist;
 mod language_tools;
 mod navigation;
+mod packages;
 mod peek;
 mod rename;
 mod render;
@@ -64,6 +65,7 @@ actions!(
         ShowProblems,
         NextDiagnostic,
         PreviousDiagnostic,
+        PackageVersions,
         ShowSignature
     ]
 );

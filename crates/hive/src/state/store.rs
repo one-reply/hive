@@ -523,6 +523,23 @@ impl Store {
         }
     }
 
+    pub(crate) fn toggle_install_on_save(
+        &mut self,
+        host: &Host,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(project) = self
+            .state
+            .projects
+            .iter_mut()
+            .find(|p| p.host == *host && p.path == path)
+        {
+            project.install_on_save = !project.install_on_save;
+            self.commit(cx);
+        }
+    }
+
     /// Remembers the worktree setup command a local project last ran, to offer it again.
     pub(crate) fn set_project_setup(&mut self, path: &Path, setup: &str, cx: &mut Context<Self>) {
         let Some(project) = self

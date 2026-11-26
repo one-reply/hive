@@ -75,5 +75,6 @@ fn project_ref(project: &Project) -> ProjectRef {
         identity: project.identity.clone(),
         expansion: Default::default(),
         setup: String::new(),
+        install_on_save: false,
     }
 }

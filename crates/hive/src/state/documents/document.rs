@@ -17,6 +17,7 @@ mod formatting;
 mod image;
 mod io;
 mod navigation;
+mod packages;
 mod relocation;
 pub(crate) use blame::LineBlame;
 pub(crate) use image::{Content, PreviewState, SvgMode};
@@ -52,6 +53,7 @@ pub(crate) struct Document {
     pub(super) _language_subscription: Option<Subscription>,
     pub(super) _language_sync: Option<Task<()>>,
     blame: LineBlame,
+    pub(crate) packages: packages::PackageLens,
     pub content: Content,
     pub base: Option<Snapshot>,
     pub conflict: Option<Snapshot>,
@@ -168,6 +170,7 @@ impl Document {
                     this.completions.schedule_refresh(cx);
                     this.schedule_language(cx);
                     this.invalidate_blame(cx);
+                    this.refresh_packages(cx);
                     this.emit(DocumentEvent::Edited(this.at_cursor(cx)), cx);
                     cx.notify();
                 }
@@ -225,6 +228,7 @@ impl Document {
             _language_subscription: None,
             _language_sync: None,
             blame,
+            packages: Default::default(),
             content,
             base: None,
             conflict: None,
@@ -397,6 +401,7 @@ impl Document {
 
     pub fn activate(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.visible = active;
+        self.refresh_packages(cx);
         if active {
             self.refresh(window, cx);
             self.schedule_blame(cx);
@@ -503,6 +508,7 @@ impl Document {
         self.completions.schedule_refresh(cx);
         self.schedule_language(cx);
         self.invalidate_blame(cx);
+        self.refresh_packages(cx);
         self.apply_position(window, cx);
         if let Some(focus) = focus {
             focus.focus(window, cx);

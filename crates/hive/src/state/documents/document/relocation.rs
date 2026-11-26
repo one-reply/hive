@@ -34,6 +34,7 @@ impl Document {
     ) -> async_channel::Receiver<Result<(), String>> {
         self.reset_language(cx);
         self.path = path;
+        self.refresh_packages(cx);
         let content = Content::new(&self.path, self.dirty);
         if std::mem::discriminant(&self.content) != std::mem::discriminant(&content) {
             self.invalidate_image(cx);
