@@ -18,6 +18,8 @@ mod language;
 mod listing;
 mod mutations;
 #[cfg(feature = "desktop")]
+pub mod open_directories;
+#[cfg(feature = "desktop")]
 pub mod tree;
 pub use mutations::{
     create_directory, create_file, delete_entry, entry_path, move_entry, name_taken, paste_entries,
