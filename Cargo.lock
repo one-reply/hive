@@ -2297,7 +2297,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_repr",
- "similar",
+ "similar 2.7.0",
  "smallvec",
  "smol",
  "tracing",
@@ -3069,7 +3069,7 @@ dependencies = [
  "serde_json_lenient",
  "sha2 0.11.1",
  "shlex",
- "similar",
+ "similar 3.2.1",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
@@ -6543,6 +6543,12 @@ dependencies = [
  "bstr",
  "unicode-segmentation",
 ]
+
+[[package]]
+name = "similar"
+version = "3.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f8bec09ae8fae0f4f265a4559a9334be3929d8504e9b536df0a41302bd1733"
 
 [[package]]
 name = "simplecss"
