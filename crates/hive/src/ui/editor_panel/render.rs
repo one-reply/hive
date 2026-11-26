@@ -21,6 +21,9 @@ impl Render for EditorPanel {
         ]
         .map(|id| Hover::new(id, window, cx));
         let document = self.document.read(cx);
+        let packages = document.is_package_manifest();
+        let package_status = document.packages.status.clone();
+        let install_status = document.packages.install_status.clone();
         let editor = document.editor.clone();
         let formatting = document.formatting;
         let supports_format = hive_core::formatting::supported(&document.path);
@@ -67,7 +70,11 @@ impl Render for EditorPanel {
             .id("file-content")
             .role(Role::Group)
             .aria_label(header.clone())
-            .key_context(EDITOR_PANEL_CONTEXT)
+            .key_context(if packages {
+                "EditorPanel PackageManifest"
+            } else {
+                EDITOR_PANEL_CONTEXT
+            })
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape"
                     && (this.signature.take().is_some() || this._signature.is_some())
@@ -306,6 +313,36 @@ impl Render for EditorPanel {
                         )
                     }),
             );
+        if packages {
+            let hover = Hover::new("file-package-versions", window, cx);
+            body = body
+                .on_action(cx.listener(|this, _: &PackageVersions, window, cx| {
+                    packages::menu(this.document.clone(), None, window, cx)
+                }))
+                .child(
+                    h_flex()
+                        .px_2()
+                        .gap_2()
+                        .child(
+                            Button::new("file-package-versions")
+                                .small()
+                                .cursor_pointer()
+                                .label("Package versions")
+                                .tooltip(key_hint::tooltip(
+                                    "Versions for the dependency at the cursor",
+                                    &PackageVersions,
+                                    "PackageManifest",
+                                    window,
+                                ))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    packages::menu(this.document.clone(), None, window, cx)
+                                }))
+                                .smooth_hover(ButtonLook::Ghost, &hover, cx),
+                        )
+                        .children(package_status)
+                        .children(install_status),
+                );
+        }
         if let Some(error) = source_error {
             body = body.child(
                 div()
@@ -407,6 +444,9 @@ impl Render for EditorPanel {
                             .size_full(),
                     )
                     .child(blame)
+                    .when(packages, |view| {
+                        view.child(packages::overlay(self.document.clone()))
+                    })
                     .children(sticky::render(&self.document, window, cx))
                     .children(self.render_blame_card(window, cx))
                     .children(self.render_signature(window, cx))

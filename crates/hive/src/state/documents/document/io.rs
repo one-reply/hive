@@ -194,6 +194,8 @@ impl Document {
         self.saving = true;
         self.error = None;
         let (target, path, text) = (self.target.clone(), self.path.clone(), self.text(cx));
+        let install_changed =
+            self.is_package_manifest() && self.install_on_save(cx) && !expected.matches(&text);
         self._save = Some(cx.spawn_in(window, async move |this, cx| {
             let result =
                 crate::state::file_io::run(cx.background_executor().clone(), move |cancellation| {
@@ -207,6 +209,9 @@ impl Document {
                     this.saving = false;
                     match result {
                         Ok(snapshot) => {
+                            if install_changed && this.install_on_save(cx) {
+                                this.queue_package_install(snapshot.text(), cx);
+                            }
                             this.base = Some(snapshot);
                             this.conflict = None;
                             this.update_dirty(cx);

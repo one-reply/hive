@@ -35,7 +35,9 @@ impl Drop for Worktree {
     }
 }
 
-struct Harness;
+struct Harness {
+    _documents: Entity<Documents>,
+}
 impl Render for Harness {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -70,7 +72,9 @@ fn open<'a>(
         document = Some(documents.update(cx, |documents, cx| {
             documents.open_edited_for_test(request, base, buffer, window, cx)
         }));
-        Harness
+        Harness {
+            _documents: documents,
+        }
     });
     (document.unwrap(), cx)
 }
@@ -147,4 +151,81 @@ fn a_file_deleted_on_disk_fails_the_save_with_the_reason(cx: &mut TestAppContext
         };
         assert!(reason.contains("a.txt"), "{reason}");
     });
+}
+
+#[gpui::test]
+fn package_version_action_rejects_old_revision_and_preserves_neighboring_text(
+    cx: &mut TestAppContext,
+) {
+    use hive_core::package_lens::{Lens, Manifest};
+    let worktree = Worktree::new();
+    let source = r#"{"name":"тест","dependencies":{"a":"^1.0.0","b":"1"}}"#;
+    let (doc, cx) = open(cx, &worktree, "package.json", [source, source, source]);
+    let dep = Manifest::parse(source).unwrap().entries.remove(0);
+    cx.update(|window, cx| {
+        doc.update(cx, |d, cx| {
+            d.packages.rows.push(Lens {
+                dependency: dep.clone(),
+                label: "Latest 2.0.0".into(),
+                choices: vec![("Latest".into(), "^2.0.0".into())],
+                audit: "Not checked".into(),
+                advisories: vec![],
+            });
+            d.apply_package(d.package_revision() + 1, &dep, "^2.0.0", window, cx);
+            assert_eq!(d.text(cx), source);
+            d.apply_package(d.package_revision(), &dep, "^2.0.0", window, cx);
+            assert_eq!(d.text(cx), source.replace("^1.0.0", "^2.0.0"));
+        })
+    });
+    assert_eq!(
+        fs::read_to_string(worktree.0.join("package.json")).unwrap(),
+        source
+    );
+}
+
+#[gpui::test]
+fn failed_package_save_never_queues_an_install(cx: &mut TestAppContext) {
+    let worktree = Worktree::new();
+    let (doc, cx) = open(cx, &worktree, "package.json", ["{}", "{ }", "{"]);
+    cx.update(|_, cx| {
+        let store = doc.read(cx).store.clone();
+        let mut project = hive_core::state::ProjectRef::new(worktree.0.clone(), Host::Local);
+        project.install_on_save = true;
+        store.update(cx, |s, _| s.state.projects.push(project));
+    });
+    assert!(!save(&doc, cx));
+    cx.read(|cx| assert!(doc.read(cx).packages.install_status.is_none()));
+    assert_eq!(
+        fs::read_to_string(worktree.0.join("package.json")).unwrap(),
+        "{}"
+    );
+}
+
+#[gpui::test]
+fn saving_invalid_json_reports_install_skipped_and_preserves_the_written_buffer(
+    cx: &mut TestAppContext,
+) {
+    let worktree = Worktree::new();
+    let (doc, cx) = open(cx, &worktree, "package.json", ["{}", "{}", "{"]);
+    cx.update(|_, cx| {
+        let store = doc.read(cx).store.clone();
+        let mut project = hive_core::state::ProjectRef::new(worktree.0.clone(), Host::Local);
+        project.install_on_save = true;
+        store.update(cx, |s, _| s.state.projects.push(project));
+    });
+    assert!(save(&doc, cx));
+    cx.read(|cx| {
+        assert!(
+            doc.read(cx)
+                .packages
+                .install_status
+                .as_deref()
+                .unwrap()
+                .starts_with("Install skipped")
+        )
+    });
+    assert_eq!(
+        fs::read_to_string(worktree.0.join("package.json")).unwrap(),
+        "{"
+    );
 }

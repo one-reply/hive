@@ -402,7 +402,10 @@ impl Documents {
             }
             // The editor's tools button and Format follow the setting even for a tab whose
             // server did not change (a preview, a file type no server handles).
-            document.update(cx, |_, cx| cx.notify());
+            document.update(cx, |doc, cx| {
+                doc.refresh_packages(cx);
+                cx.notify()
+            });
         }
     }
 }

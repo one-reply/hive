@@ -259,6 +259,13 @@ pub(crate) static SHORTCUTS: &[Shortcut] = &[
         action: || Box::new(crate::ui::editor_panel::PeekDefinition),
     },
     Shortcut {
+        label: "Package versions",
+        default: "cmd-alt-v",
+        category: Category::Workspace,
+        context: "PackageManifest",
+        action: || Box::new(crate::ui::editor_panel::PackageVersions),
+    },
+    Shortcut {
         label: "Format document",
         default: "alt-shift-f",
         category: Category::Workspace,

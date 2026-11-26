@@ -259,7 +259,7 @@ fn fits_label(label: Bounds<Pixels>, area: Bounds<Pixels>) -> bool {
         && label.bottom() <= area.bottom()
 }
 
-fn visible_line_end(editor: &EditorState, line: usize) -> Option<Bounds<Pixels>> {
+pub(super) fn visible_line_end(editor: &EditorState, line: usize) -> Option<Bounds<Pixels>> {
     let rows = editor
         .display_map()
         .buffer_line_to_display_row_range(line)?;
@@ -306,6 +306,14 @@ fn caret_line(
         return None;
     }
     let line = editor.cursor_position().line as usize;
+    if document
+        .packages
+        .rows
+        .iter()
+        .any(|r| r.dependency.line == line)
+    {
+        return None;
+    }
     let origin = document.blame().line(line)?.clone();
     Some((line, origin, visible_line_end(editor, line)?))
 }

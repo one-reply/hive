@@ -36,6 +36,9 @@ pub struct ProjectRef {
     /// Setup command last used for a new worktree of this project, offered again next time.
     #[serde(default)]
     pub setup: String,
+    /// Run the package manager after saving a changed package manifest in this project.
+    #[serde(default, deserialize_with = "lenient::or_default")]
+    pub install_on_save: bool,
 }
 
 impl ProjectRef {
@@ -48,6 +51,7 @@ impl ProjectRef {
             identity: ProjectIdentity::default(),
             expansion: ProjectExpansion::default(),
             setup: String::new(),
+            install_on_save: false,
         }
     }
 

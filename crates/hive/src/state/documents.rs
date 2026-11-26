@@ -15,6 +15,7 @@ mod gutter;
 pub(crate) mod history;
 mod language;
 mod language_features;
+mod package_installs;
 mod source_preview;
 mod workspace_symbols;
 pub(crate) use document::{
@@ -81,6 +82,7 @@ pub(crate) struct Documents {
     )>,
     /// The language-tools setting the open documents were last attached under.
     language_tools: bool,
+    installs: package_installs::Installs,
     _subscriptions: Vec<Subscription>,
 }
 impl EventEmitter<DocumentEvent> for Documents {}
@@ -122,6 +124,7 @@ impl Documents {
             store,
             navigator: Arc::default(),
             language_sessions: Vec::new(),
+            installs: Default::default(),
             language_tools,
         }
     }
