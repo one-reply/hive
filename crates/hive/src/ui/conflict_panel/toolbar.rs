@@ -1,6 +1,8 @@
 //! Header toolbar, merge-direction strip, and aligned 3-pane column headers.
 use super::*;
+use crate::ui::conflict_panel::body::conflict_position;
 use crate::ui::conflict_panel::rows::adjacent_conflicted_file;
+use gpui_kit::component::Icon;
 use hive_core::git::conflict_merge::{ConflictResolution, MergeDocument};
 use hive_core::git::conflicts::{Operation, OperationContext};
 
@@ -9,6 +11,7 @@ const BADGE_PADDING_X: Pixels = px(6.);
 const DOT_SIZE: Pixels = px(7.);
 const HEADER_TINT_OPACITY: f32 = 0.08;
 const PILL_OPACITY: f32 = 0.14;
+const NAVIGATOR_OPACITY: f32 = 0.35;
 
 /// Resolved branch/commit display labels for the 3-pane header and merge strip.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,9 +85,11 @@ impl ConflictPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let [agent, open, refresh] = ["conflict-agent", "conflict-open-file", "conflict-refresh"]
-            .map(|id| Hover::new(id, window, cx));
-        let resolving = progress.map(|progress| self.resolving(progress, names, window, cx));
+        // A file with no markers left has nothing to choose or step through.
+        let resolving = progress
+            .filter(|progress| progress.total > 0)
+            .map(|progress| self.resolving(progress, names, window, cx));
+        let file_actions = self.file_actions(progress, unmerged, window, cx);
 
         h_flex()
             .w_full()
@@ -92,24 +97,33 @@ impl ConflictPanel {
             .flex_shrink_0()
             .px_2()
             .py_1p5()
-            .gap_1p5()
+            .gap_x_3()
+            .gap_y_1p5()
             .items_center()
             .flex_wrap()
             .border_b_1()
             .border_color(cx.theme().border)
-            .when_some(
-                resolving,
-                |toolbar, [current, incoming, previous, next, fold]| {
-                    toolbar
-                        .child(current)
-                        .child(incoming)
-                        .child(previous)
-                        .child(next)
-                        .child(fold)
-                },
-            )
+            .when_some(resolving, |toolbar, resolving| toolbar.child(resolving))
+            .child(file_actions)
+    }
+
+    /// Whole-file actions at the end of the toolbar, the primary Mark Resolved last.
+    fn file_actions(
+        &self,
+        progress: Option<Progress>,
+        unmerged: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let [agent, open, refresh] = ["conflict-agent", "conflict-open-file", "conflict-refresh"]
+            .map(|id| Hover::new(id, window, cx));
+        h_flex()
+            .ml_auto()
+            .gap_1()
+            .items_center()
             .child(
                 button("conflict-agent")
+                    .icon(Lucide::Bot)
                     .label("Resolve with Agent")
                     .tooltip("Draft a request to resolve this file for the worktree's agent")
                     .disabled(!unmerged)
@@ -118,6 +132,7 @@ impl ConflictPanel {
             )
             .child(
                 button("conflict-open-file")
+                    .icon(Lucide::FileCode)
                     .label("Open file")
                     .tooltip("Edit the working file in the code editor")
                     .on_click(cx.listener(|this, _, _, cx| this.open_file(None, cx)))
@@ -133,8 +148,10 @@ impl ConflictPanel {
                     }))
                     .smooth_hover(ButtonLook::Ghost, &refresh, cx),
             )
-            .when_some(progress, |toolbar, progress| {
-                toolbar.child(self.mark_resolved_button(progress, window, cx))
+            .when_some(progress, |actions, progress| {
+                actions
+                    .child(separator(cx))
+                    .child(self.mark_resolved_button(progress, window, cx))
             })
     }
 
@@ -249,13 +266,7 @@ impl ConflictPanel {
             ["conflict-prev-file", "conflict-next-file"].map(|id| Hover::new(id, window, cx));
 
         Some(
-            h_flex()
-                .flex_none()
-                .gap_0p5()
-                .items_center()
-                .px_1()
-                .rounded_sm()
-                .bg(cx.theme().muted.opacity(0.35))
+            navigator_pill(cx)
                 .when_some(prev_path, |bar, path| {
                     let tooltip: SharedString = format!("Previous conflicted file: {path}").into();
                     bar.child(
@@ -268,13 +279,7 @@ impl ConflictPanel {
                             .smooth_hover(ButtonLook::Ghost, &prev_hover, cx),
                     )
                 })
-                .child(
-                    div()
-                        .px_1()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(label),
-                )
+                .child(navigator_label(label, cx))
                 .when_some(next_path, |bar, path| {
                     let tooltip: SharedString = format!("Next conflicted file: {path}").into();
                     bar.child(
@@ -291,21 +296,19 @@ impl ConflictPanel {
         )
     }
 
-    /// Bulk choices, conflict arrows, and unchanged-context toggle.
+    /// Bulk choices, the conflict navigator, and the unchanged-context toggle.
     fn resolving(
         &self,
         progress: Progress,
         names: &SideNames,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> [Stateful<Div>; 5] {
+    ) -> Div {
         let undecided = !progress.is_complete() && self.editing.is_none();
-        let has_conflicts = progress.total > 0;
         let [current, incoming] = ["conflict-all-current", "conflict-all-incoming"]
             .map(|id| Hover::new(id, window, cx).enabled(undecided));
-        let [previous, next] = ["conflict-previous", "conflict-next"]
-            .map(|id| Hover::new(id, window, cx).enabled(has_conflicts));
-        let fold_hover = Hover::new("conflict-toggle-fold", window, cx).enabled(has_conflicts);
+        let fold_hover = Hover::new("conflict-toggle-fold", window, cx);
+        let navigator = self.conflict_navigator(progress.total, window, cx);
 
         let cur_tip: SharedString =
             format!("Accept {} in every undecided conflict", names.current_label).into();
@@ -314,51 +317,81 @@ impl ConflictPanel {
             names.incoming_label
         )
         .into();
+        let (fold_icon, fold_label, fold_tip) = if self.collapse_unchanged {
+            (
+                Lucide::UnfoldVertical,
+                "Show Unchanged",
+                "Show all unchanged lines",
+            )
+        } else {
+            (
+                Lucide::FoldVertical,
+                "Collapse Unchanged",
+                "Collapse long unchanged sections",
+            )
+        };
+        let theme = cx.theme();
+        // The arrows point the way the per-conflict gutter buttons do: from a side into Result.
+        let current_icon = side_icon(Lucide::ChevronsRight, theme.success, undecided);
+        let incoming_icon = side_icon(Lucide::ChevronsLeft, theme.info, undecided);
 
-        [
-            button("conflict-all-current")
-                .label("All Current")
-                .tooltip(cur_tip)
-                .disabled(!undecided)
-                .on_click(
-                    cx.listener(|this, _, _, cx| this.accept_all(ConflictResolution::Current, cx)),
-                )
-                .smooth_hover(ButtonLook::Ghost, &current, cx),
-            button("conflict-all-incoming")
-                .label("All Incoming")
-                .tooltip(inc_tip)
-                .disabled(!undecided)
-                .on_click(
-                    cx.listener(|this, _, _, cx| this.accept_all(ConflictResolution::Incoming, cx)),
-                )
-                .smooth_hover(ButtonLook::Ghost, &incoming, cx),
-            button("conflict-previous")
-                .icon(Lucide::ArrowUp)
-                .tooltip("Previous conflict")
-                .disabled(!has_conflicts)
-                .on_click(cx.listener(|this, _, _, cx| this.navigate(false, cx)))
-                .smooth_hover(ButtonLook::Ghost, &previous, cx),
-            button("conflict-next")
-                .icon(Lucide::ArrowDown)
-                .tooltip("Next conflict")
-                .disabled(!has_conflicts)
-                .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx)))
-                .smooth_hover(ButtonLook::Ghost, &next, cx),
-            button("conflict-toggle-fold")
-                .label(if self.collapse_unchanged {
-                    "Show All"
-                } else {
-                    "Collapse"
-                })
-                .tooltip(if self.collapse_unchanged {
-                    "Show all unchanged lines"
-                } else {
-                    "Collapse long unchanged sections"
-                })
-                .disabled(!has_conflicts)
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_collapse_unchanged(cx)))
-                .smooth_hover(ButtonLook::Ghost, &fold_hover, cx),
-        ]
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(
+                button("conflict-all-current")
+                    .icon(current_icon)
+                    .label("All Current")
+                    .tooltip(cur_tip)
+                    .disabled(!undecided)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.accept_all(ConflictResolution::Current, cx)
+                    }))
+                    .smooth_hover(ButtonLook::Ghost, &current, cx),
+            )
+            .child(
+                button("conflict-all-incoming")
+                    .icon(incoming_icon)
+                    .label("All Incoming")
+                    .tooltip(inc_tip)
+                    .disabled(!undecided)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.accept_all(ConflictResolution::Incoming, cx)
+                    }))
+                    .smooth_hover(ButtonLook::Ghost, &incoming, cx),
+            )
+            .child(separator(cx))
+            .child(navigator)
+            .child(
+                button("conflict-toggle-fold")
+                    .icon(fold_icon)
+                    .label(fold_label)
+                    .tooltip(fold_tip)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_collapse_unchanged(cx)))
+                    .smooth_hover(ButtonLook::Ghost, &fold_hover, cx),
+            )
+    }
+
+    /// ↑/↓ around the position of the conflict they last moved to.
+    fn conflict_navigator(&self, total: usize, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let [previous, next] =
+            ["conflict-previous", "conflict-next"].map(|id| Hover::new(id, window, cx));
+        navigator_pill(cx)
+            .child(
+                button("conflict-previous")
+                    .icon(Lucide::ArrowUp)
+                    .tooltip("Previous conflict")
+                    .on_click(cx.listener(|this, _, _, cx| this.navigate(false, cx)))
+                    .smooth_hover(ButtonLook::Ghost, &previous, cx),
+            )
+            .child(navigator_label(conflict_position(self.current, total), cx))
+            .child(
+                button("conflict-next")
+                    .icon(Lucide::ArrowDown)
+                    .tooltip("Next conflict")
+                    .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx)))
+                    .smooth_hover(ButtonLook::Ghost, &next, cx),
+            )
     }
 
     fn mark_resolved_button(
@@ -373,6 +406,7 @@ impl ConflictPanel {
         let can_resolve = progress.is_complete() && !busy && !saving && self.editing.is_none();
         let hover = Hover::new("conflict-resolve", window, cx).enabled(can_resolve);
         button("conflict-resolve")
+            .icon(Lucide::Check)
             .label("Mark Resolved")
             .tooltip(if self.editing.is_some() {
                 "Apply or cancel the active inline edit first"
@@ -445,6 +479,41 @@ fn branch_pill(label: &str, accent: Hsla, cx: &App) -> Div {
 
 fn button(id: &'static str) -> Button {
     Button::new(id).cursor_pointer().small()
+}
+
+/// The shared look of the file and conflict prev/next switchers.
+fn navigator_pill(cx: &App) -> Div {
+    h_flex()
+        .flex_none()
+        .gap_0p5()
+        .items_center()
+        .px_1()
+        .rounded_sm()
+        .bg(cx.theme().muted.opacity(NAVIGATOR_OPACITY))
+}
+
+fn navigator_label(label: String, cx: &App) -> Div {
+    div()
+        .px_1()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(label)
+}
+
+/// A thin rule between toolbar groups.
+fn separator(cx: &App) -> Div {
+    div().flex_none().mx_1().w_px().h_4().bg(cx.theme().border)
+}
+
+/// A bulk choice's icon in its column's accent, so the button reads as that column. A disabled
+/// button keeps the library's muted icon.
+fn side_icon(icon: Lucide, accent: Hsla, enabled: bool) -> Icon {
+    let icon = Icon::new(icon);
+    if enabled {
+        icon.text_color(accent)
+    } else {
+        icon
+    }
 }
 
 #[cfg(test)]
