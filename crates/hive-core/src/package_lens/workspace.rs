@@ -73,7 +73,7 @@ impl Workspace {
                 let pnpm = names.contains(&"pnpm-workspace.yaml");
                 let config = if pnpm {
                     let yaml = access.read(root, &parent.join("pnpm-workspace.yaml"))?;
-                    let v: serde_json::Value = serde_yaml_ng::from_str(&yaml.text())
+                    let v: serde_json::Value = serde_saphyr::from_str(&yaml.text())
                         .map_err(|_| Error::Tool("Invalid pnpm workspace configuration".into()))?;
                     v.get("packages")
                         .cloned()

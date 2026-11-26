@@ -3019,7 +3019,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hive"
-version = "1.0.44"
+version = "1.0.45"
 dependencies = [
  "alacritty_terminal",
  "async-channel",
@@ -3045,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "hive-core"
-version = "1.0.44"
+version = "1.0.45"
 dependencies = [
  "alacritty_terminal",
  "async-channel",
@@ -3064,9 +3064,9 @@ dependencies = [
  "rustix-openpty",
  "security-framework",
  "serde",
+ "serde-saphyr",
  "serde_json",
  "serde_json_lenient",
- "serde_yaml_ng",
  "sha2 0.11.1",
  "shlex",
  "similar",
@@ -6439,19 +6439,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml_ng"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
-]
-
-[[package]]
 name = "sha1_smol"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7791,12 +7778,6 @@ name = "unicode-width"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
-
-[[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

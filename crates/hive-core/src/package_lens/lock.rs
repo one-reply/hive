@@ -15,7 +15,7 @@ impl Lock {
     pub(super) fn parse(name: &str, bytes: &[u8]) -> Result<Self, Error> {
         let invalid = || Error::Tool(format!("Cannot resolve versions from {name}"));
         match name {
-            "pnpm-lock.yaml" => serde_yaml_ng::from_slice(bytes)
+            "pnpm-lock.yaml" => serde_saphyr::from_slice(bytes)
                 .map(Self::Pnpm)
                 .map_err(|_| invalid()),
             "bun.lock" => serde_json_lenient::from_slice(bytes)
