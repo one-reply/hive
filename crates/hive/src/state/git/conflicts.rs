@@ -1,6 +1,6 @@
 //! Unmerged files of a worktree: opening their resolver and drafting them for an agent.
 use super::*;
-use hive_core::git::conflicts::{Conflict, Operation};
+use hive_core::git::conflicts::{Conflict, Operation, OperationContext};
 
 /// One unmerged file to resolve in a center tab.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -50,7 +50,12 @@ fn may_have_begun(previous: &Status, status: &Status) -> bool {
 impl Git {
     /// The unfinished merge, rebase, cherry-pick or revert of the active worktree.
     pub(crate) fn operation(&self) -> Option<Operation> {
-        self.operation
+        self.operation_context.as_ref().map(|ctx| ctx.operation)
+    }
+
+    /// Active operation together with branch/commit labels and merge direction.
+    pub(crate) fn operation_context(&self) -> Option<&OperationContext> {
+        self.operation_context.as_ref()
     }
 
     /// Unmerged paths of the active worktree, in status order.
@@ -105,7 +110,7 @@ impl Git {
             .settings
             .default_cli_agent();
         let operation = self
-            .operation
+            .operation()
             .filter(|_| self.target.as_ref() == Some(&target));
         let prompt = hive_core::agent::draft::conflicts(&target.path, paths, operation);
         cx.emit(GitEvent::AgentDraft(target, agent, prompt));

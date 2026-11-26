@@ -1,34 +1,113 @@
-//! The resolver's header: progress, bulk choices, navigation and the resolving action.
+//! Header toolbar, merge-direction strip, and aligned 3-pane column headers.
 use super::*;
+use crate::ui::conflict_panel::rows::adjacent_conflicted_file;
+use hive_core::git::conflict_merge::{ConflictResolution, MergeDocument};
+use hive_core::git::conflicts::{Operation, OperationContext};
+
+pub(super) const GUTTER_WIDTH: Pixels = px(28.);
+const BADGE_PADDING_X: Pixels = px(6.);
+const DOT_SIZE: Pixels = px(7.);
+const HEADER_TINT_OPACITY: f32 = 0.08;
+const PILL_OPACITY: f32 = 0.14;
+
+/// Resolved branch/commit display labels for the 3-pane header and merge strip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct SideNames {
+    pub direction: String,
+    pub current_label: String,
+    pub incoming_label: String,
+    pub current_commit: Option<String>,
+    pub incoming_commit: Option<String>,
+    pub result_label: String,
+}
+
+impl SideNames {
+    pub(super) fn resolve(
+        context: Option<&OperationContext>,
+        current_branch: Option<&str>,
+        document: Option<&MergeDocument>,
+    ) -> Self {
+        let first_conflict = document.and_then(|doc| doc.conflicts().next());
+        let marker_current = first_conflict
+            .map(|c| c.current_label.as_str())
+            .filter(|label| !label.is_empty());
+        let marker_incoming = first_conflict
+            .map(|c| c.incoming_label.as_str())
+            .filter(|label| !label.is_empty());
+
+        if let Some(ctx) = context {
+            let result_label = if ctx.operation == Operation::Rebase {
+                ctx.incoming.label.clone()
+            } else {
+                ctx.current.label.clone()
+            };
+            return Self {
+                direction: ctx.direction_summary(),
+                current_label: ctx.current.label.clone(),
+                incoming_label: ctx.incoming.label.clone(),
+                current_commit: ctx.current.commit.clone(),
+                incoming_commit: ctx.incoming.commit.clone(),
+                result_label,
+            };
+        }
+
+        let current_label = current_branch
+            .or(marker_current)
+            .unwrap_or("Current")
+            .to_owned();
+        let incoming_label = marker_incoming.unwrap_or("Incoming").to_owned();
+        let direction = if marker_incoming.is_some() {
+            format!("Merging {incoming_label} → {current_label}")
+        } else {
+            format!("Resolving unmerged changes on {current_label}")
+        };
+        let result_label = current_label.clone();
+        Self {
+            direction,
+            current_label,
+            incoming_label,
+            current_commit: None,
+            incoming_commit: None,
+            result_label,
+        }
+    }
+}
 
 impl ConflictPanel {
-    /// `progress` is `None` when the tab shows no file to resolve in place, which leaves
-    /// only the actions on the file itself.
     pub(super) fn toolbar(
         &self,
         progress: Option<Progress>,
         unmerged: bool,
+        names: &SideNames,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let [agent, open, refresh] = ["conflict-agent", "conflict-open-file", "conflict-refresh"]
             .map(|id| Hover::new(id, window, cx));
-        let title = progress.map_or("Conflicts".into(), Progress::label);
-        let resolving = progress.map(|progress| self.resolving(progress, window, cx));
+        let resolving = progress.map(|progress| self.resolving(progress, names, window, cx));
+
         h_flex()
-            .p_2()
-            .gap_2()
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .px_2()
+            .py_1p5()
+            .gap_1p5()
             .items_center()
+            .flex_wrap()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(div().flex_1().min_w_0().truncate().text_sm().child(title))
-            .when_some(resolving, |toolbar, [current, incoming, previous, next]| {
-                toolbar
-                    .child(current)
-                    .child(incoming)
-                    .child(previous)
-                    .child(next)
-            })
+            .when_some(
+                resolving,
+                |toolbar, [current, incoming, previous, next, fold]| {
+                    toolbar
+                        .child(current)
+                        .child(incoming)
+                        .child(previous)
+                        .child(next)
+                        .child(fold)
+                },
+            )
             .child(
                 button("conflict-agent")
                     .label("Resolve with Agent")
@@ -40,13 +119,13 @@ impl ConflictPanel {
             .child(
                 button("conflict-open-file")
                     .label("Open file")
-                    .tooltip("Edit the working file to resolve it by hand")
+                    .tooltip("Edit the working file in the code editor")
                     .on_click(cx.listener(|this, _, _, cx| this.open_file(None, cx)))
                     .smooth_hover(ButtonLook::Ghost, &open, cx),
             )
             .child(
                 button("conflict-refresh")
-                    .label("↻")
+                    .icon(Lucide::RefreshCw)
                     .tooltip("Reload the working file")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.conflict
@@ -59,48 +138,226 @@ impl ConflictPanel {
             })
     }
 
-    /// Bulk choices and the arrows between conflicts, in toolbar order.
+    /// Shows which branches/commits are being merged and in which direction, plus aligned
+    /// column headers for Current | Result | Incoming.
+    pub(super) fn merge_header(
+        &self,
+        names: &SideNames,
+        progress: Option<Progress>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let files_nav = self.conflicted_files_nav(window, cx);
+        let theme = cx.theme();
+        let direction_bar = h_flex()
+            .w_full()
+            .px_3()
+            .py_1()
+            .gap_2()
+            .items_center()
+            .border_b_1()
+            .border_color(theme.border)
+            .bg(theme.muted.opacity(0.25))
+            .when_some(files_nav, |bar, nav| bar.child(nav))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_sm()
+                    .child(names.direction.clone()),
+            )
+            .when_some(progress, |bar, progress| {
+                bar.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(if progress.is_complete() {
+                            theme.success
+                        } else {
+                            theme.muted_foreground
+                        })
+                        .child(progress.label()),
+                )
+            });
+
+        if progress.is_none() {
+            return direction_bar.into_any_element();
+        }
+
+        let columns = h_flex()
+            .w_full()
+            .min_w_0()
+            .items_stretch()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(column_header(
+                "Current",
+                &names.current_label,
+                names.current_commit.as_deref(),
+                theme.success,
+                cx,
+            ))
+            .child(div().w(GUTTER_WIDTH).flex_none())
+            .child(column_header(
+                "Result",
+                &names.result_label,
+                None,
+                theme.primary,
+                cx,
+            ))
+            .child(div().w(GUTTER_WIDTH).flex_none())
+            .child(column_header(
+                "Incoming",
+                &names.incoming_label,
+                names.incoming_commit.as_deref(),
+                theme.info,
+                cx,
+            ));
+
+        v_flex()
+            .w_full()
+            .min_w_0()
+            .child(direction_bar)
+            .child(columns)
+            .into_any_element()
+    }
+
+    /// Compact prev/next switcher when the worktree has multiple conflicted files.
+    fn conflicted_files_nav(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let request = &self.conflict.read(cx).request;
+        let git = self.git.read(cx);
+        if git.target.as_ref() != Some(&request.target) {
+            return None;
+        }
+        let paths = git.conflicted_paths();
+        if paths.len() <= 1 {
+            return None;
+        }
+        let pos = paths.iter().position(|path| path == &request.path);
+        let label = match pos {
+            Some(ix) => format!("File {}/{}", ix + 1, paths.len()),
+            None => format!("{} conflicted files", paths.len()),
+        };
+        let prev_path = adjacent_conflicted_file(&request.path, &paths, false);
+        let next_path = adjacent_conflicted_file(&request.path, &paths, true);
+        let [prev_hover, next_hover] =
+            ["conflict-prev-file", "conflict-next-file"].map(|id| Hover::new(id, window, cx));
+
+        Some(
+            h_flex()
+                .flex_none()
+                .gap_0p5()
+                .items_center()
+                .px_1()
+                .rounded_sm()
+                .bg(cx.theme().muted.opacity(0.35))
+                .when_some(prev_path, |bar, path| {
+                    let tooltip: SharedString = format!("Previous conflicted file: {path}").into();
+                    bar.child(
+                        button("conflict-prev-file")
+                            .icon(Lucide::ChevronLeft)
+                            .tooltip(tooltip)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.git.update(cx, |git, cx| git.open_conflict(&path, cx));
+                            }))
+                            .smooth_hover(ButtonLook::Ghost, &prev_hover, cx),
+                    )
+                })
+                .child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label),
+                )
+                .when_some(next_path, |bar, path| {
+                    let tooltip: SharedString = format!("Next conflicted file: {path}").into();
+                    bar.child(
+                        button("conflict-next-file")
+                            .icon(Lucide::ChevronRight)
+                            .tooltip(tooltip)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.git.update(cx, |git, cx| git.open_conflict(&path, cx));
+                            }))
+                            .smooth_hover(ButtonLook::Ghost, &next_hover, cx),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
+    /// Bulk choices, conflict arrows, and unchanged-context toggle.
     fn resolving(
         &self,
         progress: Progress,
+        names: &SideNames,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> [Stateful<Div>; 4] {
-        let undecided = !progress.is_complete();
+    ) -> [Stateful<Div>; 5] {
+        let undecided = !progress.is_complete() && self.editing.is_none();
         let has_conflicts = progress.total > 0;
         let [current, incoming] = ["conflict-all-current", "conflict-all-incoming"]
             .map(|id| Hover::new(id, window, cx).enabled(undecided));
         let [previous, next] = ["conflict-previous", "conflict-next"]
             .map(|id| Hover::new(id, window, cx).enabled(has_conflicts));
+        let fold_hover = Hover::new("conflict-toggle-fold", window, cx).enabled(has_conflicts);
+
+        let cur_tip: SharedString =
+            format!("Accept {} in every undecided conflict", names.current_label).into();
+        let inc_tip: SharedString = format!(
+            "Accept {} in every undecided conflict",
+            names.incoming_label
+        )
+        .into();
+
         [
             button("conflict-all-current")
                 .label("All Current")
-                .tooltip("Accept the current change in every undecided conflict")
+                .tooltip(cur_tip)
                 .disabled(!undecided)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.accept_all(DiffConflictResolution::Current, cx)
-                }))
+                .on_click(
+                    cx.listener(|this, _, _, cx| this.accept_all(ConflictResolution::Current, cx)),
+                )
                 .smooth_hover(ButtonLook::Ghost, &current, cx),
             button("conflict-all-incoming")
                 .label("All Incoming")
-                .tooltip("Accept the incoming change in every undecided conflict")
+                .tooltip(inc_tip)
                 .disabled(!undecided)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.accept_all(DiffConflictResolution::Incoming, cx)
-                }))
+                .on_click(
+                    cx.listener(|this, _, _, cx| this.accept_all(ConflictResolution::Incoming, cx)),
+                )
                 .smooth_hover(ButtonLook::Ghost, &incoming, cx),
             button("conflict-previous")
-                .label("↑")
+                .icon(Lucide::ArrowUp)
                 .tooltip("Previous conflict")
                 .disabled(!has_conflicts)
                 .on_click(cx.listener(|this, _, _, cx| this.navigate(false, cx)))
                 .smooth_hover(ButtonLook::Ghost, &previous, cx),
             button("conflict-next")
-                .label("↓")
+                .icon(Lucide::ArrowDown)
                 .tooltip("Next conflict")
                 .disabled(!has_conflicts)
                 .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx)))
                 .smooth_hover(ButtonLook::Ghost, &next, cx),
+            button("conflict-toggle-fold")
+                .label(if self.collapse_unchanged {
+                    "Show All"
+                } else {
+                    "Collapse"
+                })
+                .tooltip(if self.collapse_unchanged {
+                    "Show all unchanged lines"
+                } else {
+                    "Collapse long unchanged sections"
+                })
+                .disabled(!has_conflicts)
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_collapse_unchanged(cx)))
+                .smooth_hover(ButtonLook::Ghost, &fold_hover, cx),
         ]
     }
 
@@ -113,16 +370,18 @@ impl ConflictPanel {
         let conflict = self.conflict.read(cx);
         let busy = self.git.read(cx).is_busy_at(&conflict.request.target);
         let saving = conflict.is_saving();
-        let can_resolve = progress.is_complete() && !busy && !saving;
+        let can_resolve = progress.is_complete() && !busy && !saving && self.editing.is_none();
         let hover = Hover::new("conflict-resolve", window, cx).enabled(can_resolve);
         button("conflict-resolve")
             .label("Mark Resolved")
-            .tooltip(if !progress.is_complete() {
+            .tooltip(if self.editing.is_some() {
+                "Apply or cancel the active inline edit first"
+            } else if !progress.is_complete() {
                 "Choose a side for every conflict first"
             } else if progress.total == 0 {
                 "Stage this file as the resolution"
             } else {
-                "Write the chosen sides to the file and stage it"
+                "Write the merged result and stage it"
             })
             .loading(saving)
             .disabled(!can_resolve)
@@ -131,6 +390,96 @@ impl ConflictPanel {
     }
 }
 
+fn column_header(
+    role: &'static str,
+    branch: &str,
+    commit: Option<&str>,
+    accent: Hsla,
+    cx: &App,
+) -> Div {
+    let theme = cx.theme();
+    h_flex()
+        .flex_1()
+        .min_w_0()
+        .px_2p5()
+        .py_1()
+        .gap_1p5()
+        .items_center()
+        .bg(accent.opacity(HEADER_TINT_OPACITY))
+        .child(div().size(DOT_SIZE).flex_none().rounded_full().bg(accent))
+        .child(
+            div()
+                .flex_none()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(role),
+        )
+        .child(branch_pill(branch, accent, cx))
+        .when_some(commit, |row, commit| {
+            row.child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(commit.to_owned()),
+            )
+        })
+        .when(commit.is_none(), |row| row.child(div().flex_1()))
+}
+
+fn branch_pill(label: &str, accent: Hsla, cx: &App) -> Div {
+    div()
+        .max_w(px(180.))
+        .truncate()
+        .px(BADGE_PADDING_X)
+        .py(px(1.))
+        .rounded_sm()
+        .bg(accent.opacity(PILL_OPACITY))
+        .text_color(cx.theme().foreground)
+        .text_xs()
+        .font_family(cx.theme().mono_font_family.clone())
+        .child(label.to_owned())
+}
+
 fn button(id: &'static str) -> Button {
     Button::new(id).cursor_pointer().small()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SideNames;
+    use hive_core::git::conflict_merge::MergeDocument;
+    use hive_core::git::conflicts::{Operation, OperationContext, SideInfo};
+
+    #[test]
+    fn side_names_prefer_operation_context_and_format_direction() {
+        let doc = MergeDocument::parse("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> feat\n").unwrap();
+        let rebase = OperationContext {
+            operation: Operation::Rebase,
+            current: SideInfo {
+                label: "main".into(),
+                commit: Some("1111111 base".into()),
+            },
+            incoming: SideInfo {
+                label: "feature/snap".into(),
+                commit: Some("2222222 snap".into()),
+            },
+            step: Some((2, 3)),
+        };
+        let names = SideNames::resolve(Some(&rebase), None, Some(&doc));
+        assert_eq!(names.current_label, "main");
+        assert_eq!(names.incoming_label, "feature/snap");
+        assert_eq!(names.result_label, "feature/snap");
+        assert_eq!(
+            names.direction,
+            "Rebasing feature/snap onto main (step 2/3)"
+        );
+
+        let fallback = SideNames::resolve(None, Some("checkout"), Some(&doc));
+        assert_eq!(fallback.current_label, "checkout");
+        assert_eq!(fallback.incoming_label, "feat");
+        assert_eq!(fallback.direction, "Merging feat → checkout");
+    }
 }

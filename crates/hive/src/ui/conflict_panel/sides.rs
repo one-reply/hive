@@ -35,11 +35,31 @@ pub(crate) fn label(kind: Option<Conflict>, side: Side) -> &'static str {
     }
 }
 
-pub(crate) fn tooltip(kind: Option<Conflict>, side: Side) -> String {
+pub(crate) fn label_with_branch(
+    kind: Option<Conflict>,
+    side: Side,
+    branch: Option<&str>,
+) -> String {
+    match (keeps(kind, side), side, branch) {
+        (false, _, Some(branch)) => format!("Delete File (as in {branch})"),
+        (false, _, None) => "Delete File".to_owned(),
+        (true, Side::Ours, Some(branch)) => format!("Use Current ({branch})"),
+        (true, Side::Ours, None) => "Use Current File".to_owned(),
+        (true, Side::Theirs, Some(branch)) => format!("Use Incoming ({branch})"),
+        (true, Side::Theirs, None) => "Use Incoming File".to_owned(),
+    }
+}
+
+pub(crate) fn tooltip_with_branch(
+    kind: Option<Conflict>,
+    side: Side,
+    branch: Option<&str>,
+) -> String {
+    let target = branch.unwrap_or_else(|| name(side));
     if keeps(kind, side) {
-        format!("Use the {} version of the whole file", name(side))
+        format!("Use the {target} version of the whole file")
     } else {
-        format!("Delete the file, as on the {} side", name(side))
+        format!("Delete the file, as on {target}")
     }
 }
 
@@ -91,7 +111,7 @@ pub(crate) fn take(
 
 #[cfg(test)]
 mod tests {
-    use super::{choices, confirmation, label, tooltip};
+    use super::{choices, confirmation, label, tooltip_with_branch};
     use hive_core::git::conflicts::{Conflict, Side};
 
     #[test]
@@ -106,12 +126,20 @@ mod tests {
         assert_eq!(label(kind, Side::Ours), "Use Current File");
         assert_eq!(label(kind, Side::Theirs), "Delete File");
         assert_eq!(
-            tooltip(kind, Side::Theirs),
-            "Delete the file, as on the incoming side"
+            tooltip_with_branch(kind, Side::Theirs, None),
+            "Delete the file, as on incoming"
         );
         assert_eq!(
-            tooltip(kind, Side::Ours),
+            tooltip_with_branch(kind, Side::Ours, None),
             "Use the current version of the whole file"
+        );
+        assert_eq!(
+            super::label_with_branch(kind, Side::Ours, Some("main")),
+            "Use Current (main)"
+        );
+        assert_eq!(
+            super::label_with_branch(kind, Side::Theirs, Some("develop")),
+            "Delete File (as in develop)"
         );
         for side in [Side::Ours, Side::Theirs] {
             assert_eq!(label(Some(Conflict::BothDeleted), side), "Delete File");

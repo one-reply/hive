@@ -9,6 +9,8 @@ use std::path::Path;
 const INSPECT_OUTPUT_LIMIT: usize = 64 * 1024;
 /// Prints `y` or `n` for each argument, so one remote round trip probes every marker.
 const EXISTS_SCRIPT: &str = r#"for path do if [ -e "$path" ]; then echo y; else echo n; fi; done"#;
+mod context;
+pub use context::{OperationContext, SideInfo, operation_context};
 
 /// A side of an unmerged path, in Git's own terms.
 ///
@@ -102,20 +104,49 @@ impl Operation {
 /// A rebase wins over the cherry-pick and merge markers it leaves while replaying a commit,
 /// as in Git's own status.
 pub fn operation(host: &Host, cwd: &Path) -> Result<Option<Operation>, GitError> {
-    if git_paths_exist(host, cwd, &["rebase-merge", "rebase-apply"])?.contains(&true) {
-        return Ok(Some(Operation::Rebase));
+    Ok(operation_marker(host, cwd)?.map(|(operation, _)| operation))
+}
+
+/// The second value is the matching rebase directory or head ref.
+fn operation_marker(
+    host: &Host,
+    cwd: &Path,
+) -> Result<Option<(Operation, &'static str)>, GitError> {
+    let directories = ["rebase-merge", "rebase-apply"];
+    for (directory, exists) in
+        directories
+            .into_iter()
+            .zip(git_paths_exist(host, cwd, &directories)?)
+    {
+        if exists {
+            return Ok(Some((Operation::Rebase, directory)));
+        }
     }
-    let heads = [
-        ("MERGE_HEAD", Operation::Merge),
-        ("CHERRY_PICK_HEAD", Operation::CherryPick),
-        ("REVERT_HEAD", Operation::Revert),
-    ];
-    for (head, operation) in heads {
+    for (operation, head) in [
+        (Operation::Merge, "MERGE_HEAD"),
+        (Operation::CherryPick, "CHERRY_PICK_HEAD"),
+        (Operation::Revert, "REVERT_HEAD"),
+    ] {
         if head_exists(host, cwd, head)? {
-            return Ok(Some(operation));
+            return Ok(Some((operation, head)));
         }
     }
     Ok(None)
+}
+
+fn resolve_git_paths(host: &Host, cwd: &Path, entries: &[&str]) -> Result<Vec<String>, GitError> {
+    let mut args = vec!["rev-parse"];
+    for entry in entries {
+        args.extend(["--git-path", entry]);
+    }
+    let resolved = run(host, cwd, &args)?;
+    let paths: Vec<String> = resolved.lines().map(ToOwned::to_owned).collect();
+    if paths.len() != entries.len() {
+        return Err(GitError::Invalid(
+            "Unexpected `git rev-parse --git-path` output; refresh to retry.".into(),
+        ));
+    }
+    Ok(paths)
 }
 
 /// Blocking: whether a multi-commit cherry-pick or revert is paused between commits, when
@@ -135,17 +166,7 @@ fn head_exists(host: &Host, cwd: &Path, head: &str) -> Result<bool, GitError> {
 
 /// Whether each entry of the worktree's Git directory exists, in the order given.
 fn git_paths_exist(host: &Host, cwd: &Path, entries: &[&str]) -> Result<Vec<bool>, GitError> {
-    let mut args = vec!["rev-parse"];
-    for entry in entries {
-        args.extend(["--git-path", entry]);
-    }
-    let resolved = run(host, cwd, &args)?;
-    let paths: Vec<&str> = resolved.lines().collect();
-    if paths.len() != entries.len() {
-        return Err(GitError::Invalid(
-            "Unexpected `git rev-parse --git-path` output; refresh to retry.".into(),
-        ));
-    }
+    let paths = resolve_git_paths(host, cwd, entries)?;
     match host {
         Host::Local => paths
             .iter()
@@ -167,10 +188,10 @@ fn git_paths_exist(host: &Host, cwd: &Path, entries: &[&str]) -> Result<Vec<bool
     }
 }
 
-fn remote_paths_exist(host: &Host, cwd: &Path, paths: &[&str]) -> Result<Vec<bool>, GitError> {
+fn remote_paths_exist(host: &Host, cwd: &Path, paths: &[String]) -> Result<Vec<bool>, GitError> {
     let command = "inspect unfinished operation".to_owned();
     let mut args = vec!["-c", EXISTS_SCRIPT, "sh"];
-    args.extend_from_slice(paths);
+    args.extend(paths.iter().map(String::as_str));
     let output = command::run(
         host.command("sh", &args, Some(cwd)),
         &[],

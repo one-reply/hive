@@ -293,7 +293,8 @@ impl Render for GitPanel {
             Section::History => state.selected_commit.is_some() && !state.files.is_empty(),
         };
         let changes = status.as_ref().map(|s| s.files.len()).unwrap_or(0);
-        let banner = operation::Banner::new(state.operation(), state.conflicted_paths().len());
+        let banner =
+            operation::Banner::new(state.operation_context(), state.conflicted_paths().len());
         let panel = v_flex()
             .size_full()
             .min_w_0()
