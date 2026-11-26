@@ -361,8 +361,8 @@ impl Workspace {
         Some(((target.host, target.project), target.path))
     }
 
-    /// Show the selected project's center with a terminal for its selected worktree: focus an
-    /// existing tab for that path, or open one.
+    /// Show the selected project's center with the tab its selected worktree showed last, or
+    /// with that worktree's terminal: an existing tab for that path, or a new one.
     fn sync_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.drop_removed_centers(cx);
         let Some((project, cwd)) = self.selected_target(cx) else {
@@ -383,7 +383,7 @@ impl Workspace {
         let panel = self.open_pipeline_panel();
         let center = self.center(&project, window, cx);
         if !restore && panel.is_none() {
-            center.show_terminal(&cwd, window, cx);
+            center.show_worktree(&cwd, window, cx);
         }
         if let Some(panel) = panel {
             panel.read(cx).focus.clone().focus(window, cx);

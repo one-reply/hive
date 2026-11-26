@@ -11,8 +11,8 @@ impl ProjectCenter {
         window: &Window,
         cx: &App,
     ) {
-        let dock = self.dock.read(cx);
-        let Some(tree) = dock.layout(DockPlacement::Center) else {
+        self.note_focus(window, cx);
+        let Some(tree) = self.dock.read(cx).layout(DockPlacement::Center) else {
             saved.layout = None;
             return;
         };
@@ -20,13 +20,6 @@ impl ProjectCenter {
             .panels()
             .filter(|id| self.snapshot_tab(*id, cx).is_some())
             .collect();
-        if let Some(focused) = tree.panels().find(|id| {
-            dock.panel(*id)
-                .is_some_and(|p| p.focus_handle(cx).contains_focused(window, cx))
-        }) {
-            self.focused = Some(focused);
-            self.recent_tabs.activate(focused);
-        }
         saved.focused = self
             .focused
             .and_then(|id| ids.iter().position(|candidate| *candidate == id))
