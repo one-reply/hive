@@ -1,4 +1,5 @@
-//! The inline blame label fades in where it appears and fades out where it was.
+//! A label painted on a canvas fades in where it appears and fades out where it was: the
+//! inline blame label, and the hover surface of a dependency's version.
 //!
 //! The canvas paints every frame from scratch, so the label that just went away is kept here
 //! with its last position until its fade-out ends.

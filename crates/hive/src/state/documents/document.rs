@@ -23,6 +23,7 @@ pub(crate) use blame::LineBlame;
 pub(crate) use image::{Content, PreviewState, SvgMode};
 pub(crate) use io::{Changes, SaveBlocker};
 pub(crate) use navigation::{STICKY_BORDER_WIDTH, sticky_row_limit};
+pub(crate) use packages::PackageRow;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum DocumentError {
@@ -153,10 +154,14 @@ impl Document {
         let blame = LineBlame::new(store.read(cx).state.settings.files.inline_blame);
         let subscriptions = vec![
             cx.on_release(|this, cx| this.close_language(cx)),
-            cx.observe(&store, |this, _, cx| this.apply_blame_setting(cx)),
+            cx.observe(&store, |this, _, cx| {
+                this.apply_blame_setting(cx);
+                this.apply_package_setting(cx);
+            }),
             cx.subscribe(&editor, |this, _, event: &InputEditsEvent, _| {
                 this.selection_commands.edited(event);
                 this.completions.edit(event.edits());
+                this.follow_package_edits(event.edits());
             }),
             cx.subscribe_in(&editor, window, |this, _, event, _, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -508,7 +513,7 @@ impl Document {
         self.completions.schedule_refresh(cx);
         self.schedule_language(cx);
         self.invalidate_blame(cx);
-        self.refresh_packages(cx);
+        self.reset_packages(cx);
         self.apply_position(window, cx);
         if let Some(focus) = focus {
             focus.focus(window, cx);

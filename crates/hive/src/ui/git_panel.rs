@@ -88,6 +88,9 @@ pub(crate) struct GitPanel {
     message_size: commit::MessageSize,
     /// The footer's menu of Git actions.
     actions_menu: commit::ActionsMenu,
+    /// The user pressed Refresh and that read has not ended; only such a read spins the
+    /// button, as in the Files panel.
+    manual_refresh: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -129,6 +132,9 @@ impl GitPanel {
             }),
             cx.observe_in(&git, window, |this, _, window, cx| {
                 let state = this.git.read(cx);
+                if !state.loading {
+                    this.manual_refresh = false;
+                }
                 let target = state.target.clone();
                 let draft = target
                     .as_ref()
@@ -182,6 +188,7 @@ impl GitPanel {
             change_files: Default::default(),
             message_size: commit::MessageSize::default(),
             actions_menu: commit::ActionsMenu::default(),
+            manual_refresh: false,
             _subscriptions: subscriptions,
         }
     }

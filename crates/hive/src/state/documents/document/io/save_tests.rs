@@ -154,32 +154,43 @@ fn a_file_deleted_on_disk_fails_the_save_with_the_reason(cx: &mut TestAppContext
 }
 
 #[gpui::test]
-fn package_version_action_rejects_old_revision_and_preserves_neighboring_text(
-    cx: &mut TestAppContext,
-) {
-    use hive_core::package_lens::{Lens, Manifest};
+fn an_upgrade_rewrites_only_the_requirement_its_row_offers(cx: &mut TestAppContext) {
+    use hive_core::package_lens::{Change, Channel, Lens, Manifest, Upgrade, Version, Versions};
     let worktree = Worktree::new();
     let source = r#"{"name":"тест","dependencies":{"a":"^1.0.0","b":"1"}}"#;
     let (doc, cx) = open(cx, &worktree, "package.json", [source, source, source]);
-    let dep = Manifest::parse(source).unwrap().entries.remove(0);
+    let entries = Manifest::parse(source).unwrap().entries;
+    let (a, b) = (&entries[0], &entries[1]);
+    // The entry where `a` stood before a byte was typed in front of it.
+    let mut moved = a.clone();
+    moved.pair = moved.pair.start + 1..moved.pair.end + 1;
+    moved.value = moved.value.start + 1..moved.value.end + 1;
     cx.update(|window, cx| {
         doc.update(cx, |d, cx| {
-            d.packages.rows.push(Lens {
-                dependency: dep.clone(),
-                label: "Latest 2.0.0".into(),
-                choices: vec![("Latest".into(), "^2.0.0".into())],
-                audit: "Not checked".into(),
-                advisories: vec![],
+            d.packages.answer(Lens {
+                dependency: a.clone(),
+                resolved: None,
+                versions: Versions::Found(vec![Upgrade {
+                    channel: Channel::Latest,
+                    version: Version::parse("2.0.0").unwrap(),
+                    change: Some(Change::Major),
+                    spec: "^2.0.0".into(),
+                }]),
+                advisories: Vec::new(),
+                more_advisories: false,
             });
-            d.apply_package(d.package_revision() + 1, &dep, "^2.0.0", window, cx);
-            assert_eq!(d.text(cx), source);
-            d.apply_package(d.package_revision(), &dep, "^2.0.0", window, cx);
+            d.apply_upgrade(&moved, "^2.0.0", window, cx);
+            d.apply_upgrade(a, "^9.0.0", window, cx);
+            d.apply_upgrade(b, "2", window, cx);
+            assert_eq!(d.text(cx), source, "no row offers these");
+            d.apply_upgrade(a, "^2.0.0", window, cx);
             assert_eq!(d.text(cx), source.replace("^1.0.0", "^2.0.0"));
         })
     });
     assert_eq!(
         fs::read_to_string(worktree.0.join("package.json")).unwrap(),
-        source
+        source,
+        "an upgrade edits the buffer; saving stays explicit"
     );
 }
 

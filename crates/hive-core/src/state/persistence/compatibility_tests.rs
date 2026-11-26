@@ -105,6 +105,17 @@ fn strings<'a>(list: &'a Value, field: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// Each value under `written` is in `read` at the same path; objects are compared key by key.
+fn assert_reads_as_written(read: &Value, written: &Value, release: &str, path: &str) {
+    let Some(fields) = written.as_object() else {
+        assert_eq!(read, written, "{release}: {path}");
+        return;
+    };
+    for (name, value) in fields {
+        assert_reads_as_written(&read[name], value, release, &format!("{path}.{name}"));
+    }
+}
+
 #[test]
 fn every_released_schema_loads_whole_with_nothing_reset_or_dropped() {
     for (release, schema, file) in SAMPLES {
@@ -134,10 +145,9 @@ fn every_released_schema_loads_whole_with_nothing_reset_or_dropped() {
             read["workspace"]["selection"], written["workspace"]["selection"],
             "{release}"
         );
-        // Every setting the release wrote is read as written.
-        for (name, value) in written["settings"].as_object().unwrap() {
-            assert_eq!(&read["settings"][name], value, "{release}: settings.{name}");
-        }
+        // Every setting the release wrote is read as written; settings added since then
+        // may sit beside them with their defaults.
+        assert_reads_as_written(&read["settings"], &written["settings"], release, "settings");
         let runs = |state: &Value| -> Vec<(u64, String)> {
             let runs = state["pipelines"]["runs"]
                 .as_array()
@@ -166,11 +176,11 @@ fn what_a_release_did_not_know_yet_takes_its_default() {
     );
     assert!(!before_pipelines.settings.option_as_meta);
     // Before dictation, which is every release so far: unconfigured, with the stock prompt.
+    // Before the package versions switch, too: dependency versions show.
     for index in 0..SAMPLES.len() {
-        assert_eq!(
-            load(index).settings.dictation,
-            crate::dictation::Recipe::default()
-        );
+        let settings = load(index).settings;
+        assert_eq!(settings.dictation, crate::dictation::Recipe::default());
+        assert!(settings.files.package_versions);
     }
     // Before the plan approval policy and review conditions: every recipe, a run's own copy
     // included, asks the user and runs each of its reviews, and no run leaves a review out.
