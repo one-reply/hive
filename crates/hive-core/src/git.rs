@@ -10,6 +10,8 @@ pub mod branches;
 pub mod changes;
 #[cfg(feature = "desktop")]
 pub mod commit_context;
+#[cfg(feature = "desktop")]
+pub mod conflict_merge;
 pub mod conflicts;
 pub mod diff;
 #[cfg(feature = "desktop")]

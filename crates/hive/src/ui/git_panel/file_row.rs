@@ -300,21 +300,30 @@ impl GitPanel {
             } else {
                 icon
             };
+            let branch = self
+                .git
+                .read(cx)
+                .operation_context()
+                .map(|ctx| ctx.side(side).label.as_str());
             actions = actions.child(
-                action_button((id, index), icon, sides::tooltip(kind, side))
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if !show_actions {
-                            return;
-                        }
-                        // The row behind would otherwise open the resolver too.
-                        cx.stop_propagation();
-                        let git = this.git.clone();
-                        if let Some(target) = git.read(cx).target.clone() {
-                            sides::take(git, target, &path, kind, side, window, cx);
-                        }
-                    }))
-                    .smooth_hover(ButtonLook::Ghost, hover, cx),
+                action_button(
+                    (id, index),
+                    icon,
+                    sides::tooltip_with_branch(kind, side, branch),
+                )
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if !show_actions {
+                        return;
+                    }
+                    // The row behind would otherwise open the resolver too.
+                    cx.stop_propagation();
+                    let git = this.git.clone();
+                    if let Some(target) = git.read(cx).target.clone() {
+                        sides::take(git, target, &path, kind, side, window, cx);
+                    }
+                }))
+                .smooth_hover(ButtonLook::Ghost, hover, cx),
             );
         }
         let action_count = 1 + usize::from(discard.is_some()) + usize::from(can_act) + sides.len();

@@ -58,6 +58,52 @@ fn read(repo: &Repo, path: &str) -> String {
 }
 
 #[test]
+fn operation_context_reports_branches_and_direction_for_merge_rebase_and_cherry_pick() {
+    let merge = conflicted_merge();
+    let ctx = conflicts::operation_context(&Host::Local, &merge.0)
+        .unwrap()
+        .expect("active merge");
+    assert_eq!(ctx.operation, Operation::Merge);
+    assert_eq!(ctx.current.label, "main");
+    assert_eq!(ctx.incoming.label, "feature");
+    assert!(ctx.current.commit.is_some());
+    assert!(ctx.incoming.commit.is_some());
+    assert_eq!(ctx.direction_summary(), "Merging feature → main");
+
+    let rebase = diverged(
+        &[("a", "base\n")],
+        &[("a", "feature\n")],
+        &[("a", "main\n")],
+    );
+    rebase.git(&["checkout", "feature"]);
+    assert!(run(&Host::Local, &rebase.0, &["rebase", "main"]).is_err());
+    let ctx = conflicts::operation_context(&Host::Local, &rebase.0)
+        .unwrap()
+        .expect("active rebase");
+    assert_eq!(ctx.operation, Operation::Rebase);
+    assert_eq!(ctx.current.label, "main");
+    assert_eq!(ctx.incoming.label, "feature");
+    assert_eq!(ctx.step, Some((1, 1)));
+    assert_eq!(
+        ctx.direction_summary(),
+        "Rebasing feature onto main (step 1/1)"
+    );
+
+    let pick = diverged(
+        &[("a", "base\n")],
+        &[("a", "feature\n")],
+        &[("a", "main\n")],
+    );
+    assert!(run(&Host::Local, &pick.0, &["cherry-pick", "feature"]).is_err());
+    let ctx = conflicts::operation_context(&Host::Local, &pick.0)
+        .unwrap()
+        .expect("active cherry-pick");
+    assert_eq!(ctx.operation, Operation::CherryPick);
+    assert_eq!(ctx.current.label, "main");
+    assert_eq!(ctx.incoming.label, "feature");
+}
+
+#[test]
 fn unfinished_operation_is_named_and_blocks_checkout() {
     let repo = Repo::new();
     repo.write("a", "base\n");
@@ -82,7 +128,15 @@ fn unfinished_operation_is_named_and_blocks_checkout() {
         revert.commit();
     }
     assert!(run(&Host::Local, &revert.0, &["revert", "HEAD~1"]).is_err());
-    assert_eq!(operation(&revert), Some(Operation::Revert));
+    let ctx = conflicts::operation_context(&Host::Local, &revert.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ctx.operation, Operation::Revert);
+    assert_eq!(
+        ctx.incoming.label,
+        format!("before {}", revert.git(&["rev-parse", "--short", "HEAD~1"]))
+    );
+    assert!(ctx.incoming.commit.is_none());
 
     // A rebase replays commits as cherry-picks; it must still read as a rebase.
     let rebase = diverged(
@@ -259,6 +313,16 @@ fn continue_stops_at_the_next_conflicting_commit_without_failing() {
     // The second commit conflicts with the first resolution: still rebasing, new conflict.
     assert_eq!(operation(&repo), Some(Operation::Rebase));
     assert_eq!(conflict(&repo, "a"), Some(Conflict::BothModified));
+
+    let ctx = conflicts::operation_context(&Host::Local, &repo.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ctx.current.label, "main");
+    assert_eq!(
+        ctx.current.commit.as_deref(),
+        Some(repo.git(&["log", "-1", "--format=%h %s", "HEAD"]).as_str())
+    );
+    assert_eq!(ctx.step, Some((2, 2)));
 
     repo.write("a", "resolved 2\n");
     repo.action(Action::Stage(vec!["a".into()])).unwrap();

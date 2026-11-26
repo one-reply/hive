@@ -1,6 +1,5 @@
 //! What a conflict tab shows, decided from Git's status and the working file.
 use crate::state::{git::ConflictState, git_conflict::Content};
-use gpui_kit::component::diff::DiffConflict;
 use hive_core::git::conflicts::Conflict;
 
 /// The working file, reduced to what the layout depends on.
@@ -16,7 +15,7 @@ pub(super) enum File<'a> {
 impl<'a> From<&'a Content> for File<'a> {
     fn from(content: &'a Content) -> Self {
         match content {
-            Content::Text { file, .. } if file.conflicts().is_empty() => Self::Merged,
+            Content::Text { document, .. } if document.conflict_count == 0 => Self::Merged,
             Content::Text { .. } => Self::Conflicts,
             Content::Malformed(reason) => Self::Malformed(reason),
             Content::Unavailable(reason) => Self::Unavailable(reason),
@@ -134,37 +133,10 @@ pub(super) fn next_conflict(
         .or(Some(start))
 }
 
-/// The working-file line to scroll to for conflict `ix`.
-///
-/// The widget scrolls a source line to the top, and a conflict's markers are headings rather
-/// than lines. The line above the opening marker keeps the heading and its buttons in view;
-/// when that is the previous conflict's closing marker, the first line inside is used.
-pub(super) fn anchor_line(conflicts: &[DiffConflict], ix: usize) -> Option<usize> {
-    let conflict = conflicts.get(ix)?;
-    let start = conflict.lines().start;
-    let follows_marker = ix
-        .checked_sub(1)
-        .and_then(|previous| conflicts.get(previous))
-        .is_some_and(|previous| previous.lines().end == start);
-    if start > 1 && !follows_marker {
-        return Some(start - 1);
-    }
-    [
-        Some(conflict.current_lines()),
-        conflict.base_lines(),
-        Some(conflict.incoming_lines()),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|lines| !lines.is_empty())
-    .map(|lines| lines.start)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Body, File, Progress, anchor_line, body, next_conflict};
+    use super::{Body, File, Progress, body, next_conflict};
     use crate::state::git::ConflictState;
-    use gpui_kit::component::diff::DiffFile;
     use hive_core::git::conflicts::Conflict;
 
     #[test]
@@ -173,12 +145,10 @@ mod tests {
         assert_eq!(body(unmerged, None), Body::Loading);
         assert_eq!(body(unmerged, Some(File::Conflicts)), Body::Conflicts);
         assert_eq!(body(unmerged, Some(File::Merged)), Body::Merged);
-        // Another worktree's status is no reason to hide the file.
         assert_eq!(
             body(ConflictState::Unknown, Some(File::Conflicts)),
             Body::Conflicts
         );
-        // Once staged elsewhere, whatever is on disk is no longer a conflict to resolve.
         for file in [None, Some(File::Conflicts), Some(File::Merged)] {
             assert_eq!(body(ConflictState::Resolved, file), Body::Resolved);
         }
@@ -186,7 +156,6 @@ mod tests {
 
     #[test]
     fn files_without_two_text_versions_offer_whole_sides_only() {
-        // The surviving version has no markers; it must not look ready to stage.
         let deleted = ConflictState::Unmerged(Conflict::DeletedByThem);
         for file in [None, Some(File::Merged), Some(File::Unavailable("gone"))] {
             let Body::Sides(explanation) = body(deleted, file) else {
@@ -214,7 +183,6 @@ mod tests {
         assert_eq!(progress.label(), "2 of 3 conflicts resolved");
         assert_eq!(Progress::of(&[false]).label(), "0 of 1 conflict resolved");
         assert!(Progress::of(&[true, true]).is_complete());
-        // No markers at all is complete too: the file is ready to stage.
         assert!(Progress::of(&[]).is_complete());
         assert_eq!(Progress::of(&[]).label(), "No conflict markers left");
     }
@@ -228,31 +196,10 @@ mod tests {
         assert_eq!(next_conflict(None, &resolved, false), Some(3));
         assert_eq!(next_conflict(Some(3), &resolved, false), Some(1));
         assert_eq!(next_conflict(Some(1), &resolved, false), Some(3));
-        // With nothing left to decide the arrows still walk every conflict.
         assert_eq!(next_conflict(Some(0), &[true, true], true), Some(1));
         assert_eq!(next_conflict(Some(0), &[true, true], false), Some(1));
         assert_eq!(next_conflict(Some(0), &[false], true), Some(0));
-        // A position left over from a longer list restarts from the edge.
         assert_eq!(next_conflict(Some(9), &[true, false], true), Some(1));
         assert_eq!(next_conflict(None, &[], true), None);
-    }
-
-    #[test]
-    fn anchor_keeps_the_conflict_heading_in_view_when_a_line_precedes_it() {
-        let text = "top\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\n<<<<<<< HEAD\n=======\nadded\n>>>>>>> feature\n<<<<<<< HEAD\n=======\n>>>>>>> feature\nshared\n<<<<<<< HEAD\nlast\n=======\n>>>>>>> feature\n";
-        let file = DiffFile::parse_conflicts("a.txt", text).unwrap();
-        let conflicts = file.conflicts();
-        let anchors: Vec<_> = (0..conflicts.len())
-            .map(|ix| anchor_line(conflicts, ix))
-            .collect();
-        // "top" precedes the first conflict. The second and third start right after a closing
-        // marker: one has only an incoming line (9), the other no lines at all. "shared" (14)
-        // precedes the last.
-        assert_eq!(anchors, [Some(1), Some(9), None, Some(14)]);
-        assert_eq!(anchor_line(conflicts, 9), None);
-        // A conflict on the first line has nothing above it.
-        let first =
-            DiffFile::parse_conflicts("a.txt", "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> f\n").unwrap();
-        assert_eq!(anchor_line(first.conflicts(), 0), Some(2));
     }
 }
