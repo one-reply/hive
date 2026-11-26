@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["dep:alacritty_terminal", "dep:rustix-openpty", "dep:polling", "dep:ureq", "dep:async-channel", "dep:security-framework", "dep:markdown", "dep:similar"]
+desktop = ["dep:alacritty_terminal", "dep:rustix-openpty", "dep:polling", "dep:ureq", "dep:async-channel", "dep:security-framework", "dep:markdown", "dep:similar", "dep:tree-sitter-json", "dep:node-semver", "dep:serde_yaml_ng", "dep:serde_json_lenient", "dep:yarn-lock-parser", "dep:globset"]
 remote-helper = []
 # Exposes `git::testing`, the hermetic Git environment, to the tests of other crates. It adds
 # functions only: nothing behaves differently until a test calls them.
@@ -43,6 +43,13 @@ polling = { workspace = true, optional = true }
 rustix.workspace = true
 tracing.workspace = true
 tree-sitter.workspace = true
+globset = { workspace = true, optional = true }
+tree-sitter-json = { workspace = true, optional = true }
+node-semver = { workspace = true, optional = true }
+serde_yaml_ng = { workspace = true, optional = true }
+yarn-lock-parser = { workspace = true, optional = true }
+serde_json_lenient = { workspace = true, optional = true }
+
 tree-sitter-javascript.workspace = true
 tree-sitter-typescript.workspace = true
 regex.workspace = true
