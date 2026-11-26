@@ -108,8 +108,9 @@ pub(crate) struct Git {
     repository: Repository,
     pub target: Option<Target>,
     pub status: Option<Status>,
-    /// The unfinished operation of `target`, as of the last refresh that looked for one.
-    operation: Option<git::conflicts::Operation>,
+    /// The unfinished operation of `target`, with branch/commit labels, as of the last refresh
+    /// that looked for one.
+    operation_context: Option<git::conflicts::OperationContext>,
     pub branches: Vec<Branch>,
     pub remotes: Vec<String>,
     pub remote: Option<String>,
@@ -186,7 +187,7 @@ impl Git {
             repository: Repository::Unknown,
             target: None,
             status: None,
-            operation: None,
+            operation_context: None,
             branches: vec![],
             remotes: vec![],
             remote: None,
@@ -281,7 +282,7 @@ impl Git {
         self.query_generation += 1;
         self.review_loading = false;
         self.status = None;
-        self.operation = None;
+        self.operation_context = None;
         self.branches.clear();
         self.remotes.clear();
         self.remote = None;
@@ -309,7 +310,7 @@ impl Git {
         self.follow_review(previous.as_ref());
         self.sync_diff_visibility();
         self.status = None;
-        self.operation = None;
+        self.operation_context = None;
         self.branches.clear();
         self.remotes.clear();
         self.remote = None;
@@ -472,7 +473,8 @@ impl Git {
         let generation = self.refresh_generation;
         let with_stats = self.panel_visible || self.diff_visible;
         let previous = self.status.clone();
-        let known_operation = self.operation;
+        let known_operation = self.operation();
+        let known_context = self.operation_context.clone();
         self._refresh = Some(cx.spawn(async move |this, cx| {
             let query_target = target.clone();
             let result = cx
@@ -504,21 +506,23 @@ impl Git {
                     } else {
                         None
                     };
-                    let operation = if conflicts::inspects_operation(
+                    let operation_context = if conflicts::inspects_operation(
                         force,
                         previous.as_ref(),
                         &status,
                         known_operation,
                     ) {
                         // The file list is still worth showing when only this probe fails.
-                        git::conflicts::operation(&t.host, &t.path).unwrap_or_else(|error| {
-                            tracing::warn!(path = ?t.path, %error, "operation probe failed");
-                            known_operation
-                        })
+                        git::conflicts::operation_context(&t.host, &t.path).unwrap_or_else(
+                            |error| {
+                                tracing::warn!(path = ?t.path, %error, "operation probe failed");
+                                known_context
+                            },
+                        )
                     } else {
                         None
                     };
-                    Ok::<_, git::GitError>((status, metadata, operation))
+                    Ok::<_, git::GitError>((status, metadata, operation_context))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -527,10 +531,10 @@ impl Git {
                 }
                 this.loading = false;
                 match result {
-                    Ok((status, metadata, operation)) => {
+                    Ok((status, metadata, operation_context)) => {
                         this.repository = Repository::Available;
-                        let operation_changed = this.operation != operation;
-                        this.operation = operation;
+                        let operation_changed = this.operation_context != operation_context;
+                        this.operation_context = operation_context;
                         let head_changed = this.status.as_ref().is_none_or(|s| s.oid != status.oid);
                         let branch_changed = this
                             .status

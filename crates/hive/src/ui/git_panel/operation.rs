@@ -1,6 +1,6 @@
 //! The worktree's unfinished merge, rebase, cherry-pick or revert, and its open conflicts.
 use super::*;
-use hive_core::git::conflicts::Operation;
+use hive_core::git::conflicts::{Operation, OperationContext};
 
 const BANNER_BACKGROUND_OPACITY: f32 = 0.06;
 const BANNER_BORDER_OPACITY: f32 = 0.35;
@@ -17,25 +17,24 @@ pub(super) struct Banner {
 
 impl Banner {
     /// `None` when the worktree is neither mid-operation nor holding unmerged files.
-    pub(super) fn new(operation: Option<Operation>, conflicts: usize) -> Option<Self> {
+    pub(super) fn new(context: Option<&OperationContext>, conflicts: usize) -> Option<Self> {
         let unresolved = match conflicts {
             0 => None,
             1 => Some("1 conflict".to_owned()),
             count => Some(format!("{count} conflicts")),
         };
-        let title = match (operation, unresolved) {
+        let title = match (context, unresolved) {
             (None, None) => return None,
             (None, Some(unresolved)) => format!("{unresolved} to resolve"),
-            (Some(operation), None) => {
-                format!("{} in progress · ready to continue", name(operation))
-            }
-            (Some(operation), Some(unresolved)) => {
-                format!("{} in progress · {unresolved}", name(operation))
-            }
+            (Some(ctx), remaining) => format!(
+                "{} · {}",
+                ctx.direction_summary(),
+                remaining.as_deref().unwrap_or("ready to continue")
+            ),
         };
         Some(Self {
             title,
-            operation,
+            operation: context.map(|ctx| ctx.operation),
             conflicts,
         })
     }
@@ -142,6 +141,7 @@ impl GitPanel {
                         .smooth_hover(ButtonLook::Primary, &continue_hover, cx),
                 );
         }
+        let tooltip = banner.title.clone();
         div().px_3().pb_2().flex_shrink_0().child(
             v_flex()
                 .p_2()
@@ -152,8 +152,10 @@ impl GitPanel {
                 .bg(warning.opacity(BANNER_BACKGROUND_OPACITY))
                 .child(
                     h_flex()
+                        .id("operation-banner-title")
                         .gap_2()
                         .items_center()
+                        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                         .child(Icon::new(Lucide::GitMerge).small().text_color(warning))
                         .child(
                             div()
@@ -172,23 +174,41 @@ impl GitPanel {
 #[cfg(test)]
 mod tests {
     use super::{Banner, abort_confirmation};
-    use hive_core::git::conflicts::Operation;
+    use hive_core::git::conflicts::{Operation, OperationContext, SideInfo};
+
+    fn ctx(operation: Operation) -> OperationContext {
+        OperationContext {
+            operation,
+            current: SideInfo {
+                label: "main".into(),
+                commit: None,
+            },
+            incoming: SideInfo {
+                label: "develop".into(),
+                commit: None,
+            },
+            step: None,
+        }
+    }
 
     #[test]
     fn banner_names_the_operation_and_what_is_left() {
         assert_eq!(Banner::new(None, 0), None);
-        let title = |operation, conflicts| Banner::new(operation, conflicts).unwrap().title;
+        let title = |operation, conflicts| {
+            let context = ctx(operation);
+            Banner::new(Some(&context), conflicts).unwrap().title
+        };
         assert_eq!(
-            title(Some(Operation::Merge), 2),
-            "Merge in progress · 2 conflicts"
+            title(Operation::Merge, 2),
+            "Merging develop → main · 2 conflicts"
         );
         assert_eq!(
-            title(Some(Operation::Rebase), 1),
-            "Rebase in progress · 1 conflict"
+            title(Operation::Rebase, 1),
+            "Rebasing develop onto main · 1 conflict"
         );
         assert_eq!(
-            title(Some(Operation::CherryPick), 0),
-            "Cherry-pick in progress · ready to continue"
+            title(Operation::CherryPick, 0),
+            "Cherry-picking develop → main · ready to continue"
         );
         // A stash or checkout leaves unmerged files with nothing to abort or continue.
         let stash = Banner::new(None, 3).unwrap();
@@ -198,12 +218,13 @@ mod tests {
 
     #[test]
     fn continue_waits_for_every_conflict() {
-        let blocked = Banner::new(Some(Operation::Rebase), 1).unwrap();
+        let context = ctx(Operation::Rebase);
+        let blocked = Banner::new(Some(&context), 1).unwrap();
         assert_eq!(
             blocked.continue_blocker(),
             Some("Resolve every conflict first")
         );
-        let ready = Banner::new(Some(Operation::Rebase), 0).unwrap();
+        let ready = Banner::new(Some(&context), 0).unwrap();
         assert_eq!(ready.continue_blocker(), None);
     }
 

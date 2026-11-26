@@ -2,17 +2,21 @@
 //! shows the conflicts and holds the user's choices belongs to the panel.
 use super::file_io;
 use super::git::{ConflictRequest, Git, GitEvent};
-use gpui_kit::component::diff::DiffFile;
 use gpui_kit::*;
 use hive_core::files::{Access, FileError, Snapshot};
 use hive_core::git::changes::Action;
+use hive_core::git::conflict_merge::MergeDocument;
 use std::path::Path;
+use std::sync::Arc;
 
 /// What the working tree holds for an unmerged path.
 #[derive(Clone)]
 pub(crate) enum Content {
-    /// A text file and the conflicts its markers delimit; none once the markers are gone.
-    Text { snapshot: Snapshot, file: DiffFile },
+    /// A text file and the conflicts its markers delimit; `conflict_count == 0` once markers are gone.
+    Text {
+        snapshot: Arc<Snapshot>,
+        document: Arc<MergeDocument>,
+    },
     /// Markers that do not pair up, which only editing the file can repair.
     Malformed(String),
     /// Nothing Hive can show as text: a binary, oversized or missing file.
@@ -20,22 +24,20 @@ pub(crate) enum Content {
 }
 
 impl Content {
-    fn read(path: &str, result: Result<Snapshot, FileError>) -> Self {
+    fn read(result: Result<Snapshot, FileError>) -> Self {
         match result {
-            Ok(snapshot) => Self::parse(path, snapshot),
+            Ok(snapshot) => Self::parse(snapshot),
             Err(error) => Self::Unavailable(error.to_string()),
         }
     }
 
-    fn parse(path: &str, snapshot: Snapshot) -> Self {
+    fn parse(snapshot: Snapshot) -> Self {
         let text = snapshot.text();
-        match DiffFile::parse_conflicts(path.to_owned(), &text) {
-            // Without markers the file is shown whole, for a last look before staging.
-            Ok(file) if file.conflicts().is_empty() => Self::Text {
-                file: DiffFile::unchanged(path.to_owned(), &text),
-                snapshot,
+        match MergeDocument::parse(&text) {
+            Ok(document) => Self::Text {
+                snapshot: Arc::new(snapshot),
+                document: Arc::new(document),
             },
-            Ok(file) => Self::Text { snapshot, file },
             Err(error) => Self::Malformed(error.to_string()),
         }
     }
@@ -43,7 +45,7 @@ impl Content {
     /// Whether a later read found the same thing, so the widget can keep the user's choices.
     fn is_unchanged_by(&self, read: &Result<Snapshot, FileError>) -> bool {
         match (self, read) {
-            (Self::Text { snapshot, .. }, Ok(new)) => snapshot == new,
+            (Self::Text { snapshot, .. }, Ok(new)) => snapshot.as_ref() == new,
             (Self::Unavailable(message), Err(error)) => *message == error.to_string(),
             _ => false,
         }
@@ -131,7 +133,7 @@ impl GitConflict {
                 if previous.is_some_and(|content| content.is_unchanged_by(&read)) {
                     return None;
                 }
-                Some(Content::read(&request.path, read))
+                Some(Content::read(read))
             })
             .await;
             let _ = this.update(cx, |this, cx| {
@@ -168,7 +170,7 @@ impl GitConflict {
                         &snapshot,
                         &text,
                     )
-                    .map(|snapshot| Content::parse(&request.path, snapshot))
+                    .map(Content::parse)
             })
             .await;
             let _ = this.update(cx, |this, cx| {
@@ -304,7 +306,7 @@ mod tests {
 
     fn conflicts(content: Option<&Content>) -> usize {
         match content {
-            Some(Content::Text { file, .. }) => file.conflicts().len(),
+            Some(Content::Text { document, .. }) => document.conflict_count,
             other => panic!("expected text, found {}", describe(other)),
         }
     }
@@ -327,42 +329,33 @@ mod tests {
         // Captured from Git 2.54 with the default and `merge.conflictStyle=zdiff3` styles.
         let two_way = "top\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\nend\n";
         let diff3 = "<<<<<<< HEAD\nours\n||||||| 1a2b3c4\nbase\n=======\ntheirs\n>>>>>>> feature\n";
-        assert_eq!(
-            conflicts(Some(&Content::parse("a.txt", snapshot(two_way)))),
-            1
-        );
-        assert_eq!(
-            conflicts(Some(&Content::parse("a.txt", snapshot(diff3)))),
-            1
-        );
+        assert_eq!(conflicts(Some(&Content::parse(snapshot(two_way)))), 1);
+        assert_eq!(conflicts(Some(&Content::parse(snapshot(diff3)))), 1);
         // A resolved file is still text, with nothing left to choose.
-        assert_eq!(
-            conflicts(Some(&Content::parse("a.txt", snapshot("plain\n")))),
-            0
-        );
-        assert_eq!(conflicts(Some(&Content::parse("a.txt", snapshot("")))), 0);
+        assert_eq!(conflicts(Some(&Content::parse(snapshot("plain\n")))), 0);
+        assert_eq!(conflicts(Some(&Content::parse(snapshot("")))), 0);
         for broken in [
             "<<<<<<< HEAD\nours\n",
             "<<<<<<< HEAD\n<<<<<<< HEAD\n",
             ">>>>>>> feature\n",
         ] {
-            let content = Content::parse("a.txt", snapshot(broken));
+            let content = Content::parse(snapshot(broken));
             assert_eq!(describe(Some(&content)), "malformed markers", "{broken:?}");
         }
         let binary = Snapshot::parse(Path::new("a.bin"), b"\0\x01");
-        let content = Content::read("a.bin", binary);
+        let content = Content::read(binary);
         assert_eq!(describe(Some(&content)), "unavailable");
     }
 
     #[test]
     fn an_identical_reread_keeps_the_loaded_content() {
         let text = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\n";
-        let content = Content::parse("a.txt", snapshot(text));
+        let content = Content::parse(snapshot(text));
         assert!(content.is_unchanged_by(&Ok(snapshot(text))));
         assert!(!content.is_unchanged_by(&Ok(snapshot("resolved\n"))));
         let missing = || FileError::Conflict("a.txt".into());
         assert!(!content.is_unchanged_by(&Err(missing())));
-        let unavailable = Content::read("a.txt", Err(missing()));
+        let unavailable = Content::read(Err(missing()));
         assert!(unavailable.is_unchanged_by(&Err(missing())));
         assert!(!unavailable.is_unchanged_by(&Ok(snapshot(text))));
     }
@@ -393,33 +386,31 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn widget_choices_become_the_text_that_is_written(cx: &mut TestAppContext) {
-        use gpui_kit::component::diff::{DiffConflictResolution, DiffState};
-        cx.update(gpui_kit::init);
+    #[test]
+    fn resolved_text_becomes_the_text_that_is_written() {
+        use hive_core::git::conflict_merge::ConflictResolution;
         // A CRLF file with a BOM, as Git leaves it after a conflicting merge.
         let raw = "\u{feff}top\r\n<<<<<<< HEAD\r\nours\r\n=======\r\ntheirs\r\n>>>>>>> feature\r\nmiddle\r\n<<<<<<< HEAD\r\nkeep\r\n=======\r\ndrop\r\n>>>>>>> feature\r\n";
-        let Content::Text { snapshot, file } = Content::parse("a.txt", snapshot(raw)) else {
+        let Content::Text { snapshot, document } = Content::parse(snapshot(raw)) else {
             panic!("expected text");
         };
-        let display = cx.new(|cx| DiffState::new([file], cx));
-        display.update(cx, |display, cx| {
-            display.resolve_conflict("a.txt", 0, Some(DiffConflictResolution::Both), cx);
-            // One undecided conflict leaves nothing to write.
-            assert_eq!(display.resolved_text("a.txt"), None);
-            display.resolve_conflict("a.txt", 1, Some(DiffConflictResolution::Current), cx);
-            let text = display
-                .resolved_text("a.txt")
-                .expect("every conflict decided");
-            assert_eq!(text, "top\nours\ntheirs\nmiddle\nkeep\n");
-            assert_eq!(
-                snapshot.encode(&text),
-                "\u{feff}top\r\nours\r\ntheirs\r\nmiddle\r\nkeep\r\n"
-            );
-            // Undo makes the file undecided again.
-            display.resolve_conflict("a.txt", 1, None, cx);
-            assert_eq!(display.resolved_text("a.txt"), None);
-        });
+        assert_eq!(document.conflict_count, 2);
+        // One undecided conflict leaves nothing to write.
+        assert_eq!(
+            document.resolved_text(&[Some(ConflictResolution::BothCurrentFirst), None]),
+            None
+        );
+        let text = document
+            .resolved_text(&[
+                Some(ConflictResolution::BothCurrentFirst),
+                Some(ConflictResolution::Current),
+            ])
+            .expect("every conflict decided");
+        assert_eq!(text, "top\nours\ntheirs\nmiddle\nkeep\n");
+        assert_eq!(
+            snapshot.encode(&text),
+            "\u{feff}top\r\nours\r\ntheirs\r\nmiddle\r\nkeep\r\n"
+        );
     }
 
     #[gpui::test]
