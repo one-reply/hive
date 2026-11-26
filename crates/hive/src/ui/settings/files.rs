@@ -109,7 +109,7 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
         bool,
         fn(&mut FilesSettings, bool),
     );
-    let toggles: [Toggle; 9] = [
+    let toggles: [Toggle; 10] = [
         (
             "Git decorations",
             "Show staged, unstaged and changed-folder indicators.",
@@ -164,6 +164,13 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> impl IntoElement {
              node_modules binaries, build scripts, proc macros.",
             settings.language_tools,
             |s, v| s.language_tools = v,
+        ),
+        (
+            "Package versions",
+            "Show newer releases and known advisories after package.json dependencies. \
+             Looks them up with the project's package manager; needs language tools.",
+            settings.package_versions,
+            |s, v| s.package_versions = v,
         ),
     ];
     for (label, description, checked, set) in toggles {

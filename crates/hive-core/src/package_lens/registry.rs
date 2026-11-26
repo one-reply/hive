@@ -1,5 +1,5 @@
 //! Resolve versions using the workspace's own registry client and audit concrete public releases.
-use super::{Error, Lens, Manifest, Workspace};
+use super::{Change, Channel, Dependency, Error, Lens, Manifest, Upgrade, Versions, Workspace};
 use crate::command::Cancellation;
 use node_semver::{Range, Version};
 use serde::Deserialize;
@@ -133,7 +133,7 @@ pub fn inspect(
         if cancel.is_cancelled() {
             return Err(Error::Tool("Cancelled".into()));
         }
-        if !d.searchable() {
+        if !d.is_searchable() {
             continue;
         }
         let resolved = match &lock {
@@ -150,28 +150,23 @@ pub fn inspect(
             Err(_) => None,
         };
         let metadata = cache.load(ws, &d.name, cancel);
-        let mut lens = Lens {
-            dependency: d,
-            choices: Vec::new(),
-            label: String::new(),
-            audit: "Not checked".into(),
-            advisories: Vec::new(),
+        let versions = match &metadata {
+            Ok(data) => Versions::Found(upgrades(&d, data, resolved.as_ref())),
+            Err(e) => Versions::Unavailable(e.to_string()),
         };
-        match metadata {
-            Ok(data) => {
-                suggestions(&mut lens, &data, resolved.as_ref());
-                if let Some(v) = resolved {
-                    lens.audit = format!("{v} · Not checked");
-                    if public_tarball(&data, &lens.dependency.name)
-                        && (!lens.dependency.name.starts_with('@')
-                            || anonymous_public(&agent, &lens.dependency.name, &v))
-                    {
-                        checks.push((lenses.len(), lens.dependency.name.clone(), v.to_string()));
-                    }
-                }
-            }
-            Err(e) => lens.label = e.to_string(),
+        if let (Ok(data), Some(v)) = (&metadata, &resolved)
+            && public_tarball(data, &d.name)
+            && (!d.name.starts_with('@') || anonymous_public(&agent, &d.name, v))
+        {
+            checks.push((lenses.len(), d.name.clone(), v.to_string()));
         }
+        let lens = Lens {
+            dependency: d,
+            resolved,
+            versions,
+            advisories: Vec::new(),
+            more_advisories: false,
+        };
         progress(&lens);
         lenses.push(lens);
     }
@@ -213,21 +208,12 @@ fn apply_audit(
     if batch.results.len() != checks.len() {
         return Err(Error::Tool("Incomplete OSV response".into()));
     }
-    for ((index, _, version), result) in checks.iter().zip(batch.results) {
-        let lens = &mut lenses[*index];
+    for ((index, _, _), result) in checks.iter().zip(batch.results) {
+        let Some(lens) = lenses.get_mut(*index) else {
+            continue;
+        };
         lens.advisories = result.vulns.into_iter().map(|v| v.id).collect();
-        let count = lens.advisories.len();
-        if count > 0 {
-            let suffix = if result.next_page_token.is_some() {
-                "+"
-            } else {
-                ""
-            };
-            lens.audit = format!("{version} · Known advisories: {count}{suffix}");
-            lens.label.push_str(&format!(" · ⚠ {count}{suffix}"));
-        } else if result.next_page_token.is_none() {
-            lens.audit = format!("{version} · No known advisories")
-        }
+        lens.more_advisories = result.next_page_token.is_some();
     }
     Ok(())
 }
@@ -272,8 +258,8 @@ struct Advisory {
     id: String,
 }
 
-fn suggestions(lens: &mut Lens, data: &Metadata, resolved: Option<&Version>) {
-    let d = &lens.dependency;
+/// The newest release the requirement accepts, then the `latest` tag, when each moves it forward.
+fn upgrades(d: &Dependency, data: &Metadata, resolved: Option<&Version>) -> Vec<Upgrade> {
     let range = Range::parse(&d.spec).ok();
     let base = Version::parse(d.spec.trim_start_matches(['^', '~'])).ok();
     let wanted = if let Some(range) = range {
@@ -286,32 +272,28 @@ fn suggestions(lens: &mut Lens, data: &Metadata, resolved: Option<&Version>) {
         data.tags.get(&d.spec).and_then(|s| Version::parse(s).ok())
     };
     let latest = data.tags.get("latest").and_then(|s| Version::parse(s).ok());
-    let mut labels = Vec::new();
-    for (kind, candidate) in [("Wanted", wanted), ("Latest", latest)] {
-        let Some(v) = candidate else { continue };
-        let spec = d.replacement(&v);
+    let mut upgrades: Vec<Upgrade> = Vec::new();
+    for (channel, candidate) in [(Channel::Wanted, wanted), (Channel::Latest, latest)] {
+        let Some(version) = candidate else { continue };
+        let spec = d.replacement(&version);
         if spec == d.spec
-            || base.as_ref().is_some_and(|b| v < *b)
-            || lens.choices.iter().any(|(_, s)| s == &spec)
+            || base.as_ref().is_some_and(|b| version < *b)
+            || upgrades.iter().any(|u| u.spec == spec)
         {
             continue;
         }
-        let baseline = base.as_ref().or(resolved);
-        let increment = match baseline {
-            Some(b) if v.major > b.major => " major",
-            Some(b) if v.minor > b.minor => " minor",
-            Some(b) if v.patch > b.patch => " patch",
-            _ => "",
-        };
-        labels.push(format!("{kind} {v}{increment}"));
-        lens.choices
-            .push((format!("{kind}{increment} → {spec}"), spec));
+        let change = base
+            .as_ref()
+            .or(resolved)
+            .and_then(|from| Change::between(from, &version));
+        upgrades.push(Upgrade {
+            channel,
+            version,
+            change,
+            spec,
+        });
     }
-    lens.label = if labels.is_empty() {
-        "Up to date".into()
-    } else {
-        labels.join(" · ")
-    };
+    upgrades
 }
 
 #[cfg(test)]
@@ -323,24 +305,35 @@ mod tests {
         let mut rows = [lens("^1.0.0")];
         let incomplete = serde_json::from_str(r#"{"results":[]}"#).unwrap();
         assert!(apply_audit(&mut rows, &checks, incomplete).is_err());
-        assert_eq!(rows[0].audit, "Not checked");
+        assert!(rows[0].advisories.is_empty());
         let hit = serde_json::from_str(
             r#"{"results":[{"vulns":[{"id":"GHSA-test","modified":"today"}]}]}"#,
         )
         .unwrap();
         apply_audit(&mut rows, &checks, hit).unwrap();
         assert_eq!(rows[0].advisories, ["GHSA-test"]);
-        assert!(rows[0].audit.contains("1.2.0"));
+        assert!(!rows[0].more_advisories);
+        let paged = serde_json::from_str(
+            r#"{"results":[{"vulns":[{"id":"GHSA-a"}],"next_page_token":"next"}]}"#,
+        )
+        .unwrap();
+        apply_audit(&mut rows, &checks, paged).unwrap();
+        assert_eq!(
+            (rows[0].advisories.as_slice(), rows[0].more_advisories),
+            (["GHSA-a".to_owned()].as_slice(), true)
+        );
+    }
+    fn dependency(spec: &str) -> Dependency {
+        let text = json!({"dependencies":{"@scope/pkg":spec}}).to_string();
+        Manifest::parse(&text).unwrap().entries.remove(0)
     }
     fn lens(spec: &str) -> Lens {
-        let text = json!({"dependencies":{"@scope/pkg":spec}}).to_string();
-        let dependency = Manifest::parse(&text).unwrap().entries.remove(0);
         Lens {
-            dependency,
-            label: String::new(),
-            choices: Vec::new(),
-            audit: "Not checked".into(),
+            dependency: dependency(spec),
+            resolved: None,
+            versions: Versions::Found(Vec::new()),
             advisories: Vec::new(),
+            more_advisories: false,
         }
     }
     #[test]
@@ -352,22 +345,44 @@ mod tests {
             tags: HashMap::from([("latest".into(), "2.0.0".into())]),
             dist: Value::Null,
         };
-        for (spec, choices) in [
-            ("^1.2.0", vec!["^1.4.2", "^2.0.0"]),
-            ("~1.2.0", vec!["~2.0.0"]),
-            ("1.2.0", vec!["2.0.0"]),
-            (">=1 <2", vec!["1.4.2", "2.0.0"]),
+        use Change::{Major, Minor};
+        use Channel::{Latest, Wanted};
+        for (spec, expected) in [
+            (
+                "^1.2.0",
+                vec![
+                    (Wanted, "^1.4.2", Some(Minor)),
+                    (Latest, "^2.0.0", Some(Major)),
+                ],
+            ),
+            ("~1.2.0", vec![(Latest, "~2.0.0", Some(Major))]),
+            ("1.2.0", vec![(Latest, "2.0.0", Some(Major))]),
+            // No exact version in the range: the step is unknown.
+            (
+                ">=1 <2",
+                vec![(Wanted, "1.4.2", None), (Latest, "2.0.0", None)],
+            ),
+            ("^2.0.0", vec![]),
+            // A requirement ahead of `latest` is never offered a downgrade.
+            ("^3.0.0", vec![(Wanted, "^3.1.0", Some(Minor))]),
         ] {
-            let mut row = lens(spec);
-            suggestions(&mut row, &data, None);
-            assert_eq!(
-                row.choices
-                    .iter()
-                    .map(|(_, s)| s.as_str())
-                    .collect::<Vec<_>>(),
-                choices
-            );
+            let offered = upgrades(&dependency(spec), &data, None)
+                .into_iter()
+                .map(|u| (u.channel, u.spec, u.change))
+                .collect::<Vec<_>>();
+            let expected = expected
+                .into_iter()
+                .map(|(channel, spec, change)| (channel, spec.to_owned(), change))
+                .collect::<Vec<_>>();
+            assert_eq!(offered, expected, "{spec}");
         }
+        // A range without an exact version measures the step from the locked release.
+        let locked = Version::parse("1.4.0").unwrap();
+        let steps = upgrades(&dependency(">=1 <2"), &data, Some(&locked))
+            .into_iter()
+            .map(|u| u.change)
+            .collect::<Vec<_>>();
+        assert_eq!(steps, [Some(Change::Patch), Some(Change::Major)]);
     }
     #[test]
     fn custom_registry_tarballs_do_not_enter_the_public_audit() {

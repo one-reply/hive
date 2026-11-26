@@ -6,7 +6,8 @@ use std::{
 };
 
 use gpui::{
-    Action, AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, GlobalElementId,
+    Action, AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, Entity,
+    GlobalElementId,
     IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
 };
@@ -149,6 +150,13 @@ impl Render for Tooltip {
 }
 
 // ── Managed tooltip system ──────────────────────────────────────────────────
+
+/// The window's shared tooltip overlay, for a trigger that is not an element of its own (a
+/// label an app paints on a canvas). Its requests get the delay, placement and transitions of
+/// every component tooltip. The caller asks it to hide when the pointer leaves the trigger.
+pub fn window_overlay(window: &Window, cx: &App) -> Option<Entity<BaseTooltipOverlay>> {
+    WindowState::tooltip_overlay(window, cx)
+}
 
 /// Duration of the slide-down enter animation.
 const ENTER_DURATION: Duration = Duration::from_millis(150);

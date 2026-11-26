@@ -263,7 +263,7 @@ pub(crate) static SHORTCUTS: &[Shortcut] = &[
         default: "cmd-alt-v",
         category: Category::Workspace,
         context: "PackageManifest",
-        action: || Box::new(crate::ui::editor_panel::PackageVersions),
+        action: || Box::new(crate::ui::editor_panel::TogglePackageVersions),
     },
     Shortcut {
         label: "Format document",

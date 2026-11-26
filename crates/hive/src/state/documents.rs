@@ -19,7 +19,7 @@ mod package_installs;
 mod source_preview;
 mod workspace_symbols;
 pub(crate) use document::{
-    Changes, Content, Document, Indentation, PreviewState, SaveBlocker, SvgMode,
+    Changes, Content, Document, Indentation, PackageRow, PreviewState, SaveBlocker, SvgMode,
 };
 pub(crate) use document::{STICKY_BORDER_WIDTH, sticky_row_limit};
 pub(crate) use gutter::Gutter;

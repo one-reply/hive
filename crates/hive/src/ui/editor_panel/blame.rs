@@ -8,17 +8,15 @@
 //! The label's mouse handlers are window-wide, so they act only where the canvas's own hitbox is
 //! hovered: anything drawn over the editor later (the hover card, menus, notifications) keeps its
 //! clicks.
+use super::fade::Fade;
 use super::*;
 use crate::ui::workspace::ShowGitPanel;
-use fade::Fade;
 use gpui_kit::component::{WindowExt as _, notification::Notification};
 use hive_core::git::blame::{Commit, Origin};
 use hive_core::git::history::{age, calendar_date};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-
-mod fade;
 
 /// Space between the end of the line's text and the label.
 const LABEL_GAP: Pixels = px(32.);
@@ -111,7 +109,7 @@ pub(super) fn overlay(
 }
 
 /// Where a label may show and take the pointer: the canvas minus the editor's scrollbar track.
-fn label_area(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+pub(super) fn label_area(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
     let width = (bounds.size.width - SCROLLBAR_WIDTH).max(Pixels::ZERO);
     Bounds::new(bounds.origin, size(width, bounds.size.height))
 }
@@ -308,9 +306,9 @@ fn caret_line(
     let line = editor.cursor_position().line as usize;
     if document
         .packages
-        .rows
+        .rows()
         .iter()
-        .any(|r| r.dependency.line == line)
+        .any(|row| row.dependency().line == line)
     {
         return None;
     }
