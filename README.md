@@ -25,6 +25,12 @@ Built in Rust with GPUI for Apple Silicon. Hive also opens Linux projects over S
 
 ## Download
 
+Install with Homebrew on an Apple Silicon Mac.
+
+```sh
+brew install --cask one-reply/tap/hive-workspace
+```
+
 [![Download for macOS — Apple Silicon](https://img.shields.io/badge/Download_for_macOS-Apple_Silicon-6E56CF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/one-reply/hive/releases/latest)
 
 **Apple Silicon only.** The button opens GitHub Releases, where you can download
