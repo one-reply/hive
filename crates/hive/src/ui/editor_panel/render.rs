@@ -22,8 +22,18 @@ impl Render for EditorPanel {
         .map(|id| Hover::new(id, window, cx));
         let document = self.document.read(cx);
         let packages = document.is_package_manifest();
-        let package_status = document.packages.status.clone();
-        let install_status = document.packages.install_status.clone();
+        let package_notes = packages
+            .then(|| {
+                [
+                    document.packages.status(),
+                    document.packages.install_status.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ")
+            })
+            .filter(|notes| !notes.is_empty());
         let editor = document.editor.clone();
         let formatting = document.formatting;
         let supports_format = hive_core::formatting::supported(&document.path);
@@ -239,6 +249,11 @@ impl Render for EditorPanel {
                                 .smooth_hover(ButtonLook::Ghost, &format_hover, cx),
                         )
                     })
+                    .when(packages, |header| {
+                        header
+                            .child(packages::switch(&self.document, window, cx))
+                            .child(packages::actions(&self.document, cx))
+                    })
                     .when_some(svg_mode, |header, current| {
                         [SvgMode::Preview, SvgMode::Code].into_iter().fold(
                             header,
@@ -314,34 +329,16 @@ impl Render for EditorPanel {
                     }),
             );
         if packages {
-            let hover = Hover::new("file-package-versions", window, cx);
-            body = body
-                .on_action(cx.listener(|this, _: &PackageVersions, window, cx| {
-                    packages::menu(this.document.clone(), None, window, cx)
-                }))
-                .child(
-                    h_flex()
-                        .px_2()
-                        .gap_2()
-                        .child(
-                            Button::new("file-package-versions")
-                                .small()
-                                .cursor_pointer()
-                                .label("Package versions")
-                                .tooltip(key_hint::tooltip(
-                                    "Versions for the dependency at the cursor",
-                                    &PackageVersions,
-                                    "PackageManifest",
-                                    window,
-                                ))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    packages::menu(this.document.clone(), None, window, cx)
-                                }))
-                                .smooth_hover(ButtonLook::Ghost, &hover, cx),
-                        )
-                        .children(package_status)
-                        .children(install_status),
-                );
+            body = body.on_action(|_: &TogglePackageVersions, _, cx| packages::toggle(cx));
+        }
+        if let Some(notes) = package_notes {
+            body = body.child(
+                div()
+                    .px_2()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(notes),
+            );
         }
         if let Some(error) = source_error {
             body = body.child(
@@ -445,13 +442,18 @@ impl Render for EditorPanel {
                     )
                     .child(blame)
                     .when(packages, |view| {
-                        view.child(packages::overlay(self.document.clone()))
+                        view.child(packages::overlay(
+                            cx.weak_entity(),
+                            self.document.clone(),
+                            self.package_hover.clone(),
+                        ))
                     })
                     .children(sticky::render(&self.document, window, cx))
                     .children(self.render_blame_card(window, cx))
                     .children(self.render_signature(window, cx))
                     .children(self.render_imports(window, cx))
-                    .children(self.render_peek(window, cx)),
+                    .children(self.render_peek(window, cx))
+                    .children(self.render_advisories()),
             )
     }
 }

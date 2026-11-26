@@ -60,6 +60,9 @@ pub struct FilesSettings {
     /// worktree controls (`node_modules/.bin`, build scripts, proc macros), so turning
     /// this off is the only way to open untrusted code without executing any of it.
     pub language_tools: bool,
+    /// Look up newer releases and known advisories for the dependencies of an open
+    /// `package.json` and show them after each entry. Off, no registry client runs.
+    pub package_versions: bool,
     font_size: f32,
 }
 
@@ -77,6 +80,7 @@ impl Default for FilesSettings {
             inline_blame: true,
             sticky_scroll: true,
             language_tools: true,
+            package_versions: true,
             font_size: FILES_FONT_SIZE_DEFAULT,
         }
     }
@@ -147,6 +151,16 @@ mod tests {
         assert!(
             future.language_tools,
             "settings saved before the switch keep starting language tools"
+        );
+        assert!(
+            future.package_versions,
+            "settings saved before the switch keep showing versions"
+        );
+        let hidden: FilesSettings = serde_json::from_str(r#"{"package_versions":false}"#).unwrap();
+        assert!(
+            !serde_json::from_str::<FilesSettings>(&serde_json::to_string(&hidden).unwrap())
+                .unwrap()
+                .package_versions
         );
         let no_tools: FilesSettings = serde_json::from_str(r#"{"language_tools":false}"#).unwrap();
         assert!(!no_tools.language_tools);

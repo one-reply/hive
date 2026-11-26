@@ -18,6 +18,7 @@ mod agent_context;
 mod blame;
 pub(crate) mod close;
 mod editing;
+mod fade;
 mod image_preview;
 mod line;
 pub(crate) use line::goto_line;
@@ -65,7 +66,7 @@ actions!(
         ShowProblems,
         NextDiagnostic,
         PreviousDiagnostic,
-        PackageVersions,
+        TogglePackageVersions,
         ShowSignature
     ]
 );
@@ -108,6 +109,8 @@ pub(crate) struct EditorPanel {
     changes: FileChanges,
     blame_card: blame::BlameCard,
     blame_fade: blame::LabelFade,
+    package_hover: packages::LensHover,
+    advisories: Option<packages::AdvisoryMenu>,
     peek: Option<peek::Peek>,
     _peek: Option<Task<()>>,
     import_scroll: ScrollHandle,
@@ -269,6 +272,8 @@ impl EditorPanel {
             changes,
             blame_card: blame::BlameCard::default(),
             blame_fade: blame::LabelFade::default(),
+            package_hover: packages::LensHover::default(),
+            advisories: None,
             peek: None,
             _peek: None,
             import_scroll: ScrollHandle::new(),
