@@ -240,6 +240,27 @@ impl MergeDocument {
         })
     }
 
+    /// Builds the editable Current projection and each conflict's UTF-8 byte range in it.
+    /// Empty sides retain an insertion point so they can still be resolved independently.
+    pub fn result_draft(&self) -> (String, Vec<Range<usize>>) {
+        let mut text = String::new();
+        let mut ranges = Vec::with_capacity(self.conflict_count);
+        for segment in &self.segments {
+            let lines = match segment {
+                MergeSegment::Common(lines) => lines,
+                MergeSegment::Conflict(region) => &region.current,
+            };
+            let start = text.len();
+            for line in lines {
+                text.push_str(&line.raw);
+            }
+            if matches!(segment, MergeSegment::Conflict(_)) {
+                ranges.push(start..text.len());
+            }
+        }
+        (text, ranges)
+    }
+
     /// Returns the conflict region at `index`, if any.
     pub fn conflict(&self, index: usize) -> Option<&ConflictRegion> {
         self.segments.iter().find_map(|segment| match segment {
@@ -471,6 +492,15 @@ mod tests {
     const TWO_WAY: &str = "import a;\n<<<<<<< HEAD\nconst x = 1;\n=======\nconst x = 2;\nconst y = 3;\n>>>>>>> develop\nexport { x };\n";
     const DIFF3: &str =
         "top\n<<<<<<< HEAD\nours\n||||||| base\noriginal\n=======\ntheirs\n>>>>>>> feature\nend\n";
+
+    #[test]
+    fn draft_maps_empty_and_multibyte_current_sides_and_preserves_the_file_ending() {
+        let doc = MergeDocument::parse("α\n<<<<<<< HEAD\n=======\nother\n>>>>>>> topic\n<<<<<<< HEAD\n本\n||||||| base\nold\n=======\nnew\n>>>>>>> topic\nend").unwrap();
+        let (text, ranges) = doc.result_draft();
+        assert_eq!(text, "α\n本\nend");
+        assert_eq!(ranges, [3..3, 3..7]);
+        assert_eq!(&text[ranges[1].clone()], "本\n");
+    }
 
     #[test]
     fn parses_two_way_and_diff3_conflicts_with_line_numbers() {

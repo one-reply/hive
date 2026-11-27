@@ -304,7 +304,7 @@ impl ConflictPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let undecided = !progress.is_complete() && self.editing.is_none();
+        let undecided = !progress.is_complete();
         let [current, incoming] = ["conflict-all-current", "conflict-all-incoming"]
             .map(|id| Hover::new(id, window, cx).enabled(undecided));
         let fold_hover = Hover::new("conflict-toggle-fold", window, cx);
@@ -321,13 +321,13 @@ impl ConflictPanel {
             (
                 Lucide::UnfoldVertical,
                 "Show Unchanged",
-                "Show all unchanged lines",
+                "Show all unchanged lines in the source panes",
             )
         } else {
             (
                 Lucide::FoldVertical,
                 "Collapse Unchanged",
-                "Collapse long unchanged sections",
+                "Collapse long unchanged sections in the source panes",
             )
         };
         let theme = cx.theme();
@@ -344,8 +344,8 @@ impl ConflictPanel {
                     .label("All Current")
                     .tooltip(cur_tip)
                     .disabled(!undecided)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.accept_all(ConflictResolution::Current, cx)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.accept_all(ConflictResolution::Current, window, cx)
                     }))
                     .smooth_hover(ButtonLook::Ghost, &current, cx),
             )
@@ -355,8 +355,8 @@ impl ConflictPanel {
                     .label("All Incoming")
                     .tooltip(inc_tip)
                     .disabled(!undecided)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.accept_all(ConflictResolution::Incoming, cx)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.accept_all(ConflictResolution::Incoming, window, cx)
                     }))
                     .smooth_hover(ButtonLook::Ghost, &incoming, cx),
             )
@@ -381,7 +381,7 @@ impl ConflictPanel {
                 button("conflict-previous")
                     .icon(Lucide::ArrowUp)
                     .tooltip("Previous conflict")
-                    .on_click(cx.listener(|this, _, _, cx| this.navigate(false, cx)))
+                    .on_click(cx.listener(|this, _, window, cx| this.navigate(false, window, cx)))
                     .smooth_hover(ButtonLook::Ghost, &previous, cx),
             )
             .child(navigator_label(conflict_position(self.current, total), cx))
@@ -389,7 +389,7 @@ impl ConflictPanel {
                 button("conflict-next")
                     .icon(Lucide::ArrowDown)
                     .tooltip("Next conflict")
-                    .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx)))
+                    .on_click(cx.listener(|this, _, window, cx| this.navigate(true, window, cx)))
                     .smooth_hover(ButtonLook::Ghost, &next, cx),
             )
     }
@@ -403,15 +403,13 @@ impl ConflictPanel {
         let conflict = self.conflict.read(cx);
         let busy = self.git.read(cx).is_busy_at(&conflict.request.target);
         let saving = conflict.is_saving();
-        let can_resolve = progress.is_complete() && !busy && !saving && self.editing.is_none();
+        let can_resolve = progress.is_complete() && !busy && !saving;
         let hover = Hover::new("conflict-resolve", window, cx).enabled(can_resolve);
         button("conflict-resolve")
             .icon(Lucide::Check)
             .label("Mark Resolved")
-            .tooltip(if self.editing.is_some() {
-                "Apply or cancel the active inline edit first"
-            } else if !progress.is_complete() {
-                "Choose a side for every conflict first"
+            .tooltip(if !progress.is_complete() {
+                "Choose a side or edit each conflict first"
             } else if progress.total == 0 {
                 "Stage this file as the resolution"
             } else {

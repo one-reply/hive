@@ -26,44 +26,47 @@ use std::path::Path;
 use std::sync::Arc;
 
 mod body;
+mod draft;
+mod result;
+#[cfg(test)]
+mod result_tests;
 mod rows;
+#[cfg(test)]
+mod scroll_tests;
 pub(crate) mod sides;
 mod syntax;
 mod three_way;
 mod toolbar;
 
 use body::{Body, File, Progress};
-use rows::{DisplayRow, RowKey, build_rows};
+use draft::Status;
+use result::ResultEditor;
+use rows::{DisplayRow, build_rows};
 use syntax::MergeHighlights;
 use toolbar::SideNames;
 
-struct InlineEditor {
-    conflict: usize,
-    state: Entity<EditorState>,
-}
+// Measuring past the viewport keeps the next wrapped row reachable after a list reset.
+const ROW_OVERDRAW: Pixels = px(128.);
 
 pub(crate) struct ConflictPanel {
     pub conflict: Entity<GitConflict>,
     synced_generation: Option<u64>,
-    resolutions: Vec<Option<ConflictResolution>>,
+    result: Option<ResultEditor>,
     expanded_folds: HashSet<usize>,
     collapse_unchanged: bool,
     shown_bases: HashSet<usize>,
-    editing: Option<InlineEditor>,
     highlights: MergeHighlights,
     highlights_generation: Option<u64>,
     highlights_theme: Option<Arc<HighlightTheme>>,
     _highlights_task: Option<Task<()>>,
     rows: Vec<DisplayRow>,
-    conflict_rows: Vec<usize>,
-    resolved_lines: Vec<Vec<String>>,
-    list: ListState,
+    lists: [ListState; 2],
     focus: FocusHandle,
     git: Entity<Git>,
     area: WeakEntity<DockArea>,
     group: Option<WeakEntity<TabGroup>>,
     alone: bool,
-    /// The conflict the arrows last moved to.
+    /// The conflict targeted by the visible choices and navigation buttons.
     current: Option<usize>,
     /// Set once the user resolves the file from this tab, which then closes as soon as Git
     /// confirms the file is no longer unmerged.
@@ -79,6 +82,16 @@ impl ConflictPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let git = AppState::get(cx).git.clone();
+        Self::over(request, area, git, window, cx)
+    }
+
+    fn over(
+        request: ConflictRequest,
+        area: WeakEntity<DockArea>,
+        git: Entity<Git>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let conflict = cx.new(|cx| GitConflict::new(request, git.clone(), cx));
         let focus = cx.focus_handle();
         let subscriptions = vec![
@@ -87,12 +100,12 @@ impl ConflictPanel {
                     cx.defer(move |cx| area.update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged)));
                 }
             }),
-            cx.observe(&conflict, |this, conflict, cx| {
+            cx.observe_in(&conflict, window, |this, conflict, window, cx| {
                 // A resolution that was not written leaves the file in conflict and the tab open.
                 if conflict.read(cx).error.is_some() {
                     this.closing = false;
                 }
-                this.sync_document(cx);
+                this.sync_document(window, cx);
                 cx.notify()
             }),
             cx.observe_in(&git, window, |this, _, window, cx| {
@@ -105,19 +118,16 @@ impl ConflictPanel {
         let mut this = Self {
             conflict,
             synced_generation: None,
-            resolutions: Vec::new(),
+            result: None,
             expanded_folds: HashSet::new(),
             collapse_unchanged: true,
             shown_bases: HashSet::new(),
-            editing: None,
             highlights: MergeHighlights::default(),
             highlights_generation: None,
             highlights_theme: None,
             _highlights_task: None,
             rows: Vec::new(),
-            conflict_rows: Vec::new(),
-            resolved_lines: Vec::new(),
-            list: ListState::new(0, ListAlignment::Top, px(0.)),
+            lists: std::array::from_fn(|_| ListState::new(0, ListAlignment::Top, ROW_OVERDRAW)),
             focus,
             git,
             area,
@@ -127,7 +137,8 @@ impl ConflictPanel {
             closing: false,
             _subscriptions: subscriptions,
         };
-        this.sync_document(cx);
+        this.install_source_scroll(cx);
+        this.sync_document(window, cx);
         this
     }
 
@@ -139,24 +150,28 @@ impl ConflictPanel {
     }
 
     /// Reloads resolutions, rows, and background highlighting when the file on disk changes.
-    fn sync_document(&mut self, cx: &mut Context<Self>) {
+    fn sync_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let conflict = self.conflict.read(cx);
         let generation = conflict.generation();
         if self.synced_generation == Some(generation) {
             return;
         }
         self.synced_generation = Some(generation);
-        let count = match conflict.content() {
-            Some(Content::Text { document, .. }) => document.conflict_count,
-            _ => 0,
+        self.result = match conflict.content().cloned() {
+            Some(Content::Text { document, .. }) => {
+                let language = editor_language(Path::new(&conflict.request.path));
+                Some(ResultEditor::new(&document, language, window, cx))
+            }
+            _ => None,
         };
-        self.resolutions = vec![None; count];
         self.expanded_folds.clear();
         self.shown_bases.clear();
-        self.editing = None;
-        self.current = None;
+        self.current = self
+            .document(cx)
+            .and_then(|doc| (doc.conflict_count > 0).then_some(0));
         self.rebuild_rows(true, cx);
         self.prepare_highlights(cx);
+        self.reveal_current(false, window, cx);
     }
 
     fn ensure_theme_highlights(&mut self, cx: &mut Context<Self>) {
@@ -168,6 +183,9 @@ impl ConflictPanel {
             .is_some_and(|prev| Arc::ptr_eq(prev, &current_theme));
         if self.highlights_generation == Some(generation) && same_theme {
             return;
+        }
+        if let Some(result) = &self.result {
+            result.refresh_marks(cx);
         }
         self.prepare_highlights(cx);
     }
@@ -201,37 +219,25 @@ impl ConflictPanel {
     }
 
     fn rebuild_rows(&mut self, reset: bool, cx: &App) {
-        let Some(doc) = self.document(cx) else {
-            self.rows.clear();
-            self.conflict_rows.clear();
-            self.resolved_lines.clear();
-            self.list.reset(0);
-            return;
-        };
-        let old_keys: Vec<RowKey> = self.rows.iter().map(DisplayRow::key).collect();
-        let projected = build_rows(
-            doc,
-            &self.resolutions,
-            &self.expanded_folds,
-            self.collapse_unchanged,
-            self.editing.as_ref().map(|e| e.conflict),
-            &self.shown_bases,
-        );
-        let new_keys: Vec<RowKey> = projected.rows.iter().map(DisplayRow::key).collect();
-        if reset {
-            self.list.reset(projected.rows.len());
-            if let Some(&first_conflict) = projected.conflict_rows.first() {
-                self.list.scroll_to(ListOffset {
-                    item_ix: first_conflict.saturating_sub(2),
-                    offset_in_item: px(0.),
-                });
+        let rows = self
+            .document(cx)
+            .map(|doc| {
+                build_rows(
+                    doc,
+                    &self.expanded_folds,
+                    self.collapse_unchanged,
+                    &self.shown_bases,
+                )
+            })
+            .unwrap_or_default();
+        for list in &self.lists {
+            if reset {
+                list.reset(rows.len());
+            } else {
+                crate::ui::list_scroll::replace_rows(list, &self.rows, &rows);
             }
-        } else {
-            crate::ui::list_scroll::replace_rows(&self.list, &old_keys, &new_keys);
         }
-        self.rows = projected.rows;
-        self.conflict_rows = projected.conflict_rows;
-        self.resolved_lines = projected.resolved_lines;
+        self.rows = rows;
     }
 
     pub fn set_alone(&mut self, alone: bool, cx: &mut Context<Self>) {
@@ -266,25 +272,11 @@ impl ConflictPanel {
 
     /// Whether each conflict of the file has a chosen resolution, in file order.
     fn resolutions(&self) -> Vec<bool> {
-        self.resolutions.iter().map(Option::is_some).collect()
-    }
-
-    fn resolve_conflict(
-        &mut self,
-        ix: usize,
-        resolution: Option<ConflictResolution>,
-        cx: &mut Context<Self>,
-    ) {
-        if ix >= self.resolutions.len() {
-            return;
-        }
-        if self.resolutions[ix] == resolution {
-            return;
-        }
-        self.resolutions[ix] = resolution;
-        self.current = Some(ix);
-        self.rebuild_rows(false, cx);
-        cx.notify();
+        self.result
+            .iter()
+            .flat_map(|r| &r.blocks)
+            .map(|b| b.status != Status::Pending)
+            .collect()
     }
 
     fn expand_fold(&mut self, segment: usize, cx: &mut Context<Self>) {
@@ -309,95 +301,22 @@ impl ConflictPanel {
         cx.notify();
     }
 
-    fn start_editing(&mut self, conflict_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(region) = self.document(cx).and_then(|doc| doc.conflict(conflict_ix)) else {
-            return;
-        };
-        let choice = self.resolutions.get(conflict_ix).and_then(Option::as_ref);
-        let seed = region.resolution_text(choice.unwrap_or(&ConflictResolution::BothCurrentFirst));
-        let language = editor_language(Path::new(&self.conflict.read(cx).request.path));
-        let state = cx.new(|cx| {
-            let mut editor = EditorState::new(window, cx)
-                .default_value(seed)
-                .soft_wrap(false);
-            editor.set_highlighter(language, cx);
-            editor
-        });
-        let editor_focus = state.read(cx).focus_handle(cx);
-        self.editing = Some(InlineEditor {
-            conflict: conflict_ix,
-            state,
-        });
-        self.current = Some(conflict_ix);
-        self.rebuild_rows(false, cx);
-        if let Some(&row_ix) = self.conflict_rows.get(conflict_ix) {
-            self.list.scroll_to_reveal_item(row_ix);
-        }
-        editor_focus.focus(window, cx);
+    fn navigate(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.current = body::next_conflict(self.current, &self.resolutions(), forward);
+        self.reveal_current(true, window, cx);
         cx.notify();
     }
 
-    fn apply_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editor) = self.editing.take() else {
-            return;
-        };
-        let text = editor.state.read(cx).value().to_string();
-        if editor.conflict < self.resolutions.len() {
-            self.resolutions[editor.conflict] = Some(ConflictResolution::Custom(text));
-        }
-        self.rebuild_rows(false, cx);
-        self.focus.focus(window, cx);
-        cx.notify();
-    }
-
-    fn cancel_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.take().is_some() {
-            self.rebuild_rows(false, cx);
-            self.focus.focus(window, cx);
-            cx.notify();
-        }
-    }
-
-    fn navigate(&mut self, forward: bool, cx: &mut Context<Self>) {
-        let Some(next) = body::next_conflict(self.current, &self.resolutions(), forward) else {
-            return;
-        };
-        self.current = Some(next);
-        if let Some(&row_ix) = self.conflict_rows.get(next) {
-            self.list.scroll_to(ListOffset {
-                item_ix: row_ix.saturating_sub(1),
-                offset_in_item: px(0.),
-            });
-            cx.notify();
-        }
-    }
-
-    /// Chooses `resolution` for every conflict still undecided; each stays undoable.
-    fn accept_all(&mut self, resolution: ConflictResolution, cx: &mut Context<Self>) {
-        let mut changed = false;
-        for slot in &mut self.resolutions {
-            if slot.is_none() {
-                *slot = Some(resolution.clone());
-                changed = true;
-            }
-        }
-        if changed {
-            self.rebuild_rows(false, cx);
-            cx.notify();
-        }
-    }
-
-    /// Writes the chosen resolutions and stages the file; a file whose markers are already
-    /// gone is only staged.
     fn mark_resolved(&mut self, cx: &mut Context<Self>) {
-        if self.editing.is_some() || !Progress::of(&self.resolutions()).is_complete() {
+        let Some(result) = &self.result else { return };
+        if !Progress::of(&self.resolutions()).is_complete() || self.conflict.read(cx).is_saving() {
             return;
         }
-        let text = self
-            .document(cx)
-            .and_then(|doc| doc.resolved_text(&self.resolutions));
+        let text = result.state.read(cx).text();
+        let unchanged = result.blocks.is_empty() && result.original == *text;
+        let draft = (!unchanged).then(|| text.to_string());
         self.closing = true;
-        self.conflict.update(cx, |conflict, cx| match text {
+        self.conflict.update(cx, |conflict, cx| match draft {
             Some(text) => conflict.apply(text, cx),
             None => conflict.mark_resolved(cx),
         });
@@ -506,7 +425,7 @@ fn open_file(request: &ConflictRequest, line: Option<usize>, cx: &mut App) {
 impl EventEmitter<PanelEvent> for ConflictPanel {}
 impl Focusable for ConflictPanel {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.editing
+        self.result
             .as_ref()
             .map(|e| e.state.read(cx).focus_handle(cx))
             .unwrap_or_else(|| self.focus.clone())
@@ -579,6 +498,7 @@ impl Panel for ConflictPanel {
 }
 impl Render for ConflictPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_document(window, cx);
         self.ensure_theme_highlights(cx);
         let state = self.state(cx);
         let kind = match state {
@@ -636,7 +556,7 @@ impl Render for ConflictPanel {
                 .child(self.sides(explanation, kind, &names, window, cx)),
             (Body::Conflicts, Some(doc)) => content
                 .child(self.merge_header(&names, progress, window, cx))
-                .child(self.three_way_body(doc, &names, cx)),
+                .child(self.three_way_body(doc, &names, window, cx)),
             (Body::Merged, Some(doc)) => content
                 .child(self.merge_header(&names, progress, window, cx))
                 .child(
@@ -647,9 +567,9 @@ impl Render for ConflictPanel {
                         .border_color(cx.theme().border)
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("No conflict markers are left in this file. Mark it resolved to stage this version."),
+                        .child("No conflict markers are left in this file. Edit the result or mark it resolved to stage this version."),
                 )
-                .child(self.three_way_body(doc, &names, cx)),
+                .child(self.three_way_body(doc, &names, window, cx)),
             (Body::Conflicts | Body::Merged, None) => {
                 content.child(tab_message::render("Loading conflicts…", &focus))
             }
