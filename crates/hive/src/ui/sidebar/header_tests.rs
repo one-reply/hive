@@ -14,7 +14,7 @@ use hive_core::{
     projects::{Head, Project, Worktree},
     state::{StateError, WorktreeFilter},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 struct Headers(Entity<Sidebar>);
 
@@ -90,7 +90,7 @@ fn project_names_expand_on_selection_and_toggle_when_active(cx: &mut TestAppCont
             (Host::Local, "/alpha".into()),
             (Host::Local, "/beta".into()),
         ]),
-        toggled: HashMap::new(),
+        scroll: Default::default(),
         agents_open: HashSet::new(),
         working: crate::ui::stepped_spinner::SteppedSpinner::new(cx),
         _observers: vec![
@@ -306,7 +306,7 @@ fn active_project_line_highlights_selected_project_and_all_its_worktrees(cx: &mu
         projects: projects.clone(),
         store: store.clone(),
         collapsed: HashSet::new(),
-        toggled: HashMap::new(),
+        scroll: Default::default(),
         agents_open: HashSet::new(),
         working: crate::ui::stepped_spinner::SteppedSpinner::new(cx),
         _observers: vec![cx.observe(&projects, |_, _, cx| cx.notify())],

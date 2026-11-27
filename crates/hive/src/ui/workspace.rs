@@ -12,8 +12,7 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{DockArea, DockPlacement, PanelId, panel_handle};
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, InteractiveElementExt as _, Sizable as _, TitleBar, h_flex,
-    v_flex,
+    ActiveTheme as _, Icon, InteractiveElementExt as _, Sizable as _, TitleBar, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -75,8 +74,6 @@ pub struct Workspace {
     focus: FocusHandle,
     sidebar: Entity<Sidebar>,
     sidebar_open: bool,
-    /// Set by the first toggle, so the sidebar doesn't slide in on launch.
-    sidebar_animate: bool,
     /// Live width while dragging; written to the `Store` once the drag ends.
     sidebar_width: Pixels,
     /// The resize handle is held down; the next mouse-up persists `sidebar_width`.
@@ -101,9 +98,6 @@ pub struct Workspace {
     /// The right sidebar's tab in the worktrees that are not shown.
     right_tabs: RightTabs,
     git_open: bool,
-    /// Set by the first toggle, so the right sidebar doesn't slide in on launch.
-    git_animate: bool,
-    git_animation: Option<Task<()>>,
     git_width: Pixels,
     resizing_git: bool,
     last_selection: Option<PathBuf>,
@@ -118,12 +112,6 @@ pub struct Workspace {
 const TAB_BAR_HEIGHT: Pixels = px(32.);
 /// Grab area straddling the sidebar's right border.
 const RESIZE_HANDLE_WIDTH: Pixels = px(6.);
-/// Marker under the active tab of the right sidebar's header.
-const RIGHT_TAB_UNDERLINE: Pixels = px(2.);
-const HIVE_MARK: &[u8] = include_bytes!("../../assets/icons/Hive.icon/Assets/mark.svg");
-const WELCOME_LOGO_SIZE: Pixels = px(96.);
-/// Width of the welcome screen's shortcut list.
-const WELCOME_CONTENT_WIDTH: Pixels = px(360.);
 /// `TitleBar`'s left padding that clears the macOS traffic lights.
 const TRAFFIC_LIGHTS_INSET: Pixels = px(80.);
 /// Width of the sidebar toggle in the collapsed title bar, after the inset.
@@ -131,8 +119,6 @@ const COLLAPSED_TITLE_CONTENT_WIDTH: Pixels = px(32.);
 /// Left padding `TitleBar` adds on its own in fullscreen, where the traffic lights are hidden.
 const FULLSCREEN_INSET: Pixels = px(12.);
 const TITLE_INSET_DURATION: Duration = Duration::from_millis(200);
-/// Both sidebars slide open and closed at this pace.
-pub(super) const SIDEBAR_SLIDE_DURATION: Duration = Duration::from_millis(200);
 
 /// The id of agent `session`'s attention notification: a newer report replaces the older one.
 fn attention_notice_key(session: EntityId) -> (&'static str, u64) {
@@ -303,6 +289,11 @@ impl Workspace {
                     );
                 }
             }),
+            cx.observe_window_activation(window, |_, window, cx| {
+                if window.is_window_active() {
+                    gpui_kit::base::apply_system_reduce_motion(cx);
+                }
+            }),
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::sync_system_appearance(window, cx)
             }),
@@ -325,7 +316,6 @@ impl Workspace {
             focus: cx.focus_handle(),
             sidebar: cx.new(Sidebar::new),
             sidebar_open: true,
-            sidebar_animate: false,
             sidebar_width,
             resizing_sidebar: false,
             fullscreen: window.is_fullscreen(),
@@ -340,8 +330,6 @@ impl Workspace {
             files_panels: HashMap::from([(target, shown_files)]),
             right_tabs: RightTabs::default(),
             git_open,
-            git_animate: false,
-            git_animation: None,
             git_width,
             resizing_git: false,
             last_selection: None,
@@ -578,7 +566,6 @@ impl Workspace {
 
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_open = !self.sidebar_open;
-        self.sidebar_animate = true;
         cx.notify();
     }
 
@@ -701,56 +688,32 @@ impl Render for Workspace {
                     ),
             );
         let title_bar = self.animate_title_inset(title_bar);
-        // Orca-style: the title bar (traffic lights + name) sits above the sidebar only and the
-        // center dock with its tab bar runs to the very top. Collapsing slides the sidebar to
-        // zero width while the title bar shrinks into the tab bar's row, whose tabs move left
-        // up to the title bar's edge. 1.0 = fully open; `t` is the eased animation progress.
-        let amount = move |t: f32| if open { t } else { 1. - t };
-        let border = cx.theme().sidebar_border;
+        let left = super::disclosure::openness("workspace-left", open, window, cx);
+        let right = super::disclosure::openness("workspace-right", self.git_open, window, cx);
         let width = self.sidebar_width;
-        let left = move |el: Div, t: f32| {
-            let a = amount(t);
-            el.w(width * a)
-                .when(a > 0., |el| el.border_r_1().border_color(border))
-        };
-        // The dock draws its own tab bar in its own view, so the inset reaches it through the
-        // center's cell; the animated element itself does not change.
-        let title_width = self.collapsed_title_width();
-        let tab_inset: Option<Rc<Cell<Pixels>>> = self.shown_center().map(ProjectCenter::tab_inset);
-        let center = move |el: Div, t: f32| {
-            if let Some(cell) = &tab_inset {
-                cell.set(title_width * (1. - amount(t)));
-            }
-            el
-        };
-        let left_el = v_flex().h_full().flex_shrink_0().overflow_hidden().child(
-            v_flex()
-                .w(width)
-                .h_full()
-                .child(div().h(TAB_BAR_HEIGHT).flex_none())
-                .child(div().flex_1().min_h_0().child(cached(&self.sidebar))),
-        );
+        let inset = self.collapsed_title_width() * (1. - left);
+        if let Some(center) = self.shown_center() {
+            center.set_tab_inset(inset);
+        }
+        let left_el = v_flex()
+            .h_full()
+            .w(width * left)
+            .flex_shrink_0()
+            .overflow_hidden()
+            .when(left > 0., |el| {
+                el.border_r_1().border_color(sidebar_border).child(
+                    v_flex()
+                        .w(width)
+                        .h_full()
+                        .child(div().h(TAB_BAR_HEIGHT).flex_none())
+                        .child(div().flex_1().min_h_0().child(cached(&self.sidebar))),
+                )
+            });
         let center_el = v_flex()
             .flex_1()
             .min_w_0()
             .h_full()
             .child(self.render_center(window, cx));
-        let (left_el, center_el) = if self.sidebar_animate {
-            let anim = Animation::new(SIDEBAR_SLIDE_DURATION).with_easing(ease_in_out);
-            (
-                left_el
-                    .with_animation(("sidebar-w", open as usize), anim.clone(), left)
-                    .into_any_element(),
-                center_el
-                    .with_animation(("center-pt", open as usize), anim, center)
-                    .into_any_element(),
-            )
-        } else {
-            (
-                left(left_el, 1.).into_any_element(),
-                center(center_el, 1.).into_any_element(),
-            )
-        };
         let overlay = self.pipeline_overlay(window, cx);
         let covered = overlay.as_ref().is_some_and(|(covered, _)| *covered);
         let mut content = h_flex()
@@ -760,10 +723,10 @@ impl Render for Workspace {
             .min_w_0()
             .overflow_hidden()
             .when(!covered, |el| el.child(center_el))
-            .when(!covered && (self.git_open || self.git_animate), |el| {
-                el.child(self.render_right_sidebar(window, cx))
+            .when(!covered && right > 0., |el| {
+                el.child(self.render_right_sidebar(right, window, cx))
             })
-            .when(!covered && self.git_open, |el| {
+            .when(!covered && self.git_open && right >= 1., |el| {
                 el.child(self.render_git_resize_handle(cx))
             });
         if let Some((_, overlay)) = overlay {
@@ -780,10 +743,12 @@ impl Render for Workspace {
                     .absolute()
                     .top_0()
                     .left_0()
-                    .map(|el| if open { el.w(width) } else { el.w(title_width) })
+                    .w(width * left + inset)
                     .child(title_bar),
             )
-            .when(open, |el| el.child(self.render_sidebar_resize_handle(cx)));
+            .when(open && left >= 1., |el| {
+                el.child(self.render_sidebar_resize_handle(cx))
+            });
         v_flex()
             .size_full()
             .track_focus(&self.focus)
