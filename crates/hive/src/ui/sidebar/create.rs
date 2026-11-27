@@ -1,6 +1,9 @@
 //! Create a worktree and optionally launch its first agent.
 use super::*;
-use crate::ui::agent_logo;
+use crate::ui::{
+    agent_logo,
+    dialog::{field, initial_focus},
+};
 use gpui_kit::component::{
     Disableable as _, Icon, IndexPath,
     searchable_list::{SearchableListItem, SearchableVec},
@@ -60,6 +63,8 @@ struct CreateWorktree {
     project: PathBuf,
     host: Host,
     name: Entity<InputState>,
+    primary: FocusHandle,
+    cancel: FocusHandle,
     base: Entity<SelectState<SearchableVec<String>>>,
     agent: Entity<SelectState<SearchableVec<StartItem>>>,
     error: Option<String>,
@@ -115,12 +120,13 @@ impl CreateWorktree {
                 cx.notify();
             });
         });
-        name.focus_handle(cx).focus(window, cx);
         Self {
             projects,
             project,
             host,
             name,
+            primary: cx.focus_handle(),
+            cancel: cx.focus_handle(),
             base,
             agent,
             error: None,
@@ -180,6 +186,19 @@ impl CreateWorktree {
         }));
         cx.notify();
     }
+
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.busy {
+            return false;
+        }
+        if self.cancel.is_focused(window) {
+            return true;
+        }
+        if self.name.focus_handle(cx).is_focused(window) || self.primary.is_focused(window) {
+            self.submit(window, cx);
+        }
+        false
+    }
 }
 
 impl Render for CreateWorktree {
@@ -188,16 +207,21 @@ impl Render for CreateWorktree {
         let cancel_hover = Hover::new("cancel-create", window, cx);
         v_flex()
             .gap_3()
-            .child("Task name")
-            .child(TextField::input(
-                Input::new(&self.name).disabled(self.busy),
-                &self.name,
+            .child(field(
+                "Task name",
+                TextField::input(Input::new(&self.name).disabled(self.busy), &self.name, cx),
                 cx,
             ))
-            .child("Base branch")
-            .child(Select::new(&self.base).disabled(self.busy).w_full())
-            .child("Start with")
-            .child(Select::new(&self.agent).disabled(self.busy).w_full())
+            .child(field(
+                "Base branch",
+                Select::new(&self.base).disabled(self.busy).w_full(),
+                cx,
+            ))
+            .child(field(
+                "Start with",
+                Select::new(&self.agent).disabled(self.busy).w_full(),
+                cx,
+            ))
             .when_some(self.error.clone(), |view, error| {
                 view.child(div().text_sm().text_color(cx.theme().danger).child(error))
             })
@@ -210,6 +234,7 @@ impl Render for CreateWorktree {
                     .child(if self.busy {
                         Button::new("stop-create")
                             .cursor_pointer()
+                            .icon(Lucide::Square)
                             .label("Stop")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.projects
@@ -220,6 +245,7 @@ impl Render for CreateWorktree {
                     } else {
                         Button::new("cancel-create")
                             .cursor_pointer()
+                            .track_focus(&self.cancel)
                             .label("Cancel")
                             .on_click(|_, window, cx| window.close_dialog(cx))
                             .smooth_hover(ButtonLook::Ghost, &cancel_hover, cx)
@@ -227,11 +253,13 @@ impl Render for CreateWorktree {
                     .child(
                         Button::new("create-start")
                             .cursor_pointer()
+                            .track_focus(&self.primary)
+                            .icon(Lucide::Play)
                             .label("Create & Start")
                             .loading(self.busy)
                             .disabled(self.busy)
                             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
-                            .smooth_hover(ButtonLook::Outline, &create_hover, cx),
+                            .smooth_hover(ButtonLook::Primary, &create_hover, cx),
                     ),
             )
     }
@@ -253,14 +281,13 @@ pub(super) fn open(
             cx,
         )
     });
-    let initial_focus = std::cell::Cell::new(true);
+    show_form(title, form, window, cx);
+}
+
+fn show_form(title: String, form: Entity<CreateWorktree>, window: &mut Window, cx: &mut App) {
+    let focus_name = initial_focus(form.read(cx).name.focus_handle(cx));
     window.open_dialog(cx, move |dialog, window, cx| {
-        if initial_focus.replace(false) {
-            let name = form.read(cx).name.clone();
-            window.defer(cx, move |window, cx| {
-                name.focus_handle(cx).focus(window, cx)
-            });
-        }
+        focus_name(window, cx);
         // Closing drops the form and cancels its task, so dismissal waits until Git finishes.
         let dismissable = !form.read(cx).busy;
         dialog
@@ -270,5 +297,54 @@ pub(super) fn open(
             .overlay_closable(dismissable)
             .keyboard(dismissable)
             .child(form.clone())
+            .on_ok({
+                let form = form.clone();
+                move |_, window, cx| form.update(cx, |form, cx| form.confirm(window, cx))
+            })
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CreateWorktree, Host, Projects, Store, show_form};
+    use crate::ui::destructive::testing::{is_open, press, settle, window};
+    use gpui_kit as gpui;
+    use gpui_kit::{AppContext as _, Focusable as _, TestAppContext};
+
+    #[gpui::test]
+    fn enter_from_the_task_field_runs_creation_and_keeps_a_failed_form_open(
+        cx: &mut TestAppContext,
+    ) {
+        let cx = window(cx);
+        let form = cx.update(|window, cx| {
+            let store = cx.new(Store::with_held_recovery);
+            let projects = cx.new(|cx| Projects::new(&store, cx));
+            let form = cx.new(|cx| {
+                CreateWorktree::new(projects, "/removed".into(), Host::Local, window, cx)
+            });
+            show_form("New worktree".into(), form.clone(), window, cx);
+            form
+        });
+        settle(cx);
+        cx.update(|window, cx| {
+            assert!(form.read(cx).name.focus_handle(cx).is_focused(window));
+            // Clear the earlier base-branch lookup error to distinguish a new submission.
+            form.update(cx, |form, _| form.error = None);
+        });
+        cx.simulate_input("feature");
+        press("enter", cx);
+        assert!(is_open(cx));
+        cx.update(|window, cx| {
+            let form = form.read(cx);
+            assert_eq!(
+                form.error.as_deref(),
+                Some("Project is no longer available")
+            );
+            assert_eq!(form.name.read(cx).value().as_str(), "feature");
+            window.focus(&form.cancel.clone(), cx);
+        });
+        settle(cx);
+        press("enter", cx);
+        assert!(!is_open(cx));
+    }
 }

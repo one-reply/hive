@@ -5,13 +5,19 @@ use crate::ui::editor_panel::OpenFileSearch;
 use crate::ui::key_hint;
 use crate::ui::settings::OpenSettings;
 
+const HIVE_MARK: &[u8] = include_bytes!("../../../assets/icons/Hive.icon/Assets/mark.svg");
+const WELCOME_LOGO_SIZE: Pixels = px(68.);
+const WELCOME_CONTENT_WIDTH: Pixels = px(336.);
+const MARK_UNLIT_OPACITY: f32 = 0.24;
+const PRIMARY_HINT_OPACITY: f32 = 0.12;
+const MARK_REVEAL: Duration = Duration::from_millis(420);
+
 impl Workspace {
     pub(super) fn render_center(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
         // The center column starts at the window's top edge, so its top band is where the
         // macOS title bar would be: let it drag and double-click-zoom the window like `TitleBar`
         // does. Tabs stop mouse-down propagation, so dragging a tab still reorders it.
@@ -28,7 +34,7 @@ impl Workspace {
         match self.shown_center().filter(|center| !center.is_empty()) {
             Some(shown) => center.child(div().size_full().child(shown.dock().clone())),
             None => center
-                .child(self.render_welcome(muted, window, cx))
+                .child(self.render_welcome(window, cx))
                 .child(self.render_welcome_band(cx))
                 .when(!self.git_open, |el| {
                     el.child(self.render_welcome_toggle(window, cx))
@@ -68,99 +74,238 @@ impl Workspace {
             )
     }
 
-    /// Shown while the project's dock has no tabs (the dock itself draws nothing then) or no
-    /// project is selected.
-    fn render_welcome(
-        &self,
-        muted: Hsla,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let add_hover = Hover::new("welcome-add-project", window, cx);
-        let terminal_hover = Hover::new("welcome-new-terminal", window, cx);
+    /// The first action matches what can be opened in this workspace right now.
+    fn render_welcome(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let projects = self.projects.read(cx);
-        let has_projects = !projects.items.is_empty();
-        let has_selection = projects.selection().is_some();
-        let hint = match (has_selection, has_projects) {
-            (true, _) => "Open a terminal in the selected worktree to begin.",
-            (false, true) => "Select a project from the sidebar to begin.",
-            (false, false) => "Add a project folder to get started.",
-        };
-        v_flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .gap_3()
-            .child(
-                Icon::default()
-                    .data(HIVE_MARK)
-                    .size(WELCOME_LOGO_SIZE)
-                    .text_color(cx.theme().foreground),
-            )
-            .child(div().text_3xl().font_weight(FontWeight::BOLD).child("HIVE"))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(muted)
-                    .child("Control center for your AI coding agents"),
-            )
-            .child(div().mt_2().text_sm().text_color(muted).child(hint))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("welcome-add-project")
-                            .cursor_pointer()
-                            .icon(IconName::FolderOpen)
-                            .label("Add project")
-                            .on_click(|_, window, cx| crate::ui::add_project::open(window, cx))
-                            .smooth_hover(ButtonLook::Outline, &add_hover, cx),
+        let selection = projects.selection();
+        let actions = welcome_actions(selection.is_some(), !projects.items.is_empty());
+        let (title, detail): (SharedString, SharedString) = match selection {
+            Some((project, worktree)) => (
+                project.name.clone().into(),
+                worktree
+                    .map_or_else(
+                        || project.path.to_string_lossy().into_owned(),
+                        |worktree| worktree_detail(&project.name, worktree),
                     )
-                    .when(has_selection, |el| {
-                        el.child(
-                            Button::new("welcome-new-terminal")
-                                .cursor_pointer()
-                                .icon(Lucide::SquareTerminal)
-                                .label("New terminal")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.new_terminal(&NewTerminal, window, cx)
-                                }))
-                                .smooth_hover(ButtonLook::Outline, &terminal_hover, cx),
-                        )
+                    .into(),
+            ),
+            None if projects.items.is_empty() => (
+                "Hive".into(),
+                "Open a project folder to work with your coding agents.".into(),
+            ),
+            None => (
+                "Your workspace".into(),
+                "Choose a project or jump to a running agent.".into(),
+            ),
+        };
+        let theme = cx.theme();
+        let heading = h_flex()
+            .id("welcome-heading")
+            .role(Role::Heading)
+            .aria_label(title.clone())
+            .aria_description(detail.clone())
+            .gap_3()
+            .items_center()
+            .child(welcome_mark(theme.foreground, theme.muted_foreground))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_2xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .when(selection.is_some(), |detail| detail.truncate())
+                            .text_sm()
+                            .text_color(theme.muted_foreground)
+                            .child(detail),
+                    ),
+            );
+        let commands = v_flex()
+            .gap_1()
+            .children(
+                actions
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(ix, (icon, action))| {
+                        welcome_command(*icon, *action, ix == 0, window, cx)
                     }),
-            )
-            .child(self.render_shortcuts(has_selection, muted, window, cx))
+            );
+        v_flex().size_full().pt(TAB_BAR_HEIGHT).child(
+            div()
+                .id("welcome-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(
+                    v_flex()
+                        .min_h_full()
+                        .items_center()
+                        .justify_center()
+                        .p_4()
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .max_w(WELCOME_CONTENT_WIDTH)
+                                .gap_5()
+                                .child(heading)
+                                .child(commands),
+                        ),
+                ),
+        )
+    }
+}
+
+fn worktree_detail(title: &str, worktree: &Worktree) -> String {
+    let name = worktree.name();
+    let branch = worktree.branch().unwrap_or("Detached HEAD");
+    if name == title || name == branch {
+        branch.to_owned()
+    } else {
+        format!("{name} · {branch}")
+    }
+}
+
+fn welcome_command(
+    icon: Lucide,
+    action: &'static dyn Action,
+    primary: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Stateful<Div>> {
+    let label = keymap::label(action)?;
+    let hover = Hover::new(action.name(), window, cx);
+    let hint = key_hint::for_action(action, keymap::CONTEXT, window, cx).map(|hint| {
+        hint.when(primary, |hint| {
+            let ink = cx.theme().button_primary_foreground;
+            hint.bg(ink.opacity(PRIMARY_HINT_OPACITY)).text_color(ink)
+        })
+    });
+    let row = h_flex()
+        .w_full()
+        .min_w_0()
+        .gap_2()
+        .child(Icon::new(icon).small())
+        .child(div().flex_1().truncate().text_sm().child(label))
+        .children(hint);
+    let look = if primary {
+        ButtonLook::Primary
+    } else {
+        ButtonLook::Ghost
+    };
+    Some(
+        Button::new(action.name())
+            .cursor_pointer()
+            .accessibility_label(label)
+            .w_full()
+            .h_9()
+            .child(row)
+            .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+            .smooth_hover(look, &hover, cx),
+    )
+}
+
+/// Paint the light through the existing cells of the mark once, without moving the commands.
+fn welcome_mark(ink: Hsla, muted: Hsla) -> impl IntoElement {
+    let mark = |color| {
+        Icon::default()
+            .data(HIVE_MARK)
+            .size(WELCOME_LOGO_SIZE)
+            .text_color(color)
+    };
+    div()
+        .relative()
+        .size(WELCOME_LOGO_SIZE)
+        .flex_none()
+        .child(mark(muted.opacity(MARK_UNLIT_OPACITY)))
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .h_full()
+                .overflow_hidden()
+                .child(mark(ink))
+                .with_animation(
+                    "hive-mark-reveal",
+                    Animation::new(MARK_REVEAL).with_easing(ease_in_out),
+                    |mask, t| mask.w(WELCOME_LOGO_SIZE * t),
+                ),
+        )
+}
+
+fn welcome_actions(selected: bool, has_projects: bool) -> &'static [(Lucide, &'static dyn Action)] {
+    if selected {
+        &[
+            (Lucide::SquareTerminal, &NewTerminal),
+            (Lucide::FileSearch, &OpenFileSearch),
+            (Lucide::Search, &QuickSwitch),
+            (Lucide::FolderPlus, &AddProject),
+            (Lucide::Command, &ShowCommands),
+        ]
+    } else if has_projects {
+        &[
+            (Lucide::Search, &QuickSwitch),
+            (Lucide::FolderPlus, &AddProject),
+            (Lucide::Command, &ShowCommands),
+            (Lucide::Settings, &OpenSettings),
+        ]
+    } else {
+        &[
+            (Lucide::FolderPlus, &AddProject),
+            (Lucide::Command, &ShowCommands),
+            (Lucide::Settings, &OpenSettings),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AddProject, NewTerminal, OpenFileSearch, QuickSwitch, welcome_actions, worktree_detail,
+    };
+    use gpui_kit::Action as _;
+    use hive_core::projects::{Head, Worktree};
+
+    #[test]
+    fn the_primary_command_follows_the_workspace_and_file_search_requires_a_selection() {
+        for (selected, projects, first) in [
+            (false, false, AddProject.name()),
+            (false, true, QuickSwitch.name()),
+            (true, true, NewTerminal.name()),
+        ] {
+            let actions = welcome_actions(selected, projects);
+            assert_eq!(actions[0].1.name(), first);
+            assert_eq!(
+                actions
+                    .iter()
+                    .any(|(_, action)| action.name() == OpenFileSearch.name()),
+                selected
+            );
+            assert!(
+                actions
+                    .iter()
+                    .all(|(_, action)| crate::ui::keymap::label(*action).is_some())
+            );
+        }
     }
 
-    /// The window-wide shortcuts that make sense before anything is open.
-    fn render_shortcuts(&self, has_selection: bool, muted: Hsla, window: &Window, cx: &App) -> Div {
-        let actions: &[&dyn Action] = if has_selection {
-            &[
-                &NewTerminal,
-                &OpenFileSearch,
-                &QuickSwitch,
-                &ToggleSidebar,
-                &ToggleGitPanel,
-                &OpenSettings,
-            ]
-        } else {
-            &[&AddProject, &QuickSwitch, &ToggleSidebar, &OpenSettings]
+    #[test]
+    fn worktree_context_names_distinct_folders_and_detached_heads() {
+        let mut tree = Worktree {
+            path: "/src/hive".into(),
+            head: Head::Branch("develop".into()),
         };
-        v_flex()
-            .w(WELCOME_CONTENT_WIDTH)
-            .gap_1p5()
-            .mt_6()
-            .children(actions.iter().filter_map(|action| {
-                let label = keymap::label(*action)?;
-                Some(
-                    h_flex()
-                        .justify_between()
-                        .items_center()
-                        .text_sm()
-                        .text_color(muted)
-                        .child(label)
-                        .children(key_hint::for_action(*action, keymap::CONTEXT, window, cx)),
-                )
-            }))
+        assert_eq!(worktree_detail("hive", &tree), "develop");
+        tree.path = "/trees/review".into();
+        assert_eq!(worktree_detail("hive", &tree), "review · develop");
+        tree.head = Head::Detached;
+        assert_eq!(worktree_detail("hive", &tree), "review · Detached HEAD");
     }
 }

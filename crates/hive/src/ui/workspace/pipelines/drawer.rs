@@ -1,6 +1,5 @@
 //! Project-local visibility, animated geometry and keyboard focus.
 use super::*;
-use gpui_kit::base::motion::{Transition, transition};
 
 pub(in crate::ui::workspace) struct PanelSlot {
     pub(super) view: Entity<PipelinePanel>,
@@ -202,13 +201,7 @@ impl Workspace {
         let slot = self.pipeline_panels.get(project);
         let open = slot.is_some_and(|slot| slot.open);
         let key = ElementId::from(("pipeline-drawer", self.shown_center()?.dock().entity_id()));
-        let t = transition(
-            key,
-            if open { 1.0_f32 } else { 0. },
-            Transition::new(SIDEBAR_SLIDE_DURATION).ease(ease_in_out),
-            window,
-            cx,
-        );
+        let t = crate::ui::disclosure::openness(key, open, window, cx);
         let slot = slot?;
         if t <= 0. && !open {
             return None;

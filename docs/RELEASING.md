@@ -78,8 +78,8 @@ certificates and provisioning resources required for that team's distribution.
 The script wraps the existing build in an `.xcarchive`; it does not rebuild Rust.
 Xcode signs the app and nested Sparkle code with Developer ID and uploads the result
 to Apple's notary service. The script waits up to 30 minutes for notarized export,
-then requires ticket validation, recursive signature verification and Gatekeeper
-assessment. The final ZIP is created **after** stapling; SHA-256 and Sparkle
+then requires ticket validation, recursive signature verification, Sparkle UI
+resources and Gatekeeper assessment. The final ZIP is created **after** stapling; SHA-256 and Sparkle
 signatures are generated from those final bytes. No Developer ID private key is
 exported into GitHub.
 
@@ -189,7 +189,7 @@ publish the cleaned history in a fresh repository while keeping the original pri
    failed validation stop publication; there is no ad-hoc fallback.
 4. `scripts/publish_release.py` validates checksums, feed URL/version/length,
    Sparkle signatures, app identity/update policy, arm64 architecture, Developer
-   ID team, hardened runtime, stapled ticket and Gatekeeper. It uploads a draft,
+   ID team, hardened runtime, Sparkle UI resources, stapled ticket and Gatekeeper. It uploads a draft,
    downloads it again, compares bytes and repeats verification, then publishes a
    **stable Latest** release. It explicitly dispatches the update-feed workflow on
    `main`; events created by `GITHUB_TOKEN` do not otherwise start another workflow.

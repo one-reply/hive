@@ -1,9 +1,9 @@
 //! Project tree (Orca-style): colored project headers → worktree cards. Sessions will hang
 //! under worktrees.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::ui::text_field::TextField;
 use crate::ui::theme::{SELECTED_BACKGROUND_OPACITY, SELECTED_BORDER_OPACITY};
@@ -67,11 +67,6 @@ const CARD_HEIGHT: Pixels = px(34.);
 const CARD_HEIGHT_WITH_META: Pixels = px(58.);
 const CREATING_HEIGHT: Pixels = px(28.);
 const ROW_GAP: Pixels = px(2.);
-const COLLAPSE_DURATION: Duration = Duration::from_millis(200);
-/// How long a folded or unfolded list keeps its animation mounted. The animation starts on the
-/// first frame after the click, so this outlasts it; by then it rests at its final height, and
-/// dropping it changes nothing on screen but stops a folded list from building hidden rows.
-const COLLAPSE_SETTLED: Duration = Duration::from_millis(400);
 const SELECTION_DURATION: Duration = Duration::from_millis(200);
 const HOVER_BACKGROUND_OPACITY: f32 = 0.05;
 const ACTIVE_PROJECT_LINE_WIDTH: Pixels = px(2.);
@@ -82,9 +77,8 @@ pub struct Sidebar {
     store: Entity<Store>,
     /// Startup visibility, then manual changes; background activity never unfolds projects.
     collapsed: HashSet<(Host, PathBuf)>,
-    /// When projects were last folded or unfolded: only those animate, so the tree doesn't
-    /// play its animations on startup.
-    toggled: HashMap<(Host, PathBuf), Instant>,
+    /// Keep the tree's place when its closed sidebar leaves the layout.
+    scroll: ScrollHandle,
     /// Cards whose agents strip is unfolded into one row per session.
     agents_open: HashSet<(Host, PathBuf)>,
     /// Turns the Working indicators of visible agents; idle while none is on screen.
@@ -119,7 +113,7 @@ impl Sidebar {
             projects,
             store,
             collapsed,
-            toggled: HashMap::new(),
+            scroll: ScrollHandle::new(),
             agents_open: HashSet::new(),
             working: SteppedSpinner::new(cx),
             _observers: observers,
@@ -137,7 +131,6 @@ impl Sidebar {
         };
         let before = self.collapsed.len();
         self.collapsed.retain(registered);
-        self.toggled.retain(|key, _| registered(key));
         if self.collapsed.len() != before {
             cx.notify();
         }
@@ -151,10 +144,6 @@ impl Sidebar {
         self.store.update(cx, |store, cx| {
             store.set_project_expanded(&path.0, &path.1, expanded, cx)
         });
-        let now = Instant::now();
-        self.toggled
-            .retain(|_, toggled_at| collapse_animating(Some(*toggled_at), now));
-        self.toggled.insert(path.clone(), now);
         cx.notify();
     }
 
@@ -178,35 +167,25 @@ impl Sidebar {
         let open = !self
             .collapsed
             .contains(&(project.host.clone(), project.path.clone()));
-        let animate = collapse_animating(
-            self.toggled
-                .get(&(project.host.clone(), project.path.clone()))
-                .copied(),
-            Instant::now(),
+        let unfolded = crate::ui::disclosure::openness(
+            format!("project-list:{:?}:{:?}", project.host, project.path),
+            open,
+            window,
+            cx,
         );
-        let list = (open || animate).then(|| {
+        let list = (unfolded > 0.).then(|| {
             let rows = self.render_rows(project, window, cx);
-            let height = rows
-                .iter()
-                .map(|(_, height)| *height + ROW_GAP)
-                .sum::<Pixels>();
-            let list = v_flex()
+            v_flex()
                 .overflow_hidden()
-                .children(rows.into_iter().map(|(row, _)| row));
-            if animate {
-                list.with_animation(
-                    animation_id(
-                        &format!("project-list:{:?}", project.host),
-                        &project.path,
-                        open,
-                    ),
-                    collapse_animation(),
-                    move |list, t| list.h(height * openness(open, t)),
-                )
+                .when(unfolded < 1., |list| {
+                    let height = rows
+                        .iter()
+                        .map(|(_, height)| *height + ROW_GAP)
+                        .sum::<Pixels>();
+                    list.h(height * unfolded)
+                })
+                .children(rows.into_iter().map(|(row, _)| row))
                 .into_any_element()
-            } else {
-                list.into_any_element()
-            }
         });
         self.project_group(ix, project, open, list, window, cx)
     }
@@ -396,10 +375,9 @@ impl Sidebar {
             if open { "Collapse" } else { "Expand" },
             project.name
         );
-        let unfolded = transition(
+        let unfolded = crate::ui::disclosure::openness(
             format!("project-chevron:{:?}:{:?}", project.host, project.path),
-            if open { 1.0_f32 } else { 0. },
-            Transition::new(COLLAPSE_DURATION).ease(ease_in_out),
+            open,
             window,
             cx,
         );
@@ -776,6 +754,7 @@ impl Render for Sidebar {
             .child(
                 v_flex()
                     .id("project-tree")
+                    .track_scroll(&self.scroll)
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -914,25 +893,6 @@ fn host_badge(label: SharedString, fg: Hsla, muted_fg: Hsla) -> impl IntoElement
         .line_height(BADGE_LINE_HEIGHT)
         .text_color(muted_fg)
         .child(label)
-}
-
-/// Restarts whenever `open` flips, because the id changes with it.
-fn animation_id(kind: &str, project: &Path, open: bool) -> ElementId {
-    SharedString::from(format!("{kind}:{}:{open}", project.display())).into()
-}
-
-fn collapse_animation() -> Animation {
-    Animation::new(COLLAPSE_DURATION).with_easing(ease_in_out)
-}
-
-/// Whether a project list toggled at `toggled_at` still needs its fold animation.
-fn collapse_animating(toggled_at: Option<Instant>, now: Instant) -> bool {
-    toggled_at.is_some_and(|at| now.saturating_duration_since(at) < COLLAPSE_SETTLED)
-}
-
-/// 1.0 = fully open; `t` is the eased animation progress.
-fn openness(open: bool, t: f32) -> f32 {
-    if open { t } else { 1. - t }
 }
 
 /// Placeholder card while `git worktree add` runs.
@@ -1137,33 +1097,4 @@ fn confirm_force_delete(
 fn notify_error(title: &'static str, err: &WorktreeError, window: &mut Window, cx: &mut App) {
     tracing::warn!(%err, "{title}");
     window.push_notification(Notification::error(err.to_string()).title(title), cx);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{COLLAPSE_DURATION, COLLAPSE_SETTLED, collapse_animating};
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn collapse_animates_only_until_it_settles() {
-        let toggled_at = Instant::now();
-        let after = |ms| toggled_at + Duration::from_millis(ms);
-        assert!(!collapse_animating(None, toggled_at));
-        assert!(collapse_animating(Some(toggled_at), toggled_at));
-        assert!(collapse_animating(Some(toggled_at), after(399)));
-        assert!(!collapse_animating(Some(toggled_at), after(400)));
-        assert!(
-            COLLAPSE_SETTLED > COLLAPSE_DURATION,
-            "the animation must finish before it is dropped"
-        );
-    }
-
-    #[test]
-    fn collapse_toggled_in_the_future_still_animates() {
-        let now = Instant::now();
-        assert!(collapse_animating(
-            Some(now + Duration::from_millis(5)),
-            now
-        ));
-    }
 }
