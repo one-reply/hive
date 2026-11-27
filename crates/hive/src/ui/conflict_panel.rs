@@ -27,6 +27,8 @@ use std::sync::Arc;
 
 mod body;
 mod rows;
+#[cfg(test)]
+mod scroll_tests;
 pub(crate) mod sides;
 mod syntax;
 mod three_way;
@@ -36,6 +38,9 @@ use body::{Body, File, Progress};
 use rows::{DisplayRow, RowKey, build_rows};
 use syntax::MergeHighlights;
 use toolbar::SideNames;
+
+// Measuring past the viewport keeps the next wrapped row reachable after a list reset.
+const ROW_OVERDRAW: Pixels = px(128.);
 
 struct InlineEditor {
     conflict: usize,
@@ -117,7 +122,7 @@ impl ConflictPanel {
             rows: Vec::new(),
             conflict_rows: Vec::new(),
             resolved_lines: Vec::new(),
-            list: ListState::new(0, ListAlignment::Top, px(0.)),
+            list: ListState::new(0, ListAlignment::Top, ROW_OVERDRAW),
             focus,
             git,
             area,
