@@ -7,7 +7,7 @@ use gpui_kit::{
     Context, Entity, IntoElement, MouseButton, Render, TestAppContext, Window, div, point, px,
 };
 use hive_core::{host::Host, state::StateError};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 struct Harness {
     sidebar: Entity<Sidebar>,
@@ -61,7 +61,7 @@ fn inactive_strip_selects_card_then_active_strip_only_toggles_agents(cx: &mut Te
         projects,
         store: store.clone(),
         collapsed: HashSet::new(),
-        toggled: HashMap::new(),
+        scroll: Default::default(),
         agents_open: HashSet::new(),
         working: crate::ui::stepped_spinner::SteppedSpinner::new(cx),
         _observers: vec![

@@ -1,13 +1,9 @@
 //! Workspace integration for source control, diff and conflict tabs.
 use super::*;
 use crate::state::git::{ConflictRequest, DiffRequest, GitEvent};
-use gpui_kit::base::Disableable as _;
-use gpui_kit::base::motion::{Transition, transition};
+use gpui_kit::component::tab::{Tab, TabBar};
 use hive_core::projects::Target;
 use hive_core::settings::clamp_git_panel_width;
-
-const RIGHT_TAB_WIDTH: Rems = rems(2.);
-const RIGHT_TAB_TRANSITION: Duration = Duration::from_millis(180);
 
 impl Workspace {
     pub(super) fn sync_git_file(&self, cx: &mut Context<Self>) {
@@ -131,15 +127,6 @@ impl Workspace {
 
     pub(super) fn toggle_git(&mut self, cx: &mut Context<Self>) {
         self.git_open = !self.git_open;
-        self.git_animate = true;
-        self.git_animation = Some(cx.spawn(async |this, cx| {
-            cx.background_executor().timer(SIDEBAR_SLIDE_DURATION).await;
-            let _ = this.update(cx, |this, cx| {
-                // A closed sidebar must leave the layout tree once its slide finishes.
-                this.git_animate = false;
-                cx.notify();
-            });
-        }));
         let store = AppState::get(cx).store.clone();
         store.update(cx, |s, cx| s.set_git_panel_open(self.git_open, cx));
         self.sync_right_tab_visibility(RightTab::selected(cx), cx);
@@ -153,6 +140,7 @@ impl Workspace {
     /// whose width animates, the same way the left sidebar collapses.
     pub(super) fn render_right_sidebar(
         &self,
+        openness: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -162,72 +150,37 @@ impl Workspace {
         let selected_files = RightTab::selected(cx).is_files();
         let git_absent = AppState::get(cx).git.read(cx).has_no_repository();
         let width = self.git_width;
-        let indicator_position = transition(
-            "right-sidebar-tab-indicator",
-            if selected_files { 1.0 } else { 0.0 },
-            Transition::new(RIGHT_TAB_TRANSITION).ease(ease_in_out),
-            window,
-            cx,
-        );
-        // The header sits where the macOS title bar would be, so it drags the window too.
-        let header =
-            h_flex()
-                .id("right-sidebar-header")
+        let tab = |label: &'static str, icon: Lucide, choice, enabled: bool| {
+            Tab::new()
+                .prefix(Icon::new(icon).small())
+                .label(label)
                 .h(TAB_BAR_HEIGHT)
-                .flex_none()
-                .px_2()
-                .justify_between()
-                .items_center()
-                .border_b_1()
-                .border_color(border)
-                .child(
-                    h_flex()
-                        .relative()
-                        .h_full()
-                        .flex_none()
-                        .child(
-                            render_right_tab(
-                                "choose-git",
-                                "Git",
-                                Lucide::GitBranch,
-                                !selected_files && !git_absent,
-                                !git_absent,
-                                window,
-                                cx,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.choose_right_tab(RightTab::Git, cx)
-                            })),
-                        )
-                        .child(
-                            render_right_tab(
-                                "choose-files",
-                                "Files",
-                                Lucide::Folder,
-                                selected_files,
-                                true,
-                                window,
-                                cx,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.choose_right_tab(RightTab::Files, cx)
-                            })),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .bottom_0()
-                                .left(RIGHT_TAB_WIDTH * indicator_position)
-                                .w(RIGHT_TAB_WIDTH)
-                                .h(RIGHT_TAB_UNDERLINE)
-                                .bg(cx.theme().primary),
-                        ),
-                )
-                .child(
-                    right_sidebar_toggle()
-                        .small()
-                        .panel_toggle(open, &toggle_hover, cx),
-                );
+                .cursor_pointer()
+                .disabled(!enabled)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |this, _, _, cx| this.choose_right_tab(choice, cx)))
+        };
+        let header = h_flex()
+            .id("right-sidebar-header")
+            .h(TAB_BAR_HEIGHT)
+            .flex_none()
+            .child(
+                TabBar::new("right-sidebar-tabs")
+                    .underline()
+                    .small()
+                    .flex_1()
+                    .h_full()
+                    .px_2()
+                    .selected_index(usize::from(selected_files))
+                    .child(tab("Git", Lucide::GitBranch, RightTab::Git, !git_absent))
+                    .child(tab("Files", Lucide::Folder, RightTab::Files, true))
+                    .suffix(
+                        right_sidebar_toggle()
+                            .small()
+                            .panel_toggle(open, &toggle_hover, cx)
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+                    ),
+            );
         let header = self.window_drag_band(header, |_| true, cx);
         let content = v_flex()
             .h_full()
@@ -243,23 +196,13 @@ impl Workspace {
                 super::cached(&self.git_panel).into_any_element()
             }));
         // Right-aligned so the content's left edge moves while its right edge stays put.
-        let outer = v_flex()
+        v_flex()
             .h_full()
+            .w(width * openness)
             .flex_shrink_0()
             .items_end()
             .overflow_hidden()
-            .child(content);
-        if !self.git_animate {
-            return outer.w(width).into_any_element();
-        }
-        // 1.0 = fully open; `t` is the eased animation progress.
-        let amount = move |t: f32| if open { t } else { 1. - t };
-        outer
-            .with_animation(
-                ("right-sidebar-w", open as usize),
-                Animation::new(SIDEBAR_SLIDE_DURATION).with_easing(ease_in_out),
-                move |el, t| el.w(width * amount(t)),
-            )
+            .child(content)
             .into_any_element()
     }
 
@@ -306,42 +249,6 @@ impl Workspace {
                 }),
             )
     }
-}
-
-/// Full-height tabs share one sliding indicator in their parent row.
-fn render_right_tab(
-    id: &'static str,
-    label: &'static str,
-    icon: Lucide,
-    active: bool,
-    enabled: bool,
-    window: &mut Window,
-    cx: &mut App,
-) -> Stateful<Div> {
-    let hover = Hover::new(id, window, cx).enabled(enabled);
-    let color = if active {
-        cx.theme().foreground
-    } else {
-        cx.theme().muted_foreground
-    };
-    div()
-        .id(id)
-        .h_full()
-        .w(RIGHT_TAB_WIDTH)
-        .flex()
-        .justify_center()
-        .items_center()
-        .cursor_pointer()
-        .when(!enabled, |tab| tab.cursor_default().opacity(0.5))
-        .child(
-            Button::new(id)
-                .accessibility_label(label)
-                .small()
-                .cursor_pointer()
-                .disabled(!enabled)
-                .icon(Icon::new(icon).text_color(color))
-                .smooth_hover(ButtonLook::Ghost, &hover, cx),
-        )
 }
 
 /// The button that shows or hides the right sidebar. It stays in the window's top-right

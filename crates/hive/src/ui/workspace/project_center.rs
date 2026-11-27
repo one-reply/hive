@@ -98,8 +98,8 @@ impl ProjectCenter {
 
     /// The cell the dock's tab bar reads its left inset from. The dock is its own view, so
     /// the workspace hands the value over through this cell rather than through render args.
-    pub(super) fn tab_inset(&self) -> Rc<Cell<Pixels>> {
-        self.tab_inset.clone()
+    pub(super) fn set_tab_inset(&self, inset: Pixels) {
+        self.tab_inset.set(inset)
     }
 
     pub(super) fn is_empty(&self) -> bool {
