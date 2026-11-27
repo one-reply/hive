@@ -4,7 +4,7 @@ use gpui_kit::component::highlighter::{HighlightTheme, SyntaxHighlighter};
 use gpui_kit::{HighlightStyle, Hsla};
 use hive_core::files::editor_language;
 use hive_core::git::conflict_merge::{
-    ConflictResolution, InlineDiffRanges, MergeDocument, MergeSegment, inline_diff_ranges,
+    InlineDiffRanges, MergeDocument, MergeSegment, inline_diff_ranges,
 };
 use std::collections::HashMap;
 use std::ops::Range;
@@ -131,50 +131,6 @@ impl MergeHighlights {
             .and_then(|c| c.base.get(line))
             .cloned()
             .unwrap_or_default()
-    }
-
-    pub(super) fn result_styles(
-        &self,
-        region: &hive_core::git::conflict_merge::ConflictRegion,
-        conflict: usize,
-        resolution: &ConflictResolution,
-        line: usize,
-        text: &str,
-        theme: &HighlightTheme,
-    ) -> LineStyles {
-        let Some(side) = self.conflicts.get(conflict) else {
-            return Vec::new();
-        };
-        match resolution {
-            ConflictResolution::Current => side.current.get(line).cloned().unwrap_or_default(),
-            ConflictResolution::Incoming => side.incoming.get(line).cloned().unwrap_or_default(),
-            ConflictResolution::BothCurrentFirst => {
-                if line < region.current.len() {
-                    side.current.get(line).cloned().unwrap_or_default()
-                } else {
-                    side.incoming
-                        .get(line - region.current.len())
-                        .cloned()
-                        .unwrap_or_default()
-                }
-            }
-            ConflictResolution::BothIncomingFirst => {
-                if line < region.incoming.len() {
-                    side.incoming.get(line).cloned().unwrap_or_default()
-                } else {
-                    side.current
-                        .get(line - region.incoming.len())
-                        .cloned()
-                        .unwrap_or_default()
-                }
-            }
-            ConflictResolution::Custom(_) => {
-                let Some(language) = self.language.as_deref() else {
-                    return Vec::new();
-                };
-                highlight_single_line(language, text, theme)
-            }
-        }
     }
 }
 
@@ -332,15 +288,6 @@ fn highlight_base(
         map.insert(region.index, per_line);
     }
     map
-}
-
-fn highlight_single_line(language: &str, text: &str, theme: &HighlightTheme) -> LineStyles {
-    if text.is_empty() {
-        return Vec::new();
-    }
-    let mut highlighter = SyntaxHighlighter::new(language);
-    highlighter.update(None, &Rope::from_str(text), None);
-    highlighter.styles(&(0..text.len()), theme)
 }
 
 #[cfg(test)]

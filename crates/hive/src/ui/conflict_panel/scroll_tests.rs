@@ -6,11 +6,11 @@ use gpui_kit::{
     TestAppContext, Window, div, list, point, px,
 };
 
-struct ResultList(ListState);
+struct SourceList(ListState);
 
-impl Render for ResultList {
+impl Render for SourceList {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        // The first wrapped line fills the viewport. Accepting both appends two more.
+        // The first wrapped line fills the viewport. Expanding a folded section appends two more.
         list(self.0.clone(), |ix, _, _| {
             div()
                 .w_full()
@@ -23,9 +23,9 @@ impl Render for ResultList {
 }
 
 #[gpui::test]
-fn scroll_reaches_the_appended_result_rows(cx: &mut TestAppContext) {
+fn scroll_reaches_expanded_source_rows_after_a_wrapped_line(cx: &mut TestAppContext) {
     let state = ListState::new(1, ListAlignment::Top, ROW_OVERDRAW);
-    let (_, cx) = cx.add_window_view(|_, _| ResultList(state.clone()));
+    let (_, cx) = cx.add_window_view(|_, _| SourceList(state.clone()));
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
     replace_rows(&state, &[0], &[0, 1, 2]);
@@ -40,6 +40,6 @@ fn scroll_reaches_the_appended_result_rows(cx: &mut TestAppContext) {
     }
     let last = state
         .bounds_for_item(2)
-        .expect("last result row is measured");
+        .expect("last source row is measured");
     assert_eq!(last.bottom(), state.viewport_bounds().bottom());
 }
