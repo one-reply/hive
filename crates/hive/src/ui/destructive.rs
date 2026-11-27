@@ -1,4 +1,5 @@
 //! Confirmations of actions that cannot be taken back: a delete, a discard, a force push.
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::{AlertDialog, DialogFooter};
 use gpui_kit::component::{Disableable as _, WindowExt as _};
@@ -72,6 +73,7 @@ pub(crate) fn choice(
     let safe_button = Button::new("destructive-safe")
         .cursor_pointer()
         .primary()
+        .icon(Lucide::CornerDownLeft)
         .label(safe_text)
         .on_click(move |_, window, cx| {
             if by_button(window, cx) {
@@ -251,6 +253,27 @@ mod tests {
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         assert_eq!(confirmed.get(), 1);
+    }
+
+    #[gpui::test]
+    fn enter_on_a_focused_standard_cancel_button_cancels(cx: &mut TestAppContext) {
+        let cancelled = Rc::new(Cell::new(false));
+        let result = cancelled.clone();
+        let cx = open(cx, move |alert, _, _| {
+            let result = result.clone();
+            alert
+                .confirm()
+                .title("Create branch")
+                .on_ok(|_, _, _| panic!("Enter on Cancel ran the default action"))
+                .on_cancel(move |_, _, _| {
+                    result.set(true);
+                    true
+                })
+        });
+        press("tab", cx);
+        press("enter", cx);
+        assert!(cancelled.get());
+        assert!(!is_open(cx));
     }
 
     #[gpui::test]

@@ -6,6 +6,7 @@ use crate::{
         store::Store,
     },
     ui::{
+        dialog::initial_focus,
         hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _},
         text_field::TextField,
     },
@@ -15,6 +16,7 @@ use gpui_kit::base::motion::{MotionReveal, Transition, transition};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _,
     button::Button,
+    dialog::Confirm,
     h_flex,
     input::{Input, InputEvent, InputState},
     v_flex,
@@ -36,9 +38,20 @@ const UNFOLD_DURATION: Duration = Duration::from_millis(220);
 const QUARTER_TURN: f32 = std::f32::consts::FRAC_PI_2;
 
 pub(crate) fn open(window: &mut Window, cx: &mut App) {
-    let chooser = cx.new(|cx| Chooser::new(window, cx));
-    window.open_dialog(cx, move |dialog, _, _| {
-        dialog.title("Add project").w(WIDTH).child(chooser.clone())
+    let hosts = known_hosts(cx);
+    let chooser = cx.new(|cx| Chooser::new(hosts, window, cx));
+    show_chooser(chooser, window, cx);
+}
+
+fn show_chooser(chooser: Entity<Chooser>, window: &mut Window, cx: &mut App) {
+    let focus_local = initial_focus(chooser.read(cx).local.clone());
+    window.open_dialog(cx, move |dialog, window, cx| {
+        focus_local(window, cx);
+        dialog
+            .title("Add project")
+            .w(WIDTH)
+            .child(chooser.clone())
+            .on_ok(|_, _, _| false)
     });
 }
 
@@ -52,8 +65,10 @@ fn ssh(target: Option<SharedString>, window: &mut Window, cx: &mut App) {
 
 /// Picks where the project lives: a local folder, a known SSH host, or another one.
 struct Chooser {
+    local: FocusHandle,
     /// `None` while `~/.ssh/config` is still being read.
     hosts: Option<Vec<SshHost>>,
+    host_scroll: ScrollHandle,
     /// The "Another SSH host" block unfolds in place into this field.
     other: Entity<InputState>,
     adding_other: bool,
@@ -62,8 +77,7 @@ struct Chooser {
 }
 
 impl Chooser {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let load = known_hosts(cx);
+    fn new(load: Task<Vec<SshHost>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let task = cx.spawn(async move |this, cx| {
             let hosts = load.await;
             let _ = this.update(cx, |this, cx| {
@@ -73,14 +87,15 @@ impl Chooser {
         });
         let other = cx
             .new(|cx| InputState::new(window, cx).placeholder("user@host or an alias, e.g. home"));
-        let subscription =
-            cx.subscribe_in(&other, window, |this, _, event, window, cx| match event {
-                InputEvent::PressEnter { .. } => this.connect_other(window, cx),
-                InputEvent::Change => cx.notify(),
-                _ => {}
-            });
+        let subscription = cx.subscribe(&other, |_, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
         Self {
+            local: cx.focus_handle().tab_stop(true),
             hosts: None,
+            host_scroll: ScrollHandle::new(),
             other,
             adding_other: false,
             _task: task,
@@ -110,8 +125,13 @@ impl Chooser {
         window.defer(cx, move |window, cx| ssh(Some(target), window, cx));
     }
 
-    fn render_hosts(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let hosts = v_flex().gap_1p5().flex_shrink_0();
+    fn render_hosts(&self, window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
+        let hosts = v_flex()
+            .id("add-ssh-hosts")
+            .gap_1p5()
+            .max_h(HOSTS_MAX_HEIGHT)
+            .overflow_y_scroll()
+            .track_scroll(&self.host_scroll);
         let list = match &self.hosts {
             None => return hosts.child(note("Reading ~/.ssh/config…", cx)),
             Some(list) if list.is_empty() => {
@@ -121,7 +141,16 @@ impl Chooser {
         };
         hosts.children(list.iter().enumerate().map(|(index, host)| {
             let target = SharedString::from(host.alias.clone());
-            option_row(
+            let focus = window.use_keyed_state(("host-focus", index), cx, |window, cx| {
+                let focus = cx.focus_handle().tab_stop(true);
+                let scroll = self.host_scroll.clone();
+                let observed = cx.on_focus(&focus, window, move |_, _, cx| {
+                    scroll.scroll_to_item(index);
+                    cx.notify();
+                });
+                (focus, observed)
+            });
+            let row = option_row(
                 ("add-ssh-host", index),
                 row_content(
                     Lucide::Server.into(),
@@ -133,8 +162,10 @@ impl Chooser {
                 window,
                 cx,
             )
-            .aria_label(target.clone())
-            .on_click(move |_, window, cx| {
+            .flex_shrink_0()
+            .track_focus(&focus.read(cx).0)
+            .aria_label(target.clone());
+            choice(row, cx, move |window, cx| {
                 let target = target.clone();
                 window.close_dialog(cx);
                 window.defer(cx, move |window, cx| ssh(Some(target), window, cx));
@@ -162,49 +193,32 @@ impl Chooser {
             ButtonLook::Outline
         };
         let fg = cx.theme().foreground;
-        let header =
-            row_content(
-                Icon::new(Lucide::Plus).rotate(radians(QUARTER_TURN / 2. * progress)),
-                "Another SSH host…",
-                Some("user@host or any alias ssh understands".into()),
-                Icon::new(Lucide::ChevronRight).rotate(radians(QUARTER_TURN * progress)),
-                cx,
-            )
-            .id("add-ssh-other-header")
-            .role(Role::Button)
-            .aria_label("Another SSH host")
-            .px_3()
-            .py_2()
-            .cursor_pointer()
-            .on_click(cx.listener(|this, _, window, cx| {
+        let header = row_content(
+            Icon::new(Lucide::Plus).rotate(radians(QUARTER_TURN / 2. * progress)),
+            "Another SSH host…",
+            Some("user@host or any alias ssh understands".into()),
+            Icon::new(Lucide::ChevronRight).rotate(radians(QUARTER_TURN * progress)),
+            cx,
+        )
+        .id("add-ssh-other-header")
+        .aria_label("Another SSH host")
+        .aria_expanded(self.adding_other)
+        .border_1()
+        .border_color(cx.theme().transparent)
+        .px_3()
+        .py_2()
+        .rounded_md();
+        let chooser = cx.entity();
+        let header = choice(header, cx, move |window, cx| {
+            chooser.update(cx, |this, cx| {
                 this.set_adding_other(!this.adding_other, window, cx)
-            }));
+            });
+        });
         // MotionReveal lays the form out as its own root, where an auto width shrinks to content.
         // The header's × already collapses the block, so the row only needs a submit button.
         // MotionReveal also clips to its bounds, so the top padding keeps the field's focus
         // ring, drawn outside the field, from being cut off.
-        let form = h_flex()
-            .w_full()
-            .gap_2()
-            .px_3()
-            .pt_1()
-            .pb_3()
-            .opacity(progress)
-            .child(div().flex_1().min_w_0().child(TextField::input(
-                Input::new(&self.other),
-                &self.other,
-                cx,
-            )))
-            .child(
-                Button::new("add-ssh-other-connect")
-                    .cursor_pointer()
-                    .icon(Lucide::ArrowRight)
-                    .tooltip("Connect (Enter)")
-                    .disabled(!can_connect)
-                    .on_click(cx.listener(|this, _, window, cx| this.connect_other(window, cx)))
-                    .smooth_hover(connect_look, &connect_hover, cx),
-            );
-        v_flex()
+        let card = v_flex()
             .id("add-ssh-other-card")
             .w_full()
             .rounded_lg()
@@ -215,12 +229,41 @@ impl Chooser {
                 fg.opacity(ROW_BACKGROUND_OPACITY),
                 fg.opacity(ROW_HOVER_OPACITY),
             )
-            .child(header)
-            .child(MotionReveal::new(
-                "add-ssh-other-form",
-                progress,
-                form.into_any_element(),
-            ))
+            .child(header);
+        if !self.adding_other && progress == 0. {
+            return card;
+        }
+        let form = h_flex()
+            .w_full()
+            .gap_2()
+            .px_3()
+            .pt_1()
+            .pb_3()
+            .opacity(progress)
+            .on_action(cx.listener(|this, _: &Confirm, window, cx| {
+                if this.adding_other {
+                    this.connect_other(window, cx);
+                }
+            }))
+            .child(div().flex_1().min_w_0().child(TextField::input(
+                Input::new(&self.other).disabled(!self.adding_other),
+                &self.other,
+                cx,
+            )))
+            .child(
+                Button::new("add-ssh-other-connect")
+                    .cursor_pointer()
+                    .icon(Lucide::ArrowRight)
+                    .tooltip("Connect (Enter)")
+                    .disabled(!self.adding_other || !can_connect)
+                    .on_click(cx.listener(|this, _, window, cx| this.connect_other(window, cx)))
+                    .smooth_hover(connect_look, &connect_hover, cx),
+            );
+        card.child(MotionReveal::new(
+            "add-ssh-other-form",
+            progress,
+            form.into_any_element(),
+        ))
     }
 }
 
@@ -232,14 +275,19 @@ impl Render for Chooser {
                 Lucide::FolderOpen.into(),
                 "Local folder",
                 Some("Open a folder on this Mac".into()),
-                Icon::new(Lucide::ChevronRight),
+                Icon::new(if self.local.is_focused(window) {
+                    Lucide::CornerDownLeft
+                } else {
+                    Lucide::ChevronRight
+                }),
                 cx,
             ),
             window,
             cx,
         )
         .aria_label("Local folder")
-        .on_click(|_, window, cx| {
+        .track_focus(&self.local);
+        let local = choice(local, cx, |window, cx| {
             window.close_dialog(cx);
             Store::prompt_add_projects(AppState::get(cx).store.clone(), cx);
         });
@@ -247,16 +295,26 @@ impl Render for Chooser {
             v_flex()
                 .gap_2()
                 .child(section_label("SSH hosts", cx))
-                .child(
-                    div()
-                        .id("add-ssh-hosts")
-                        .max_h(HOSTS_MAX_HEIGHT)
-                        .overflow_y_scroll()
-                        .child(self.render_hosts(window, cx)),
-                )
+                .child(self.render_hosts(window, cx))
                 .child(self.render_other(window, cx)),
         )
     }
+}
+
+/// The dialog binds Enter to Confirm, so route it to the same action as a pointer click.
+fn choice(
+    row: Stateful<Div>,
+    cx: &App,
+    activate: impl Fn(&mut Window, &mut App) + Clone + 'static,
+) -> Stateful<Div> {
+    let enter = activate.clone();
+    let theme = cx.theme();
+    row.role(Role::Button)
+        .cursor_pointer()
+        .tab_index(0)
+        .focus(|row| row.bg(theme.accent).border_1().border_color(theme.ring))
+        .on_action(move |_: &Confirm, window, cx| enter(window, cx))
+        .on_click(move |_, window, cx| activate(window, cx))
 }
 
 /// A bordered, clickable choice around [`row_content`].
@@ -271,7 +329,6 @@ fn option_row(
     let fg = cx.theme().foreground;
     content
         .id(id)
-        .role(Role::Button)
         .w_full()
         .px_3()
         .py_2()
@@ -283,7 +340,6 @@ fn option_row(
             fg.opacity(ROW_BACKGROUND_OPACITY),
             fg.opacity(ROW_HOVER_OPACITY),
         )
-        .cursor_pointer()
 }
 
 /// Icon tile, title, optional muted detail and a trailing icon.
@@ -533,3 +589,6 @@ impl Render for RemoteForm {
             )
     }
 }
+
+#[cfg(test)]
+mod tests;

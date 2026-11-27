@@ -1,6 +1,7 @@
 //! Branch selection and confirmations with their original worktree captured at opening.
 use crate::state::git::Git;
 use crate::ui::destructive;
+use crate::ui::dialog::{field, initial_focus};
 use crate::ui::hover::{ButtonLook, Hover, SmoothButton as _, SmoothHoverBg as _};
 use crate::ui::text_field::TextField;
 use gpui_kit::assets::IconName as Lucide;
@@ -304,15 +305,21 @@ fn create_branch(
             .split_once('/')
             .map(|(_, name)| name)
             .unwrap_or(&remote.name);
-        name.update(cx, |n, cx| n.set_value(suggested.to_string(), window, cx));
+        name.update(cx, |input, cx| {
+            input.set_value(suggested.to_owned(), window, cx);
+            input.select_all(window, cx);
+        });
     }
     let base = start_points(&git, &target, remote.as_ref(), window, cx);
-    window.open_alert_dialog(cx, move |dialog, _, cx| {
+    let focus_name = initial_focus(name.focus_handle(cx));
+    window.open_alert_dialog(cx, move |dialog, window, cx| {
+        focus_name(window, cx);
         let (git, target, name) = (git.clone(), target.clone(), name.clone());
         let (base, references) = base.clone();
         let busy = git.read(cx).is_busy_at(&target);
         let track = remote.is_some();
         dialog
+            .icon(Icon::new(Lucide::GitBranch))
             .title(if track {
                 "Track remote branch"
             } else {
@@ -322,18 +329,26 @@ fn create_branch(
             .when(busy, |dialog| dialog.footer(busy_footer("Create branch")))
             .child(
                 v_flex()
-                    .gap_2()
-                    .child("Branch name")
-                    .child(TextField::input(Input::new(&name), &name, cx))
-                    .child("Start from")
-                    .child(Select::new(&base).w_full()),
+                    .gap_3()
+                    .child(field(
+                        "Branch name",
+                        TextField::input(Input::new(&name), &name, cx),
+                        cx,
+                    ))
+                    .child(field("Start from", Select::new(&base).w_full(), cx)),
             )
             .button_props(
                 DialogButtonProps::default()
                     .ok_text("Create branch")
                     .show_cancel(true)
-                    .on_ok(move |_, _, cx| {
+                    .on_ok(move |_, window, cx| {
                         if git.read(cx).is_busy_at(&target) {
+                            return false;
+                        }
+                        let value = name.read(cx).value();
+                        let name_text = value.trim();
+                        if name_text.is_empty() {
+                            name.focus_handle(cx).focus(window, cx);
                             return false;
                         }
                         let start = base
@@ -342,7 +357,7 @@ fn create_branch(
                             .and_then(|ix| references.get(ix.row))
                             .map_or(HEAD, String::as_str);
                         let action = Action::CreateBranch {
-                            name: name.read(cx).value().trim().into(),
+                            name: name_text.into(),
                             base: start.into(),
                             track,
                         };
@@ -521,4 +536,46 @@ fn busy_footer(label: &'static str) -> impl IntoElement {
                 .disabled(true)
                 .tooltip(BUSY),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Branch, Git, Target, create_branch};
+    use crate::state::{projects::Projects, store::Store};
+    use crate::ui::destructive::testing::{is_open, press, settle, window};
+    use gpui_kit as gpui;
+    use gpui_kit::{AppContext as _, TestAppContext};
+    use hive_core::host::Host;
+
+    #[gpui::test]
+    fn an_empty_branch_name_stays_open_for_editing(cx: &mut TestAppContext) {
+        let cx = window(cx);
+        let (git, target) = cx.update(|_, cx| {
+            let store = cx.new(Store::with_held_recovery);
+            let projects = cx.new(|cx| Projects::new(&store, cx));
+            let git = cx.new(|cx| Git::new(projects, cx));
+            let target = Target {
+                host: Host::Local,
+                project: "/unused".into(),
+                path: "/unused".into(),
+            };
+            (git, target)
+        });
+        let remote = Branch {
+            name: "origin/topic".into(),
+            reference: "refs/remotes/origin/topic".into(),
+            remote: true,
+            worktree: None,
+        };
+        for start in [None, Some(remote)] {
+            cx.update(|window, cx| create_branch(git.clone(), target.clone(), start, window, cx));
+            settle(cx);
+            // Typing replaces the selected suggestion when tracking a remote branch.
+            cx.simulate_input("  ");
+            press("enter", cx);
+            assert!(is_open(cx));
+            press("escape", cx);
+            assert!(!is_open(cx));
+        }
+    }
 }

@@ -1,13 +1,16 @@
 //! What a pull or merge request will say, shown and editable before anything leaves the
 //! machine: its title, description and the branch to merge into.
 
-use crate::ui::text_field::TextField;
+use crate::ui::{
+    dialog::{field, initial_focus},
+    text_field::TextField,
+};
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
-use gpui_kit::component::{ActiveTheme as _, WindowExt as _, v_flex};
+use gpui_kit::component::{Icon, WindowExt as _};
 use gpui_kit::*;
 use hive_core::git::pull_request::Draft;
-use std::cell::Cell;
 use std::rc::Rc;
 
 /// Lines the description shows before it scrolls.
@@ -41,31 +44,26 @@ pub(crate) fn open(
             .placeholder("The repository's default branch")
     });
     let submit = Rc::new(submit);
-    // The dialog itself takes the focus when it opens; the title is what gets typed first.
-    let initial_focus = Cell::new(true);
+    let focus_title = initial_focus(title.focus_handle(cx));
     window.open_alert_dialog(cx, move |dialog, window, cx| {
-        if initial_focus.replace(false) {
-            let title = title.clone();
-            window.defer(cx, move |window, cx| {
-                title.focus_handle(cx).focus(window, cx)
-            });
-        }
+        focus_title(window, cx);
         let (title, body, base) = (title.clone(), body.clone(), base.clone());
         let submit = submit.clone();
         dialog
+            .icon(Icon::new(Lucide::GitPullRequest))
             .title("Create pull request")
-            .child(caption(hint.clone(), cx))
-            .child(labeled(
+            .description(hint.clone())
+            .child(field(
                 "Title",
                 TextField::input(Input::new(&title), &title, cx),
                 cx,
             ))
-            .child(labeled(
+            .child(field(
                 "Description",
                 TextField::textarea(Textarea::new(&body), &body, cx),
                 cx,
             ))
-            .child(labeled(
+            .child(field(
                 "Merge into",
                 TextField::input(Input::new(&base), &base, cx),
                 cx,
@@ -88,17 +86,6 @@ pub(crate) fn open(
                     }),
             )
     });
-}
-
-fn caption(text: impl Into<SharedString>, cx: &App) -> Div {
-    div()
-        .text_xs()
-        .text_color(cx.theme().muted_foreground)
-        .child(text.into())
-}
-
-fn labeled(label: &'static str, field: impl IntoElement, cx: &App) -> Div {
-    v_flex().gap_1().child(caption(label, cx)).child(field)
 }
 
 #[cfg(test)]
