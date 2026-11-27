@@ -56,6 +56,15 @@ def require_microphone_entitlement(app):
         raise ValueError(f"The signed app lost the {MICROPHONE} entitlement")
 
 
+def require_sparkle_ui(app):
+    """A validly signed framework can still be missing the installer interface."""
+    resources = app / "Contents/Frameworks/Sparkle.framework/Resources"
+    for name in ("SUUpdateAlert.nib", "SUUpdatePermissionPrompt.nib", "Base.lproj/Sparkle.strings"):
+        path = resources / name
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError(f"Sparkle is missing a required update resource: {path}")
+
+
 def export_notarized(archive, destination, authentication, timeout=1800):
     deadline = time.monotonic() + timeout
     while True:
@@ -100,6 +109,7 @@ def sign_and_notarize(app, team, key=None, key_id=None, issuer=None):
         subprocess.run(["xcrun", "stapler", "validate", str(signed_app)], check=True)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(signed_app)], check=True)
         require_microphone_entitlement(signed_app)
+        require_sparkle_ui(signed_app)
         subprocess.run(["spctl", "--assess", "--type", "execute", "--verbose=2", str(signed_app)], check=True)
         subprocess.run(["ditto", str(signed_app), str(app)], check=True)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)

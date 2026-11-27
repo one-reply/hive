@@ -13,6 +13,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 from prepare_update_site import SPARKLE, validate_feed
+from sign_macos import require_sparkle_ui
 
 
 def verify_assets(directory, repository, tag):
@@ -34,6 +35,7 @@ def verify_assets(directory, repository, tag):
     with tempfile.TemporaryDirectory(prefix="hive-release-check-") as temporary:
         subprocess.run(["ditto", "-x", "-k", str(archive), temporary], check=True)
         app = Path(temporary) / "Hive.app"
+        require_sparkle_ui(app)
         info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
         expected = plistlib.loads(Path("packaging/macos/Info.plist").read_bytes())
         if (info.get("CFBundleIdentifier") != "dev.hive.Hive"
