@@ -10,8 +10,16 @@ impl ConflictPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let ix = region.index;
-        let resolution = self.resolutions.get(ix).and_then(Option::as_ref);
-        let editing_this = self.editing.as_ref().is_some_and(|e| e.conflict == ix);
+        let status = &self
+            .result
+            .as_ref()
+            .expect("a rendered conflict has a result")
+            .blocks[ix]
+            .status;
+        let resolution = match status {
+            Status::Accepted(choice) => Some(choice),
+            _ => None,
+        };
         let has_base = region.base.is_some();
         let base_shown = self.shown_bases.contains(&ix);
 
@@ -36,7 +44,6 @@ impl ConflictPanel {
             gutter_left_hover,
             gutter_right_hover,
             choose_both_hover,
-            edit_hover,
             swap_hover,
             undo_hover,
             base_hover,
@@ -44,7 +51,6 @@ impl ConflictPanel {
             "gutter-left",
             "gutter-right",
             "choose-both",
-            "choose-edit",
             "choose-swap",
             "choose-undo",
             "choose-base",
@@ -130,19 +136,15 @@ impl ConflictPanel {
                 Button::new(("gutter-left", ix))
                     .cursor_pointer()
                     .xsmall()
-                    .disabled(editing_this)
                     .label(if left_taken { "✓" } else { "»" })
                     .tooltip(if left_taken {
                         SharedString::from("Undo Current")
                     } else {
                         SharedString::from(format!("Accept Current ({cur_label})"))
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let next = toggle_side(
-                            this.resolutions.get(ix).and_then(Option::as_ref),
-                            Side::Ours,
-                        );
-                        this.resolve_conflict(ix, next, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let next = toggle_side(this.accepted(ix), Side::Ours);
+                        this.resolve_conflict(ix, next, window, cx);
                     }))
                     .smooth_hover(ButtonLook::Ghost, &gutter_left_hover, cx),
             );
@@ -164,24 +166,21 @@ impl ConflictPanel {
                 Button::new(("gutter-right", ix))
                     .cursor_pointer()
                     .xsmall()
-                    .disabled(editing_this)
                     .label(if right_taken { "✓" } else { "«" })
                     .tooltip(if right_taken {
                         SharedString::from("Undo Incoming")
                     } else {
                         SharedString::from(format!("Accept Incoming ({inc_label})"))
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let next = toggle_side(
-                            this.resolutions.get(ix).and_then(Option::as_ref),
-                            Side::Theirs,
-                        );
-                        this.resolve_conflict(ix, next, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let next = toggle_side(this.accepted(ix), Side::Theirs);
+                        this.resolve_conflict(ix, next, window, cx);
                     }))
                     .smooth_hover(ButtonLook::Ghost, &gutter_right_hover, cx),
             );
 
         let center_bg = match resolution {
+            None if *status == Status::Edited => theme.primary.opacity(0.14),
             None => theme.warning.opacity(UNDECIDED_OPACITY),
             Some(ConflictResolution::Current) => theme.success.opacity(CONFLICT_HEADER_OPACITY),
             Some(ConflictResolution::Incoming) => theme.info.opacity(CONFLICT_HEADER_OPACITY),
@@ -205,10 +204,12 @@ impl ConflictPanel {
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(match resolution {
-                        None => theme.warning,
+                        None if *status == Status::Pending => theme.warning,
+                        None => theme.foreground,
                         Some(_) => theme.foreground,
                     })
                     .child(match resolution {
+                        None if *status == Status::Edited => "✓ Edited Result".into(),
                         None => format!("Conflict #{}", ix + 1),
                         Some(res) => format!("✓ {}", res.label()),
                     }),
@@ -223,13 +224,14 @@ impl ConflictPanel {
                     .smooth_hover(ButtonLook::Ghost, &base_hover, cx),
                 )
             })
-            .when(resolution.is_none() && !editing_this, |bar| {
+            .when(matches!(status, Status::Pending), |bar| {
                 bar.child(
                     small_action(("choose-both", ix), "Both")
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.resolve_conflict(
                                 ix,
                                 Some(ConflictResolution::BothCurrentFirst),
+                                window,
                                 cx,
                             );
                         }))
@@ -243,37 +245,28 @@ impl ConflictPanel {
                         ConflictResolution::BothCurrentFirst
                             | ConflictResolution::BothIncomingFirst
                     )
-                ) && !editing_this,
+                ),
                 |bar| {
                     bar.child(
                         small_action(("choose-swap", ix), "Swap Order")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let next = match this.resolutions.get(ix) {
-                                    Some(Some(ConflictResolution::BothCurrentFirst)) => {
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let next = match this.accepted(ix) {
+                                    Some(ConflictResolution::BothCurrentFirst) => {
                                         Some(ConflictResolution::BothIncomingFirst)
                                     }
                                     _ => Some(ConflictResolution::BothCurrentFirst),
                                 };
-                                this.resolve_conflict(ix, next, cx);
+                                this.resolve_conflict(ix, next, window, cx);
                             }))
                             .smooth_hover(ButtonLook::Ghost, &swap_hover, cx),
                     )
                 },
             )
-            .when(self.editing.is_none(), |bar| {
-                bar.child(
-                    small_action(("choose-edit", ix), "Edit")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.start_editing(ix, window, cx);
-                        }))
-                        .smooth_hover(ButtonLook::Ghost, &edit_hover, cx),
-                )
-            })
-            .when(resolution.is_some() && !editing_this, |bar| {
+            .when(!matches!(status, Status::Pending), |bar| {
                 bar.child(
                     small_action(("choose-undo", ix), "Undo")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.resolve_conflict(ix, None, cx);
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.resolve_conflict(ix, None, window, cx);
                         }))
                         .smooth_hover(ButtonLook::Ghost, &undo_hover, cx),
                 )
