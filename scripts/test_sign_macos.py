@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from sign_macos import (ENTITLEMENTS, MICROPHONE, export_notarized, prepare_archive,
-    require_microphone_entitlement, sign_and_notarize)
+    require_microphone_entitlement, require_sparkle_ui, sign_and_notarize)
 
 
 class DeveloperIDTests(unittest.TestCase):
@@ -69,6 +69,16 @@ class DeveloperIDTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, "entitlement"):
                         require_microphone_entitlement(self.app)
+
+    def test_signed_bundle_without_the_update_dialog_is_refused(self):
+        resources = self.app / "Contents/Frameworks/Sparkle.framework/Resources"
+        (resources / "Base.lproj").mkdir(parents=True)
+        (resources / "Base.lproj/Sparkle.strings").write_bytes(b"strings")
+        (resources / "SUUpdatePermissionPrompt.nib").write_bytes(b"nib")
+        with self.assertRaisesRegex(ValueError, "SUUpdateAlert.nib"):
+            require_sparkle_ui(self.app)
+        (resources / "SUUpdateAlert.nib").write_bytes(b"nib")
+        require_sparkle_ui(self.app)
 
     def test_pending_export_retries_without_uploading_again(self):
         results = [subprocess.CompletedProcess([], 65, 'Archive "Hive.xcarchive" is processing and not ready for distribution.'),
