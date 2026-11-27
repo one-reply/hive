@@ -9,7 +9,7 @@ gpui-component = { path = "vendor/gpui-component" }
 core-text = { path = "vendor/core-text" }
 
 [workspace.package]
-version = "1.0.48"
+version = "1.0.49"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/one-reply/hive"
