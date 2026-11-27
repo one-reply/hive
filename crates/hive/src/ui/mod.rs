@@ -5,6 +5,7 @@ pub mod app_menu;
 pub(crate) mod code_reference;
 pub(crate) mod conflict_panel;
 pub(crate) mod destructive;
+mod dialog;
 pub(crate) mod diff_panel;
 mod diff_view;
 mod disclosure;

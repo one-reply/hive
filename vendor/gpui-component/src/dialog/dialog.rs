@@ -168,14 +168,18 @@ impl DialogButtonProps {
             .clone()
             .unwrap_or_else(|| t!("Dialog.cancel").into());
 
-        DialogButton {
+        let cancel = DialogButton {
             anchor_key: "dialog-cancel-anchor",
             button: Button::new("cancel")
                 .label(cancel_text)
                 .with_variant(self.cancel_variant.unwrap_or_default()),
             action: Rc::new(Cancel),
-        }
-        .into_any_element()
+        };
+        // Enter normally confirms the dialog. On Cancel it must activate the focused button.
+        div()
+            .on_action(|_: &Confirm, window, cx| window.dispatch_action(Box::new(Cancel), cx))
+            .child(cancel)
+            .into_any_element()
     }
 }
 
